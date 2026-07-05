@@ -332,8 +332,13 @@ async def drain_pending_hooks() -> None:
 
     Precondition: this snapshots the in-flight set once and awaits it, so any
     hook scheduled *after* the snapshot (during the await) is not drained. Call
-    it only once no further dispatches are possible — i.e. after streaming has
-    ended — as both current callers do.
+    it only once no further dispatches are possible. The headless caller invokes
+    it after `_run_agent_loop` has fully returned. The `app.py` graceful-exit
+    caller cancels the agent worker first, whose cancel handler
+    (`_handle_interrupt_cleanup`) schedules its terminal `tool.result` hooks
+    *synchronously* before this snapshot runs — see the ordering comment there —
+    so they are captured; a hook scheduled after a slow async write would not
+    be.
     """
     # Snapshot: tasks remove themselves from the set via their done-callback as
     # they finish, so iterating the live set while gathering would mutate it.

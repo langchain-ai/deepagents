@@ -43,6 +43,7 @@ from deepagents_code._cli_context import CLIContext
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
+    ToolCallBufferKey,
     ToolStatus,
     build_tool_error_payload,
     build_tool_result_payload,
@@ -283,7 +284,9 @@ class StreamState:
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
-    tool_call_buffers: dict[int | str, ToolCallBuffer] = field(default_factory=dict)
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = field(
+        default_factory=dict
+    )
     """Maps a tool-call index or ID to its in-progress buffer: name, ID,
     accumulated argument fragments, and the display latch."""
 
@@ -297,6 +300,14 @@ class StreamState:
 
     displayed_tool_call_ids: set[str] = field(default_factory=set)
     """Tool-call IDs whose non-interactive call line has already been printed."""
+
+    emitted_tool_use_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs for which a `tool.use` has been dispatched.
+
+    Monotonic: never cleared within a run, so `tool.use` fires at most once per
+    id even if a call's arg chunks are redelivered after its result (mirrors the
+    TUI's `displayed_tool_ids`). Result correlation and the orphan drain use the
+    separate `in_flight_tool_calls`, which *is* cleared per result."""
 
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
     """Maps interrupt IDs to their validated HITL requests that are awaiting
@@ -492,38 +503,39 @@ def _process_ai_message(
             # Gate tool.use on a resolved tool id so this surface matches the
             # interactive one, which dispatches at widget-mount time in
             # `textual_adapter.execute_task_textual`. Both gate on a resolved
-            # tool-call id and fire at most once per id. `buffer_id not in
-            # in_flight_tool_calls` makes tool.use fire at most once per in-flight
-            # *window*: the id is recorded below and cleared when its result
-            # arrives. That window is weaker than the TUI's monotonic
-            # `displayed_tool_ids`; see the "fire-once-per-in-flight-window"
-            # clause of the parity contract in `_tool_stream` for why it is
-            # nonetheless sufficient under standard `stream_mode="messages"`
-            # streaming.
+            # tool-call id and fire at most once per id via a monotonic id set
+            # (`emitted_tool_use_ids` here, `displayed_tool_ids` there) that is
+            # never cleared within the run — see the "fire-once-per-id" clause of
+            # the parity contract in `_tool_stream`. Gating on the monotonic set
+            # rather than `in_flight_tool_calls` (which is cleared per result)
+            # means a redelivery of a completed call's arg chunks does not
+            # re-fire `tool.use` and spawn a spurious orphan.
             parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)
                 and buffer_id is not None
                 and parsed_args is not None
-                and buffer_id not in state.in_flight_tool_calls
+                and buffer_id not in state.emitted_tool_use_ids
             ):
                 dispatch_hook_fire_and_forget(
                     "tool.use",
                     build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
+                state.emitted_tool_use_ids.add(buffer_id)
                 state.in_flight_tool_calls[buffer_id] = InFlightToolCall(
                     buffer_name, parsed_args
                 )
             if (
                 isinstance(buffer_id, str)
                 and parsed_args is not None
-                and buffer_id in state.in_flight_tool_calls
+                and buffer_id in state.emitted_tool_use_ids
             ):
                 # Drop the buffer so a later turn that reuses this streaming
                 # index (indices restart per message, per LangChain streaming
                 # semantics) starts fresh rather than reusing this call's state.
-                # This also clears redelivered completed chunks whose hook
-                # dispatch was deduped by `in_flight_tool_calls`.
+                # This also clears a redelivered completed call's recreated
+                # buffer, whose `tool.use` is already suppressed by the
+                # monotonic `emitted_tool_use_ids`.
                 state.tool_call_buffers.pop(buffer_key, None)
 
 
@@ -950,6 +962,17 @@ def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -
         state: The stream state whose in-flight tool maps are drained.
         tool_output: Terminal output recorded on each synthesized `tool.result`.
     """
+    if state.in_flight_tool_calls:
+        # A non-empty in-flight map here means real tool results were lost to a
+        # mid-stream abort (a clean run drains every id via its result). Surface
+        # it at warning — matching the TUI's backstop for the same class — so an
+        # operator can tell a clean run from one that synthesized error closes,
+        # rather than the drain being silent (degraded audit fidelity).
+        logger.warning(
+            "Stream ended with %d in-flight tool call(s) that never received a "
+            "result; closing each with a synthetic tool.error/tool.result",
+            len(state.in_flight_tool_calls),
+        )
     for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
         dispatch_hook_fire_and_forget(
             "tool.error", build_tool_error_payload(in_flight.name)

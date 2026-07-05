@@ -65,15 +65,14 @@ A hook consumer can rely on these guarantees being identical across surfaces:
     terminal `tool.error`/`tool.result` (TUI via
     `_dispatch_terminal_tool_result_hooks`, headless via
     `_dispatch_orphaned_tool_result_hooks`), so no `tool.use` is left dangling.
-- **Fire-once-per-in-flight-window**: `tool.use` fires at most once per
-    in-flight tool-call id on both surfaces (TUI via `displayed_tool_ids`,
-    headless via `in_flight_tool_calls`). The two are not equally strong: the
-    TUI's `displayed_tool_ids` is monotonic (never discarded within a turn),
-    whereas the headless `in_flight_tool_calls` is cleared when a call's result
-    arrives, so a redelivery of the same id's arg chunks *after* its result
-    would re-fire there. Standard `stream_mode="messages"` streaming never
-    reorders a call's chunks after its result, so the in-flight window is
-    sufficient in practice.
+- **Fire-once-per-id**: `tool.use` fires at most once per tool-call id on both
+    surfaces, each gated by a monotonic id set that is never discarded within a
+    turn (TUI via `displayed_tool_ids`, headless via `emitted_tool_use_ids`). A
+    redelivery of the same id's arg chunks *after* its result — non-standard for
+    `stream_mode="messages"` — is therefore ignored on both surfaces rather than
+    re-firing `tool.use`. Headless additionally keeps `in_flight_tool_calls` for
+    result correlation and the orphan drain; that map *is* cleared per result,
+    so it is deliberately not the fire-once guard.
 - **`tool.error` co-firing**: whenever `tool_status` is `"error"`, both
     surfaces emit `tool.error` alongside `tool.result`.
 
@@ -115,6 +114,15 @@ logger = logging.getLogger(__name__)
 
 ToolStatus = Literal["success", "error"]
 """Terminal status of a tool call, mirroring `ToolMessage.status`."""
+
+ToolCallBufferKey = int | str
+"""Key for buffering an in-progress streamed tool call.
+
+The streaming `index` (an `int`) when present, else the tool-call `id` (a
+`str`), else a unique placeholder string (see `tool_call_buffer_key`). Exported
+so both surfaces annotate their buffer maps identically rather than each
+spelling the union — the exact drift this module exists to prevent.
+"""
 
 ProviderToolArgs = dict[str, Any] | list[Any] | str | int | float | bool | None
 """A whole tool-call arguments value delivered by a provider in one chunk.
@@ -215,7 +223,7 @@ class ToolResultPayload(TypedDict):
 
 def tool_call_buffer_key(
     index: int | str | None, tool_id: str | None, count: int
-) -> int | str:
+) -> ToolCallBufferKey:
     """Compute a stable key for buffering an in-progress streamed tool call.
 
     Prefers the streaming `index` (stable across fragments of one call), then
@@ -417,6 +425,14 @@ class ToolCallBuffer:
             self.args = args
             self.args_parts = []
         elif isinstance(args, str):
+            # Append every non-empty fragment unconditionally. An earlier
+            # TUI-only version skipped a fragment equal to the immediately
+            # preceding one to dedup accidental redelivery; that guard was
+            # dropped because a stream can legitimately emit two identical
+            # consecutive deltas (e.g. two `", "` fragments) and skipping one
+            # corrupts the reassembled JSON. Standard `stream_mode="messages"`
+            # streaming never redelivers a fragment, so unconditional append is
+            # both lossless and correct in practice.
             if args:
                 self.args = None
                 self.args_parts.append(args)
@@ -464,10 +480,11 @@ class ToolCallBuffer:
             return None
         # Cheap structural pre-check: bail while a JSON object/array is still
         # open so we don't attempt to parse a partial streamed fragment. A
-        # well-formed object's closing brace is always its last char. The join
-        # above is unavoidable per fragment, but deferring `json.loads` until
-        # the value looks complete is what avoids re-parsing the whole prefix
-        # on every fragment.
+        # well-formed object's closing brace is always its last char. The
+        # `"".join` still runs per fragment (so accumulation stays O(n^2) across
+        # the stream); the win is deferring the costlier `json.loads` until the
+        # value looks complete, rather than re-parsing the whole prefix on every
+        # fragment.
         #
         # A bracketed value with trailing junk after its close (e.g.
         # `{"a": 1} x`) also returns here and is treated as still-streaming, so
@@ -622,7 +639,11 @@ def build_tool_result_payload(
             truncation occurred.
     """
     if len(tool_output) > HOOK_TOOL_OUTPUT_LIMIT:
-        keep = HOOK_TOOL_OUTPUT_LIMIT - len(TOOL_OUTPUT_TRUNCATION_MARKER)
+        # `max(..., 0)` guards a future `HOOK_TOOL_OUTPUT_LIMIT` set below the
+        # marker length: a negative `keep` would slice from the end and keep the
+        # tail instead of truncating. Positive with today's constants (2000 vs a
+        # ~19-char marker); this only future-proofs a constant change.
+        keep = max(HOOK_TOOL_OUTPUT_LIMIT - len(TOOL_OUTPUT_TRUNCATION_MARKER), 0)
         capped_output = tool_output[:keep] + TOOL_OUTPUT_TRUNCATION_MARKER
     else:
         capped_output = tool_output

@@ -6292,6 +6292,71 @@ class TestCrossSurfaceHookParity:
             ]
         )
 
+    async def test_structured_content_output_parity(self) -> None:
+        """List/structured tool output formats identically across surfaces.
+
+        `tool_output` for multimodal / MCP content-block results must run through
+        the same formatter on both surfaces; a regression to a raw `str(list)`
+        repr on either would break this parity (and this scenario is the one the
+        four scalar-content cases can't catch).
+        """
+        from deepagents_code.tool_display import format_tool_message_content
+
+        content: list[Any] = [
+            {"type": "text", "text": "line one"},
+            {"type": "text", "text": "line two"},
+        ]
+        headless = _run_headless_surface(
+            [
+                {
+                    "type": "tool_call",
+                    "name": "read_file",
+                    "id": "call-1",
+                    "index": 0,
+                    "args": {"path": "foo.py"},
+                }
+            ],
+            ToolMessage(
+                content=content,
+                tool_call_id="call-1",
+                name="read_file",
+                status="success",
+            ),
+        )
+        textual = await _run_textual_surface(
+            [
+                (
+                    (),
+                    "messages",
+                    (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+                ),
+                (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content=content,
+                            tool_call_id="call-1",
+                            name="read_file",
+                            status="success",
+                        ),
+                        {},
+                    ),
+                ),
+            ]
+        )
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
+        # Guard the specific divergence risk: the formatted output, not a list
+        # repr. Both surfaces must equal the shared formatter's result.
+        expected = format_tool_message_content(content)
+        result_output = next(
+            payload["tool_output"]
+            for event, payload in headless
+            if event == "tool.result"
+        )
+        assert result_output == expected
+        assert result_output != str(content)
+
     async def test_errored_tool_call_parity(self) -> None:
         """An error result co-fires tool.error alongside tool.result on both."""
         blocks = [

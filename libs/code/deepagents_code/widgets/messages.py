@@ -2655,8 +2655,8 @@ class ToolCallMessage(Vertical):
 
         Returns a shallow copy so a consumer (e.g. a hook payload built from
         `args`) cannot rebind the widget's top-level keys by reference. Nested
-        mutable values are shared, not deep-copied; the only consumer serializes
-        the result (never deep-mutates it), so a shallow copy is sufficient.
+        mutable values are shared, not deep-copied, so callers must treat them as
+        read-only and must not deep-mutate a returned nested value.
         """
         return dict(self._args)
 

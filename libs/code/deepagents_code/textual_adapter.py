@@ -58,6 +58,7 @@ from deepagents_code._session_stats import (
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
+    ToolCallBufferKey,
     ToolStatus,
     build_tool_error_payload,
     build_tool_result_payload,
@@ -713,7 +714,7 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
-    tool_call_buffers: dict[str | int, ToolCallBuffer] = {}
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
     # Tool-call ids that already received terminal hooks before a resumed
     # `ToolMessage` can stream. When the turn still resumes, middleware
     # synthetic messages would otherwise re-dispatch `tool.result`; this set
@@ -2132,8 +2133,18 @@ async def _handle_interrupt_cleanup(
 
     # Mark tools as rejected AFTER saving state. Terminal hooks for these were
     # already dispatched before the state writes above (see the comment there).
+    # Guard each `set_rejected` — it does DOM work that can raise during
+    # app-exit teardown — so a failure can't skip the `clear()` below. If it
+    # did, `_current_tool_messages` would stay populated and the caller's
+    # `finally` backstop would re-dispatch a duplicate terminal hook for every
+    # id already closed at the top of this function.
     for tool_msg in list(adapter._current_tool_messages.values()):
-        tool_msg.set_rejected()
+        try:
+            tool_msg.set_rejected()
+        except Exception:
+            logger.exception(
+                "Failed to mark tool row rejected during interrupt cleanup"
+            )
     adapter._current_tool_messages.clear()
 
     # Keep the token count marked stale whenever interrupted state was captured,

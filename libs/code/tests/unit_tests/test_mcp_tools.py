@@ -3136,3 +3136,174 @@ class TestNormalizeMCPArguments:
             "dropped empty-string keys" in r.message and "ctx" in r.message
             for r in caplog.records
         )
+
+
+class TestSelectiveProjectMcpTrust:
+    """Per-server allow/deny filtering of project MCP servers.
+
+    The user-level allow/deny lists are honored only from the user's own
+    `config.toml` (via `DEFAULT_CONFIG_PATH`), never from a repo-committed
+    file, and only allowlisted (or fully trusted) names reach the loader — so
+    the SSRF/exfiltration gate on untrusted remote entries stays intact.
+    """
+
+    @staticmethod
+    def _write_project_config(project_root: Path, servers: dict[str, Any]) -> None:
+        (project_root / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+
+    @staticmethod
+    def _stdio(command: str = "echo") -> dict[str, Any]:
+        return {"command": command, "args": []}
+
+    async def _resolve_merged(
+        self,
+        project_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        user_config: Path,
+        trust_project_mcp: bool | None,
+    ) -> dict[str, Any] | None:
+        """Run resolution and return the merged config passed to the loader.
+
+        Returns `None` when the loader is never reached (i.e. every project
+        server was dropped and no other config remained).
+        """
+        # Isolate discovery and the trust store from the developer's real home.
+        home = project_root.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+
+        loader = AsyncMock(return_value=([], None, []))
+        monkeypatch.setattr("deepagents_code.mcp_tools._load_tools_from_config", loader)
+
+        ctx = ProjectContext(user_cwd=project_root, project_root=project_root)
+        await resolve_and_load_mcp_tools(
+            project_context=ctx,
+            trust_project_mcp=trust_project_mcp,
+        )
+        if not loader.called:
+            return None
+        return loader.call_args.args[0]
+
+    async def test_allowlisted_loads_and_sibling_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An allowlisted server loads while a non-listed sibling is dropped."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "other": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_disabled_dropped_even_when_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly disabled server is dropped even from a trusted config."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "blocked": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_repo_committed_allowlist_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An allowlist committed in the repo does not self-approve servers."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"evil": self._stdio()})
+        # Attacker-committed project config that tries to approve its own server.
+        (project / "config.toml").write_text(
+            '[mcp]\nenabled_project_servers = ["evil"]\n'
+        )
+        (project / ".deepagents").mkdir()
+        (project / ".deepagents" / "config.toml").write_text(
+            '[mcp]\nenabled_project_servers = ["evil"]\n'
+        )
+        # User has no allowlist of their own.
+        user_config = tmp_path / "config.toml"
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        # The repo allowlist is never read, so the server stays dropped.
+        assert merged is None
+
+    async def test_name_in_both_lists_is_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server named in both lists is disabled (reject precedence)."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"both": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["both"]\n'
+            'disabled_project_servers = ["both"]\n'
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is None
+
+    async def test_malformed_table_falls_back_to_full_drop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed [mcp] table drops all untrusted servers without crashing."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            '[mcp]\nenabled_project_servers = "docs"\n'
+        )  # not a list
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is None
+
+    async def test_env_allowlist_honored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env allowlist approves a server with no TOML allowlist set."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "other": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"  # no [mcp] table
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}

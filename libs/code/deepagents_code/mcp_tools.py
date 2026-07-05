@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from langchain_mcp_adapters.client import Connection
     from mcp import ClientSession
 
+    from deepagents_code.model_config import McpServerTrustLists
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -1753,6 +1754,47 @@ async def get_mcp_tools(
     return await _load_tools_from_config(config)
 
 
+def _log_skipped_project_servers(
+    dropped: list[tuple[str, str, str]],
+    *,
+    trust_project_mcp: bool | None,
+    config_trusted: bool,
+) -> None:
+    """Log project MCP servers that were dropped, explaining why.
+
+    Split out so the trust/drop loop stays readable. The message distinguishes an
+    explicit reject on an otherwise-trusted config from the untrusted-drop cases,
+    which themselves differ by whether trust was declined outright
+    (`--trust-project-mcp` off) or merely not yet granted.
+
+    Args:
+        dropped: `(name, kind, summary)` tuples for each skipped server.
+        trust_project_mcp: The caller's tri-state trust flag.
+        config_trusted: Whether the project config was otherwise trusted (so the
+            only reason to drop is an explicit user-level deny entry).
+    """
+    skipped_list = "\n".join(
+        f"- {name} [{kind}]: {summary}" for name, kind, summary in dropped
+    )
+    if config_trusted:
+        logger.warning(
+            "Skipped project MCP servers rejected by user config "
+            "(disabled_project_servers):\n%s",
+            skipped_list,
+        )
+    elif trust_project_mcp is False:
+        logger.warning(
+            "Skipped untrusted project MCP servers:\n%s",
+            skipped_list,
+        )
+    else:
+        logger.warning(
+            "Skipped untrusted project MCP servers "
+            "(config changed or not yet approved):\n%s",
+            skipped_list,
+        )
+
+
 async def resolve_and_load_mcp_tools(
     *,
     explicit_config_path: str | None = None,
@@ -1778,6 +1820,12 @@ async def resolve_and_load_mcp_tools(
             - `False`: drop stdio entries from project configs.
             - `None`: consult the persistent trust store — trusted configs
               load fully, untrusted project stdio servers are dropped.
+
+            Regardless of this flag, the user-level allow/deny lists
+            (`[mcp].enabled_project_servers` /`disabled_project_servers` and
+            their env equivalents, via `load_mcp_server_trust_lists`) are
+            applied: named servers load from an otherwise-untrusted config,
+            and explicitly denied servers are dropped even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
         stateless: When `True`, do not return an owned runtime session manager.
@@ -1822,6 +1870,7 @@ async def resolve_and_load_mcp_tools(
             configs.append(config)
 
     project_trusted: bool | None = None
+    trust_lists: McpServerTrustLists | None = None
     for path in project_configs:
         config, error = load_mcp_config_with_error(path)
         if error is not None:
@@ -1834,43 +1883,61 @@ async def resolve_and_load_mcp_tools(
             configs.append(config)
             continue
 
+        # Whether the config as a whole is trusted (flag/env/fingerprint). This
+        # governs the default for un-listed servers; the user-level allow/deny
+        # lists below refine it per server.
         if trust_project_mcp is True:
-            configs.append(config)
-            continue
-
-        if trust_project_mcp is None and project_trusted is None:
-            from deepagents_code.mcp_trust import (
-                compute_config_fingerprint,
-                is_project_mcp_trusted,
-            )
-
-            project_root = str(_resolve_project_config_base(project_context).resolve())
-            fingerprint = compute_config_fingerprint(project_configs)
-            project_trusted = is_project_mcp_trusted(project_root, fingerprint)
-
-        if project_trusted is True:
-            configs.append(config)
-            continue
-
-        # Untrusted project config: drop ALL servers (stdio + remote). Remote
-        # entries from an attacker-controlled .mcp.json can SSRF localhost or
-        # cloud metadata endpoints during the preflight HEAD probe, and any
-        # `${VAR}` references in their `headers` would exfiltrate the value
-        # to the attacker URL during the discovery handshake.
-        skipped = [
-            f"- {name} [{kind}]: {summary}" for name, kind, summary in project_servers
-        ]
-        skipped_list = "\n".join(skipped)
-        if trust_project_mcp is False:
-            logger.warning(
-                "Skipped untrusted project MCP servers:\n%s",
-                skipped_list,
-            )
+            config_trusted = True
+        elif trust_project_mcp is False:
+            config_trusted = False
         else:
-            logger.warning(
-                "Skipped untrusted project MCP servers "
-                "(config changed or not yet approved):\n%s",
-                skipped_list,
+            if project_trusted is None:
+                from deepagents_code.mcp_trust import (
+                    compute_config_fingerprint,
+                    is_project_mcp_trusted,
+                )
+
+                project_root = str(
+                    _resolve_project_config_base(project_context).resolve()
+                )
+                fingerprint = compute_config_fingerprint(project_configs)
+                project_trusted = is_project_mcp_trusted(project_root, fingerprint)
+            config_trusted = project_trusted
+
+        # The allow/deny lists are sourced only from the user's own config (home
+        # config.toml + env) — never from the repo — so a committed .mcp.json
+        # cannot self-approve. Loaded lazily and reused across project configs.
+        if trust_lists is None:
+            from deepagents_code.model_config import load_mcp_server_trust_lists
+
+            trust_lists = load_mcp_server_trust_lists()
+
+        # Keep only servers that survive the trust decision. Dropping the rest
+        # here (rather than loading all or none) preserves the SSRF/header-
+        # exfiltration gate: a non-allowlisted remote entry from an attacker-
+        # controlled .mcp.json never reaches the preflight HEAD probe or the
+        # `${VAR}` header interpolation during the discovery handshake.
+        servers = config["mcpServers"]
+        kept: dict[str, Any] = {}
+        for name, server in servers.items():
+            if name in trust_lists.disabled:
+                # Explicit reject always wins, even for a trusted config.
+                continue
+            if config_trusted or name in trust_lists.enabled:
+                kept[name] = server
+        if kept:
+            configs.append({**config, "mcpServers": kept})
+
+        dropped = [
+            (name, kind, summary)
+            for name, kind, summary in project_servers
+            if name not in kept
+        ]
+        if dropped:
+            _log_skipped_project_servers(
+                dropped,
+                trust_project_mcp=trust_project_mcp,
+                config_trusted=config_trusted,
             )
 
     if explicit_config_path:

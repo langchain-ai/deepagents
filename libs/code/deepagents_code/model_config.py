@@ -3046,6 +3046,121 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     return True
 
 
+class McpServerTrustLists(NamedTuple):
+    """User-level allow/deny lists for project MCP servers, by server name.
+
+    Sourced only from the user's own configuration (home `config.toml` and
+    process env), never from a repo, so a committed `.mcp.json` cannot
+    self-approve. See `load_mcp_server_trust_lists`.
+    """
+
+    enabled: frozenset[str]
+    """Server names pre-approved to load from an untrusted project config."""
+
+    disabled: frozenset[str]
+    """Server names always rejected; reject wins over `enabled` and over trust."""
+
+
+def _parse_csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated env var into a list of trimmed, non-empty names.
+
+    Returns:
+        The parsed list when the variable is set (possibly empty after
+            trimming), or `None` when the variable is unset so callers can
+            distinguish "unset, fall back to TOML" from "set but empty".
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _toml_str_list(value: object) -> list[str]:
+    """Coerce a raw TOML value into a list of strings, dropping bad elements.
+
+    Non-list values and non-string elements are ignored rather than raised so
+    a malformed `[mcp]` table degrades to "nothing configured" instead of
+    crashing startup, consistent with the other structured loaders.
+
+    Returns:
+        The string elements of `value`, or an empty list when `value` is not a
+            list.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def load_mcp_server_trust_lists(
+    config_path: Path | None = None,
+) -> McpServerTrustLists:
+    """Load per-server project MCP allow/deny lists from user-level config.
+
+    Security boundary: this reads the `[mcp]` table only from the user-level
+    `config.toml` (`DEFAULT_CONFIG_PATH`, i.e. `~/.deepagents/config.toml`) and
+    the `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` /
+    `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS` process env vars — never from
+    a project's `.mcp.json` or any repo-committed file. There is no
+    project-level `config.toml` discovery, so an attacker who commits a
+    malicious `.mcp.json` plus an in-repo config cannot pre-approve their own
+    servers; the approval must live in the user's home config. This mirrors
+    Claude Code's "untrusted folder → only non-checked-in settings" rule.
+
+    Each env var, when set, replaces (takes precedence over) its TOML list so
+    the behavior matches the env-beats-config resolution used elsewhere.
+    Rejection wins: a name appearing in both the enabled and disabled result is
+    reported only in `disabled`.
+
+    Args:
+        config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
+            callers should not point this at a project path — doing so would
+            defeat the boundary above.
+
+    Returns:
+        The resolved `McpServerTrustLists`. Falls back to empty lists (logging
+            a warning) when the file is missing, unreadable, or malformed.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    toml_enabled: list[str] = []
+    toml_disabled: list[str] = []
+    try:
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+            mcp_section = data.get("mcp", {})
+            if isinstance(mcp_section, dict):
+                toml_enabled = _toml_str_list(
+                    mcp_section.get("enabled_project_servers")
+                )
+                toml_disabled = _toml_str_list(
+                    mcp_section.get("disabled_project_servers")
+                )
+            else:
+                logger.warning(
+                    "[mcp] in %s should be a table, got %s; ignoring",
+                    config_path,
+                    type(mcp_section).__name__,
+                )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read %s for MCP server trust lists; using none",
+            config_path,
+            exc_info=True,
+        )
+
+    env_enabled = _parse_csv_env(_env_vars.ENABLED_PROJECT_MCP_SERVERS)
+    env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
+
+    enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
+    disabled = frozenset(env_disabled if env_disabled is not None else toml_disabled)
+    # Reject precedence: a name in both lists is disabled, so never report it as
+    # enabled.
+    enabled -= disabled
+    return McpServerTrustLists(enabled=enabled, disabled=disabled)
+
+
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
     "messages": True,

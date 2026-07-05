@@ -18,6 +18,7 @@ from deepagents_code.model_config import (
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
+    McpServerTrustLists,
     ModelConfig,
     ModelConfigError,
     ModelProfileEntry,
@@ -39,6 +40,7 @@ from deepagents_code.model_config import (
     has_provider_credentials,
     is_warning_suppressed,
     load_default_agent,
+    load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
     load_thread_columns,
@@ -5212,6 +5214,123 @@ class TestUnsuppressWarning:
 
         unsuppress_warning("tavily", config_path)
         assert not is_warning_suppressed("tavily", config_path)
+
+
+class TestLoadMcpServerTrustLists:
+    """Tests for load_mcp_server_trust_lists()."""
+
+    def test_reads_both_lists_from_toml(self, tmp_path: Path) -> None:
+        """Parses enabled and disabled lists from the [mcp] table."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "reference"]\n'
+            'disabled_project_servers = ["blocked"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(
+            enabled=frozenset({"docs", "reference"}),
+            disabled=frozenset({"blocked"}),
+        )
+
+    def test_reject_precedence_removes_from_enabled(self, tmp_path: Path) -> None:
+        """A name in both lists is reported only as disabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "both"]\n'
+            'disabled_project_servers = ["both"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset({"docs"})
+        assert result.disabled == frozenset({"both"})
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        """A missing config file yields empty lists, not an error."""
+        result = load_mcp_server_trust_lists(tmp_path / "nonexistent.toml")
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_missing_mcp_section_returns_empty(self, tmp_path: Path) -> None:
+        """A config without an [mcp] table yields empty lists."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_corrupt_toml_falls_back_to_empty(self, tmp_path: Path) -> None:
+        """Malformed TOML degrades to empty lists rather than crashing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_malformed_table_shape_ignored(self, tmp_path: Path) -> None:
+        """Non-list values and non-string elements are dropped, no crash."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = "docs"\n'  # not a list
+            'disabled_project_servers = [1, "blocked", true]\n'  # mixed types
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.disabled == frozenset({"blocked"})
+
+    def test_env_overrides_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Env lists replace their TOML counterparts, independently per list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS,
+            "env-enabled, env-two",
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # Enabled comes from env; disabled falls back to the TOML value.
+        assert result.enabled == frozenset({"env-enabled", "env-two"})
+        assert result.disabled == frozenset({"toml-disabled"})
+
+    def test_empty_env_clears_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty env var overrides (clears) the TOML list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["toml-enabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+
+    def test_defaults_to_user_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no argument, the loader reads the user-level config path only."""
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        result = load_mcp_server_trust_lists()
+
+        assert result.enabled == frozenset({"docs"})
 
 
 class TestGetModelProfiles:

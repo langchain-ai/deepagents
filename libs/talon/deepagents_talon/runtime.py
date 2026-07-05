@@ -870,11 +870,11 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
 
 
 def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
-    subagents_dir = assistant_dir / "subagents"
-    if not subagents_dir.is_dir():
+    agents_dir = assistant_dir.parent / "agents"
+    if not agents_dir.is_dir():
         return []
     subagents: list[SubAgent] = []
-    for child in sorted(subagents_dir.iterdir(), key=lambda item: item.name):
+    for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
         if not child.is_dir():
             continue
         path = child / "AGENTS.md"

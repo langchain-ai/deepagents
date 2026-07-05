@@ -32,7 +32,7 @@ def test_import_fleet_zip_materializes_agent_files_and_mcp_config(tmp_path: Path
             "subagents/researcher/tools.json": json.dumps(_tools_json("researcher")),
         },
     )
-    target = tmp_path / "agent"
+    target = tmp_path / "agent-home" / "agent"
 
     result = import_fleet_zip(source, target_dir=target)
 
@@ -45,7 +45,8 @@ def test_import_fleet_zip_materializes_agent_files_and_mcp_config(tmp_path: Path
     assert (target / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8") == (
         "---\nname: review\n---\nReview things."
     )
-    assert (target / "subagents" / "researcher" / "AGENTS.md").is_file()
+    assert (tmp_path / "agent-home" / "agents" / "researcher" / "AGENTS.md").is_file()
+    assert not (target / "subagents").exists()
     assert not (target / "tools.json").exists()
     assert not (target / "config.json").exists()
     notes = (target / ".mcp.json.setup").read_text(encoding="utf-8")
@@ -113,7 +114,13 @@ def test_import_fleet_cli_resolves_target_assistant(
     unexpected_id: str | None,
 ) -> None:
     source = tmp_path / "fleet.zip"
-    _write_zip(source, {"AGENTS.md": "root prompt"})
+    _write_zip(
+        source,
+        {
+            "AGENTS.md": "root prompt",
+            "subagents/researcher/AGENTS.md": "Research carefully.",
+        },
+    )
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("DEEPAGENTS_TALON_ASSISTANT_ID", "default")
     monkeypatch.setattr(
@@ -128,6 +135,7 @@ def test_import_fleet_cli_resolves_target_assistant(
     assert exc.value.code == 0
     target = tmp_path / "home" / expected_id / "agent"
     assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
+    assert (tmp_path / "home" / expected_id / "agents" / "researcher" / "AGENTS.md").is_file()
     if unexpected_id is not None:
         assert not (tmp_path / "home" / unexpected_id / "agent" / "AGENTS.md").exists()
 
@@ -164,9 +172,11 @@ def test_import_fleet_zip_rejects_symlink_entries_before_writing_target(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "fleet.zip"
-    target = tmp_path / "agent"
-    target.mkdir()
+    target = tmp_path / "agent-home" / "agent"
+    target.mkdir(parents=True)
     (target / "AGENTS.md").write_text("existing prompt", encoding="utf-8")
+    (target / "subagents" / "stale" / "AGENTS.md").parent.mkdir(parents=True)
+    (target / "subagents" / "stale" / "AGENTS.md").write_text("stale", encoding="utf-8")
     symlink = zipfile.ZipInfo("skills/review/SKILL.md")
     symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
     with zipfile.ZipFile(source, "w") as archive:
@@ -273,7 +283,7 @@ def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> N
 def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Path) -> None:
     first = tmp_path / "first.zip"
     second = tmp_path / "second.zip"
-    target = tmp_path / "agent"
+    target = tmp_path / "agent-home" / "agent"
     _write_zip(
         first,
         {
@@ -302,8 +312,9 @@ def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Pat
     assert (target / "skills" / "write" / "SKILL.md").read_text(encoding="utf-8") == (
         "second skill"
     )
-    assert not (target / "subagents" / "researcher").exists()
-    assert (target / "subagents" / "writer" / "AGENTS.md").read_text(
+    assert not (target / "subagents").exists()
+    assert not (tmp_path / "agent-home" / "agents" / "researcher").exists()
+    assert (tmp_path / "agent-home" / "agents" / "writer" / "AGENTS.md").read_text(
         encoding="utf-8"
     ) == "second subagent"
 

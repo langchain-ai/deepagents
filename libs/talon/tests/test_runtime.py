@@ -199,14 +199,14 @@ async def test_runtime_wires_subagents(
     assert captured["subagents"] == subagents
 
 
-async def test_runtime_loads_local_subagents_from_assistant_dir(
+async def test_runtime_loads_local_subagents_from_user_agents_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
-    assistant_dir = tmp_path / "assistant"
-    researcher_dir = assistant_dir / "subagents" / "researcher"
-    reviewer_dir = assistant_dir / "subagents" / "reviewer"
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
+    reviewer_dir = tmp_path / "agent-home" / "agents" / "reviewer"
     researcher_dir.mkdir(parents=True)
     reviewer_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
@@ -253,10 +253,10 @@ async def test_runtime_skips_unloadable_local_subagent_dirs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     captured: dict[str, Any] = {}
-    assistant_dir = tmp_path / "assistant"
-    missing_dir = assistant_dir / "subagents" / "missing"
-    bad_dir = assistant_dir / "subagents" / "bad name"
-    good_dir = assistant_dir / "subagents" / "good-name"
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    missing_dir = tmp_path / "agent-home" / "agents" / "missing"
+    bad_dir = tmp_path / "agent-home" / "agents" / "bad name"
+    good_dir = tmp_path / "agent-home" / "agents" / "good-name"
     missing_dir.mkdir(parents=True)
     bad_dir.mkdir(parents=True)
     good_dir.mkdir(parents=True)

@@ -244,13 +244,13 @@ def _materialize_staging(
         elif _is_subagent_prompt_path(name):
             subagent = PurePosixPath(name).parts[1]
             _validate_agent_name(subagent, name)
-            _copy_zip_file(archive, info, staging / name)
+            _copy_zip_file(archive, info, staging / "agents" / subagent / "AGENTS.md")
         elif name in {"config.json", "tools.json"}:
             _copy_zip_file(archive, info, staging / name)
         elif _is_subagent_tools_path(name):
             subagent = PurePosixPath(name).parts[1]
             _validate_agent_name(subagent, name)
-            _copy_zip_file(archive, info, staging / name)
+            _copy_zip_file(archive, info, staging / "agents" / subagent / "tools.json")
 
 
 def _copy_zip_file(archive: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path) -> None:
@@ -298,9 +298,9 @@ def _tools_json_paths(staging: Path) -> list[tuple[Path, str]]:
     root = staging / "tools.json"
     if root.is_file():
         paths.append((root, "root"))
-    subagents = staging / "subagents"
-    if subagents.is_dir():
-        for child in sorted(subagents.iterdir(), key=lambda item: item.name):
+    agents = staging / "agents"
+    if agents.is_dir():
+        for child in sorted(agents.iterdir(), key=lambda item: item.name):
             path = child / "tools.json"
             if path.is_file():
                 paths.append((path, child.name))
@@ -490,12 +490,14 @@ def _refresh_target(
     notes: str | None,
     mcp_config: str | None,
 ) -> None:
+    agent_home = target.parent
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     target.chmod(0o700)
     _replace_file(staging / "AGENTS.md", target / "AGENTS.md")
 
     _replace_tree(staging / "skills", target / "skills")
-    _replace_tree(staging / "subagents", target / "subagents")
+    _replace_tree(staging / "agents", agent_home / "agents")
+    _remove_path(target / "subagents")
 
     setup_path = target / _SETUP_FILENAME
     if notes is None:
@@ -532,16 +534,24 @@ def _replace_tree(source: Path, target: Path) -> None:
         shutil.copytree(source, target)
 
 
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
 def _subagent_prompt_paths(target: Path) -> list[Path]:
-    subagents = target / "subagents"
-    if not subagents.is_dir():
+    agents = target.parent / "agents"
+    if not agents.is_dir():
         return []
-    return sorted(path for path in subagents.glob("*/AGENTS.md") if path.is_file())
+    return sorted(path for path in agents.glob("*/AGENTS.md") if path.is_file())
 
 
 def _display_path(path: Path) -> str:
     parts = path.parts
-    if "subagents" in parts:
-        index = parts.index("subagents")
-        return "/".join(parts[index:])
+    for directory in ("subagents", "agents"):
+        if directory in parts:
+            index = parts.index(directory)
+            return "/".join(parts[index:])
     return path.name

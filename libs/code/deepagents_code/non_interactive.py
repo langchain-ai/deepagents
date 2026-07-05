@@ -245,6 +245,24 @@ async def _terminate_startup_process(proc: Process) -> None:
         )
 
 
+@dataclass(frozen=True)
+class InFlightToolCall:
+    """A tool call whose `tool.use` has fired but whose result has not arrived.
+
+    Bundling the name and args into one record keeps them structurally in
+    lock-step: a single `dict[str, InFlightToolCall]` cannot represent an id with
+    args but no name (or vice versa), which two parallel dicts could. That
+    removes the desync failure mode where an orphaned drain would emit a
+    `tool.error` with an empty `tool_name`.
+    """
+
+    name: str
+    """The tool name, carried so an orphaned call can be closed with a name."""
+
+    args: dict[str, Any]
+    """The parsed tool-call arguments, for correlating the matching result."""
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
@@ -268,16 +286,13 @@ class StreamState:
     """Maps a tool-call index or ID to its in-progress buffer: name, ID,
     accumulated argument fragments, and the display latch."""
 
-    tool_call_args_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    in_flight_tool_calls: dict[str, InFlightToolCall] = field(default_factory=dict)
     """Maps in-flight tool-call IDs (those whose `tool.use` has fired) to their
-    parsed arguments, so the matching `tool.result` can be correlated. Entries
-    are removed when the result arrives."""
-
-    tool_call_names_by_id: dict[str, str] = field(default_factory=dict)
-    """Maps in-flight tool-call IDs to their tool name, kept in lock-step with
-    `tool_call_args_by_id` so an orphaned `tool.use` (one whose `ToolMessage`
-    never arrives, e.g. an aborted stream) can still be closed with a named
-    terminal event."""
+    name and parsed arguments, so the matching `tool.result` can be correlated.
+    Entries are removed when the result arrives; any still present when the
+    stream aborts are closed by `_dispatch_orphaned_tool_result_hooks`. One
+    record per id keeps name and args structurally in lock-step (see
+    `InFlightToolCall`)."""
 
     displayed_tool_call_ids: set[str] = field(default_factory=set)
     """Tool-call IDs whose non-interactive call line has already been printed."""
@@ -479,7 +494,7 @@ def _process_ai_message(
             # `_dispatch_tool_use_hook` call near `ToolCallMessage` mount). Both
             # gate on a resolved tool-call id and fire at most once per id — the
             # parity contract is documented in `_tool_stream`. `buffer_id not in
-            # tool_call_args_by_id` makes tool.use fire at most once per in-flight
+            # in_flight_tool_calls` makes tool.use fire at most once per in-flight
             # id (the id is recorded below and cleared when its result arrives),
             # mirroring the interactive `displayed_tool_ids` guard so a provider
             # re-delivering a completed call can't double-fire.
@@ -488,24 +503,25 @@ def _process_ai_message(
                 isinstance(buffer_name, str)
                 and buffer_id is not None
                 and parsed_args is not None
-                and buffer_id not in state.tool_call_args_by_id
+                and buffer_id not in state.in_flight_tool_calls
             ):
                 dispatch_hook_fire_and_forget(
                     "tool.use",
                     build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
-                state.tool_call_args_by_id[buffer_id] = parsed_args
-                state.tool_call_names_by_id[buffer_id] = buffer_name
+                state.in_flight_tool_calls[buffer_id] = InFlightToolCall(
+                    buffer_name, parsed_args
+                )
             if (
                 isinstance(buffer_id, str)
                 and parsed_args is not None
-                and buffer_id in state.tool_call_args_by_id
+                and buffer_id in state.in_flight_tool_calls
             ):
                 # Drop the buffer so a later turn that reuses this streaming
                 # index (indices restart per message, per LangChain streaming
                 # semantics) starts fresh rather than reusing this call's state.
                 # This also clears redelivered completed chunks whose hook
-                # dispatch was deduped by `tool_call_args_by_id`.
+                # dispatch was deduped by `in_flight_tool_calls`.
                 state.tool_call_buffers.pop(buffer_key, None)
 
 
@@ -552,8 +568,9 @@ def _process_message_chunk(
         # pair them — but log the correlation miss so a lost pairing is not
         # completely silent.
         if isinstance(tool_id, str):
-            tool_args = state.tool_call_args_by_id.pop(tool_id, None)
-            correlated_tool_name = state.tool_call_names_by_id.pop(tool_id, "")
+            in_flight = state.in_flight_tool_calls.pop(tool_id, None)
+            tool_args = in_flight.args if in_flight is not None else None
+            correlated_tool_name = in_flight.name if in_flight is not None else ""
             state.displayed_tool_call_ids.discard(tool_id)
             if tool_args is None:
                 # Info, not debug: a real-id result with no matching tool.use is
@@ -591,8 +608,8 @@ def _process_message_chunk(
         # raw Python list repr here vs. extracted text there. Truncation to
         # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
         # Guard formatting so a formatter error can't skip the tool.result
-        # dispatch below; fall back to the raw content (still capped in the
-        # payload by build_tool_result_payload).
+        # dispatch below; on failure use a sentinel (see the except) rather than
+        # re-touching the offending content, so the dispatch stays unconditional.
         try:
             tool_content = format_tool_message_content(message_obj.content)
             tool_output = str(tool_content) if tool_content else ""
@@ -604,11 +621,12 @@ def _process_message_chunk(
             logger.exception("Failed to format tool output")
             tool_output = UNRENDERABLE_TOOL_OUTPUT
         # Headless always dispatches tool.result for every ToolMessage — there
-        # are no widgets to skip. The TUI dispatches from three branches in
-        # `textual_adapter.execute_task_textual`: the widget-backed path, the
-        # `completed_tool_result_ids` duplicate-suppression path, and an `else`
-        # for unmounted tools that mirrors this always-dispatch behavior. See
-        # the parity contract in `_tool_stream` for the full guarantee.
+        # are no widgets to skip. The TUI handles ToolMessages in three branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path and
+        # an `else` for unmounted tools both dispatch (mirroring this
+        # always-dispatch behavior), while the `completed_tool_result_ids` branch
+        # suppresses a duplicate rather than dispatching. See the parity contract
+        # in `_tool_stream` for the full guarantee.
         if tool_status == "error":
             dispatch_hook_fire_and_forget(
                 "tool.error",
@@ -917,7 +935,7 @@ def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -
     """Close out `tool.use` events that never received a `ToolMessage`.
 
     On a normally-completing run every `tool.use` is followed by a `ToolMessage`
-    that drains `tool_call_args_by_id`, so this is a no-op. When the stream is
+    that drains `in_flight_tool_calls`, so this is a no-op. When the stream is
     aborted mid-flight (e.g. a provider error between the tool call and its
     result), any id still present had its `tool.use` dispatched with no terminal
     event; emit `tool.error` + a `tool_status="error"` `tool.result` for each so
@@ -928,17 +946,17 @@ def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -
         state: The stream state whose in-flight tool maps are drained.
         tool_output: Terminal output recorded on each synthesized `tool.result`.
     """
-    for tool_id, tool_args in list(state.tool_call_args_by_id.items()):
-        tool_name = state.tool_call_names_by_id.get(tool_id, "")
-        dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
+    for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
+        dispatch_hook_fire_and_forget(
+            "tool.error", build_tool_error_payload(in_flight.name)
+        )
         dispatch_hook_fire_and_forget(
             "tool.result",
             build_tool_result_payload(
-                tool_name, tool_id, tool_args, "error", tool_output
+                in_flight.name, tool_id, in_flight.args, "error", tool_output
             ),
         )
-    state.tool_call_args_by_id.clear()
-    state.tool_call_names_by_id.clear()
+    state.in_flight_tool_calls.clear()
 
 
 async def _run_agent_loop(

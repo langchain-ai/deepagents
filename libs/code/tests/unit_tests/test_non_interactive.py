@@ -18,10 +18,12 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._tool_stream import UNRENDERABLE_TOOL_OUTPUT
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
+    InFlightToolCall,
     StreamState,
     ThreadUrlLookupState,
     _build_non_interactive_header,
@@ -2174,7 +2176,11 @@ class TestProcessMessageChunkHooks:
             name="read_file",
             status="success",
         )
-        state = StreamState(tool_call_args_by_id={"call-1": {"path": "foo.py"}})
+        state = StreamState(
+            in_flight_tool_calls={
+                "call-1": InFlightToolCall("read_file", {"path": "foo.py"})
+            }
+        )
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
         file_op_tracker.complete_with_message.return_value = None
@@ -2194,7 +2200,7 @@ class TestProcessMessageChunkHooks:
                 "tool_output": "File read successfully",
             },
         )
-        assert state.tool_call_args_by_id == {}
+        assert state.in_flight_tool_calls == {}
 
     def test_tool_result_uses_correlated_name_when_message_name_missing(
         self,
@@ -2208,8 +2214,9 @@ class TestProcessMessageChunkHooks:
             status="success",
         )
         state = StreamState(
-            tool_call_args_by_id={"call-1": {"path": "foo.py"}},
-            tool_call_names_by_id={"call-1": "read_file"},
+            in_flight_tool_calls={
+                "call-1": InFlightToolCall("read_file", {"path": "foo.py"})
+            }
         )
         console = Console(quiet=True)
         file_op_tracker = MagicMock()
@@ -2230,8 +2237,7 @@ class TestProcessMessageChunkHooks:
                 "tool_output": "File read successfully",
             },
         )
-        assert state.tool_call_args_by_id == {}
-        assert state.tool_call_names_by_id == {}
+        assert state.in_flight_tool_calls == {}
 
     def test_tool_result_dispatched_for_error_status(self) -> None:
         """tool.error and tool.result fire when a tool call failed."""
@@ -2290,6 +2296,47 @@ class TestProcessMessageChunkHooks:
 
         payload = mock_dispatch.call_args[0][1]
         assert len(payload["tool_output"]) == 2000
+
+    def test_tool_result_sentinel_when_formatter_raises(self) -> None:
+        """A formatter error still dispatches tool.result with the sentinel.
+
+        The content-formatting guard must keep the terminal dispatch
+        unconditional; otherwise a formatter (or pathological `__str__`) error
+        would drop the tool.result for this tool and every later tool.
+        """
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="unformattable",
+            tool_call_id="call-boom",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        def boom(_content: object) -> str:
+            msg = "formatter boom"
+            raise RuntimeError(msg)
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.format_tool_message_content",
+                side_effect=boom,
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0][0][1]["tool_output"] == UNRENDERABLE_TOOL_OUTPUT
 
     def test_tool_output_uses_formatter_for_structured_content(self) -> None:
         """tool_output is the formatted content, not a raw list repr.
@@ -2512,8 +2559,9 @@ class TestOrphanedToolResultHooks:
     def test_dispatches_terminal_hooks_and_clears_state(self) -> None:
         """Each in-flight id gets a named error result, then the maps are drained."""
         state = StreamState()
-        state.tool_call_args_by_id = {"tool-1": {"command": "sleep 100"}}
-        state.tool_call_names_by_id = {"tool-1": "execute"}
+        state.in_flight_tool_calls = {
+            "tool-1": InFlightToolCall("execute", {"command": "sleep 100"})
+        }
 
         with patch(
             "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
@@ -2534,8 +2582,7 @@ class TestOrphanedToolResultHooks:
                 "tool_output": "Stream ended before tool result",
             }
         ]
-        assert state.tool_call_args_by_id == {}
-        assert state.tool_call_names_by_id == {}
+        assert state.in_flight_tool_calls == {}
 
     def test_noop_when_no_orphans(self) -> None:
         """A clean run (every id already drained) dispatches nothing."""
@@ -2559,8 +2606,9 @@ class TestOrphanedToolResultHooks:
             _context: object,
         ) -> None:
             # Simulate a tool.use having fired just before the stream dies.
-            state.tool_call_args_by_id["tool-1"] = {"command": "x"}
-            state.tool_call_names_by_id["tool-1"] = "execute"
+            state.in_flight_tool_calls["tool-1"] = InFlightToolCall(
+                "execute", {"command": "x"}
+            )
             msg = "provider blew up"
             raise RuntimeError(msg)
 

@@ -753,6 +753,37 @@ class TestToolCallMessageDuration:
             assert "Took" not in getattr(content, "plain", str(content))
 
 
+class TestToolCallMessageTerminalStateGuards:
+    """A rejected/skipped row must not flip to success/error on a resumed turn."""
+
+    async def test_set_success_noop_on_rejected_row(self) -> None:
+        """A resumed synthetic success ToolMessage keeps a rejected row rejected.
+
+        After a reasoned reject the turn can resume and stream a synthetic
+        ToolMessage for the rejected tool; `set_success` must be ignored so the
+        row keeps its terminal rejected state instead of flipping.
+        """
+        app = _tool_msg_app("execute", {"command": "rm -rf /"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_rejected()
+            assert app.msg._status == "rejected"
+            app.msg.set_success("done")
+            await pilot.pause()
+            assert app.msg._status == "rejected"
+            assert app.msg.is_success is False
+
+    async def test_set_error_noop_on_rejected_row(self) -> None:
+        """A resumed synthetic error ToolMessage keeps a rejected row rejected."""
+        app = _tool_msg_app("execute", {"command": "rm -rf /"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_rejected()
+            app.msg.set_error("boom")
+            await pilot.pause()
+            assert app.msg._status == "rejected"
+
+
 class TestToolCallMessageTodos:
     """Tests for `write_todos` output formatting."""
 

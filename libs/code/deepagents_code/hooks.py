@@ -36,7 +36,9 @@ single sequence of events:
 
 `tool_args` is the parsed tool-call arguments; a non-object value (rare) is
 wrapped as `{"value": ...}`. `tool_output` is the tool's returned content,
-truncated to `HOOK_TOOL_OUTPUT_LIMIT` characters (`tool_args` is not truncated).
+capped to `HOOK_TOOL_OUTPUT_LIMIT` characters (`tool_args` is not truncated); a
+capped value ends with `…[output truncated]` so a consumer can tell a truncated
+result from a short one.
 `tool_status` is `"success"` or `"error"`; `"error"` covers both a tool that
 raised and a call the user rejected or cancelled. Whenever a `tool.result` has
 `tool_status: "error"`, `tool.error` (payload `{"tool_names": [<name>]}`) fires
@@ -235,7 +237,11 @@ async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
         if not hooks:
             return
 
-        payload_bytes = json.dumps({"event": event, **payload}).encode()
+        # `default=str` degrades a non-JSON-serializable value (e.g. a
+        # provider-delivered whole-value arg object) to its string form rather
+        # than raising and dropping the entire hook event — the invocation stays
+        # auditable even if one field isn't natively serializable.
+        payload_bytes = json.dumps({"event": event, **payload}, default=str).encode()
         await asyncio.to_thread(_dispatch_hook_sync, event, payload_bytes, hooks)
     except Exception:
         logger.warning(

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from deepagents_code._tool_stream import (
+    TOOL_OUTPUT_TRUNCATION_MARKER,
     ToolCallBuffer,
     build_tool_error_payload,
     build_tool_result_payload,
@@ -271,11 +272,23 @@ class TestPayloadBuilders:
         }
 
     def test_tool_output_truncated_to_limit(self) -> None:
-        """`tool_output` is capped at `HOOK_TOOL_OUTPUT_LIMIT`."""
+        """`tool_output` is capped at `HOOK_TOOL_OUTPUT_LIMIT` and marked."""
         payload = build_tool_result_payload(
             "read_file", "toolu_1", {}, "success", "x" * (HOOK_TOOL_OUTPUT_LIMIT + 500)
         )
+        # The marker is counted within the cap, so the total length never exceeds
+        # the limit, and its presence lets a consumer tell it was truncated.
         assert len(payload["tool_output"]) == HOOK_TOOL_OUTPUT_LIMIT
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
+    def test_tool_output_at_limit_not_marked(self) -> None:
+        """Output exactly at the cap is passed through unmarked (no truncation)."""
+        exact = "x" * HOOK_TOOL_OUTPUT_LIMIT
+        payload = build_tool_result_payload(
+            "read_file", "toolu_1", {}, "success", exact
+        )
+        assert payload["tool_output"] == exact
+        assert not payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
 
     def test_tool_args_not_truncated(self) -> None:
         """`tool_args` is passed through in full; only output is capped."""

@@ -1315,13 +1315,40 @@ async def execute_task_textual(
                                     buffer_name, buffer_id, parsed_args
                                 )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
-                                await adapter._mount_message(tool_msg)
-                                adapter._current_tool_messages[buffer_id] = tool_msg
-                                # Mark running so the group row reflects live
-                                # progress; the row itself is hidden inside the
-                                # group, so this drives state, not a visible
-                                # per-tool spinner.
-                                tool_msg.set_running()
+                                try:
+                                    await adapter._mount_message(tool_msg)
+                                except Exception:
+                                    # tool.use already fired. If the mount raises
+                                    # (e.g. mounting into a torn-down DOM during
+                                    # shutdown), the widget is never registered in
+                                    # `_current_tool_messages`, so the reject/
+                                    # cancel drains — which only iterate that dict
+                                    # — would leave this tool.use unterminated.
+                                    # Close it here so the "every tool.use is
+                                    # closed" guarantee holds, and record the id
+                                    # so a later real ToolMessage doesn't
+                                    # double-dispatch. Mirrors the guarded
+                                    # ask_user mount path above.
+                                    logger.exception(
+                                        "Failed to mount tool widget for %s",
+                                        buffer_id,
+                                    )
+                                    _dispatch_tool_error_hook(buffer_name)
+                                    _dispatch_tool_result_hook(
+                                        buffer_name,
+                                        buffer_id,
+                                        parsed_args,
+                                        "error",
+                                        "Tool row mount failed",
+                                    )
+                                    completed_tool_result_ids.add(buffer_id)
+                                else:
+                                    adapter._current_tool_messages[buffer_id] = tool_msg
+                                    # Mark running so the group row reflects live
+                                    # progress; the row itself is hidden inside
+                                    # the group, so this drives state, not a
+                                    # visible per-tool spinner.
+                                    tool_msg.set_running()
 
                             if buffer_id is not None:
                                 tool_call_buffers.pop(buffer_key, None)

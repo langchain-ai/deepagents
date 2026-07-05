@@ -2651,8 +2651,12 @@ class ToolCallMessage(Vertical):
 
     @property
     def args(self) -> dict[str, Any]:
-        """Public read-only accessor for the parsed tool-call arguments."""
-        return self._args
+        """Public read-only accessor for the parsed tool-call arguments.
+
+        Returns a shallow copy so a consumer (e.g. a hook payload built from
+        `args`) cannot mutate the widget's internal state by reference.
+        """
+        return dict(self._args)
 
     @property
     def is_success(self) -> bool:

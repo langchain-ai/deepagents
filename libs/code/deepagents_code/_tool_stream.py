@@ -25,10 +25,10 @@ a single shared dispatch function:
     from the widget constructor (or from a validated HITL interrupt). Result
     correlation reads args from `tool_msg.args` (a widget property).
 
-- **Headless**: there are no widgets. Tool-call state lives in plain dicts on
-    `StreamState` (`tool_call_args_by_id`). `tool.use` fires in the stream loop
-    once args parse and the tool-call id is known. Result correlation pops args
-    from that dict.
+- **Headless**: there are no widgets. Tool-call state lives in a plain dict on
+    `StreamState` (`in_flight_tool_calls`, keyed by tool-call id). `tool.use`
+    fires in the stream loop once args parse and the tool-call id is known.
+    Result correlation pops the record from that dict.
 
 Additionally, only the TUI has interactive HITL approval widgets that can be
 rejected, so only it needs `_dispatch_terminal_tool_result_hooks` and the
@@ -61,7 +61,7 @@ A hook consumer can rely on these guarantees being identical across surfaces:
     `_dispatch_orphaned_tool_result_hooks`), so no `tool.use` is left dangling.
 - **Fire-once-per-tool**: `tool.use` fires at most once per in-flight
     tool-call id on both surfaces (TUI via `displayed_tool_ids`, headless via
-    `tool_call_args_by_id`).
+    `in_flight_tool_calls`).
 - **`tool.error` co-firing**: whenever `tool_status` is `"error"`, both
     surfaces emit `tool.error` alongside `tool.result`.
 
@@ -95,6 +95,12 @@ logger = logging.getLogger(__name__)
 
 ToolStatus = Literal["success", "error"]
 """Terminal status of a tool call, mirroring `ToolMessage.status`."""
+
+TOOL_OUTPUT_TRUNCATION_MARKER = "…[output truncated]"
+"""Suffix appended to a `tool.result` `tool_output` that hit
+`HOOK_TOOL_OUTPUT_LIMIT`, so a consumer can distinguish a capped result from a
+genuinely short one. The marker is counted within the cap, so the final
+`tool_output` length never exceeds `HOOK_TOOL_OUTPUT_LIMIT`."""
 
 UNRENDERABLE_TOOL_OUTPUT = "<tool output could not be rendered>"
 """Sentinel `tool_output` used when formatting/coercing a tool result raises.
@@ -170,7 +176,10 @@ class ToolResultPayload(TypedDict):
     """`"success"`, or `"error"` for a failed, rejected, or cancelled call."""
 
     tool_output: str
-    """The tool's returned content, truncated to `HOOK_TOOL_OUTPUT_LIMIT`."""
+    """The tool's returned content, capped to `HOOK_TOOL_OUTPUT_LIMIT`. When the
+    full output exceeded the cap, the value ends with
+    `TOOL_OUTPUT_TRUNCATION_MARKER` so a consumer (e.g. a secret/policy scanner)
+    can tell a truncated result from a genuinely short one."""
 
 
 def tool_call_buffer_key(
@@ -358,6 +367,11 @@ class ToolCallBuffer:
                     "Tool-call args look complete but failed to parse: %r",
                     joined[:200],
                 )
+            # A non-bracketed complete-but-malformed value is deliberately not
+            # warned here: it is indistinguishable from a still-streaming scalar
+            # fragment, so warning would be noisy. If such a call still executes,
+            # its `tool.result` logs the correlation miss at info; if it never
+            # executes there is no result to audit, so nothing is lost.
             return None
         if not isinstance(parsed, dict):
             return {"value": parsed}
@@ -406,24 +420,33 @@ def build_tool_result_payload(
 ) -> ToolResultPayload:
     """Build the `tool.result` hook payload (schema documented in `hooks`).
 
-    `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` here so both surfaces
-    apply the identical cap regardless of where the raw output originates.
-    `tool_args` is intentionally not truncated (see `HOOK_TOOL_OUTPUT_LIMIT`).
+    `tool_output` is capped to `HOOK_TOOL_OUTPUT_LIMIT` here so both surfaces
+    apply the identical cap regardless of where the raw output originates. When
+    the cap fires the value ends with `TOOL_OUTPUT_TRUNCATION_MARKER` (counted
+    within the cap, so the result never exceeds the limit) so a consumer can tell
+    a capped result from a short one. `tool_args` is intentionally not truncated
+    (see `HOOK_TOOL_OUTPUT_LIMIT`).
 
     Args:
         tool_name: The tool that produced the result.
         tool_id: The tool-call id, or `None` when it could not be correlated.
         tool_args: The parsed tool-call arguments, or `{}` when uncorrelated.
         tool_status: `"success"` or `"error"`.
-        tool_output: The tool's returned content (truncated in the payload).
+        tool_output: The tool's returned content (capped in the payload).
 
     Returns:
-        The `tool.result` payload dict with `tool_output` truncated.
+        The `tool.result` payload dict with `tool_output` capped and marked when
+            truncation occurred.
     """
+    if len(tool_output) > HOOK_TOOL_OUTPUT_LIMIT:
+        keep = HOOK_TOOL_OUTPUT_LIMIT - len(TOOL_OUTPUT_TRUNCATION_MARKER)
+        capped_output = tool_output[:keep] + TOOL_OUTPUT_TRUNCATION_MARKER
+    else:
+        capped_output = tool_output
     return {
         "tool_name": tool_name,
         "tool_id": tool_id,
         "tool_args": tool_args,
         "tool_status": tool_status,
-        "tool_output": tool_output[:HOOK_TOOL_OUTPUT_LIMIT],
+        "tool_output": capped_output,
     }

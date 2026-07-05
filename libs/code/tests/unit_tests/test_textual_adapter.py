@@ -19,6 +19,10 @@ from rich.console import Console
 
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+from deepagents_code._tool_stream import (
+    TOOL_OUTPUT_TRUNCATION_MARKER,
+    UNRENDERABLE_TOOL_OUTPUT,
+)
 from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.textual_adapter import (
@@ -4186,12 +4190,193 @@ class TestToolHooksTextual:
         assert payload["tool_status"] == "success"
         assert payload["tool_name"] == "read_file"
         assert payload["tool_id"] == "call-1"
-        assert payload["tool_output"] == output[:2000]
+        # Capped to the limit and marked so a consumer can tell it was truncated;
+        # the marker is counted within the cap so the total stays at 2000.
+        assert len(payload["tool_output"]) == 2000
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+        assert payload["tool_output"].startswith("x" * 100)
         assert payload["tool_args"] == {"path": "foo.py"}
         tool_msg = next(
             widget for widget in mounted if isinstance(widget, ToolCallMessage)
         )
         assert tool_msg._output == output
+
+    async def test_tool_result_sentinel_when_formatter_raises(self) -> None:
+        """A formatter error still dispatches tool.result with the sentinel.
+
+        The content-formatting guard must keep the terminal dispatch
+        unconditional; otherwise a formatter (or pathological `__str__`) error
+        would drop the tool.result for this tool and every later tool.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="unformattable", tool_call_id="call-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        def boom(_content: object) -> str:
+            msg = "formatter boom"
+            raise RuntimeError(msg)
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.format_tool_message_content",
+                side_effect=boom,
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_output"] == UNRENDERABLE_TOOL_OUTPUT
+
+    async def test_mount_failure_closes_tool_use_with_terminal_hooks(self) -> None:
+        """A widget mount failure still closes the tool.use with terminal hooks.
+
+        tool.use fires at mount time, so if `_mount_message` raises the widget is
+        never tracked and the reject/cancel drains cannot close it. The guarded
+        mount path must emit tool.error + an error tool.result itself and record
+        the id so the later real ToolMessage for the same call does not
+        double-dispatch.
+        """
+
+        async def failing_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            # Simulate a mount failure only for the tool row (assistant/other
+            # widgets still mount), so the guard under test is exercised.
+            if isinstance(widget, ToolCallMessage):
+                msg = "mount boom"
+                raise RuntimeError(msg)  # noqa: TRY004  # simulated failure, not a type guard
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+            # The real result still arrives after the mount failed; it must be
+            # suppressed rather than emitting a second tool.result.
+            (
+                (),
+                "messages",
+                (ToolMessage(content="ok", tool_call_id="call-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=failing_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert (
+            "tool.use",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+            },
+        ) in events
+        assert ("tool.error", {"tool_names": ["read_file"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        # Exactly one — the mount-failure guard's; the later real ToolMessage for
+        # the same id is deduped via completed_tool_result_ids.
+        assert result_payloads == [
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "error",
+                "tool_output": "Tool row mount failed",
+            }
+        ]
+
+    async def test_uncorrelated_tool_result_logs_and_sends_empty_args(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ToolMessage with no mounted widget emits tool.result with {} args.
+
+        Mirrors the headless twin: an uncorrelated real-id result is logged at
+        info (greppable) and still dispatched so audit hooks observe every
+        executed tool.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="orphan", tool_call_id="ghost-1", name="read_file"
+                    ),
+                    {},
+                ),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_id"] == "ghost-1"
+        assert result_payloads[0]["tool_name"] == "read_file"
+        assert result_payloads[0]["tool_args"] == {}
+        assert any(
+            "ghost-1" in record.message and "no correlated" in record.message
+            for record in caplog.records
+        )
 
     async def test_ask_user_interrupt_dispatches_tool_hooks(self) -> None:
         """ask_user interrupt rows emit tool.use and tool.result hooks."""

@@ -1150,8 +1150,8 @@ oversaturating it.
 # Independent-reviewer prompt for the finalize-time grader sub-agent. Targets the
 # recurring self-verification gap: agents do correct core work, then "verify" against
 # their own convention/assumption and over-claim. A fresh-context grader that derives
-# the contract from the TASK wording does not share that blind spot. Transcript-only
-# for now (no tools); execution-grounded verification is the next step if this helps.
+# the contract from the TASK wording does not share that blind spot, and it verifies by
+# RUNNING (shell tool) rather than trusting the transcript's claims.
 _GRADER_SYSTEM_PROMPT = """You are an independent reviewer with a `shell` tool. Decide whether the work described in <transcript> actually satisfies the task in <rubric>.
 
 Derive what "done" requires from the task's own wording alone: the exact interface/contract it describes (function signature, CLI usage, output format), the literal identifiers it names, and BOTH sides of any "change X but preserve Y" constraint. The task text is the only authority — do not adopt the agent's naming, convention, or assumptions.
@@ -1265,8 +1265,11 @@ def shell(command: str) -> str:
 
 _GRADER_VERDICT_RE = re.compile(r"VERDICT:\s*(satisfied|needs_revision)", re.IGNORECASE)
 _GRADER_FEEDBACK_RE = re.compile(r"FEEDBACK:\s*(.+)", re.IGNORECASE | re.DOTALL)
-# Bound the grader's own tool-use loop so a thrashing grader can't burn the run budget.
-_GRADER_RECURSION_LIMIT = 14
+# Bound the grader's own tool-use loop so a runaway grader can't burn the run budget.
+# 14 was too tight — real shell-verification exceeded it and errored out before the
+# grader could emit a verdict (observed GraphRecursionError on ~1/5 grades). 60 leaves
+# room (~30 tool calls) to actually verify and conclude.
+_GRADER_RECURSION_LIMIT = 60
 
 
 class _NemotronRubricMiddleware(RubricMiddleware):

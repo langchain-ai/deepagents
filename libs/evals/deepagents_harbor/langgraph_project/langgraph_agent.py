@@ -222,10 +222,11 @@ _SPEC_INIT_DEFAULTS: dict[str, dict[str, Any]] = {
         "model_kwargs": {"top_p": 0.95},
     },
     # Fireworks dedicated deployment. Temperature lowered from the NVIDIA cookbook's
-    # 0.6 to 0.3 to curb exploratory rambling / non-convergence (thrash) on long
-    # agentic tasks; top_p and max_tokens keep the cookbook values.
+    # 0.6 to 0.5 to curb exploratory rambling / non-convergence (thrash) on long
+    # agentic tasks while staying closer to the cookbook than 0.3; top_p and
+    # max_tokens keep the cookbook values.
     "fireworks:accounts/langchain-fireworks/deployments/nemotron-tb-test": {
-        "temperature": 0.3,
+        "temperature": 0.5,
         "max_tokens": 32000,
         "model_kwargs": {"top_p": 0.95},
     },

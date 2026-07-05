@@ -320,10 +320,10 @@ def test_resolve_init_kwargs_fireworks_caller_overrides_sampling() -> None:
 
 def test_resolve_init_kwargs_sets_fireworks_deployment_ultra_sampling() -> None:
     # The Fireworks dedicated deployment keeps the cookbook top_p/max_tokens but runs
-    # a lowered temperature (0.3 vs the cookbook 0.6) to curb thrash on long agentic
+    # a lowered temperature (0.5 vs the cookbook 0.6) to curb thrash on long agentic
     # tasks, so it does not run at Fireworks server defaults.
     assert langgraph_agent._resolve_init_kwargs(_FIREWORKS_NEMOTRON_DEPLOYMENT, {}) == {
-        "temperature": 0.3,
+        "temperature": 0.5,
         "max_tokens": 32000,
         "model_kwargs": {"top_p": 0.95},
     }

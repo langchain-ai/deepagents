@@ -426,3 +426,38 @@ class TestDrainPendingHooks:
         await hooks_mod.drain_pending_hooks()
 
         assert hooks_mod._background_tasks == set()
+
+
+# ---------------------------------------------------------------------------
+# has_pending_hooks
+# ---------------------------------------------------------------------------
+
+
+class TestHasPendingHooks:
+    """`has_pending_hooks` gates the TUI's drain-on-exit, so verify it directly.
+
+    A wrong predicate here would silently skip the graceful-exit drain and drop
+    the final `tool.result`, which a mock-only test could not catch.
+    """
+
+    async def test_false_when_no_tasks(self):
+        """No scheduled hooks means nothing to wait for."""
+        assert hooks_mod.has_pending_hooks() is False
+
+    async def test_true_while_task_in_flight_then_false_after_drain(self):
+        """Reports True with a live task pending and False once it drains."""
+
+        async def _slow() -> None:
+            await asyncio.sleep(0.05)
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_slow())
+        hooks_mod._background_tasks.add(task)
+        task.add_done_callback(hooks_mod._background_tasks.discard)
+
+        assert hooks_mod.has_pending_hooks() is True
+
+        await hooks_mod.drain_pending_hooks()
+
+        assert hooks_mod.has_pending_hooks() is False
+        assert hooks_mod._background_tasks == set()

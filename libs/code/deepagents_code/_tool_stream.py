@@ -19,11 +19,53 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
 
 logger = logging.getLogger(__name__)
+
+ToolStatus = Literal["success", "error"]
+"""Terminal status of a tool call, mirroring `ToolMessage.status`."""
+
+
+class ToolUsePayload(TypedDict):
+    """`tool.use` hook payload (schema documented in `hooks`)."""
+
+    tool_name: str
+    """The tool being invoked."""
+
+    tool_id: str | None
+    """The tool-call id, or `None` when the call carried no id."""
+
+    tool_args: dict[str, Any]
+    """The parsed tool-call arguments."""
+
+
+class ToolErrorPayload(TypedDict):
+    """`tool.error` hook payload (schema documented in `hooks`)."""
+
+    tool_names: list[str]
+    """Names of the tools whose calls failed or were rejected."""
+
+
+class ToolResultPayload(TypedDict):
+    """`tool.result` hook payload (schema documented in `hooks`)."""
+
+    tool_name: str
+    """The tool that produced the result."""
+
+    tool_id: str | None
+    """The tool-call id, or `None` when it could not be correlated."""
+
+    tool_args: dict[str, Any]
+    """The parsed tool-call arguments, or `{}` when uncorrelated."""
+
+    tool_status: ToolStatus
+    """`"success"`, or `"error"` for a failed, rejected, or cancelled call."""
+
+    tool_output: str
+    """The tool's returned content, truncated to `HOOK_TOOL_OUTPUT_LIMIT`."""
 
 
 def tool_call_buffer_key(
@@ -56,19 +98,34 @@ def tool_call_buffer_key(
 class ToolCallBuffer:
     """In-progress state for a single streamed tool call.
 
-    `args` and `args_parts` are two representations of the arguments, intended
-    to be used one at a time: `args` holds a fully materialized value when a
-    chunk delivers it in one piece, while `args_parts` collects JSON string
-    fragments that are reassembled by `parse_args` once the payload is complete.
-    `displayed` is a one-shot latch guarding the single "Calling tool" console
-    line (used only by the headless surface).
+    `args` and `args_parts` are two representations of the arguments used one at
+    a time, depending on whether the provider delivers the value whole or in
+    JSON string fragments.
     """
 
     name: str | None = None
+    """The tool name, once a chunk has supplied it."""
+
     tool_id: str | None = None
+    """The tool-call id, once a chunk has supplied it."""
+
     args: Any = None  # provider-shaped: dict, scalar, or None
+    """A fully materialized arguments value delivered by a single chunk (dict or,
+    rarely, a scalar). Mutually exclusive with `args_parts`."""
+
     args_parts: list[str] = field(default_factory=list)
+    """JSON string fragments accumulated across chunks, reassembled by
+    `parse_args` once the payload looks complete. Mutually exclusive with
+    `args`."""
+
     displayed: bool = False
+    """One-shot latch guarding the single "Calling tool" console line (used only
+    by the headless surface)."""
+
+    warned: bool = False
+    """One-shot latch so a malformed-but-complete payload is logged at most once,
+    even though `parse_args` re-runs on every later chunk for the retained
+    buffer."""
 
     def ingest(
         self,
@@ -80,9 +137,8 @@ class ToolCallBuffer:
         """Fold one streamed tool-call chunk's fields into the buffer.
 
         A dict `args` replaces any accumulated fragments (the provider delivered
-        the whole value at once); a string `args` is appended as a fragment,
-        skipping an immediate duplicate of the previous fragment; any other
-        non-`None` value is stored as-is.
+        the whole value at once); a string `args` is appended as a fragment; any
+        other non-`None` value is stored as-is.
 
         Args:
             name: The tool name from this chunk, if present.
@@ -99,7 +155,7 @@ class ToolCallBuffer:
             self.args = args
             self.args_parts = []
         elif isinstance(args, str):
-            if args and (not self.args_parts or args != self.args_parts[-1]):
+            if args:
                 self.args_parts.append(args)
         elif args is not None:
             self.args = args
@@ -113,7 +169,8 @@ class ToolCallBuffer:
 
         Returns:
             Parsed tool-call arguments, or `None` when the args are not yet
-                complete (still streaming) or empty.
+                complete (still streaming), empty, or structurally complete but
+                malformed (the malformed case is logged once via `warned`).
         """
         if isinstance(self.args, dict):
             return self.args
@@ -139,9 +196,16 @@ class ToolCallBuffer:
         except json.JSONDecodeError:
             # Args that look structurally complete (bracketed and closed) but
             # still fail to parse are malformed, not mid-stream — surface them
-            # rather than silently dropping the tool.use hook. `repr` escapes
-            # any control characters in the model-generated fragment.
-            if stripped[0] in "{[" and stripped.endswith(("}", "]")):
+            # rather than silently dropping the tool.use hook. `%r` escapes any
+            # control characters in the model-generated fragment. The `warned`
+            # latch keeps this to one line per call, since the buffer is retained
+            # and parse_args re-runs on every later chunk for the same call.
+            if (
+                stripped[0] in "{["
+                and stripped.endswith(("}", "]"))
+                and not self.warned
+            ):
+                self.warned = True
                 logger.warning(
                     "Tool-call args look complete but failed to parse: %r",
                     joined[:200],
@@ -154,8 +218,13 @@ class ToolCallBuffer:
 
 def build_tool_use_payload(
     tool_name: str, tool_id: str | None, tool_args: dict[str, Any]
-) -> dict[str, Any]:
+) -> ToolUsePayload:
     """Build the `tool.use` hook payload (schema documented in `hooks`).
+
+    Args:
+        tool_name: The tool being invoked.
+        tool_id: The tool-call id, or `None` when the call carried no id.
+        tool_args: The parsed tool-call arguments.
 
     Returns:
         The `tool.use` payload dict.
@@ -167,8 +236,11 @@ def build_tool_use_payload(
     }
 
 
-def build_tool_error_payload(tool_name: str) -> dict[str, Any]:
+def build_tool_error_payload(tool_name: str) -> ToolErrorPayload:
     """Build the `tool.error` hook payload (schema documented in `hooks`).
+
+    Args:
+        tool_name: The tool whose call failed or was rejected.
 
     Returns:
         The `tool.error` payload dict.
@@ -180,13 +252,21 @@ def build_tool_result_payload(
     tool_name: str,
     tool_id: str | None,
     tool_args: dict[str, Any],
-    tool_status: str,
+    tool_status: ToolStatus,
     tool_output: str,
-) -> dict[str, Any]:
+) -> ToolResultPayload:
     """Build the `tool.result` hook payload (schema documented in `hooks`).
 
     `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` here so both surfaces
     apply the identical cap regardless of where the raw output originates.
+    `tool_args` is intentionally not truncated (see `HOOK_TOOL_OUTPUT_LIMIT`).
+
+    Args:
+        tool_name: The tool that produced the result.
+        tool_id: The tool-call id, or `None` when it could not be correlated.
+        tool_args: The parsed tool-call arguments, or `{}` when uncorrelated.
+        tool_status: `"success"` or `"error"`.
+        tool_output: The tool's returned content (truncated in the payload).
 
     Returns:
         The `tool.result` payload dict with `tool_output` truncated.

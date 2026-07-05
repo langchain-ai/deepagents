@@ -2257,6 +2257,14 @@ class TestParseToolCallArgs:
         buffer = ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
         assert buffer.parse_args() == {"command": "uv run pytest"}
 
+    def test_adjacent_identical_fragments_are_preserved(self) -> None:
+        """Identical neighboring fragments can be real streamed content."""
+        buffer = ToolCallBuffer()
+        for fragment in ('{"content": "', "hi", "hi", '"}'):
+            buffer.ingest(name=None, tool_id=None, args=fragment)
+
+        assert buffer.parse_args() == {"content": "hihi"}
+
     def test_incomplete_json_returns_none(self) -> None:
         """An unclosed object is treated as still streaming, not dispatched."""
         buffer = ToolCallBuffer(args_parts=['{"command": "uv run'])

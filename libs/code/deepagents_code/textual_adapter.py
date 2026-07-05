@@ -57,6 +57,7 @@ from deepagents_code._session_stats import (
 )
 from deepagents_code._tool_stream import (
     ToolCallBuffer,
+    ToolStatus,
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
@@ -106,7 +107,7 @@ def _dispatch_tool_result_hook(
     tool_name: str,
     tool_id: str | None,
     tool_args: dict[str, Any],
-    tool_status: str,
+    tool_status: ToolStatus,
     tool_output: str,
 ) -> None:
     """Dispatch a `tool.result` hook with the payload documented in `hooks.py`.
@@ -125,17 +126,30 @@ def _dispatch_tool_result_hook(
 def _dispatch_rejected_tool_result_hooks(
     tool_messages: dict[str, ToolCallMessage],
     tool_output: str,
-) -> None:
-    """Dispatch terminal hook events for HITL tools that will not resume."""
+) -> list[str]:
+    """Dispatch terminal hook events for HITL tools that will not resume.
+
+    Args:
+        tool_messages: Map of tool-call id to its widget for the rejected tools.
+        tool_output: Terminal output string recorded on each `tool.result`.
+
+    Returns:
+        The tool-call ids that received terminal hooks. Callers track these so a
+            later synthetic reject `ToolMessage` (when the turn still resumes,
+            e.g. alongside an answered `ask_user`) does not double-dispatch.
+    """
+    dispatched: list[str] = []
     for tool_id, tool_msg in list(tool_messages.items()):
         _dispatch_tool_error_hook(tool_msg.tool_name)
         _dispatch_tool_result_hook(
             tool_msg.tool_name,
             tool_id,
-            tool_msg._args,
+            tool_msg.args,
             "error",
             tool_output,
         )
+        dispatched.append(tool_id)
+    return dispatched
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -680,6 +694,11 @@ async def execute_task_textual(
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, ToolCallBuffer] = {}
+    # Tool-call ids that already received terminal hooks at bare-reject time.
+    # When the turn still resumes (a bare reject alongside an answered
+    # `ask_user`), the middleware's synthetic reject `ToolMessage` would
+    # otherwise re-dispatch `tool.result`; this set suppresses that duplicate.
+    rejected_tool_ids: set[str] = set()
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -963,7 +982,13 @@ async def execute_task_textual(
 
                     if isinstance(message, ToolMessage):
                         tool_name = getattr(message, "name", "")
-                        tool_status = getattr(message, "status", "success")
+                        raw_status = getattr(message, "status", "success")
+                        # Normalize to the two-value hook domain so an unexpected
+                        # provider status can't leak into a payload as a third,
+                        # undocumented value.
+                        tool_status: ToolStatus = (
+                            "error" if raw_status == "error" else "success"
+                        )
                         tool_content = format_tool_message_content(message.content)
                         output_str = str(tool_content) if tool_content else ""
                         record = file_op_tracker.complete_with_message(message)
@@ -978,14 +1003,23 @@ async def execute_task_textual(
                                 tool_msg.set_success(output_str)
                             else:
                                 tool_msg.set_error(output_str or "Error")
-                                _dispatch_tool_error_hook(tool_msg._tool_name)
+                                _dispatch_tool_error_hook(tool_msg.tool_name)
                             _dispatch_tool_result_hook(
-                                tool_msg._tool_name,
+                                tool_msg.tool_name,
                                 tool_id,
-                                tool_msg._args,
+                                tool_msg.args,
                                 tool_status,
                                 output_str,
                             )
+                        elif tool_id and tool_id in rejected_tool_ids:
+                            # This is the middleware's synthetic reject
+                            # ToolMessage for a tool whose terminal hooks already
+                            # fired at bare-reject time (the turn still resumed
+                            # because an answered `ask_user` was pending). Its
+                            # widget was cleared, so it lands here — consume the
+                            # id and skip re-dispatch to avoid a duplicate
+                            # tool.result (with mismatched `{}` args).
+                            rejected_tool_ids.discard(tool_id)
                         else:
                             # The tool call was never mounted — either it has no
                             # tool_call_id, or its streamed args never parsed so
@@ -1581,12 +1615,14 @@ async def execute_task_textual(
                                 # agent: keep `any_rejected=False` so the
                                 # stream resumes and the banner is suppressed.
                                 if reject_message is None:
-                                    _dispatch_rejected_tool_result_hooks(
-                                        adapter._current_tool_messages,
-                                        "Tool approval rejected",
+                                    rejected_tool_ids.update(
+                                        _dispatch_rejected_tool_result_hooks(
+                                            adapter._current_tool_messages,
+                                            "Tool approval rejected",
+                                        )
                                     )
+                                    adapter._current_tool_messages.clear()
                                     any_rejected = True
-                                adapter._current_tool_messages.clear()
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1600,9 +1636,11 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
-                                _dispatch_rejected_tool_result_hooks(
-                                    adapter._current_tool_messages,
-                                    "Tool approval rejected",
+                                rejected_tool_ids.update(
+                                    _dispatch_rejected_tool_result_hooks(
+                                        adapter._current_tool_messages,
+                                        "Tool approval rejected",
+                                    )
                                 )
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
@@ -1618,9 +1656,11 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
-                            _dispatch_rejected_tool_result_hooks(
-                                adapter._current_tool_messages,
-                                "Tool approval rejected",
+                            rejected_tool_ids.update(
+                                _dispatch_rejected_tool_result_hooks(
+                                    adapter._current_tool_messages,
+                                    "Tool approval rejected",
+                                )
                             )
                             adapter._current_tool_messages.clear()
                             any_rejected = True

@@ -4331,6 +4331,97 @@ class TestToolHooksTextual:
             "tool_output": "Tool approval rejected",
         }
 
+    async def test_hitl_reasoned_reject_preserves_tool_args_for_result(self) -> None:
+        """A reasoned HITL reject keeps args until the resumed ToolMessage."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Tool approval rejected",
+                                tool_call_id="tool-1",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert len(agent.stream_inputs) == 2
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "tool-1",
+            "tool_args": {"command": "echo hi"},
+            "tool_status": "error",
+            "tool_output": "Tool approval rejected",
+        }
+
     async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
         """tool.use reassembles streamed arg fragments and fires exactly once."""
         chunks = [
@@ -4423,6 +4514,189 @@ class TestToolHooksTextual:
         assert payload["tool_args"] == {}
         assert payload["tool_status"] == "error"
         assert payload["tool_output"] == "orphaned output"
+
+    async def test_untracked_tool_message_success_suppresses_tool_error(self) -> None:
+        """An untracked *successful* ToolMessage emits tool.result, not tool.error.
+
+        Complements the error variant above: the widget-less path must not fire a
+        spurious tool.error for a tool that succeeded.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="orphaned output",
+                        tool_call_id="ghost-1",
+                        name="read_file",
+                        status="success",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
+        assert "tool.error" not in events
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "read_file",
+            "tool_id": "ghost-1",
+            "tool_args": {},
+            "tool_status": "success",
+            "tool_output": "orphaned output",
+        }
+
+    async def test_bare_reject_with_answered_ask_user_emits_single_result(
+        self,
+    ) -> None:
+        """A bare reject beside an answered ask_user emits one execute tool.result.
+
+        The turn still resumes to deliver the ask_user answer, so the middleware's
+        synthetic reject ToolMessage streams back for the rejected `execute` call.
+        Its terminal hooks already fired at reject time, so the resumed message
+        must be deduped by tool id rather than emitting a second tool.result with
+        mismatched `{}` args.
+        """
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        ask_interrupt = SimpleNamespace(
+            id="ask-int",
+            value={
+                "type": "ask_user",
+                "questions": questions,
+                "tool_call_id": "ask-1",
+            },
+        )
+        hitl_interrupt = SimpleNamespace(
+            id="hitl-int",
+            value={
+                "action_requests": action_requests,
+                "review_configs": [
+                    {
+                        "action_name": "execute",
+                        "allowed_decisions": ["approve", "reject"],
+                    }
+                ],
+            },
+        )
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    ((), "updates", {"__interrupt__": [ask_interrupt, hitl_interrupt]}),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Tool approval rejected",
+                                tool_call_id="tool-1",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+
+        ask_future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        ask_future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return ask_future
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        # The turn resumed (to deliver the ask_user answer), so the synthetic
+        # reject ToolMessage was streamed back on the second call.
+        assert len(agent.stream_inputs) == 2
+        execute_results = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result" and c[0][1]["tool_name"] == "execute"
+        ]
+        assert len(execute_results) == 1
+        assert execute_results[0][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "tool-1",
+            "tool_args": {"command": "echo hi"},
+            "tool_status": "error",
+            "tool_output": "Tool approval rejected",
+        }
 
     async def test_ask_user_interrupt_cancelled_dispatches_tool_result(self) -> None:
         """A cancelled ask_user emits tool.error and an error tool.result."""

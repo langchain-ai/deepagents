@@ -2636,6 +2636,11 @@ class ToolCallMessage(Vertical):
         return self._tool_name
 
     @property
+    def args(self) -> dict[str, Any]:
+        """Public read-only accessor for the parsed tool-call arguments."""
+        return self._args
+
+    @property
     def is_success(self) -> bool:
         """Whether the tool completed successfully."""
         return self._status == "success"

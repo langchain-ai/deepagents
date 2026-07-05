@@ -42,6 +42,7 @@ from rich.text import Text
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._tool_stream import (
     ToolCallBuffer,
+    ToolStatus,
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
@@ -450,11 +451,16 @@ def _process_ai_message(
             # Gate tool.use on a resolved tool id so this surface matches the
             # interactive one, which only dispatches once the id is known — a
             # tool.result can then always be correlated back to its tool.use.
+            # `buffer_id not in tool_call_args_by_id` makes tool.use fire at most
+            # once per in-flight id (the id is recorded below and cleared when
+            # its result arrives), mirroring the interactive `displayed_tool_ids`
+            # guard so a provider re-delivering a completed call can't double-fire.
             parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)
                 and buffer_id is not None
                 and parsed_args is not None
+                and buffer_id not in state.tool_call_args_by_id
             ):
                 dispatch_hook_fire_and_forget(
                     "tool.use",
@@ -529,7 +535,10 @@ def _process_message_chunk(
                     highlight=False,
                 )
         tool_name = getattr(message_obj, "name", "")
-        tool_status = getattr(message_obj, "status", "success")
+        raw_status = getattr(message_obj, "status", "success")
+        # Normalize to the two-value hook domain so an unexpected provider status
+        # can't leak into a payload as a third, undocumented value.
+        tool_status: ToolStatus = "error" if raw_status == "error" else "success"
         # Format the content the same way the interactive surface does so
         # `tool_output` is identical across surfaces for list/structured content
         # (e.g. multimodal or MCP tools returning content blocks) rather than a

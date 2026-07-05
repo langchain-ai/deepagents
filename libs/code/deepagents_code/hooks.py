@@ -16,9 +16,11 @@ If `events` is omitted or empty the hook receives **all** events.
 Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
 after the user submits a non-empty preferred name.
 
-`tool.use` fires before each tool call whose streamed arguments parse into a
-complete value (a call whose arguments never parse is skipped); `tool.result`
-fires after every executed tool call:
+`tool.use` fires before a tool call once its streamed arguments parse into a
+complete value *and* its tool-call id is known; a call whose arguments never
+parse, or that carries no id, is skipped. `tool.result` fires after every tool
+call reaches a terminal state — successful execution, failure, or HITL
+rejection/cancellation:
 
 ```jsonc
 {"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
@@ -27,17 +29,22 @@ fires after every executed tool call:
 {"event": "tool.result", "tool_name": "write_file", "tool_id": "toolu_abc123",
  "tool_args": {"file_path": "src/foo.py", "content": "..."},
  "tool_status": "success", "tool_output": "Updated file src/foo.py"}
+
+{"event": "tool.error", "tool_names": ["write_file"]}
 ```
 
 `tool_args` is the parsed tool-call arguments; a non-object value (rare) is
 wrapped as `{"value": ...}`. `tool_output` is the tool's returned content,
-truncated to `HOOK_TOOL_OUTPUT_LIMIT` characters. `tool_status` is `"success"`
-or `"error"`. When a failing tool emits its result, `tool.error` fires
-alongside `tool.result`, so existing `tool.error` hooks are unaffected.
+truncated to `HOOK_TOOL_OUTPUT_LIMIT` characters (`tool_args` is not truncated).
+`tool_status` is `"success"` or `"error"`; `"error"` covers both a tool that
+raised and a call the user rejected or cancelled. Whenever a `tool.result` has
+`tool_status: "error"`, `tool.error` (payload `{"tool_names": [<name>]}`) fires
+alongside it, so existing `tool.error` hooks are unaffected.
 
-`tool_id` is normally the string tool-call id, but may be `null` on
-`tool.result` when the executed tool's result could not be correlated back to a
-`tool.use` (e.g. the call carried no id); in that case `tool_args` is `{}`.
+`tool_args` is `{}` whenever a `tool.result` cannot be correlated back to a
+`tool.use` — either because the call carried no id (then `tool_id` is `null`) or
+because no `tool.use` fired for it (e.g. its args never parsed), in which case
+`tool_id` may still be the real string id.
 """
 
 from __future__ import annotations
@@ -47,7 +54,10 @@ import json
 import logging
 import subprocess  # noqa: S404
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +67,9 @@ HOOK_TOOL_OUTPUT_LIMIT = 2000
 Bounds payload size (data-amplification guard) while keeping enough of the
 tool's output to be useful to audit/notification hooks. Shared by both the
 interactive and headless dispatch paths so the cap never drifts between them.
+Only `tool_output` is capped; `tool_args` is passed through in full so hooks
+that act on the arguments (e.g. a linter reading a `write_file` `content`) see
+the exact value the tool received.
 """
 
 _hooks_config: list[dict[str, Any]] | None = None
@@ -194,7 +207,7 @@ def _dispatch_hook_sync(
             future.result()
 
 
-async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
+async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
     """Fire matching hook commands with `payload` serialized as JSON on stdin.
 
     The `event` name is automatically injected into the payload under the
@@ -223,7 +236,7 @@ async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
         )
 
 
-def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
+def dispatch_hook_fire_and_forget(event: str, payload: Mapping[str, Any]) -> None:
     """Schedule `dispatch_hook` as a background task with a strong reference.
 
     Use this instead of bare `create_task(dispatch_hook(...))` to prevent the

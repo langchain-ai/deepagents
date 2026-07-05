@@ -16,7 +16,9 @@ If `events` is omitted or empty the hook receives **all** events.
 Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
 after the user submits a non-empty preferred name.
 
-`tool.use` fires before each tool call; `tool.result` fires after:
+`tool.use` fires before each tool call whose streamed arguments parse into a
+complete value (a call whose arguments never parse is skipped); `tool.result`
+fires after every executed tool call:
 
 ```jsonc
 {"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
@@ -32,6 +34,10 @@ wrapped as `{"value": ...}`. `tool_output` is the tool's returned content,
 truncated to `HOOK_TOOL_OUTPUT_LIMIT` characters. `tool_status` is `"success"`
 or `"error"`. When a failing tool emits its result, `tool.error` fires
 alongside `tool.result`, so existing `tool.error` hooks are unaffected.
+
+`tool_id` is normally the string tool-call id, but may be `null` on
+`tool.result` when the executed tool's result could not be correlated back to a
+`tool.use` (e.g. the call carried no id); in that case `tool_args` is `{}`.
 """
 
 from __future__ import annotations
@@ -132,8 +138,13 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
     except (FileNotFoundError, PermissionError) as exc:
         logger.warning("Hook command failed for event %s: %s — %s", event, command, exc)
     except Exception:
-        logger.debug(
-            "Hook dispatch failed for event %s: %s",
+        # Unexpected failure (e.g. ENOEXEC for a non-executable hook file, an
+        # embedded null byte, or fd/memory exhaustion). These are the failures
+        # we understand least, so surface them at warning — the expected
+        # timeout / not-found / permission cases above are also warnings, and a
+        # silent debug here would hide a hook that never fires.
+        logger.warning(
+            "Hook dispatch failed unexpectedly for event %s: %s",
             event,
             command,
             exc_info=True,

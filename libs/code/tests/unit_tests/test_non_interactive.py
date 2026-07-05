@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -27,15 +28,14 @@ from deepagents_code.non_interactive import (
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
-    _parse_tool_call_args,
     _process_ai_message,
     _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
-    _ToolCallBuffer,
     run_non_interactive,
 )
+from deepagents_code.tool_display import format_tool_message_content
 
 
 @pytest.fixture
@@ -1895,6 +1895,36 @@ class TestProcessAIMessageHooks:
         ]
         assert not tool_use_calls
 
+    def test_tool_use_not_dispatched_without_id(self) -> None:
+        """tool.use waits for a tool id so tool.result can be correlated.
+
+        Mirrors the interactive surface, which only dispatches once the id is
+        known. Here the args parse cleanly and the name is present, leaving the
+        missing id as the only thing blocking dispatch.
+        """
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": None,
+                "index": 0,
+                "args": '{"path": "foo.py"}',
+            }
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
+
     def test_tool_use_not_dispatched_for_text_blocks(self) -> None:
         """tool.use must not fire when the block is a text chunk, not a tool call."""
         ai_msg = MagicMock(spec=AIMessage)
@@ -2122,6 +2152,74 @@ class TestProcessMessageChunkHooks:
         payload = mock_dispatch.call_args[0][1]
         assert len(payload["tool_output"]) == 2000
 
+    def test_tool_output_uses_formatter_for_structured_content(self) -> None:
+        """tool_output is the formatted content, not a raw list repr.
+
+        Regression guard for cross-surface parity: list/structured ToolMessage
+        content (e.g. multimodal or MCP content blocks) must be run through the
+        same formatter the interactive surface uses, so the two emit identical
+        `tool_output` rather than extracted text here vs. a Python list repr.
+        """
+        from langchain_core.messages import ToolMessage
+
+        content: list[Any] = [
+            {"type": "text", "text": "line one"},
+            {"type": "text", "text": "line two"},
+        ]
+        tool_msg = ToolMessage(
+            content=content,
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert payload["tool_output"] == format_tool_message_content(tool_msg.content)
+        # The raw list repr is what this surface used to emit; guard against it.
+        assert payload["tool_output"] != str(tool_msg.content)
+
+    def test_tool_result_uncorrelated_str_id_sends_empty_args_and_logs(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A str tool_id with no stored tool.use args sends {} and logs the miss.
+
+        Distinguishes a lost correlation (logged) from a tool that genuinely
+        took no arguments, so a dropped pairing is not completely silent.
+        """
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="ok",
+            tool_call_id="ghost-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()  # no entry for "ghost-1"
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            caplog.at_level("DEBUG", logger="deepagents_code.non_interactive"),
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert payload["tool_args"] == {}
+        assert any("no correlated tool.use args" in r.message for r in caplog.records)
+
     def test_tool_result_not_dispatched_for_ai_message(self) -> None:
         """tool.result must not fire when the message is an AIMessage."""
         ai_msg = MagicMock(spec=AIMessage)
@@ -2142,41 +2240,41 @@ class TestProcessMessageChunkHooks:
 
 
 class TestParseToolCallArgs:
-    """Tests for `_parse_tool_call_args` argument reassembly."""
+    """Tests for `ToolCallBuffer.parse_args` argument reassembly."""
 
     def test_direct_dict_args_returned_as_is(self) -> None:
         """A materialized dict is returned unchanged."""
-        buffer = _ToolCallBuffer(args={"path": "foo.py"})
-        assert _parse_tool_call_args(buffer) == {"path": "foo.py"}
+        buffer = ToolCallBuffer(args={"path": "foo.py"})
+        assert buffer.parse_args() == {"path": "foo.py"}
 
     def test_direct_scalar_args_wrapped(self) -> None:
         """A materialized non-dict value is wrapped as `{"value": ...}`."""
-        buffer = _ToolCallBuffer(args=42)
-        assert _parse_tool_call_args(buffer) == {"value": 42}
+        buffer = ToolCallBuffer(args=42)
+        assert buffer.parse_args() == {"value": 42}
 
     def test_complete_json_fragments_parsed(self) -> None:
         """Fragments that join into a complete object parse to that object."""
-        buffer = _ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
-        assert _parse_tool_call_args(buffer) == {"command": "uv run pytest"}
+        buffer = ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
+        assert buffer.parse_args() == {"command": "uv run pytest"}
 
     def test_incomplete_json_returns_none(self) -> None:
         """An unclosed object is treated as still streaming, not dispatched."""
-        buffer = _ToolCallBuffer(args_parts=['{"command": "uv run'])
-        assert _parse_tool_call_args(buffer) is None
+        buffer = ToolCallBuffer(args_parts=['{"command": "uv run'])
+        assert buffer.parse_args() is None
 
     def test_json_parsing_to_list_wrapped(self) -> None:
         """A complete JSON array (non-object) is wrapped as `{"value": ...}`."""
-        buffer = _ToolCallBuffer(args_parts=["[1, 2, 3]"])
-        assert _parse_tool_call_args(buffer) == {"value": [1, 2, 3]}
+        buffer = ToolCallBuffer(args_parts=["[1, 2, 3]"])
+        assert buffer.parse_args() == {"value": [1, 2, 3]}
 
     def test_empty_parts_returns_none(self) -> None:
         """No accumulated fragments means nothing to parse yet."""
-        assert _parse_tool_call_args(_ToolCallBuffer()) is None
+        assert ToolCallBuffer().parse_args() is None
 
     def test_whitespace_only_parts_returns_none(self) -> None:
         """Whitespace-only fragments carry no parseable payload."""
-        buffer = _ToolCallBuffer(args_parts=["   "])
-        assert _parse_tool_call_args(buffer) is None
+        buffer = ToolCallBuffer(args_parts=["   "])
+        assert buffer.parse_args() is None
 
     def test_malformed_complete_json_returns_none_and_warns(
         self, caplog: pytest.LogCaptureFixture
@@ -2186,9 +2284,105 @@ class TestParseToolCallArgs:
         This distinguishes genuinely malformed args (surfaced) from mid-stream
         fragments (silent), so a dropped `tool.use` is never invisible.
         """
-        buffer = _ToolCallBuffer(args_parts=["{bad json}"])
-        with caplog.at_level("WARNING", logger="deepagents_code.non_interactive"):
-            assert _parse_tool_call_args(buffer) is None
+        buffer = ToolCallBuffer(args_parts=["{bad json}"])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
         assert any(
             "look complete but failed to parse" in r.message for r in caplog.records
         )
+
+
+class TestDrainWiring:
+    """`run_non_interactive` awaits `drain_pending_hooks` in its `finally`.
+
+    This is the headless half of the feature's guarantee that the final
+    `tool.result` is not cancelled when `asyncio.run` tears the loop down. The
+    drain must run on both the success and error return paths without replacing
+    the computed exit code.
+    """
+
+    async def test_drains_pending_hooks_on_success(self) -> None:
+        """The success path (exit 0) still awaits the drain."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 0
+        mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_error_and_preserves_exit_code(self) -> None:
+        """An error return (exit 1) still awaits the drain, exit code intact."""
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=OSError("boom"),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 1
+        mock_drain.assert_awaited_once()

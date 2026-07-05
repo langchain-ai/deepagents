@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 import uuid
@@ -56,11 +55,17 @@ from deepagents_code._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
+from deepagents_code._tool_stream import (
+    ToolCallBuffer,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    tool_call_buffer_key,
+)
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import (
-    HOOK_TOOL_OUTPUT_LIMIT,
     dispatch_hook,
     dispatch_hook_fire_and_forget,
 )
@@ -88,40 +93,32 @@ def _dispatch_tool_use_hook(
 ) -> None:
     """Dispatch a `tool.use` hook with the payload documented in `hooks.py`."""
     dispatch_hook_fire_and_forget(
-        "tool.use",
-        {
-            "tool_name": tool_name,
-            "tool_id": tool_id,
-            "tool_args": tool_args,
-        },
+        "tool.use", build_tool_use_payload(tool_name, tool_id, tool_args)
     )
 
 
 def _dispatch_tool_error_hook(tool_name: str) -> None:
     """Dispatch a `tool.error` hook with the payload documented in `hooks.py`."""
-    dispatch_hook_fire_and_forget(
-        "tool.error",
-        {"tool_names": [tool_name]},
-    )
+    dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
 
 
 def _dispatch_tool_result_hook(
     tool_name: str,
-    tool_id: str,
+    tool_id: str | None,
     tool_args: dict[str, Any],
     tool_status: str,
     tool_output: str,
 ) -> None:
-    """Dispatch a `tool.result` hook with the payload documented in `hooks.py`."""
+    """Dispatch a `tool.result` hook with the payload documented in `hooks.py`.
+
+    `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` inside the shared
+    payload builder.
+    """
     dispatch_hook_fire_and_forget(
         "tool.result",
-        {
-            "tool_name": tool_name,
-            "tool_id": tool_id,
-            "tool_args": tool_args,
-            "tool_status": tool_status,
-            "tool_output": tool_output[:HOOK_TOOL_OUTPUT_LIMIT],
-        },
+        build_tool_result_payload(
+            tool_name, tool_id, tool_args, tool_status, tool_output
+        ),
     )
 
 
@@ -682,7 +679,7 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
-    tool_call_buffers: dict[str | int, dict] = {}
+    tool_call_buffers: dict[str | int, ToolCallBuffer] = {}
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -989,18 +986,21 @@ async def execute_task_textual(
                                 tool_status,
                                 output_str,
                             )
-                        elif tool_id:
-                            logger.debug(
-                                "ToolMessage tool_call_id=%s not in "
-                                "_current_tool_messages; spinner gating "
-                                "may be stale",
-                                tool_id,
-                            )
-                            # The tool call was never mounted (e.g. its streamed
-                            # args never parsed, so no tool.use fired). Still
-                            # emit tool.result — with no widget we lack the
-                            # parsed args, so send {} — so audit hooks observe
+                        else:
+                            # The tool call was never mounted — either it has no
+                            # tool_call_id, or its streamed args never parsed so
+                            # no tool.use fired and no widget exists. Still emit
+                            # tool.result (with {} args, since without a widget
+                            # we lack the parsed args) so audit hooks observe
                             # every executed tool, matching the headless path.
+                            # tool_id may be None here, mirroring headless.
+                            if tool_id:
+                                logger.debug(
+                                    "ToolMessage tool_call_id=%s not in "
+                                    "_current_tool_messages; spinner gating "
+                                    "may be stale",
+                                    tool_id,
+                                )
                             if tool_status == "error":
                                 _dispatch_tool_error_hook(tool_name)
                             _dispatch_tool_result_hook(
@@ -1141,98 +1141,33 @@ async def execute_task_textual(
                             chunk_id = block.get("id")
                             chunk_index = block.get("index")
 
-                            buffer_key: str | int
-                            if chunk_index is not None:
-                                buffer_key = chunk_index
-                            elif chunk_id is not None:
-                                buffer_key = chunk_id
-                            else:
-                                buffer_key = f"unknown-{len(tool_call_buffers)}"
-
+                            buffer_key = tool_call_buffer_key(
+                                chunk_index, chunk_id, len(tool_call_buffers)
+                            )
                             buffer = tool_call_buffers.setdefault(
-                                buffer_key,
-                                {
-                                    "name": None,
-                                    "id": None,
-                                    "args": None,
-                                    "args_parts": [],
-                                },
+                                buffer_key, ToolCallBuffer()
+                            )
+                            buffer.ingest(
+                                name=chunk_name, tool_id=chunk_id, args=chunk_args
                             )
 
-                            if chunk_name:
-                                buffer["name"] = chunk_name
-                            if chunk_id:
-                                buffer["id"] = chunk_id
-
-                            if isinstance(chunk_args, dict):
-                                buffer["args"] = chunk_args
-                                buffer["args_parts"] = []
-                            elif isinstance(chunk_args, str):
-                                if chunk_args:
-                                    parts: list[str] = buffer.setdefault(
-                                        "args_parts", []
-                                    )
-                                    if not parts or chunk_args != parts[-1]:
-                                        parts.append(chunk_args)
-                            elif chunk_args is not None:
-                                buffer["args"] = chunk_args
-
-                            buffer_name = buffer.get("name")
-                            buffer_id = buffer.get("id")
+                            buffer_name = buffer.name
+                            buffer_id = buffer.tool_id
                             if buffer_name is None:
                                 continue
 
-                            # Resolve the tool arguments. String fragments are
-                            # accumulated in `args_parts` and joined + parsed
-                            # once the buffer holds a complete JSON value. Re-
-                            # joining and re-parsing the whole prefix on every
-                            # fragment is O(n^2) and ran on the UI event loop for
-                            # large `edit_file` blobs. Each `continue` below
-                            # leaves the buffer in `tool_call_buffers` so the next
+                            # `parse_args` reassembles streamed JSON string
+                            # fragments, deferring the parse until the value
+                            # looks complete — which avoids re-parsing the whole
+                            # prefix on every fragment (costly on the UI event
+                            # loop for large `edit_file` blobs) — and returns
+                            # None while still incomplete. Each `continue` leaves
+                            # the buffer in `tool_call_buffers` so the next
                             # fragment keeps accumulating; it is popped only after
-                            # a successful parse + mount.
-                            direct_args = buffer.get("args")
-                            if isinstance(direct_args, dict):
-                                parsed_args = direct_args
-                            elif direct_args is not None:
-                                parsed_args = {"value": direct_args}
-                            else:
-                                parts = buffer.get("args_parts") or []
-                                if not parts:
-                                    continue
-                                joined = "".join(parts)
-                                stripped = joined.strip()
-                                if not stripped:
-                                    continue
-                                # Objects/arrays can be large (e.g. `edit_file`
-                                # blobs), so defer parsing until the closing
-                                # bracket arrives. Scalars are always small and
-                                # never end in `}`/`]`, so parse them eagerly
-                                # rather than leaving them stuck unparsed.
-                                if stripped[0] in "{[" and not stripped.endswith(
-                                    ("}", "]")
-                                ):
-                                    continue
-                                try:
-                                    parsed_args = json.loads(joined)
-                                except json.JSONDecodeError:
-                                    # Mirrors _parse_tool_call_args in
-                                    # non_interactive.py — keep the two in sync.
-                                    # Complete-looking (bracketed and closed) but
-                                    # invalid args are malformed, not mid-stream,
-                                    # so surface them instead of silently
-                                    # dropping tool.use.
-                                    if stripped[0] in "{[" and stripped.endswith(
-                                        ("}", "]")
-                                    ):
-                                        logger.warning(
-                                            "Tool-call args look complete but "
-                                            "failed to parse: %r",
-                                            joined[:200],
-                                        )
-                                    continue
-                                if not isinstance(parsed_args, dict):
-                                    parsed_args = {"value": parsed_args}
+                            # a successful parse + mount below.
+                            parsed_args = buffer.parse_args()
+                            if parsed_args is None:
+                                continue
 
                             # Flush pending text before tool call
                             pending_text = pending_text_by_namespace.get(ns_key, "")

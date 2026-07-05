@@ -21,7 +21,6 @@ agent's response text.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
 import threading
@@ -41,6 +40,13 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
+from deepagents_code._tool_stream import (
+    ToolCallBuffer,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    tool_call_buffer_key,
+)
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -52,7 +58,6 @@ from deepagents_code.config import (
 )
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.hooks import (
-    HOOK_TOOL_OUTPUT_LIMIT,
     dispatch_hook,
     dispatch_hook_fire_and_forget,
     drain_pending_hooks,
@@ -60,6 +65,7 @@ from deepagents_code.hooks import (
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.textual_adapter import SessionStats, print_usage_table
+from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
@@ -115,74 +121,6 @@ def _write_newline() -> None:
     """Write a newline to stdout (and flush)."""
     sys.stdout.write("\n")
     sys.stdout.flush()
-
-
-@dataclass
-class _ToolCallBuffer:
-    """In-progress state for a single streamed tool call.
-
-    `args` and `args_parts` are mutually exclusive representations of the
-    arguments: `args` holds a fully materialized value when a chunk delivers
-    them in one piece, while `args_parts` collects JSON string fragments that
-    are reassembled once the payload is complete. `hook_dispatched` and
-    `displayed` are one-shot latches guarding, respectively, the single
-    `tool.use` dispatch and the single "Calling tool" console line for this
-    call.
-    """
-
-    name: str | None = None
-    id: str | None = None
-    args: Any = None
-    args_parts: list[str] = field(default_factory=list)
-    hook_dispatched: bool = False
-    displayed: bool = False
-
-
-def _parse_tool_call_args(buffer: _ToolCallBuffer) -> dict[str, Any] | None:
-    """Parse a buffer's tool-call args once enough data has arrived.
-
-    A non-object JSON value (a bare scalar or list — rare for tool calls) is
-    wrapped as `{"value": ...}` so the hook payload's `tool_args` is always a
-    JSON object.
-
-    Args:
-        buffer: The in-progress tool-call buffer to read args from.
-
-    Returns:
-        Parsed tool-call arguments, or `None` when the buffer's args are not
-            yet complete (still streaming) or empty.
-    """
-    if isinstance(buffer.args, dict):
-        return buffer.args
-    if buffer.args is not None:
-        return {"value": buffer.args}
-
-    if not buffer.args_parts:
-        return None
-    joined = "".join(buffer.args_parts)
-    stripped = joined.strip()
-    if not stripped:
-        return None
-    # Cheap structural pre-check: bail while a JSON object/array is still open
-    # so we don't attempt to parse (and dispatch on) a partial streamed
-    # fragment. A well-formed object's closing brace is always its last char.
-    if stripped[0] in "{[" and not stripped.endswith(("}", "]")):
-        return None
-    try:
-        parsed = json.loads(joined)
-    except json.JSONDecodeError:
-        # Args that look structurally complete (bracketed and closed) but still
-        # fail to parse are malformed, not mid-stream — surface them rather than
-        # silently dropping the tool.use hook.
-        if stripped[0] in "{[" and stripped.endswith(("}", "]")):
-            logger.warning(
-                "Tool-call args look complete but failed to parse: %r",
-                joined[:200],
-            )
-        return None
-    if not isinstance(parsed, dict):
-        return {"value": parsed}
-    return parsed
 
 
 class _ConsoleSpinner:
@@ -323,9 +261,9 @@ class StreamState:
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
-    tool_call_buffers: dict[int | str, _ToolCallBuffer] = field(default_factory=dict)
+    tool_call_buffers: dict[int | str, ToolCallBuffer] = field(default_factory=dict)
     """Maps a tool-call index or ID to its in-progress buffer: name, ID,
-    accumulated argument fragments, and the display/dispatch latches."""
+    accumulated argument fragments, and the display latch."""
 
     tool_call_args_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Maps completed tool-call IDs to their parsed arguments for result hooks."""
@@ -489,32 +427,14 @@ def _process_ai_message(
             chunk_index = block.get("index")
             chunk_args = block.get("args")
 
-            if chunk_index is not None:
-                buffer_key: int | str = chunk_index
-            elif chunk_id is not None:
-                buffer_key = chunk_id
-            else:
-                buffer_key = f"unknown-{len(state.tool_call_buffers)}"
-
-            buffer = state.tool_call_buffers.setdefault(buffer_key, _ToolCallBuffer())
-            if chunk_name:
-                buffer.name = chunk_name
-            if chunk_id:
-                buffer.id = chunk_id
-
-            if isinstance(chunk_args, dict):
-                buffer.args = chunk_args
-                buffer.args_parts = []
-            elif isinstance(chunk_args, str):
-                if chunk_args and (
-                    not buffer.args_parts or chunk_args != buffer.args_parts[-1]
-                ):
-                    buffer.args_parts.append(chunk_args)
-            elif chunk_args is not None:
-                buffer.args = chunk_args
+            buffer_key = tool_call_buffer_key(
+                chunk_index, chunk_id, len(state.tool_call_buffers)
+            )
+            buffer = state.tool_call_buffers.setdefault(buffer_key, ToolCallBuffer())
+            buffer.ingest(name=chunk_name, tool_id=chunk_id, args=chunk_args)
 
             buffer_name = buffer.name
-            buffer_id = buffer.id
+            buffer_id = buffer.tool_id
             if isinstance(buffer_name, str) and not buffer.displayed:
                 if state.spinner:
                     state.spinner.stop()
@@ -527,26 +447,23 @@ def _process_ai_message(
                     )
                 buffer.displayed = True
 
-            parsed_args = _parse_tool_call_args(buffer)
+            # Gate tool.use on a resolved tool id so this surface matches the
+            # interactive one, which only dispatches once the id is known — a
+            # tool.result can then always be correlated back to its tool.use.
+            parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)
+                and buffer_id is not None
                 and parsed_args is not None
-                and not buffer.hook_dispatched
             ):
                 dispatch_hook_fire_and_forget(
                     "tool.use",
-                    {
-                        "tool_name": buffer_name,
-                        "tool_id": buffer_id,
-                        "tool_args": parsed_args,
-                    },
+                    build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
-                buffer.hook_dispatched = True
-                if isinstance(buffer_id, str):
-                    state.tool_call_args_by_id[buffer_id] = parsed_args
+                state.tool_call_args_by_id[buffer_id] = parsed_args
                 # Drop the buffer so a later turn that reuses this streaming
-                # index (indices restart per message) starts fresh and its
-                # tool.use is not suppressed by this call's latch.
+                # index (indices restart per message, per LangChain streaming
+                # semantics) starts fresh rather than reusing this call's state.
                 state.tool_call_buffers.pop(buffer_key, None)
 
 
@@ -586,14 +503,22 @@ def _process_message_chunk(
         _process_ai_message(message_obj, state, console)
     elif isinstance(message_obj, ToolMessage):
         tool_id = getattr(message_obj, "tool_call_id", None)
-        # Args come from the matching tool.use; they default to {} when the call
+        # Args come from the matching tool.use. They default to {} when the call
         # had no id to correlate on, or no tool.use fired (e.g. its args never
-        # parsed). The seam is intentional — without an id we cannot pair them.
-        tool_args = (
-            state.tool_call_args_by_id.pop(tool_id, {})
-            if isinstance(tool_id, str)
-            else {}
-        )
+        # parsed). The seam is intentional — without a correlated id we cannot
+        # pair them — but log the correlation miss so a lost pairing is not
+        # completely silent.
+        if isinstance(tool_id, str):
+            tool_args = state.tool_call_args_by_id.pop(tool_id, None)
+            if tool_args is None:
+                logger.debug(
+                    "tool.result for %s has no correlated tool.use args; "
+                    "sending empty tool_args",
+                    tool_id,
+                )
+                tool_args = {}
+        else:
+            tool_args = {}
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
             if state.spinner:
@@ -605,21 +530,23 @@ def _process_message_chunk(
                 )
         tool_name = getattr(message_obj, "name", "")
         tool_status = getattr(message_obj, "status", "success")
-        tool_output = str(message_obj.content)[:HOOK_TOOL_OUTPUT_LIMIT]
+        # Format the content the same way the interactive surface does so
+        # `tool_output` is identical across surfaces for list/structured content
+        # (e.g. multimodal or MCP tools returning content blocks) rather than a
+        # raw Python list repr here vs. extracted text there. Truncation to
+        # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
+        tool_content = format_tool_message_content(message_obj.content)
+        tool_output = str(tool_content) if tool_content else ""
         if tool_status == "error":
             dispatch_hook_fire_and_forget(
                 "tool.error",
-                {"tool_names": [tool_name]},
+                build_tool_error_payload(tool_name),
             )
         dispatch_hook_fire_and_forget(
             "tool.result",
-            {
-                "tool_name": tool_name,
-                "tool_id": tool_id,
-                "tool_args": tool_args,
-                "tool_status": tool_status,
-                "tool_output": tool_output,
-            },
+            build_tool_result_payload(
+                tool_name, tool_id, tool_args, tool_status, tool_output
+            ),
         )
         if state.spinner:
             state.spinner.start()
@@ -1524,5 +1451,11 @@ async def run_non_interactive(
         # Fire-and-forget hooks (tool.use/tool.result) run as background tasks;
         # await them here so the final tool.result is not cancelled when
         # asyncio.run tears the loop down. Never return from this block — that
-        # would swallow the exit code determined above.
-        await drain_pending_hooks()
+        # would swallow the exit code determined above. drain_pending_hooks is
+        # documented never to raise, but guard it anyway (mirroring app.py's
+        # shutdown drain) so a future contract break can't replace the exit code
+        # with an exception escaping the finally.
+        try:
+            await drain_pending_hooks()
+        except Exception:
+            logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)

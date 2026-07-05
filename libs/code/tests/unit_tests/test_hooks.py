@@ -262,6 +262,31 @@ class TestDispatchHook:
             # Should not raise.
             await hooks_mod.dispatch_hook("session.start", {})
 
+    async def test_generic_error_logged_at_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unexpected subprocess failures surface at WARNING, not hidden at DEBUG.
+
+        The catch-all handles the least-understood failures (e.g. ENOEXEC for a
+        non-executable hook file), so a silent debug log would hide a hook that
+        never fires.
+        """
+        hooks_mod._hooks_config = [{"command": ["bad"]}]
+
+        with (
+            patch(
+                "deepagents_code.hooks.subprocess.run",
+                side_effect=RuntimeError("unexpected"),
+            ),
+            caplog.at_level("WARNING", logger="deepagents_code.hooks"),
+        ):
+            await hooks_mod.dispatch_hook("session.start", {})
+
+        assert any(
+            "failed unexpectedly" in r.getMessage() and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
     async def test_multiple_hooks_dispatched(self):
         """All matching hooks fire, not just the first."""
         hooks_mod._hooks_config = [

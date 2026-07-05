@@ -1075,36 +1075,74 @@ def _run_install_uv(
     verbose: bool,
     fails: bool = False,
     mktemp_fails: bool = False,
+    no_shebang: bool = False,
+    download_fails: bool = False,
+    use_wget: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
 
-    A fake `curl` emits a trivial "installer" that prints a noise line; the
-    function pipes it to `sh`, so the noise lands in its captured output. When
-    `fails` is set, that installer also exits non-zero, exercising the
-    surface-output-on-failure branch. Returns the completed process so callers
-    can assert on whether the noise reached the terminal and on the exit code.
+    A fake downloader (``curl`` by default, or ``wget`` when ``use_wget`` is set)
+    writes a trivial "installer" to the file named by its output flag (``-o`` for
+    curl, ``-O`` for wget); the harness runs it via ``sh``, so the noise lands in
+    the captured output. When ``fails`` is set, that installer also exits
+    non-zero, exercising the surface-output-on-failure branch. When ``no_shebang``
+    is set, the installer content starts with an HTML tag instead of a shell
+    shebang, exercising the shebang-verification rejection. When ``download_fails``
+    is set, the fake downloader writes an error to stderr and exits non-zero
+    *without* creating the file, exercising the download-failure branch and
+    proving the downloader's own error is surfaced. Returns the completed process
+    so callers can assert on whether the noise reached the terminal and on the
+    exit code.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    curl = bin_dir / "curl"
-    installer = "'echo UV_INSTALLER_NOISE'" + (" 'exit 3'" if fails else "")
-    curl.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' {installer}\n")
-    _make_executable(curl)
+    first_line = "'<html>error</html>'" if no_shebang else "'#!/bin/sh'"
+    installer = first_line + " 'echo UV_INSTALLER_NOISE'"
+    if fails:
+        installer += " 'exit 3'"
+
+    # The fake downloader must handle its output flag (curl ``-o`` / wget ``-O``)
+    # and write the installer content there instead of stdout. With
+    # ``download_fails`` it instead emits an error to stderr and exits non-zero
+    # without creating the file, so install_uv sees a failed download.
+    downloader_name = "wget" if use_wget else "curl"
+    out_flag = "-O" if use_wget else "-o"
+    if download_fails:
+        write_body = (
+            "printf 'DOWNLOADER_ERROR: could not resolve host\\n' >&2\nexit 7\n"
+        )
+    else:
+        write_body = f"printf '%s\\n' {installer} >\"${{out:-/dev/stdout}}\"\n"
+    downloader = bin_dir / downloader_name
+    downloader.write_text(
+        "#!/usr/bin/env bash\n"
+        "out=''\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  case "$1" in\n'
+        f'    {out_flag}) out="$2"; shift 2 ;;\n'
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n" + write_body
+    )
+    _make_executable(downloader)
     if mktemp_fails:
         mktemp = bin_dir / "mktemp"
         mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
         _make_executable(mktemp)
 
+    # install_uv branches on is_snap_curl. For the curl path, stub it to the
+    # non-snap answer so the normal curl branch runs (and no stray "command not
+    # found" hits stderr). For the wget path, report curl as a snap so install_uv
+    # skips the curl branch and falls through to the wget branch — regardless of
+    # a real curl on the host PATH.
+    is_snap_curl_rc = "0" if use_wget else "1"
     script = tmp_path / "install_uv_harness.sh"
     script.write_text(
         "set -euo pipefail\n"
         "log_info() { :; }\n"
         'log_error() { printf "%s\\n" "$*" >&2; }\n'
         "register_temp() { :; }\n"
-        # install_uv branches on is_snap_curl; stub it to the non-snap answer so
-        # the harness exercises the normal curl path (and emits no stray
-        # "command not found" on stderr).
-        "is_snap_curl() { return 1; }\n"
+        f"is_snap_curl() {{ return {is_snap_curl_rc}; }}\n"
         f"VERBOSE={'1' if verbose else '0'}\n"
         f"{_extract_shell_function('install_uv')}\n"
         "install_uv\n",
@@ -1159,6 +1197,52 @@ def test_install_uv_requires_secure_temp_file(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "mktemp is required to create a secure temp file" in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def test_install_uv_rejects_non_shell_response(tmp_path: Path) -> None:
+    """A download that doesn't start with a shell shebang is rejected before exec.
+
+    Simulates a transparent proxy or captive portal returning 200 with HTML
+    instead of the uv installer. The shebang check must catch it and exit with
+    an actionable error, rather than piping the HTML into ``sh``.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, no_shebang=True)
+
+    assert proc.returncode != 0
+    assert "does not start with a shell shebang" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_surfaces_download_failure(tmp_path: Path) -> None:
+    """A failed download exits non-zero and surfaces the downloader's own error.
+
+    Exercises the download-failure branch (`uv_install_rc -ne 0`): the fake curl
+    exits non-zero and writes its error to stderr without creating the installer
+    file. `install_uv` must relay that captured error — not just a generic
+    message — include the downloader's exit code, and never execute a payload.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, download_fails=True)
+
+    assert proc.returncode != 0
+    assert "Failed to download uv installer" in proc.stderr
+    # The downloader's captured stderr is surfaced, not discarded to /dev/null.
+    assert "DOWNLOADER_ERROR: could not resolve host" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+
+
+def test_install_uv_downloads_via_wget(tmp_path: Path) -> None:
+    """The wget branch downloads to `-O <file>` and the script then runs it.
+
+    curl is reported as a snap so `install_uv` falls through to the wget branch.
+    Verbose mode surfaces the installer's output, proving wget wrote a valid
+    shebang file that passed verification and executed.
+    """
+    proc = _run_install_uv(tmp_path, verbose=True, use_wget=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "UV_INSTALLER_NOISE" in proc.stderr
 
 
 def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
@@ -1665,3 +1749,79 @@ def test_install_script_skips_managed_install_when_verify_failed(
 
     assert proc.returncode == 0, proc.stderr
     assert not (tmp_path / "dcode-tools.txt").exists(), proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_install_script_help_flag_prints_usage_and_exits(
+    tmp_path: Path, flag: str
+) -> None:
+    """`--help` / `-h` prints the env-var reference and exits 0 before any install.
+
+    Guards the early-returns in the CLI-flag loop: the script must not reach uv
+    or any network probe. The output must mention key environment variables so
+    the user can discover their options without reading source.
+    """
+    env = _env(tmp_path, {}, installed_version=None, latest_version="0.2.0")
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), flag],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.returncode == 0
+    assert "DEEPAGENTS_CODE_VERSION" in proc.stdout
+    assert "DEEPAGENTS_CODE_EXTRAS" in proc.stdout
+    assert "baseten" in proc.stdout
+    assert "basesten" not in proc.stdout
+    assert "DEEPAGENTS_CODE_PYTHON" in proc.stdout
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
+@pytest.mark.parametrize("flag", ["--version", "-v"])
+def test_install_script_version_flag_prints_version_and_exits(
+    tmp_path: Path, flag: str
+) -> None:
+    """`--version` / `-v` prints the installer version and exits 0."""
+    env = _env(tmp_path, {}, installed_version=None, latest_version="0.2.0")
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), flag],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.returncode == 0
+    # Assert the exact version string, not just a substring: the help body also
+    # contains "installer", so a weaker check wouldn't catch --version being
+    # mis-wired to print_help. The absent "Usage:" marker pins that distinction
+    # and doubles as a drift guard on INSTALLER_VERSION.
+    assert "deepagents-code installer 1.0" in proc.stdout
+    assert "Usage:" not in proc.stdout
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
+def test_install_script_rejects_unknown_flag(tmp_path: Path) -> None:
+    """An unrecognized argument exits non-zero before any install work.
+
+    Guards the `*)` arm of the CLI-flag loop: a typo like `--verison` must
+    surface an error and skip the install, rather than being silently ignored
+    and proceeding to a full install.
+    """
+    env = _env(tmp_path, {}, installed_version=None, latest_version="0.2.0")
+    proc = subprocess.run(
+        ["bash", str(SCRIPT), "--verison"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert proc.returncode == 2
+    assert "Unrecognized argument" in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()

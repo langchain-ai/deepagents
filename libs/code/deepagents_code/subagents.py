@@ -56,14 +56,17 @@ class SubagentMetadata(TypedDict):
     """Absolute path to the subagent definition file."""
 
 
-def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
+def _parse_subagent_file(
+    file_path: Path, *, fallback_name: str | None = None
+) -> SubagentMetadata | None:
     """Parse a subagent markdown file with YAML frontmatter.
 
     The file must have YAML frontmatter (delimited by ---) containing at minimum
-    'name' and 'description' fields. The body of the file becomes the system_prompt.
+    a 'description' field. The body of the file becomes the system_prompt.
 
     Args:
         file_path: Path to the markdown file.
+        fallback_name: Name to use when the frontmatter omits `name`.
 
     Returns:
         SubagentMetadata if parsing succeeds, None otherwise.
@@ -79,7 +82,7 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     if not match:
         logger.warning(
             "Skipping subagent %s: missing YAML frontmatter. The file must start "
-            "with a '---' delimited block containing 'name' and 'description'.",
+            "with a '---' delimited block containing at least 'description'.",
             file_path,
         )
         return None
@@ -95,27 +98,32 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     # Validate frontmatter structure and required fields
     if not isinstance(frontmatter, dict):
         logger.warning(
-            "Skipping subagent %s: frontmatter must be a mapping with 'name' and "
-            "'description' fields.",
+            "Skipping subagent %s: frontmatter must be a mapping with a "
+            "'description' field.",
             file_path,
         )
         return None
 
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-    model = frontmatter.get("model")
+    name_value = frontmatter.get("name", fallback_name)
+    description_value = frontmatter.get("description")
+    model_value = frontmatter.get("model")
 
     # Validate types: name and description must be non-empty strings
     # model is optional but must be string if present
-    name_valid = isinstance(name, str) and name
-    description_valid = isinstance(description, str) and description
-    model_valid = model is None or isinstance(model, str)
+    name = name_value if isinstance(name_value, str) and name_value else None
+    description = (
+        description_value
+        if isinstance(description_value, str) and description_value
+        else None
+    )
+    model = model_value if model_value is None or isinstance(model_value, str) else None
+    model_valid = model_value is None or isinstance(model_value, str)
 
-    if not (name_valid and description_valid and model_valid):
+    if name is None or description is None or not model_valid:
         invalid_fields: list[str] = []
-        if not name_valid:
+        if name is None:
             invalid_fields.append("name (non-empty string required)")
-        if not description_valid:
+        if description is None:
             invalid_fields.append("description (non-empty string required)")
         if not model_valid:
             invalid_fields.append("model (string required when present)")
@@ -186,19 +194,19 @@ def _load_subagents_from_dir(
                 )
             continue
 
-        subagent = _parse_subagent_file(subagent_file)
+        subagent = _parse_subagent_file(subagent_file, fallback_name=entry.name)
         if subagent:
             subagent["source"] = source
-            # The folder name and the frontmatter `name` are independent, so two
-            # folders can declare the same `name` and silently collapse to one
-            # entry. Iteration order is filesystem-dependent, so warn rather than
-            # let a definition vanish without explanation.
+            # The folder name and a declared `name` can differ, so two folders can
+            # resolve to the same subagent name and silently collapse to one entry.
+            # Iteration order is filesystem-dependent, so warn rather than let a
+            # definition vanish without explanation.
             existing = subagents.get(subagent["name"])
             if existing is not None:
                 logger.warning(
                     "Subagent name collision in %s: %s and %s both declare "
-                    "name=%r. Using %s; give each subagent a unique 'name' in "
-                    "its frontmatter.",
+                    "name=%r. Using %s; give each subagent a unique folder or "
+                    "frontmatter 'name'.",
                     agents_dir,
                     existing["path"],
                     subagent["path"],

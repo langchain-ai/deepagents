@@ -99,7 +99,7 @@ Always structure your response with headings.
         assert "1. Write clearly" in result["system_prompt"]
 
     def test_parse_subagent_missing_name(self, tmp_path: Path) -> None:
-        """Test that subagent without name is rejected."""
+        """Test that subagent without name is rejected without a fallback."""
         subagent_file = tmp_path / "invalid.md"
         subagent_file.write_text("""---
 description: Missing name field
@@ -109,6 +109,22 @@ Content
 """)
 
         assert _parse_subagent_file(subagent_file) is None
+
+    def test_parse_subagent_uses_fallback_name(self, tmp_path: Path) -> None:
+        """Test that fallback name is used when frontmatter omits name."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+description: Missing name field
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="helper")
+
+        assert result is not None
+        assert result["name"] == "helper"
+        assert result["description"] == "Missing name field"
 
     def test_parse_subagent_missing_description(self, tmp_path: Path) -> None:
         """Test that subagent without description is rejected."""
@@ -227,6 +243,27 @@ class TestLoadSubagentsFromDir:
         assert len(result) == 1
         assert "researcher" in result
         assert result["researcher"]["source"] == "user"
+
+    def test_load_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test loading a subagent whose frontmatter omits name."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "helper"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Helpful assistant
+---
+
+Content
+""")
+
+        result = _load_subagents_from_dir(agents_dir, "user")
+
+        assert len(result) == 1
+        assert "helper" in result
+        assert result["helper"]["name"] == "helper"
+        assert result["helper"]["description"] == "Helpful assistant"
 
     def test_load_multiple_subagents(self, tmp_path: Path) -> None:
         """Test loading multiple subagents."""

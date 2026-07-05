@@ -5256,6 +5256,57 @@ class TestToolHooksTextual:
         ]
         assert not tool_use_calls
 
+    async def test_tool_use_dispatches_when_id_arrives_after_args(self) -> None:
+        """Complete args are retained until a later chunk supplies the id."""
+        chunks = [
+            _tool_chunk(name="read_file", args='{"path": "foo.py"}', chunk_id=None),
+            _tool_chunk(name=None, args="", chunk_id="call-1"),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="ok", tool_call_id="call-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        assert tool_use_calls[0][0][1] == {
+            "tool_name": "read_file",
+            "tool_id": "call-1",
+            "tool_args": {"path": "foo.py"},
+        }
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "read_file",
+            "tool_id": "call-1",
+            "tool_args": {"path": "foo.py"},
+            "tool_status": "success",
+            "tool_output": "ok",
+        }
+
     async def test_tool_use_not_dispatched_without_name(self) -> None:
         """tool.use must not fire while a streamed call has args + id but no name.
 

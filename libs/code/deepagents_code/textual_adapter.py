@@ -1286,7 +1286,8 @@ async def execute_task_textual(
                                 # per-tool spinner.
                                 tool_msg.set_running()
 
-                            tool_call_buffers.pop(buffer_key, None)
+                            if buffer_id is not None:
+                                tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
                         pending_text = pending_text_by_namespace.get(ns_key, "")

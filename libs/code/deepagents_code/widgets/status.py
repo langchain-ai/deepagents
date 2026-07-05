@@ -205,9 +205,13 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-branch {
-        width: auto;
+        width: 1fr;
+        min-width: 0;
         color: $text-muted;
         padding: 0 1;
+        overflow-x: hidden;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     StatusBar .status-left-collapsible {

@@ -106,6 +106,39 @@ class TestBranchDisplay:
             display = pilot.app.query_one("#branch-display")
             assert display.render() == ""
 
+    @staticmethod
+    def _visible_branch_text(display: Static) -> str:
+        """Return the branch text as actually rendered to the terminal line."""
+        from rich.segment import Segment
+
+        return "".join(
+            seg.text for seg in display.render_line(0) if isinstance(seg, Segment)
+        )
+
+    async def test_long_branch_name_truncates_with_ellipsis(self) -> None:
+        """A branch too long for the footer should render a trailing ellipsis."""
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        async with StatusBarApp().run_test(size=(110, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.cwd = "/Users/someone/dev/projects/deepagents/libs/code"
+            bar.branch = long_branch
+            await pilot.pause()
+            display = pilot.app.query_one("#branch-display", Static)
+            visible = self._visible_branch_text(display)
+            assert "\u2026" in visible
+            assert visible != long_branch
+
+    async def test_short_branch_name_not_truncated(self) -> None:
+        """A branch that fits should render in full with no ellipsis."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            display = pilot.app.query_one("#branch-display", Static)
+            visible = self._visible_branch_text(display)
+            assert "\u2026" not in visible
+            assert "main" in visible
+
     async def test_branch_display_contains_git_icon(self) -> None:
         """Branch display should include the git branch glyph prefix."""
         async with StatusBarApp().run_test() as pilot:

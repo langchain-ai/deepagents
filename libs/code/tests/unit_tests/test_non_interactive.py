@@ -26,6 +26,7 @@ from deepagents_code.non_interactive import (
     ThreadUrlLookupState,
     _build_non_interactive_header,
     _collect_action_request_warnings,
+    _dispatch_orphaned_tool_result_hooks,
     _make_hitl_decision,
     _process_ai_message,
     _process_message_chunk,
@@ -2460,6 +2461,102 @@ class TestProcessMessageChunkHooks:
                     "tool_output": "ok",
                 },
             )
+        ]
+
+
+class TestOrphanedToolResultHooks:
+    """`_dispatch_orphaned_tool_result_hooks` closes tool.use with no result.
+
+    Headless parity for the aborted-stream case: a `tool.use` whose `ToolMessage`
+    never arrives (e.g. a provider error mid-tool) must still be closed with a
+    terminal `tool.error`/`tool.result`, matching the TUI's cleanup paths.
+    """
+
+    def test_dispatches_terminal_hooks_and_clears_state(self) -> None:
+        """Each in-flight id gets a named error result, then the maps are drained."""
+        state = StreamState()
+        state.tool_call_args_by_id = {"tool-1": {"command": "sleep 100"}}
+        state.tool_call_names_by_id = {"tool-1": "execute"}
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert ("tool.error", {"tool_names": ["execute"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "tool-1",
+                "tool_args": {"command": "sleep 100"},
+                "tool_status": "error",
+                "tool_output": "Stream ended before tool result",
+            }
+        ]
+        assert state.tool_call_args_by_id == {}
+        assert state.tool_call_names_by_id == {}
+
+    def test_noop_when_no_orphans(self) -> None:
+        """A clean run (every id already drained) dispatches nothing."""
+        state = StreamState()
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(state, "x")
+        mock_dispatch.assert_not_called()
+
+    async def test_run_agent_loop_drains_orphans_on_stream_error(self) -> None:
+        """A mid-stream error closes the in-flight tool.use before propagating."""
+
+        async def boom(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            _console: object,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            # Simulate a tool.use having fired just before the stream dies.
+            state.tool_call_args_by_id["tool-1"] = {"command": "x"}
+            state.tool_call_names_by_id["tool-1"] = "execute"
+            msg = "provider blew up"
+            raise RuntimeError(msg)
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=boom),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            pytest.raises(RuntimeError, match="provider blew up"),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "hi",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "tool-1",
+                "tool_args": {"command": "x"},
+                "tool_status": "error",
+                "tool_output": "Stream ended before tool result",
+            }
         ]
 
 

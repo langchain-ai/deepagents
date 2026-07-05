@@ -41,6 +41,7 @@ from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
     ToolStatus,
     build_tool_error_payload,
@@ -268,7 +269,15 @@ class StreamState:
     accumulated argument fragments, and the display latch."""
 
     tool_call_args_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
-    """Maps completed tool-call IDs to their parsed arguments for result hooks."""
+    """Maps in-flight tool-call IDs (those whose `tool.use` has fired) to their
+    parsed arguments, so the matching `tool.result` can be correlated. Entries
+    are removed when the result arrives."""
+
+    tool_call_names_by_id: dict[str, str] = field(default_factory=dict)
+    """Maps in-flight tool-call IDs to their tool name, kept in lock-step with
+    `tool_call_args_by_id` so an orphaned `tool.use` (one whose `ToolMessage`
+    never arrives, e.g. an aborted stream) can still be closed with a named
+    terminal event."""
 
     displayed_tool_call_ids: set[str] = field(default_factory=set)
     """Tool-call IDs whose non-interactive call line has already been printed."""
@@ -486,6 +495,7 @@ def _process_ai_message(
                     build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
                 state.tool_call_args_by_id[buffer_id] = parsed_args
+                state.tool_call_names_by_id[buffer_id] = buffer_name
             if (
                 isinstance(buffer_id, str)
                 and parsed_args is not None
@@ -542,6 +552,7 @@ def _process_message_chunk(
         # completely silent.
         if isinstance(tool_id, str):
             tool_args = state.tool_call_args_by_id.pop(tool_id, None)
+            state.tool_call_names_by_id.pop(tool_id, None)
             state.displayed_tool_call_ids.discard(tool_id)
             if tool_args is None:
                 # Info, not debug: a real-id result with no matching tool.use is
@@ -581,10 +592,14 @@ def _process_message_chunk(
         # payload by build_tool_result_payload).
         try:
             tool_content = format_tool_message_content(message_obj.content)
+            tool_output = str(tool_content) if tool_content else ""
         except Exception:
-            logger.exception("Failed to format tool output; using raw content")
-            tool_content = message_obj.content
-        tool_output = str(tool_content) if tool_content else ""
+            # Guard formatting *and* the str() coercion together: a pathological
+            # __str__ must not re-raise past the fallback and skip the
+            # tool.result dispatch below. Use a sentinel rather than re-touching
+            # the offending content, so the dispatch stays unconditional.
+            logger.exception("Failed to format tool output")
+            tool_output = UNRENDERABLE_TOOL_OUTPUT
         # Headless always dispatches tool.result for every ToolMessage — there
         # are no widgets to skip. The TUI dispatches from three branches in
         # `textual_adapter.execute_task_textual`: the widget-backed path, the
@@ -895,6 +910,34 @@ async def _stream_agent(
             state.spinner.stop()
 
 
+def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
+    """Close out `tool.use` events that never received a `ToolMessage`.
+
+    On a normally-completing run every `tool.use` is followed by a `ToolMessage`
+    that drains `tool_call_args_by_id`, so this is a no-op. When the stream is
+    aborted mid-flight (e.g. a provider error between the tool call and its
+    result), any id still present had its `tool.use` dispatched with no terminal
+    event; emit `tool.error` + a `tool_status="error"` `tool.result` for each so
+    the headless surface upholds the same "every `tool.use` is closed" guarantee
+    as the TUI's `_dispatch_terminal_tool_result_hooks`.
+
+    Args:
+        state: The stream state whose in-flight tool maps are drained.
+        tool_output: Terminal output recorded on each synthesized `tool.result`.
+    """
+    for tool_id, tool_args in list(state.tool_call_args_by_id.items()):
+        tool_name = state.tool_call_names_by_id.get(tool_id, "")
+        dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                tool_name, tool_id, tool_args, "error", tool_output
+            ),
+        )
+    state.tool_call_args_by_id.clear()
+    state.tool_call_names_by_id.clear()
+
+
 async def _run_agent_loop(
     agent: Any,  # noqa: ANN401
     message: str,
@@ -968,40 +1011,55 @@ async def _run_agent_loop(
 
     start_time = time.monotonic()
 
-    # Initial stream
-    await _stream_agent(
-        agent, stream_input, config, state, console, file_op_tracker, context
-    )
-
-    # The internal default applies when --max-turns is omitted, guarding
-    # against unbounded runaway loops in scripts that forgot to set one.
-    effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
-
-    # The initial stream above counts as turn 1; each HITL resume is a further
-    # turn. Raise before starting a resume that would exceed the budget so the
-    # user-facing count matches the flag's semantics.
-    turns = 1
-    while state.interrupt_occurred:
-        if turns >= effective_limit:
-            limit_source = (
-                f"--max-turns {max_turns}"
-                if max_turns is not None
-                else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
-            )
-            msg = (
-                f"Exceeded {effective_limit} agentic turns ({limit_source}). "
-                "The agent may be stuck retrying rejected commands. "
-                "Increase --max-turns or break the task into smaller steps."
-            )
-            raise HITLIterationLimitError(msg)
-        turns += 1
-        state.interrupt_occurred = False
-        state.hitl_response.clear()
-        _process_hitl_interrupts(state, console)
-        stream_input = Command(resume=state.hitl_response)
+    try:
+        # Initial stream
         await _stream_agent(
             agent, stream_input, config, state, console, file_op_tracker, context
         )
+
+        # The internal default applies when --max-turns is omitted, guarding
+        # against unbounded runaway loops in scripts that forgot to set one.
+        effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
+
+        # The initial stream above counts as turn 1; each HITL resume is a
+        # further turn. Raise before starting a resume that would exceed the
+        # budget so the user-facing count matches the flag's semantics.
+        turns = 1
+        while state.interrupt_occurred:
+            if turns >= effective_limit:
+                limit_source = (
+                    f"--max-turns {max_turns}"
+                    if max_turns is not None
+                    else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
+                )
+                msg = (
+                    f"Exceeded {effective_limit} agentic turns ({limit_source}). "
+                    "The agent may be stuck retrying rejected commands. "
+                    "Increase --max-turns or break the task into smaller steps."
+                )
+                raise HITLIterationLimitError(msg)
+            turns += 1
+            state.interrupt_occurred = False
+            state.hitl_response.clear()
+            _process_hitl_interrupts(state, console)
+            stream_input = Command(resume=state.hitl_response)
+            await _stream_agent(
+                agent, stream_input, config, state, console, file_op_tracker, context
+            )
+    finally:
+        # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
+        # aborted by a provider error mid-tool. On a clean run every id was
+        # already drained by its result, so this is a no-op. Guarded so a
+        # dispatch problem can never mask the exception propagating from the
+        # stream (this runs on the error path too).
+        try:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+        except Exception:
+            logger.warning(
+                "Orphaned tool.result drain failed unexpectedly", exc_info=True
+            )
 
     wall_time = time.monotonic() - start_time
 

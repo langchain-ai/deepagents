@@ -10840,6 +10840,20 @@ class TestTerminalBackgroundSync:
 class TestExitGracefulWorkerHandoff:
     """Verify `exit()` defers teardown for an in-flight agent worker."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_background_hooks(self) -> Iterator[None]:
+        """Isolate the module-global hook task set across tests.
+
+        These tests read the real `has_pending_hooks()`; a stray undone task
+        left in `_background_tasks` by an earlier test would otherwise push
+        `test_synchronous_when_worker_finished` onto the graceful path and flake.
+        """
+        import deepagents_code.hooks as hooks_mod
+
+        hooks_mod._background_tasks.clear()
+        yield
+        hooks_mod._background_tasks.clear()
+
     async def test_defers_when_agent_worker_unfinished(self) -> None:
         """A running, unfinished worker arms a deferred graceful exit."""
         app = DeepAgentsApp()

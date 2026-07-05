@@ -1,7 +1,7 @@
 """Shared streaming tool-call buffering and hook-payload construction.
 
 Both execution surfaces reassemble the same streamed tool-call state and fire
-the same `tool.use` / `tool.result` hook payloads:
+the same `tool.use` / `tool.result` / `tool.error` hook payloads:
 
 - the interactive Textual TUI (`deepagents_code.textual_adapter`), and
 - the headless runner (`deepagents_code.non_interactive`).
@@ -31,7 +31,7 @@ a single shared dispatch function:
     from that dict.
 
 Additionally, only the TUI has interactive HITL approval widgets that can be
-rejected, so only it needs `_dispatch_rejected_tool_result_hooks` and the
+rejected, so only it needs `_dispatch_terminal_tool_result_hooks` and the
 `completed_tool_result_ids` duplicate-suppression set for synthetic middleware
 `ToolMessage` re-arrivals after a resumed turn. The headless runner has no
 interrupt/resume flow and therefore no equivalent race.
@@ -54,7 +54,11 @@ A hook consumer can rely on these guarantees being identical across surfaces:
     truncation are the same.
 - **Event completeness**: every executed tool emits `tool.result`, including
     tools whose args never parsed or that carried no tool-call id (both surfaces
-    emit with `{}` args in that case).
+    emit with `{}` args in that case). A tool whose stream is aborted before its
+    result — a cancelled turn or a mid-stream error — is also closed with a
+    terminal `tool.error`/`tool.result` (TUI via
+    `_dispatch_terminal_tool_result_hooks`, headless via
+    `_dispatch_orphaned_tool_result_hooks`), so no `tool.use` is left dangling.
 - **Fire-once-per-tool**: `tool.use` fires at most once per in-flight
     tool-call id on both surfaces (TUI via `displayed_tool_ids`, headless via
     `tool_call_args_by_id`).
@@ -83,7 +87,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
 
@@ -91,6 +95,13 @@ logger = logging.getLogger(__name__)
 
 ToolStatus = Literal["success", "error"]
 """Terminal status of a tool call, mirroring `ToolMessage.status`."""
+
+UNRENDERABLE_TOOL_OUTPUT = "<tool output could not be rendered>"
+"""Sentinel `tool_output` used when formatting/coercing a tool result raises.
+
+Lets both surfaces keep the terminal `tool.result` dispatch unconditional
+without re-touching the offending content (whose `__str__`/`__repr__` may itself
+raise), so a hook consumer still sees the result rather than a dropped event."""
 
 
 def normalize_tool_status(raw_status: object, tool_name: str) -> ToolStatus:
@@ -203,7 +214,7 @@ class ToolCallBuffer:
     tool_id: str | None = None
     """The tool-call id, once a chunk has supplied it."""
 
-    args: Any = None  # provider-shaped: dict, scalar, or None
+    args: object = None  # provider-shaped: dict, scalar, or None
     """A fully materialized arguments value delivered by a single chunk (dict or,
     rarely, a scalar). Mutually exclusive with `args_parts` (see `__post_init__`
     and `ingest`)."""
@@ -307,7 +318,10 @@ class ToolCallBuffer:
                 malformed (the malformed case is logged once via `warned`).
         """
         if isinstance(self.args, dict):
-            return self.args
+            # A whole-value dict delivered by the provider; its keys are
+            # provider-shaped, so narrow the `object` field to the declared arg
+            # type at this single return site.
+            return cast("dict[str, Any]", self.args)
         if self.args is not None:
             return {"value": self.args}
 

@@ -167,6 +167,43 @@ class TestTextualUIAdapterInit:
         assert adapter._current_tool_messages == {}
         set_active.assert_called_once_with(None)
 
+    def test_finalize_pending_tools_dispatches_terminal_hooks(self) -> None:
+        """Aborting a stream mid-tool closes each pending tool.use.
+
+        Each pending widget already had its `tool.use` dispatched at mount, so
+        the safety-net path must emit a terminal `tool.error`/`tool.result` for
+        it — otherwise the aborted tool leaves an unterminated `tool.use`.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=MagicMock(),
+        )
+        tool_widget = MagicMock()
+        tool_widget.tool_name = "read_file"
+        tool_widget.args = {"path": "notes.txt"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            adapter.finalize_pending_tools_with_error("Agent error: boom")
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert ("tool.error", {"tool_names": ["read_file"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "notes.txt"},
+                "tool_status": "error",
+                "tool_output": "Agent error: boom",
+            }
+        ]
+        assert adapter._current_tool_messages == {}
+
 
 class TestInterruptCleanup:
     """Tests for interrupt cleanup token handling."""
@@ -231,6 +268,59 @@ class TestInterruptCleanup:
         interrupted_msg = interrupted_payload["messages"][0]
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
+
+    async def test_interrupt_cleanup_dispatches_terminal_hooks(self) -> None:
+        """A cancelled turn closes each pending tool.use with terminal hooks.
+
+        A tool whose `tool.use` fired but whose `ToolMessage` never arrived
+        (because Ctrl+C aborted the turn) must still get a terminal
+        `tool.error`/`tool.result`, mirroring the HITL-reject branches.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=MagicMock(),
+        )
+        tool_widget = MagicMock()
+        # Public accessors feed the terminal-hook payload; the private backing
+        # fields feed the interrupted-AIMessage rebuild — set both consistently,
+        # mirroring the real `ToolCallMessage` where the accessors read these.
+        tool_widget.tool_name = "execute"
+        tool_widget.args = {"command": "sleep 100"}
+        tool_widget._tool_name = "execute"
+        tool_widget._args = {"command": "sleep 100"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},  # ty: ignore
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert ("tool.error", {"tool_names": ["execute"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "sleep 100"},
+                "tool_status": "error",
+                "tool_output": "Turn cancelled",
+            }
+        ]
+        tool_widget.set_rejected.assert_called_once_with()
+        assert adapter._current_tool_messages == {}
 
     async def test_interrupt_stops_active_assistant_streams(self) -> None:
         """Interrupted streaming messages should not leave flush timers running."""
@@ -3338,6 +3428,54 @@ class TestExecuteTaskTextualAskUser:
         assert "ask_user not supported by this UI" in error_calls
         assert "tool-1" not in adapter._current_tool_messages
 
+    async def test_ask_user_unsupported_dispatches_terminal_hooks(self) -> None:
+        """The unsupported-UI ask_user branch closes its tool.use.
+
+        With no `request_ask_user` callback the ask_user cannot run, so the
+        branch must emit `tool.error` + an error `tool.result` carrying the
+        canned unsupported message — otherwise its `tool.use` is unterminated.
+        """
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert ("tool.error", {"tool_names": ["ask_user"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_name"] == "ask_user"
+        assert result_payloads[0]["tool_id"] == "tool-1"
+        assert result_payloads[0]["tool_status"] == "error"
+        assert result_payloads[0]["tool_output"] == "ask_user not supported by this UI"
+
     async def test_request_ask_user_returning_none_is_reported_as_error(self) -> None:
         """A `None` callback result should resume with explicit error status."""
 
@@ -4435,6 +4573,93 @@ class TestToolHooksTextual:
             "tool_output": "Tool approval rejected",
         }
 
+    async def test_hitl_reasoned_reject_keeps_row_rejected(self) -> None:
+        """A reasoned reject that resumes must not flip the row to Error.
+
+        The resumed synthetic reject `ToolMessage` fires the terminal hook via
+        the mounted branch, which also calls `set_error`; the widget must keep
+        its rejected state because `set_error`/`set_success` no-op once a row is
+        terminal-rejected. Guards against the row flipping "Rejected" -> "Error".
+        """
+        mounted: list[ToolCallMessage] = []
+
+        async def capture_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Tool approval rejected",
+                                tool_call_id="tool-1",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=capture_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(agent.stream_inputs) == 2
+        execute_widgets = [w for w in mounted if w.tool_name == "execute"]
+        assert len(execute_widgets) == 1
+        # Stayed rejected despite the resumed error ToolMessage driving set_error.
+        assert execute_widgets[0]._status == "rejected"
+
     async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
         """tool.use reassembles streamed arg fragments and fires exactly once."""
         chunks = [
@@ -4591,7 +4816,7 @@ class TestToolHooksTextual:
     async def test_hitl_bare_reject_dispatches_hooks_for_every_tool(self) -> None:
         """A batch bare-reject closes each pending tool's tool.use, per tool.
 
-        `_dispatch_rejected_tool_result_hooks` loops over every mounted tool, so
+        `_dispatch_terminal_tool_result_hooks` loops over every mounted tool, so
         rejecting a parallel batch must emit one tool.error + one tool.result for
         each tool, each carrying its own id and args — not just the first.
         """

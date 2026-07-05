@@ -1353,6 +1353,13 @@ class ToolCallMessage(Vertical):
         Args:
             result: Tool output/result to display
         """
+        if self._status in {"rejected", "skipped"}:
+            # A rejected tool (or one skipped due to a sibling rejection) never
+            # legitimately becomes successful. A resumed turn can still stream a
+            # synthetic ToolMessage for such a tool (see the reasoned-reject path
+            # in `textual_adapter`); ignore it so the row keeps its terminal
+            # rejected/skipped state instead of flipping.
+            return
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
@@ -1401,6 +1408,13 @@ class ToolCallMessage(Vertical):
         Args:
             error: Error message
         """
+        if self._status in {"rejected", "skipped"}:
+            # A rejected/skipped tool never legitimately errors. A resumed turn
+            # can stream a synthetic error ToolMessage for a reasoned-reject tool
+            # (see `textual_adapter`); ignore it so the row keeps its rejected
+            # state rather than flipping to "Error" (which also left the stale
+            # `rejected` CSS class alongside `error`).
+            return
         self._stop_animation()
         self._status = "error"
         # For shell commands, prepend the full command so users can see what failed

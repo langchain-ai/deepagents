@@ -56,6 +56,7 @@ from deepagents_code._session_stats import (
     format_token_count as format_token_count,
 )
 from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
     ToolStatus,
     build_tool_error_payload,
@@ -124,28 +125,32 @@ def _dispatch_tool_result_hook(
     )
 
 
-def _dispatch_rejected_tool_result_hooks(
+def _dispatch_terminal_tool_result_hooks(
     tool_messages: dict[str, ToolCallMessage],
     tool_output: str,
 ) -> list[str]:
-    """Dispatch terminal hook events for HITL tools that will not resume.
+    """Emit terminal `tool.error`/`tool.result` for still-pending tool widgets.
 
-    TUI-only: the headless surface has no interactive approval widgets and
-    therefore no rejection path. This function and the
-    `completed_tool_result_ids` duplicate-suppression set it feeds are the
-    TUI-specific parts of the parity contract (see `_tool_stream` docstring);
-    the headless surface satisfies the same "every `tool.use` is closed by a
-    terminal event" guarantee structurally because it has no interrupt/resume
-    flow.
+    Every widget in `tool_messages` already had its `tool.use` dispatched (that
+    is when the widget is mounted), so any tool that reaches a terminal outcome
+    *without* a streamed `ToolMessage` — a HITL rejection, a cancelled turn, or
+    an aborted stream — would otherwise leave its `tool.use` unterminated. This
+    closes each one with a `tool_status="error"` result carrying the widget's
+    real `tool_name`/`args`, so the "every `tool.use` is closed by a matching
+    terminal event" guarantee holds on those paths too.
+
+    TUI-only: the headless surface reaches the equivalent state through
+    `_run_agent_loop`'s orphan drain rather than widgets.
 
     Args:
-        tool_messages: Map of tool-call id to its widget for the rejected tools.
+        tool_messages: Map of tool-call id to its widget for the pending tools.
         tool_output: Terminal output string recorded on each `tool.result`.
 
     Returns:
-        The tool-call ids that received terminal hooks. Callers track these so a
-            later synthetic reject `ToolMessage` (when the turn still resumes,
-            e.g. alongside an answered `ask_user`) does not double-dispatch.
+        The tool-call ids that received terminal hooks. Callers track these
+            (via `completed_tool_result_ids`) so a later synthetic `ToolMessage`
+            — when the turn still resumes, e.g. alongside an answered `ask_user`
+            — does not double-dispatch.
     """
     dispatched: list[str] = []
     for tool_id, tool_msg in list(tool_messages.items()):
@@ -452,6 +457,11 @@ class TextualUIAdapter:
         Args:
             error: Error text to display in each pending tool widget.
         """
+        # Each pending widget already had its `tool.use` dispatched at mount, so
+        # emit terminal hooks before dropping them — otherwise an aborted stream
+        # leaves those `tool.use` events unterminated for audit consumers. Runs
+        # before the widget updates so a `set_error` failure can't skip it.
+        _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
         self._current_tool_messages.clear()
@@ -874,6 +884,14 @@ async def execute_task_textual(
                                             _dispatch_tool_use_hook(
                                                 "ask_user", tool_id, tool_args
                                             )
+                                            # Latch the id the moment tool.use
+                                            # fires — not on mount success — so a
+                                            # re-observed interrupt cannot
+                                            # double-fire tool.use if the mount
+                                            # below raises (matches the regular
+                                            # tool path, which latches before
+                                            # dispatch).
+                                            displayed_tool_ids.add(tool_id)
                                             tool_msg = ToolCallMessage(
                                                 "ask_user",
                                                 tool_args,
@@ -887,7 +905,6 @@ async def execute_task_textual(
                                                     tool_id,
                                                 )
                                             else:
-                                                displayed_tool_ids.add(tool_id)
                                                 adapter._current_tool_messages[
                                                     tool_id
                                                 ] = tool_msg
@@ -998,17 +1015,17 @@ async def execute_task_textual(
                         tool_status: ToolStatus = normalize_tool_status(
                             getattr(message, "status", "success"), tool_name
                         )
-                        # Guard formatting so a formatter error on unusual
-                        # content can't skip the tool.result dispatch below; fall
-                        # back to the raw content (still capped in the payload).
+                        # Guard formatting *and* the str() coercion so a
+                        # pathological __str__ on the content can't re-raise and
+                        # skip the tool.result dispatch below. On failure use a
+                        # sentinel rather than re-touching the offending content,
+                        # so the terminal dispatch is genuinely unconditional.
                         try:
                             tool_content = format_tool_message_content(message.content)
+                            output_str = str(tool_content) if tool_content else ""
                         except Exception:
-                            logger.exception(
-                                "Failed to format tool output; using raw content"
-                            )
-                            tool_content = message.content
-                        output_str = str(tool_content) if tool_content else ""
+                            logger.exception("Failed to format tool output")
+                            output_str = UNRENDERABLE_TOOL_OUTPUT
                         record = file_op_tracker.complete_with_message(message)
 
                         # Update tool call status with output
@@ -1670,7 +1687,7 @@ async def execute_task_textual(
                                 # stream resumes and the banner is suppressed.
                                 if reject_message is None:
                                     completed_tool_result_ids.update(
-                                        _dispatch_rejected_tool_result_hooks(
+                                        _dispatch_terminal_tool_result_hooks(
                                             adapter._current_tool_messages,
                                             "Tool approval rejected",
                                         )
@@ -1691,7 +1708,7 @@ async def execute_task_textual(
                                 ):
                                     tool_msg.set_rejected()
                                 completed_tool_result_ids.update(
-                                    _dispatch_rejected_tool_result_hooks(
+                                    _dispatch_terminal_tool_result_hooks(
                                         adapter._current_tool_messages,
                                         "Tool approval rejected",
                                     )
@@ -1711,7 +1728,7 @@ async def execute_task_textual(
                             ):
                                 tool_msg.set_rejected()
                             completed_tool_result_ids.update(
-                                _dispatch_rejected_tool_result_hooks(
+                                _dispatch_terminal_tool_result_hooks(
                                     adapter._current_tool_messages,
                                     "Tool approval rejected",
                                 )
@@ -1929,6 +1946,14 @@ async def _handle_interrupt_cleanup(
                 )
             )
 
+    # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
+    # arrived because the turn was cancelled: emit terminal hooks before the
+    # widgets are dropped, so a cancel path leaves no unterminated `tool.use`
+    # (mirroring the HITL-reject branches). The turn does not resume from here,
+    # so the returned ids need not be tracked for dedup.
+    _dispatch_terminal_tool_result_hooks(
+        adapter._current_tool_messages, "Turn cancelled"
+    )
     # Mark tools as rejected AFTER saving state
     for tool_msg in list(adapter._current_tool_messages.values()):
         tool_msg.set_rejected()

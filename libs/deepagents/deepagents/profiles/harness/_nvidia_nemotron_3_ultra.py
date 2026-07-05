@@ -944,6 +944,12 @@ _PLAN_FIRST_NUDGE = (
     "threshold, or a required count is a filter or assertion your solution must enforce — "
     "and if your data source or method cannot honor a stated constraint, you have not yet "
     "solved the task as asked.\n"
+    "- Scope every change to ONLY what the task requires: decide up front what must change and "
+    "what must stay exactly as-is, then change just that. Do not reformat, restructure, rename, "
+    "re-implement, or alter the behavior/semantics of anything the task did not ask you to "
+    "touch — even inside a file you are legitimately editing. When only a value or a line needs "
+    "to change, change exactly that and leave the surrounding content byte-for-byte as it was; "
+    "unnecessary or \"improving\" edits are a common way otherwise-correct work gets marked wrong.\n"
     "- Work that must OUTLIVE your shell: a session's state — exported variables (PATH "
     "included), an activated virtualenv, your working directory, anything held only in "
     "memory — disappears the moment your shell does. Anything the task says to \"make "
@@ -1016,6 +1022,11 @@ _PLAN_ADHERENCE_NUDGE = (
     "library again against the file you just wrote, is not an independent check: it only "
     "shows the answer agrees with itself. A result that holds only under the specific tool or "
     "environment you chose stays unconfirmed until a second, independent route agrees.\n"
+    "7. Confirm you changed ONLY what the task required: diff each file you edited against its "
+    "ORIGINAL and check that every difference is one the task asked for. If you reformatted, "
+    "restructured, renamed, re-implemented, or changed the behavior/semantics of anything the "
+    "task did not ask you to touch, revert that part — leave everything except the required "
+    "change byte-for-byte as it was.\n"
     "If any observed result does not match what the task requires, that is unfinished work: "
     "fix it and re-run. You are done only when a clean, independent re-run has SHOWN every "
     "requirement met — not when you believe it."
@@ -1159,6 +1170,8 @@ Derive what "done" requires from the task's own wording alone: the exact interfa
 Do NOT trust the transcript's claims of success — the agent routinely reports that its own tests passed when the real requirement is unmet. Verify by RUNNING: use the `shell` tool to inspect the actual files and exercise the deliverable the way the TASK describes — invoke the function/CLI with only the inputs the task names (letting internals default), reproduce the required runtime condition end to end, and compare the real output against the literal spec (for a "preserve formatting" constraint, diff the produced file against the original; for an API, call it exactly as the task shows). Base your verdict ONLY on what you observe from commands you run, never on the agent's assertions.
 
 Be conservative: any requirement you cannot positively confirm by your own observation is unmet.
+
+Also confirm the work is SCOPED: the deliverable should change only what the task requires. If the agent altered a file's structure, formatting, or behavior beyond the specific change the task asked for — reformatting output, restructuring or re-implementing lines, or changing how something works when only a value needed changing — that is a defect; return needs_revision. Check this by diffing each edited file against its original (e.g. `git diff`) and confirming every change is one the task called for.
 
 When you have run enough to decide, respond with EXACTLY two lines and nothing else:
 VERDICT: <satisfied or needs_revision>

@@ -990,20 +990,31 @@ async def execute_task_textual(
                         tool_status: ToolStatus = normalize_tool_status(
                             getattr(message, "status", "success"), tool_name
                         )
-                        tool_content = format_tool_message_content(message.content)
+                        # Guard formatting so a formatter error on unusual
+                        # content can't skip the tool.result dispatch below; fall
+                        # back to the raw content (still capped in the payload).
+                        try:
+                            tool_content = format_tool_message_content(message.content)
+                        except Exception:
+                            logger.exception(
+                                "Failed to format tool output; using raw content"
+                            )
+                            tool_content = message.content
                         output_str = str(tool_content) if tool_content else ""
                         record = file_op_tracker.complete_with_message(message)
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
-                            # Pop before widget calls so the dict drains even
+                            # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
                             tool_msg = adapter._current_tool_messages.pop(tool_id)
-                            if tool_status == "success":
-                                tool_msg.set_success(output_str)
-                            else:
-                                tool_msg.set_error(output_str or "Error")
+                            # Dispatch the terminal hooks *before* touching the
+                            # widget: a render failure must never drop this tool's
+                            # tool.result/tool.error (which would leave its
+                            # tool.use unterminated). The headless path likewise
+                            # dispatches without depending on any widget.
+                            if tool_status == "error":
                                 _dispatch_tool_error_hook(tool_msg.tool_name)
                             _dispatch_tool_result_hook(
                                 tool_msg.tool_name,
@@ -1012,6 +1023,18 @@ async def execute_task_textual(
                                 tool_status,
                                 output_str,
                             )
+                            # Update the widget last, guarded: a set_success/
+                            # set_error failure must not abort the turn and drop
+                            # the remaining tools' hooks.
+                            try:
+                                if tool_status == "success":
+                                    tool_msg.set_success(output_str)
+                                else:
+                                    tool_msg.set_error(output_str or "Error")
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update tool row for %s", tool_id
+                                )
                         elif tool_id and tool_id in completed_tool_result_ids:
                             # This is a middleware synthetic ToolMessage for a
                             # tool whose terminal hooks already fired while the

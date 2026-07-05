@@ -66,11 +66,9 @@ class ToolUsePayload(TypedDict):
     tool_name: str
     """The tool being invoked."""
 
-    tool_id: str | None
-    """The tool-call id. Always a real id for an emitted `tool.use` — a call
-    with no id never produces one (see `hooks`); the field is `str | None` only
-    to share the builder's signature with `tool.result`, whose id can be
-    `None`."""
+    tool_id: str
+    """The tool-call id. Always a real id — a call with no id never produces a
+    `tool.use` (see `hooks`), so unlike `tool.result` this is never `None`."""
 
     tool_args: dict[str, Any]
     """The parsed tool-call arguments."""
@@ -145,12 +143,13 @@ class ToolCallBuffer:
 
     args: Any = None  # provider-shaped: dict, scalar, or None
     """A fully materialized arguments value delivered by a single chunk (dict or,
-    rarely, a scalar). Mutually exclusive with `args_parts`."""
+    rarely, a scalar). Mutually exclusive with `args_parts` (see `__post_init__`
+    and `ingest`)."""
 
     args_parts: list[str] = field(default_factory=list)
     """JSON string fragments accumulated across chunks, reassembled by
     `parse_args` once the payload looks complete. Mutually exclusive with
-    `args`."""
+    `args` (see `__post_init__` and `ingest`)."""
 
     displayed: bool = False
     """One-shot latch guarding the single "Calling tool" console line (used only
@@ -160,6 +159,21 @@ class ToolCallBuffer:
     """One-shot latch so a malformed-but-complete payload is logged at most once,
     even though `parse_args` re-runs on every later chunk for the retained
     buffer."""
+
+    def __post_init__(self) -> None:
+        """Enforce the `args` XOR `args_parts` invariant at construction.
+
+        `ingest` maintains this on every chunk; asserting it here as well means
+        the illegal both-populated state is unrepresentable regardless of how a
+        buffer is built, so `parse_args` can read `args` first without masking a
+        conflicting `args_parts`.
+
+        Raises:
+            ValueError: If both `args` and `args_parts` are set.
+        """
+        if self.args is not None and self.args_parts:
+            msg = "ToolCallBuffer cannot hold both args and args_parts"
+            raise ValueError(msg)
 
     def ingest(
         self,
@@ -201,10 +215,12 @@ class ToolCallBuffer:
             self.tool_id = tool_id
 
         # `args` (a whole value) and `args_parts` (JSON fragments) are mutually
-        # exclusive; each branch clears the counterpart so the buffer can never
-        # hold both — the invariant `parse_args` relies on rather than merely
-        # masking via read order. A provider streams a single call as either
-        # whole values or fragments, never a mix, so no real sequence loses data.
+        # exclusive; each branch clears the counterpart so the buffer never holds
+        # both. Together with the `__post_init__` guard this keeps the invariant
+        # true for every buffer, so `parse_args` reads `args` first without
+        # masking a conflicting `args_parts` via read order. A provider streams a
+        # single call as either whole values or fragments, never a mix, so no
+        # real sequence loses data.
         if isinstance(args, dict):
             self.args = args
             self.args_parts = []
@@ -273,14 +289,14 @@ class ToolCallBuffer:
 
 
 def build_tool_use_payload(
-    tool_name: str, tool_id: str | None, tool_args: dict[str, Any]
+    tool_name: str, tool_id: str, tool_args: dict[str, Any]
 ) -> ToolUsePayload:
     """Build the `tool.use` hook payload (schema documented in `hooks`).
 
     Args:
         tool_name: The tool being invoked.
-        tool_id: The tool-call id. Always set for an emitted `tool.use`; typed
-            optional only to share the shape with `tool.result`.
+        tool_id: The tool-call id. Always a real id for an emitted `tool.use`
+            (a call with no id never produces one).
         tool_args: The parsed tool-call arguments.
 
     Returns:

@@ -4588,6 +4588,386 @@ class TestToolHooksTextual:
             "tool_output": "orphaned output",
         }
 
+    async def test_hitl_bare_reject_dispatches_hooks_for_every_tool(self) -> None:
+        """A batch bare-reject closes each pending tool's tool.use, per tool.
+
+        `_dispatch_rejected_tool_result_hooks` loops over every mounted tool, so
+        rejecting a parallel batch must emit one tool.error + one tool.result for
+        each tool, each carrying its own id and args — not just the first.
+        """
+        action_requests = [
+            {"name": "execute", "args": {"command": "echo hi"}},
+            {"name": "write_file", "args": {"path": "foo.py"}},
+        ]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "write_file", {"path": "foo.py"}, "tool-2"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                },
+                                {
+                                    "action_name": "write_file",
+                                    "allowed_decisions": ["approve", "reject"],
+                                },
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        calls = mock_dispatch_background.call_args_list
+        results = {
+            c[0][1]["tool_id"]: c[0][1] for c in calls if c[0][0] == "tool.result"
+        }
+        errors = sorted(
+            c[0][1]["tool_names"][0] for c in calls if c[0][0] == "tool.error"
+        )
+        assert set(results) == {"tool-1", "tool-2"}
+        assert results["tool-1"]["tool_args"] == {"command": "echo hi"}
+        assert results["tool-1"]["tool_status"] == "error"
+        assert results["tool-2"]["tool_args"] == {"path": "foo.py"}
+        assert results["tool-2"]["tool_status"] == "error"
+        assert errors == ["execute", "write_file"]
+
+    async def test_hitl_unexpected_decision_type_dispatches_terminal_hooks(
+        self,
+    ) -> None:
+        """An unrecognized HITL decision type still closes the pending tool.use."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "bogus"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
+            "tool.use",
+            "tool.error",
+            "tool.result",
+        ]
+        assert mock_dispatch_background.call_args_list[2][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "tool-1",
+            "tool_args": {"command": "echo hi"},
+            "tool_status": "error",
+            "tool_output": "Tool approval rejected",
+        }
+
+    async def test_hitl_non_dict_decision_dispatches_terminal_hooks(self) -> None:
+        """A non-dict HITL decision still closes the pending tool.use."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result("reject")
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
+            "tool.use",
+            "tool.error",
+            "tool.result",
+        ]
+        assert mock_dispatch_background.call_args_list[2][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "tool-1",
+            "tool_args": {"command": "echo hi"},
+            "tool_status": "error",
+            "tool_output": "Tool approval rejected",
+        }
+
+    async def test_malformed_complete_args_skip_tool_use_but_emit_result(self) -> None:
+        """Interactive parity: complete-but-malformed args skip tool.use, keep result.
+
+        Mirrors the headless `test_malformed_args_emit_result_without_use`: a
+        streamed arg fragment that looks complete (bracketed and closed) but fails
+        to parse produces no tool.use, yet the executed tool's tool.result still
+        fires via the untracked path with `{}` args.
+        """
+        chunks = [
+            _tool_chunk(name="execute", args='{"command": }', chunk_id="call-1"),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="ran anyway",
+                        tool_call_id="call-1",
+                        name="execute",
+                        status="success",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
+        assert "tool.use" not in events
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "call-1",
+            "tool_args": {},
+            "tool_status": "success",
+            "tool_output": "ran anyway",
+        }
+
+    async def test_unexpected_tool_status_fails_closed_to_error(self) -> None:
+        """Interactive parity: an unexpected ToolMessage.status fails closed to error.
+
+        A mounted tool whose terminal ToolMessage carries a status outside the
+        `success`/`error` domain must emit `tool.error` and an error
+        `tool.result`, never a spurious success.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage.model_construct(
+                        content="stopped",
+                        tool_call_id="call-1",
+                        name="read_file",
+                        status="cancelled",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
+        assert "tool.error" in events
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_status"] == "error"
+        assert payload["tool_name"] == "read_file"
+        assert payload["tool_id"] == "call-1"
+        assert payload["tool_args"] == {"path": "foo.py"}
+
     async def test_bare_reject_with_answered_ask_user_emits_single_result(
         self,
     ) -> None:

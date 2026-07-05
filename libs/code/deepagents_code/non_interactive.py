@@ -573,7 +573,14 @@ def _process_message_chunk(
         # (e.g. multimodal or MCP tools returning content blocks) rather than a
         # raw Python list repr here vs. extracted text there. Truncation to
         # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
-        tool_content = format_tool_message_content(message_obj.content)
+        # Guard formatting so a formatter error can't skip the tool.result
+        # dispatch below; fall back to the raw content (still capped in the
+        # payload by build_tool_result_payload).
+        try:
+            tool_content = format_tool_message_content(message_obj.content)
+        except Exception:
+            logger.exception("Failed to format tool output; using raw content")
+            tool_content = message_obj.content
         tool_output = str(tool_content) if tool_content else ""
         if tool_status == "error":
             dispatch_hook_fire_and_forget(

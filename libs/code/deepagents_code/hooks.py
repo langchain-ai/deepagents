@@ -20,7 +20,8 @@ after the user submits a non-empty preferred name.
 complete value *and* its tool-call id is known; a call whose arguments never
 parse, or that carries no id, is skipped. `tool.result` fires after every tool
 call reaches a terminal state — successful execution, failure, or HITL
-rejection/cancellation:
+rejection/cancellation. The three blocks below show the payload *shapes*, not a
+single sequence of events:
 
 ```jsonc
 {"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
@@ -227,7 +228,7 @@ async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
-        payload: Arbitrary JSON-serializable dict sent on the command's stdin.
+        payload: Arbitrary JSON-serializable mapping sent on the command's stdin.
     """
     try:
         hooks = _load_hooks()
@@ -254,12 +255,15 @@ def dispatch_hook_fire_and_forget(event: str, payload: Mapping[str, Any]) -> Non
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
-        payload: Arbitrary JSON-serializable dict sent on the command's stdin.
+        payload: Arbitrary JSON-serializable mapping sent on the command's stdin.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.debug("No running event loop; skipping hook for %s", event)
+        # A dropped hook is an audit/notification gap, so surface it at warning
+        # rather than debug. In the streaming paths a loop is always running, so
+        # this fires only from an unexpected sync call site.
+        logger.warning("No running event loop; skipping hook for %s", event)
         return
     task = loop.create_task(dispatch_hook(event, payload))
     _background_tasks.add(task)

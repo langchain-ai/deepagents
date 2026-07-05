@@ -8,7 +8,7 @@ surfaces additionally exercise it end-to-end in their own suites).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import pytest
 
 from deepagents_code._tool_stream import (
     ToolCallBuffer,
@@ -19,9 +19,6 @@ from deepagents_code._tool_stream import (
     tool_call_buffer_key,
 )
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestToolCallBufferKey:
@@ -43,6 +40,28 @@ class TestToolCallBufferKey:
     def test_zero_index_is_not_treated_as_missing(self) -> None:
         """Index 0 is a valid key, not a falsy stand-in for absent."""
         assert tool_call_buffer_key(0, None, 0) == 0
+
+
+class TestToolCallBufferConstruction:
+    """The `args` XOR `args_parts` invariant is enforced at construction."""
+
+    def test_both_args_and_args_parts_rejected(self) -> None:
+        """Constructing with both populated raises, making the state unrepresentable.
+
+        `ingest` maintains the XOR on every chunk; `__post_init__` guarantees no
+        buffer can be built in the illegal both-set state that `parse_args` would
+        otherwise mask via read order.
+        """
+        with pytest.raises(ValueError, match="cannot hold both"):
+            ToolCallBuffer(args={"a": 1}, args_parts=['{"a":'])
+
+    def test_only_args_allowed(self) -> None:
+        """A whole value alone is a legal buffer."""
+        assert ToolCallBuffer(args={"a": 1}).args == {"a": 1}
+
+    def test_only_args_parts_allowed(self) -> None:
+        """Fragments alone are a legal buffer."""
+        assert ToolCallBuffer(args_parts=['{"a":']).args_parts == ['{"a":']
 
 
 class TestToolCallBufferIngest:

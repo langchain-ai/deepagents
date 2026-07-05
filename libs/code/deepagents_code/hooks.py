@@ -57,8 +57,8 @@ both may observe them out of order, and events from parallel tool calls
 interleave freely. Correlate by `tool_id` rather than relying on arrival order —
 there is no cross-event delivery-ordering guarantee for the tool events. Most
 non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
-`context.offload`, `context.compact`) are dispatched with an awaited
-`dispatch_hook` and so fire in program order. `input.required` and
+`context.offload`, `context.compact`, `permission.request`) are dispatched with
+an awaited `dispatch_hook` and so fire in program order. `input.required` and
 `user.name.set` are the exceptions: `user.name.set` is always dispatched
 fire-and-forget, and `input.required` is fire-and-forget on the headless surface
 (awaited only in the interactive TUI), so neither carries a program-order
@@ -202,6 +202,15 @@ def _dispatch_hook_sync(
     for hook in hooks:
         command = hook.get("command")
         if not isinstance(command, list) or not command:
+            # A misconfigured `command` (missing, a bare string instead of an
+            # argv list, or empty) means this hook can never fire. Warn rather
+            # than silently skip so the config mistake is greppable instead of
+            # looking like the hook simply never matched.
+            logger.warning(
+                "Skipping hook with invalid `command` for event %s: %r",
+                event,
+                command,
+            )
             continue
 
         events = hook.get("events")

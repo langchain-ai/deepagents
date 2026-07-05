@@ -22,8 +22,9 @@ a single shared dispatch function:
 - **TUI**: tool calls are backed by `ToolCallMessage` widgets that persist
     parsed args as instance state and render success/error visually. `tool.use`
     fires at widget-mount time because that is when the parsed args are available
-    from the widget constructor (or from a validated HITL interrupt). Result
-    correlation reads args from `tool_msg.args` (a widget property).
+    — they are what the widget is constructed with (or come from a validated HITL
+    interrupt). Result correlation reads args from `tool_msg.args` (a widget
+    property).
 
 - **Headless**: there are no widgets. Tool-call state lives in a plain dict on
     `StreamState` (`in_flight_tool_calls`, keyed by tool-call id). `tool.use`
@@ -63,9 +64,15 @@ A hook consumer can rely on these guarantees being identical across surfaces:
     terminal `tool.error`/`tool.result` (TUI via
     `_dispatch_terminal_tool_result_hooks`, headless via
     `_dispatch_orphaned_tool_result_hooks`), so no `tool.use` is left dangling.
-- **Fire-once-per-tool**: `tool.use` fires at most once per in-flight
-    tool-call id on both surfaces (TUI via `displayed_tool_ids`, headless via
-    `in_flight_tool_calls`).
+- **Fire-once-per-in-flight-window**: `tool.use` fires at most once per
+    in-flight tool-call id on both surfaces (TUI via `displayed_tool_ids`,
+    headless via `in_flight_tool_calls`). The two are not equally strong: the
+    TUI's `displayed_tool_ids` is monotonic (never discarded within a turn),
+    whereas the headless `in_flight_tool_calls` is cleared when a call's result
+    arrives, so a redelivery of the same id's arg chunks *after* its result
+    would re-fire there. Standard `stream_mode="messages"` streaming never
+    reorders a call's chunks after its result, so the in-flight window is
+    sufficient in practice.
 - **`tool.error` co-firing**: whenever `tool_status` is `"error"`, both
     surfaces emit `tool.error` alongside `tool.result`.
 
@@ -300,12 +307,15 @@ class ToolCallBuffer:
     buffer."""
 
     def __post_init__(self) -> None:
-        """Enforce the `args` XOR `args_parts` invariant at construction.
+        """Enforce the `args` XOR `args_parts` invariant at construction time.
 
-        `ingest` maintains this on every chunk; asserting it here as well means
-        the illegal both-populated state is unrepresentable regardless of how a
-        buffer is built, so `parse_args` can read `args` first without masking a
-        conflicting `args_parts`.
+        `ingest` maintains this on every chunk. This guard catches an illegal
+        buffer built directly with both fields set; the fields are public and
+        mutable, though, so a caller can still reach the both-populated state by
+        assigning them after construction. `parse_args` re-checks the invariant
+        at read time (raising rather than silently reading `args` first and
+        masking a conflicting `args_parts`), so the illegal state fails loudly
+        wherever it originates.
 
         Raises:
             ValueError: If both `args` and `args_parts` are set.
@@ -355,8 +365,17 @@ class ToolCallBuffer:
         # id. In that delayed-id shape, a retained `self.tool_id` is already stale
         # even though this chunk has no id to compare against; clear it before
         # folding the new name/args so parsed args cannot dispatch under the old
-        # call id. Id-less continuation chunks for the same call normally carry
-        # only args, so they keep accumulating below.
+        # call id.
+        #
+        # This assumes the standard LangChain streaming contract: a call's name
+        # arrives only on its first chunk, so id-less continuation chunks for the
+        # same call carry only args and keep accumulating below. A non-standard
+        # provider that *repeats* the name on an id-less continuation chunk would
+        # trip `delayed_id_reuses_index` mid-call and reset the accumulated args.
+        # That degrades gracefully rather than crashing: the call's `tool.use`
+        # (and its parsed args) is lost, but the tool still executes and its
+        # `tool.result` still fires via the uncorrelated `{}`-args path. No
+        # observed provider (Anthropic/OpenAI) streams that shape.
         new_id_reuses_index = (
             tool_id is not None and self.tool_id is not None and tool_id != self.tool_id
         )
@@ -405,7 +424,17 @@ class ToolCallBuffer:
                 unparseable — malformed or too deeply nested (the
                 structurally-complete malformed case is logged once via
                 `warned`).
+
+        Raises:
+            ValueError: If both `args` and `args_parts` are populated, violating
+                the invariant `ingest`/`__post_init__` maintain. Guarded here so
+                a caller that assigned the public fields directly fails loudly
+                instead of silently dropping the fragments (read order would
+                otherwise return `args` and discard `args_parts`).
         """
+        if self.args is not None and self.args_parts:
+            msg = "ToolCallBuffer cannot hold both args and args_parts"
+            raise ValueError(msg)
         if isinstance(self.args, dict):
             # A whole-value dict delivered by the provider; its keys are
             # provider-shaped, so narrow the `object` field to the declared arg

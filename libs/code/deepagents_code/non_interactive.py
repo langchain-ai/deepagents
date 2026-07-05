@@ -1085,6 +1085,30 @@ async def _run_agent_loop(
             logger.warning(
                 "Orphaned tool.result drain failed unexpectedly", exc_info=True
             )
+        # Surface any buffered tool call whose args never parsed: it never
+        # entered `in_flight_tool_calls` (so the orphan drain above skips it) and
+        # would otherwise be dropped with `state` at scope exit with no trace.
+        # Info, not warning — some of these may still have executed (their
+        # `tool.result` fired with `{}` args and logged a correlation miss); this
+        # only asserts the args never parsed. Guarded so a logging failure can
+        # never mask an exception propagating from the stream.
+        try:
+            unparsed_calls = sum(
+                1
+                for buffer in state.tool_call_buffers.values()
+                if buffer.name is not None and buffer.parse_args() is None
+            )
+            if unparsed_calls:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unparsed_calls,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
 
     wall_time = time.monotonic() - start_time
 

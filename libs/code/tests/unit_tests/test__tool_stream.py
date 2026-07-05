@@ -345,6 +345,39 @@ class TestToolCallBufferParseArgs:
             "look complete but failed to parse" in r.message for r in caplog.records
         )
 
+    def test_over_closed_json_warns_via_balance_check(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A payload with more closers than openers is complete-but-malformed.
+
+        `{"a": 1}}` ends in `}` (so it clears the cheap pre-check and reaches
+        `json.loads`, which rejects the trailing brace). The string-aware balance
+        scan hits the `depth < 0` branch and reports the value complete — a stray
+        closer can never be finished by more input — so the failed parse is
+        warned once rather than mistaken for a still-open mid-stream fragment.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"a": 1}}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is True
+        assert any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+
+    def test_both_args_and_args_parts_raises_at_read(self) -> None:
+        """Violating the XOR invariant after construction fails loudly at read.
+
+        `__post_init__` only guards construction, and the fields are public and
+        mutable, so a direct assignment can reach the illegal both-populated
+        state. `parse_args` re-checks the invariant and raises rather than
+        silently reading `args` first and discarding the accumulated
+        `args_parts`.
+        """
+        buffer = ToolCallBuffer(args={"a": 1})
+        buffer.args_parts = ['{"b":', " 2}"]
+        with pytest.raises(ValueError, match="cannot hold both"):
+            buffer.parse_args()
+
 
 class TestPayloadBuilders:
     """Fixed-shape hook payloads and the output truncation invariant."""

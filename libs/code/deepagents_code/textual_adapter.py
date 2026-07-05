@@ -1864,6 +1864,24 @@ async def execute_task_textual(
                         "Stream ended before tool result",
                     )
                     adapter._current_tool_messages.clear()
+                # Surface any buffered tool call whose args never parsed: it was
+                # never mounted and never fired a `tool.use`, so it would vanish
+                # with `tool_call_buffers` at turn end with no trace. Info, not
+                # warning — the precondition (a clean end mid-tool-call) is
+                # unusual and nothing executed for these; it only needs to be
+                # greppable. `parse_args` is safe to re-run (idempotent bar the
+                # one-shot `warned` latch).
+                unparsed_calls = sum(
+                    1
+                    for buffer in tool_call_buffers.values()
+                    if buffer.name is not None and buffer.parse_args() is None
+                )
+                if unparsed_calls:
+                    logger.info(
+                        "Stream ended with %d tool call(s) whose arguments never "
+                        "parsed; no tool.use was emitted for them",
+                        unparsed_calls,
+                    )
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 

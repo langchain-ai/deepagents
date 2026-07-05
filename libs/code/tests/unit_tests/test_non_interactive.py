@@ -23,6 +23,7 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
+from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
@@ -2732,6 +2733,106 @@ class TestOrphanedToolResultHooks:
                 "tool_args": {"command": "x"},
                 "tool_status": "error",
                 "tool_output": "Stream ended before tool result",
+            }
+        ]
+
+
+class TestRunAgentLoopHITLReject:
+    """Headless HITL reject closes the tool.use through the full resume cycle.
+
+    The parity contract's headless reject route is "a rejection arrives as a
+    synthetic `ToolMessage` handled by the normal result path." This drives that
+    end-to-end through `_run_agent_loop`'s interrupt -> `Command(resume=...)` ->
+    resumed-stream cycle, not just the `_process_message_chunk` unit, so the
+    documented cross-surface guarantee is exercised as a loop.
+    """
+
+    async def test_resumed_reject_closes_tool_use_with_correlated_args(self) -> None:
+        """Turn 1 fires tool.use; the resumed reject closes it with real args."""
+        ai_chunk = MagicMock(spec=AIMessage)
+        ai_chunk.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "execute",
+                "id": "call-1",
+                "index": 0,
+                "args": '{"command": "rm -rf /"}',
+            }
+        ]
+        reject_msg = ToolMessage(
+            content="Tool rejected by user",
+            tool_call_id="call-1",
+            name="execute",
+            status="error",
+        )
+        calls = {"n": 0}
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            file_op_tracker: FileOpTracker,
+            _context: object,
+        ) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Turn 1: the model emits a tool call — the real gating fires
+                # tool.use and records it in-flight — then the turn pauses on a
+                # HITL interrupt.
+                _process_ai_message(ai_chunk, state, console)
+                state.interrupt_occurred = True
+            else:
+                # Resumed turn: the rejection streams back as a synthetic error
+                # ToolMessage on the normal result path.
+                _process_message_chunk(
+                    (reject_msg, {}), state, console, file_op_tracker
+                )
+
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=staged_stream),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "run a command",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                file_op_tracker,
+                quiet=True,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        # Exactly one tool.use, with the correlated args.
+        use_payloads = [p for e, p in events if e == "tool.use"]
+        assert use_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "rm -rf /"},
+            }
+        ]
+        # The reject closes the tool.use: a co-fired tool.error plus an error
+        # tool.result that carries the correlated args, not the uncorrelated
+        # `{}` fallback, proving the resume drained the in-flight record.
+        assert ("tool.error", {"tool_names": ["execute"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "rm -rf /"},
+                "tool_status": "error",
+                "tool_output": "Tool rejected by user",
             }
         ]
 

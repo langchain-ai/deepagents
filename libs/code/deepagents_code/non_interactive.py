@@ -545,6 +545,7 @@ def _process_message_chunk(
         _process_ai_message(message_obj, state, console)
     elif isinstance(message_obj, ToolMessage):
         tool_id = getattr(message_obj, "tool_call_id", None)
+        correlated_tool_name = ""
         # Args come from the matching tool.use. They default to {} when the call
         # had no id to correlate on, or no tool.use fired (e.g. its args never
         # parsed). The seam is intentional — without a correlated id we cannot
@@ -552,7 +553,7 @@ def _process_message_chunk(
         # completely silent.
         if isinstance(tool_id, str):
             tool_args = state.tool_call_args_by_id.pop(tool_id, None)
-            state.tool_call_names_by_id.pop(tool_id, None)
+            correlated_tool_name = state.tool_call_names_by_id.pop(tool_id, "")
             state.displayed_tool_call_ids.discard(tool_id)
             if tool_args is None:
                 # Info, not debug: a real-id result with no matching tool.use is
@@ -576,6 +577,8 @@ def _process_message_chunk(
                     highlight=False,
                 )
         tool_name = getattr(message_obj, "name", "")
+        if not tool_name:
+            tool_name = correlated_tool_name
         # Normalize to the two-value hook domain, fail-closed: an unexpected
         # provider status is logged and treated as an error (see
         # `normalize_tool_status`) rather than silently reported as success.

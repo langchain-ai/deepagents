@@ -2196,6 +2196,43 @@ class TestProcessMessageChunkHooks:
         )
         assert state.tool_call_args_by_id == {}
 
+    def test_tool_result_uses_correlated_name_when_message_name_missing(
+        self,
+    ) -> None:
+        """tool.result uses the matching tool.use name when ToolMessage omits it."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            status="success",
+        )
+        state = StreamState(
+            tool_call_args_by_id={"call-1": {"path": "foo.py"}},
+            tool_call_names_by_id={"call-1": "read_file"},
+        )
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+        assert state.tool_call_args_by_id == {}
+        assert state.tool_call_names_by_id == {}
+
     def test_tool_result_dispatched_for_error_status(self) -> None:
         """tool.error and tool.result fire when a tool call failed."""
         from langchain_core.messages import ToolMessage

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from textual.color import Color as TColor
 from textual.content import Content
@@ -33,9 +33,12 @@ from deepagents_code.config import (
 )
 from deepagents_code.widgets._links import open_style_link
 
-_ANSI_THEMES = {"ansi-dark", "ansi-light"}
+_ANSI_THEMES: Final[set[str]] = {"ansi-dark", "ansi-light"}
+"""Theme names whose color palette is determined by the terminal emulator
+rather than by the app, so link styles use bold instead of a parsed color."""
 
-_LANGSMITH_UTM_SOURCE = "deepagents-code"
+_LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
+"""UTM source tag appended to LangSmith project URLs in the welcome banner."""
 
 
 def _langsmith_project_link(project_url: str) -> str:

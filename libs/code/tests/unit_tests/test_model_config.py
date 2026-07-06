@@ -5332,6 +5332,82 @@ class TestLoadMcpServerTrustLists:
 
         assert result.enabled == frozenset({"docs"})
 
+    def test_disabled_env_honored_without_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deny list can be set purely from the env var."""
+        config_path = tmp_path / "config.toml"  # no [mcp] table
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "blocked, other"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"blocked", "other"})
+
+    def test_disabled_env_overrides_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The disabled env list replaces the TOML deny list; enabled falls back."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "env-disabled"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"env-disabled"})
+        assert result.enabled == frozenset({"toml-enabled"})
+
+    def test_empty_disabled_env_clears_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty disabled env var clears (does not fall back to) TOML."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = ["toml-disabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset()
+
+    def test_toml_entries_are_trimmed(self, tmp_path: Path) -> None:
+        """TOML names are stripped, matching env parsing (no whitespace mismatch)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = [" docs ", "  "]\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # " docs " -> "docs"; the whitespace-only "  " entry is dropped.
+        assert result.enabled == frozenset({"docs"})
+
+    def test_bare_string_disabled_logs_and_yields_empty(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bare-string deny list (a fail-open typo) is dropped *and* logged.
+
+        Without the warning this would silently stop enforcing the user's
+        rejection, which is the dangerous direction for the deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        # Valid TOML, but a string rather than a list — the [mcp] table is still
+        # a dict, so the "should be a table" branch does not fire.
+        config_path.write_text('[mcp]\ndisabled_project_servers = "blocked"\n')
+
+        with caplog.at_level(logging.WARNING):
+            result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset()
+        assert any(
+            "disabled_project_servers" in r.message and "list of strings" in r.message
+            for r in caplog.records
+        )
+
 
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""

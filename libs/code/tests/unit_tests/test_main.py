@@ -2379,6 +2379,143 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert "could not be saved" in capsys.readouterr().err
 
+    def test_all_servers_list_resolved_skips_prompt(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When every server is on the user's lists, no prompt fires."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs"]\n'
+            'disabled_project_servers = ["blocked"]\n'
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "prompt must be skipped when all servers are list-resolved"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "blocked": {"command": "echo"},
+                    }
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo"),
+                    ("blocked", "stdio", "echo"),
+                ],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", _no_input),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is None
+        assert "require approval" not in capsys.readouterr().err
+
+    def test_prompt_lists_only_unlisted_servers(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pre-approved server is omitted from the prompt; unlisted ones stay."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "other": {"command": "echo"},
+                    }
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("other", "stdio", "echo other"),
+                ],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = capsys.readouterr().err
+        assert '"other"' in err
+        # The pre-approved server must not be presented as needing approval.
+        assert '"docs"' not in err
+
 
 class TestCheckMcpProjectTrustDedupe:
     """Regression tests for the project MCP approval prompt deduplication.

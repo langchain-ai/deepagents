@@ -3155,6 +3155,10 @@ class TestSelectiveProjectMcpTrust:
     def _stdio(command: str = "echo") -> dict[str, Any]:
         return {"command": command, "args": []}
 
+    @staticmethod
+    def _remote(url: str = "https://example.test/mcp") -> dict[str, Any]:
+        return {"type": "sse", "url": url}
+
     async def _resolve_merged(
         self,
         project_root: Path,
@@ -3349,6 +3353,104 @@ class TestSelectiveProjectMcpTrust:
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_allowlisted_remote_kept_and_sibling_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Remote entries are gated by name too: only the allowlisted one loads.
+
+        This is the SSRF/exfiltration case the design exists for — a
+        non-allowlisted remote entry must never survive into the merged config
+        (and so never reach the preflight probe or `${VAR}` header resolution).
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._remote(), "evil": self._remote()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+        assert merged["mcpServers"]["docs"]["type"] == "sse"
+
+    async def test_allow_and_deny_combined_in_untrusted_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One untrusted config: allowed kept, denied and unlisted both dropped."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project,
+            {
+                "keep": self._stdio(),
+                "block": self._stdio(),
+                "other": self._stdio(),
+            },
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["keep"]\n'
+            'disabled_project_servers = ["block"]\n'
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"keep"}
+
+    async def test_disabled_dropped_when_fingerprint_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deny wins over fingerprint trust, not just the explicit flag."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "blocked": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
+        # Fingerprint store reports the whole config as trusted.
+        monkeypatch.setattr(
+            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: True
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=None
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_allowlisted_loads_when_fingerprint_untrusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On the `None` path with untrusted fingerprint, allowlist still loads."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "other": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        monkeypatch.setattr(
+            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: False
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=None
         )
 
         assert merged is not None

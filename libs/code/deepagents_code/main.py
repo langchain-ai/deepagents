@@ -2351,12 +2351,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt.
 
+    Servers already resolved by the user's `enabled_project_servers` /
+    `disabled_project_servers` lists are excluded from the prompt (enabled
+    ones load regardless; disabled ones never load), and `None` is returned
+    when that leaves nothing to decide.
+
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
         `True` to allow project servers, `False` to deny, or `None`
-            when no project servers exist.
+            when there are no project servers whose fate this prompt decides.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2421,6 +2426,26 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
         return True
 
+    # Drop servers already resolved by the user's own allow/deny lists: an
+    # enabled server loads regardless of the answer here, and a disabled one
+    # never loads, so prompting about either is misleading. The lists come only
+    # from the user's home config (never the repo), the same boundary the
+    # loader enforces. Only the remaining, un-listed servers actually hinge on
+    # this decision.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
+    prompt_servers = [
+        (name, kind, summary)
+        for name, kind, summary in all_servers
+        if name not in trust_lists.enabled and name not in trust_lists.disabled
+    ]
+    if not prompt_servers:
+        # Every project server is pre-approved or force-denied by the user's
+        # lists — nothing is left to decide interactively. The loader applies
+        # those lists whether this returns None or a trust decision.
+        return None
+
     # Interactive prompt
     from rich.console import Console as _Console
 
@@ -2433,7 +2458,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, kind, summary in all_servers:
+    for name, kind, summary in prompt_servers:
         prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
     prompt_console.print()
     prompt_console.print(

@@ -3046,12 +3046,17 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     return True
 
 
-class McpServerTrustLists(NamedTuple):
+@dataclass(frozen=True)
+class McpServerTrustLists:
     """User-level allow/deny lists for project MCP servers, by server name.
 
     Sourced only from the user's own configuration (home `config.toml` and
     process env), never from a repo, so a committed `.mcp.json` cannot
     self-approve. See `load_mcp_server_trust_lists`.
+
+    The "reject wins" invariant — a name in both lists is only rejected — is
+    enforced in `__post_init__`, so every instance is disjoint no matter how it
+    was constructed; callers need not pre-subtract.
     """
 
     enabled: frozenset[str]
@@ -3059,6 +3064,16 @@ class McpServerTrustLists(NamedTuple):
 
     disabled: frozenset[str]
     """Server names always rejected; reject wins over `enabled` and over trust."""
+
+    def __post_init__(self) -> None:
+        """Enforce reject precedence by removing disabled names from enabled.
+
+        A rejected name must never survive in `enabled`, whatever the caller
+        passed, so a future allow-first consumer can't be tricked into loading
+        a denied server. Frozen dataclass, so assign via `object.__setattr__`.
+        """
+        if self.enabled & self.disabled:
+            object.__setattr__(self, "enabled", self.enabled - self.disabled)
 
 
 def _parse_csv_env(name: str) -> list[str] | None:
@@ -3075,20 +3090,55 @@ def _parse_csv_env(name: str) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _toml_str_list(value: object) -> list[str]:
-    """Coerce a raw TOML value into a list of strings, dropping bad elements.
+def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
+    """Coerce a raw TOML value into a list of trimmed, non-empty server names.
 
-    Non-list values and non-string elements are ignored rather than raised so
-    a malformed `[mcp]` table degrades to "nothing configured" instead of
-    crashing startup, consistent with the other structured loaders.
+    Malformed input degrades to "nothing configured" instead of crashing
+    startup (consistent with the other structured loaders), but — unlike a
+    silent drop — every discarded value is logged. That matters most for the
+    deny list: a user who mistypes `disabled_project_servers` (e.g. a bare
+    string instead of a list, which is still valid TOML) would otherwise have
+    their rejection silently stop being enforced, a fail-open. Elements are
+    stripped and empties dropped so matching behaves the same as the
+    comma-separated env parsing in `_parse_csv_env`.
+
+    Args:
+        value: The raw value read from the `[mcp]` table (or `None` when the
+            key is absent).
+        key: The TOML key name, used only for log context.
+        config_path: The config file the value came from, for log context.
 
     Returns:
-        The string elements of `value`, or an empty list when `value` is not a
-            list.
+        The trimmed, non-empty string elements of `value`, or an empty list
+            when `value` is absent or not a list.
     """
-    if not isinstance(value, list):
+    if value is None:
         return []
-    return [item for item in value if isinstance(item, str)]
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].%s in %s should be a list of strings, got %s; ignoring it "
+            "(this list is now empty)",
+            key,
+            config_path,
+            type(value).__name__,
+        )
+        return []
+    result: list[str] = []
+    discarded = 0
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        else:
+            discarded += 1
+    if discarded:
+        logger.warning(
+            "[mcp].%s in %s: ignored %d non-string or empty entr%s",
+            key,
+            config_path,
+            discarded,
+            "y" if discarded == 1 else "ies",
+        )
+    return result
 
 
 def load_mcp_server_trust_lists(
@@ -3132,10 +3182,14 @@ def load_mcp_server_trust_lists(
             mcp_section = data.get("mcp", {})
             if isinstance(mcp_section, dict):
                 toml_enabled = _toml_str_list(
-                    mcp_section.get("enabled_project_servers")
+                    mcp_section.get("enabled_project_servers"),
+                    key="enabled_project_servers",
+                    config_path=config_path,
                 )
                 toml_disabled = _toml_str_list(
-                    mcp_section.get("disabled_project_servers")
+                    mcp_section.get("disabled_project_servers"),
+                    key="disabled_project_servers",
+                    config_path=config_path,
                 )
             else:
                 logger.warning(
@@ -3155,9 +3209,8 @@ def load_mcp_server_trust_lists(
 
     enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
     disabled = frozenset(env_disabled if env_disabled is not None else toml_disabled)
-    # Reject precedence: a name in both lists is disabled, so never report it as
-    # enabled.
-    enabled -= disabled
+    # Reject precedence (a name in both lists ends up only in `disabled`) is
+    # enforced by `McpServerTrustLists.__post_init__`, so no subtraction here.
     return McpServerTrustLists(enabled=enabled, disabled=disabled)
 
 

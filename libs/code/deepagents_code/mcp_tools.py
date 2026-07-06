@@ -1888,12 +1888,16 @@ async def resolve_and_load_mcp_tools(
         explicit_config_path: Extra config file to layer on top of
             auto-discovered configs.
         no_mcp: If `True`, disable all MCP loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust. Applies to
+            stdio and remote (http/sse) servers alike — remote entries are
+            gated too because an attacker-controlled `.mcp.json` can SSRF or
+            exfiltrate `${VAR}` headers during the discovery preflight.
 
-            - `True`: always trust project configs, including stdio servers.
-            - `False`: drop stdio entries from project configs.
+            - `True`: always trust project configs (all servers).
+            - `False`: drop all project servers (stdio and remote).
             - `None`: consult the persistent trust store — trusted configs
-              load fully, untrusted project stdio servers are dropped.
+              load fully; all servers from untrusted project configs are
+              dropped.
 
             Regardless of this flag, the user-level allow/deny lists
             (`[mcp].enabled_project_servers` /`disabled_project_servers` and

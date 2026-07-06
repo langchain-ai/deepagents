@@ -116,6 +116,9 @@ def show_help() -> None:
     console.print(
         "  dcode doctor                              Print install diagnostics"
     )
+    console.print(
+        "  dcode tools <install>                     Manage managed tools (ripgrep)"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -164,8 +167,11 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
-        "  --interpreter              Enable JS interpreter (`js_eval`) middleware "
-        "(local mode only)"
+        "  --interpreter, --no-interpreter"
+        "  Enable or disable JS interpreter (`js_eval`) middleware"
+    )
+    console.print(
+        "                             Enabled by default when not using a sandbox"
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
@@ -178,6 +184,21 @@ def show_help() -> None:
     )
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
+    )
+    console.print(
+        "  --goal TEXT                Draft goal criteria; review, then run "
+        "accepted goal"
+    )
+    console.print(
+        "  --rubric TEXT|@PATH        Acceptance criteria to grade against; "
+        "'@path' reads a file relative to cwd, '~' ok (needs -n)"
+    )
+    console.print(
+        "  --rubric-model MODEL       Model the rubric grader uses "
+        "(defaults to main model)"
+    )
+    console.print(
+        "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
@@ -202,7 +223,7 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
-        "  --install NAME             Install an optional extra (e.g. quickjs)"
+        "  --install NAME             Install an optional extra (e.g. daytona)"
     )
     console.print(
         "  --package                  With --install, treat NAME as a package "
@@ -491,6 +512,58 @@ def show_doctor_help() -> None:
     console.print()
 
 
+def show_tools_help() -> None:
+    """Show help information for the `tools` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  install           Install or repair the managed ripgrep binary")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools install")
+    console.print("  dcode tools install --json")
+    console.print()
+
+
+def show_tools_install_help() -> None:
+    """Show help information for the `tools install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools install [options]")
+    console.print()
+    console.print(
+        "Download the pinned, SHA-256-verified ripgrep binary into",
+    )
+    console.print(
+        "~/.deepagents/bin (no sudo). Reuses a system `rg` already on PATH and",
+    )
+    console.print(
+        "is also handy for repairing a missing or stale managed binary.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools install")
+    console.print("  dcode tools install --json")
+    console.print()
+    console.print(
+        "Opt out with DEEPAGENTS_CODE_OFFLINE=1 or set",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "DEEPAGENTS_CODE_RIPGREP_INSTALLER=system to use your package manager.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
 def _print_mcp_discovery_paths() -> None:
     """Print the auto-discovered MCP config paths in precedence order."""
     from deepagents_code.mcp_tools import MCP_CONFIG_DISCOVERY_PATHS
@@ -595,12 +668,13 @@ def show_config_help() -> None:
     console.print("  dcode config <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  show              Show effective values and their source")
-    console.print("  list|ls           List all available options")
+    console.print("  show|list|ls      Show effective values and their source")
     console.print("  get <key>         Show one option's value and source")
     console.print("  path              Show config file locations")
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  -v, --verbose, --all  Also show each option's description and how to set it",
+    )
     console.print()
     console.print(
         "  Credentials are reported as set/not set only; values are never printed.",
@@ -609,7 +683,7 @@ def show_config_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode config show")
-    console.print("  dcode config list --json")
+    console.print("  dcode config show --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
     console.print("  dcode config path")
     console.print()

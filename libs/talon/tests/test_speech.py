@@ -1,11 +1,13 @@
 from pathlib import Path
 
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.interfaces import ChannelMessage
 from deepagents_talon.speech import (
     DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
     LocalParakeetVoiceTranscriber,
     OpenAIVoiceTranscriber,
     build_voice_transcriber,
+    transcribe_voice_message,
 )
 
 
@@ -63,3 +65,73 @@ def test_build_voice_transcriber_preserves_openai_model_override(tmp_path: Path)
 
     assert isinstance(transcriber, OpenAIVoiceTranscriber)
     assert transcriber.model == "gpt-4o-transcribe"
+
+
+async def test_transcribe_voice_message_transcribes_video() -> None:
+    class Transcriber:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, message: ChannelMessage) -> str | None:  # noqa: ARG002
+            self.calls += 1
+            return "transcribed"
+
+    transcriber = Transcriber()
+    message = ChannelMessage(
+        conversation_id="chat",
+        text="video",
+        metadata={"media_type": "video", "media_path": "clip.mp4"},
+    )
+
+    updated = await transcribe_voice_message(transcriber, message)
+
+    assert transcriber.calls == 1
+    assert "transcribed" in updated.text
+
+
+async def test_transcribe_voice_message_transcribes_audio_document() -> None:
+    class Transcriber:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, message: ChannelMessage) -> str | None:  # noqa: ARG002
+            self.calls += 1
+            return "transcribed"
+
+    transcriber = Transcriber()
+    message = ChannelMessage(
+        conversation_id="chat",
+        text="",
+        metadata={
+            "media_type": "voice",
+            "media_path": "song.mp3",
+            "media_mime_types": ["audio/mpeg"],
+        },
+    )
+
+    updated = await transcribe_voice_message(transcriber, message)
+
+    assert transcriber.calls == 1
+    assert "transcribed" in updated.text
+
+
+async def test_transcribe_voice_message_ignores_plain_document() -> None:
+    class Transcriber:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def transcribe(self, message: ChannelMessage) -> str | None:  # noqa: ARG002
+            self.calls += 1
+            return "transcribed"
+
+    transcriber = Transcriber()
+    message = ChannelMessage(
+        conversation_id="chat",
+        text="doc",
+        metadata={"media_type": "document", "media_path": "report.pdf"},
+    )
+
+    updated = await transcribe_voice_message(transcriber, message)
+
+    assert updated == message
+    assert transcriber.calls == 0

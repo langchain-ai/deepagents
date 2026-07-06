@@ -47,7 +47,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `release: skip sdk pin check` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
 ### Version Bumping
 
@@ -290,7 +290,11 @@ When these disagree, the same version can behave differently for different users
 
 ## Alpha / Beta / Pre-release Versions
 
-release-please is SemVer-only internally. Its `prerelease` versioning strategy produces versions like `0.0.35-alpha.1`, which is **not valid [PEP 440](https://peps.python.org/pep-0440/)**. Python/PyPI requires `0.0.35a1` (no hyphen, no dot). The Python file updaters write the SemVer string verbatim and their regexes cannot round-trip PEP 440 versions, so bumping version files on `main` to a PEP 440 pre-release would break subsequent release-please runs.
+release-please can maintain normal Python versions for us, but it cannot safely maintain Python pre-release versions on long-lived branches.
+
+The problem is the difference between SemVer and Python's [PEP 440](https://peps.python.org/pep-0440/) version syntax. release-please's built-in prerelease strategy produces SemVer versions like `0.0.35-alpha.1`, but PyPI requires the PEP 440 form `0.0.35a1`. If we manually commit that PEP 440 version to `main` or a long-lived `vX.Y` branch, a later release-please PR may not be able to move every version file back to the final GA version. In particular, the `_version.py` updater only matches stable-looking `X.Y.Z` / `X.Y.Z-suffix` values, not values like `0.0.35a1` or `0.0.35rc1`. The next GA release PR could update `pyproject.toml` to `0.0.35` while leaving `_version.py` stuck at `0.0.35a1`.
+
+For that reason, never commit PEP 440 pre-release version bumps to `main` or a long-lived `vX.Y` version branch. Keep those branches in the stable-version shape release-please can maintain, and use the throwaway branch flow below for alpha, beta, RC, or `.dev` artifacts.
 
 ### How to publish a pre-release
 
@@ -327,7 +331,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
-   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally older than the workspace SDK)
 
 5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
@@ -400,7 +404,7 @@ Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only 
 
 1. **Branch:** create `v0.7` from `main`.
 2. **Build `0.7`:** land net-new work via **squash PRs into `v0.7`** (same flow as `main`).
-3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
+3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). Use a PR title like `chore(repo): sync main into v0.7`; do not use `release` as the scope because PR title lint reserves `release` for the type and disallows it as a scope. CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
 4. **Cutover:** an admin merges `v0.7` onto `main` with `git merge --no-ff` under admin bypass. See [Cutover](#cutover-main-adopts-the-new-line).
 
 ### Staging branch (`main` stays on the current line)
@@ -476,6 +480,8 @@ After `main` adopts the new line, cut a `vX.Y` branch from the **last release co
 This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
 
 The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
+
+There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if each commit introduced by the merged branch touches files. This covers cases where the final file tree is intentionally unchanged, but preserving the individual commits matters. For example, release-please reads commit history to decide package scope, version bumps, and changelog entries, so restoring a lost `feat(sdk)!` commit with a `BREAKING CHANGE:` footer can be necessary even when the files already match `main`.
 
 **If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 
@@ -667,19 +673,21 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
 
-### Release Failed: Code SDK Pin Mismatch
+### Release Failed: Code SDK Pin Is Older Than SDK
 
-If the release workflow fails at the "Verify package pins latest SDK version" step with:
+If the release workflow fails at the "Verify package pins SDK at or ahead of workspace version" step with:
 
 ```txt
-deepagents-code SDK pin does not match SDK version!
+deepagents-code SDK pin is older than the workspace SDK version!
 SDK version (libs/deepagents/pyproject.toml): 0.4.2
 deepagents-code SDK pin (libs/code/pyproject.toml): 0.4.1
 ```
 
-This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged.
+This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` is older than the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged. A pin ahead of the workspace SDK is allowed for intentional prerelease coordination.
 
-**To fix:**
+If the older pin is intentional, add the `release: skip sdk pin check` label to the release PR before merging. The automatic release dispatch will pass `dangerous-skip-sdk-pin-check=true`, preserving the normal auto-release path while recording the bypass decision on the PR. Only use this when `deepagents-code` does not depend on SDK functionality newer than the pinned version.
+
+**To fix after an unlabeled release PR already failed:**
 
 1. **Hotfix the pin on `main`:**
 

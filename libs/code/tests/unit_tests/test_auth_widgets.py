@@ -21,7 +21,8 @@ from deepagents_code.widgets.auth import (
     AuthPromptScreen,
     AuthResult,
     _is_safe_acquisition_url,
-    _provider_display_name,
+    provider_display_name,
+    provider_short_name,
 )
 from deepagents_code.widgets.codex_auth import CodexAuthScreen
 
@@ -66,7 +67,14 @@ class _AuthHostApp(App[None]):
         yield Container(id="main")
 
     def show_prompt(
-        self, provider: str, env_var: str | None, *, reason: str | None = None
+        self,
+        provider: str,
+        env_var: str | None,
+        *,
+        reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Push the prompt and capture the dismissal result."""
 
@@ -74,11 +82,21 @@ class _AuthHostApp(App[None]):
             self.prompt_result = result
             self.prompt_dismissed = True
 
-        self.push_screen(AuthPromptScreen(provider, env_var, reason=reason), handle)
+        self.push_screen(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=reason,
+                allow_empty_submit=allow_empty_submit,
+                input_placeholder=input_placeholder,
+                submit_label=submit_label,
+            ),
+            handle,
+        )
 
-    def show_manager(self) -> None:
+    def show_manager(self, *, initial_provider: str | None = None) -> None:
         """Push the manager screen."""
-        self.push_screen(AuthManagerScreen())
+        self.push_screen(AuthManagerScreen(initial_provider=initial_provider))
 
     def on_auth_manager_screen_credential_saved(
         self, _event: AuthManagerScreen.CredentialSaved
@@ -186,23 +204,46 @@ class TestAuthPromptScreen:
 
     def test_display_name_falls_back_to_title_cased_key(self) -> None:
         """Unmapped provider keys degrade to a readable title-cased label."""
-        assert _provider_display_name("acme_gateway") == "Acme Gateway"
+        assert provider_display_name("acme_gateway") == "Acme Gateway"
 
     def test_config_display_name_overrides_builtin_map(self) -> None:
         """A configured `display_name` wins over the built-in label.
 
         Pins the resolution order (config > built-in map) so reordering the
-        `or` chain in `_provider_display_name` would fail a test instead of
+        `or` chain in `provider_display_name` would fail a test instead of
         silently shadowing user config.
         """
         config = model_config.ModelConfig(
             providers={"openai": {"display_name": "Custom OpenAI"}}
         )
-        assert _provider_display_name("openai", config) == "Custom OpenAI"
+        assert provider_display_name("openai", config) == "Custom OpenAI"
         # Without the override, resolution falls through to the built-in map.
         empty = model_config.ModelConfig()
         builtin_label = PROVIDER_DISPLAY_NAMES["openai"]
-        assert _provider_display_name("openai", empty) == builtin_label
+        assert provider_display_name("openai", empty) == builtin_label
+
+    def test_short_name_uses_builtin_brand_map(self) -> None:
+        """A provider with a verbose display name gets its compact brand."""
+        empty = model_config.ModelConfig()
+        assert provider_short_name("openai_codex", empty) == "OpenAI Codex"
+
+    def test_short_name_falls_back_to_display_name(self) -> None:
+        """Providers without a brand override reuse the display name."""
+        empty = model_config.ModelConfig()
+        assert provider_short_name("openai", empty) == PROVIDER_DISPLAY_NAMES["openai"]
+        # Unmapped keys degrade through display-name resolution to title case.
+        assert provider_short_name("acme_gateway", empty) == "Acme Gateway"
+
+    def test_config_short_name_overrides_builtin_map(self) -> None:
+        """A configured `short_name` wins over the built-in brand map.
+
+        Pins the resolution order (config > built-in map > display name) so
+        reordering the `or` chain in `provider_short_name` fails a test.
+        """
+        config = model_config.ModelConfig(
+            providers={"openai_codex": {"short_name": "Codex"}}
+        )
+        assert provider_short_name("openai_codex", config) == "Codex"
 
     def test_is_safe_acquisition_url_rejects_non_http_schemes(self) -> None:
         """Only http/https URLs are eligible to render as clickable links."""
@@ -234,7 +275,7 @@ class TestAuthPromptScreen:
             toggle = app.screen.query_one("#auth-prompt-advanced-toggle", Static)
             assert "Sign in to Anthropic" in str(instructions.content)
             assert "create or copy an API key" in str(instructions.content)
-            assert "Provider key page" in str(instructions.content)
+            assert "Anthropic key page" in str(instructions.content)
             assert "Deep Agents Code stores the above key locally" in str(
                 storage_note.content
             )
@@ -334,6 +375,21 @@ class TestAuthPromptScreen:
             assert "For older models" in text
             assert "Request access to Chat completions (/v1/chat/completions)" in text
 
+    async def test_anthropic_instructions_warn_against_subscription_plans(
+        self,
+    ) -> None:
+        """Anthropic keys note subscription plans don't work for API calls."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Sign in to Anthropic" in text
+            assert "create or copy an API key" in text
+            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
+            assert "pay-as-you-go billing" in text
+
     async def test_provider_instructions_use_config_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -354,7 +410,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             assert "Sign in to My Gateway" in str(instructions.content)
-            assert "Provider key page" in str(instructions.content)
+            assert "My Gateway key page" in str(instructions.content)
 
     async def test_unmapped_provider_links_to_setup_docs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -375,8 +431,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             text = str(instructions.content)
             assert "Sign in to My Gateway" in text
-            assert "Provider setup docs" in text
-            assert "Provider key page" not in text
+            assert "My Gateway setup docs" in text
+            assert "key page" not in text
 
     async def test_unsafe_configured_key_url_is_not_rendered(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -402,8 +458,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             # The malformed URL is dropped, so no clickable link survives.
             assert not any("javascript" in str(span.style) for span in content.spans)
             # With the configured URL rejected and no built-in entry, it falls
-            # back to the generic setup-docs link.
-            assert "Provider setup docs" in str(content)
+            # back to the setup-docs link.
+            assert "My Gateway setup docs" in str(content)
 
     async def test_unsafe_configured_key_url_surfaces_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -427,6 +483,26 @@ api_key_env = "MY_GATEWAY_API_KEY"
             text = str(instructions.content)
             assert "configured api_key_url was ignored" in text
             assert "unsupported URL scheme" in text
+
+    async def test_anthropic_notice_and_rejected_url_notice_coexist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Provider-specific and rejected-URL notices both render when both fire."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+api_key_url = "javascript:alert(1)"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
+            assert "configured api_key_url was ignored" in text
 
     async def test_f2_toggles_advanced_details(self) -> None:
         """Advanced endpoint and env-var details are hidden behind F2."""
@@ -771,6 +847,108 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert app.prompt_dismissed is False
         assert auth_store.get_stored_key("anthropic") is None
 
+    async def test_optional_empty_submit_cancels_without_error(self) -> None:
+        """Onboarding can use the auth prompt as an optional setup step."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt(
+                "tavily",
+                "TAVILY_API_KEY",
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.CANCELLED
+        assert auth_store.get_stored_key("tavily") is None
+
+    async def test_optional_prompt_customizes_new_user_copy(self) -> None:
+        """Onboarding can explain Tavily without a separate key-entry modal."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt(
+                "tavily",
+                "TAVILY_API_KEY",
+                reason="Web search is optional. Press Enter to skip.",
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+            await pilot.pause()
+
+            key_input = app.screen.query_one("#auth-prompt-input", Input)
+            help_text = app.screen.query_one(".auth-prompt-help", Static)
+            copy = "\n".join(str(widget.content) for widget in app.screen.query(Static))
+            has_storage_note = bool(app.screen.query("#auth-prompt-storage-note"))
+
+        assert key_input.placeholder == "Tavily API key (optional)"
+        assert key_input.password is True
+        assert "Web search is optional" in copy
+        assert "Enter save/skip" in str(help_text.content)
+        # Services (Tavily) omit the storage note entirely — the title and
+        # reason already explain the key, so it would only be redundant copy.
+        assert has_storage_note is False
+        assert "stores the above key locally" not in copy
+
+    async def test_optional_prompt_surfaces_save_failure_and_stays_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed credential write shows an inline error and keeps the modal."""
+
+        def _raise(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
+            msg = "credential store is not writable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(auth_store, "set_stored_key", _raise)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
+            await pilot.press("enter")
+            await pilot.pause()
+            err = app.screen.query_one("#auth-prompt-error", Static)
+            error_text = str(err.content)
+
+        # Surfaced in-modal, not silently swallowed, and the modal stays open so
+        # onboarding cannot proceed as if the key were saved.
+        assert "Could not save credential" in error_text
+        assert "credential store is not writable" in error_text
+        assert app.prompt_dismissed is False
+
+    async def test_optional_prompt_notifies_store_warnings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """chmod-style warnings from the store reach the user via `notify`."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        def _warn(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
+            return auth_store.WriteOutcome(warnings=("credential file is not private",))
+
+        monkeypatch.setattr(auth_store, "set_stored_key", _warn)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert ("credential file is not private", "warning") in notices
+        assert app.prompt_result is AuthResult.SAVED
+
     async def test_escape_cancels(self) -> None:
         """Escape dismisses with `CANCELLED` and writes nothing."""
         app = _AuthHostApp()
@@ -966,6 +1144,26 @@ api_key_env = "MY_GATEWAY_API_KEY"
             assert "Env override order" in text
             # The URL value itself is not leaked into the hint.
             assert "scoped.example" not in text
+
+    async def test_base_url_hint_names_surviving_alternate_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The blank-endpoint hint includes alternate env vars that still resolve."""
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("baseten", "BASETEN_API_KEY")
+            await pilot.pause()
+            hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
+            text = str(hint.content)
+            assert "Leave blank to use DEEPAGENTS_CODE_BASETEN_API_BASE" in text
+            assert "DEEPAGENTS_CODE_BASETEN_BASE_URL, then BASETEN_BASE_URL" in text
+            assert "DEEPAGENTS_CODE_BASETEN_API_BASE, then BASETEN_API_BASE" in text
+            assert "legacy.example" not in text
 
     async def test_no_logging_of_secret(self, caplog: pytest.LogCaptureFixture) -> None:
         """Submitting a key never lands its value in widget logs."""
@@ -1587,6 +1785,53 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.press("enter")
             await pilot.pause()
         assert screen.pending_install_extra == "groq"
+        assert screen.pending_install_provider == "groq"
+
+    async def test_reopening_manager_highlights_initial_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reopening after an install highlights the just-installed provider.
+
+        Simulates the post-install reopen: `groq` is now installed and listed,
+        and passing it as `initial_provider` lands the cursor on its row rather
+        than resetting to index 0.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "groq": ["llama-3"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "groq"},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="groq")
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            assert options.highlighted is not None
+            assert options.get_option_at_index(options.highlighted).id == "groq"
+
+    async def test_reopening_manager_ignores_unknown_initial_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An initial provider absent from the list leaves the cursor at the top."""
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="not-a-real-provider")
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            assert options.highlighted == 0
 
     async def test_cancelling_install_leaves_manager_without_pending_extra(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1610,6 +1855,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.press("escape")
             await pilot.pause()
             assert screen.pending_install_extra is None
+            assert screen.pending_install_provider is None
             assert isinstance(app.screen, AuthManagerScreen)
 
     async def test_disabled_known_provider_not_offered_for_install(

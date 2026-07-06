@@ -102,6 +102,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["mcp"], "dcode mcp <command>"),
         (["config"], "dcode config <command>"),
         (["auth"], "dcode auth <command>"),
+        (["tools"], "dcode tools <command>"),
     ],
 )
 def test_help_only_commands_skip_runtime_imports(
@@ -166,6 +167,7 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
         ["mcp", "login", "example.com"],
         ["config", "show"],
         ["auth", "list"],
+        ["tools", "install"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:

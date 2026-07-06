@@ -11,6 +11,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
+from textual.widgets.text_area import Selection
 
 from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
@@ -26,6 +27,7 @@ from deepagents_code.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -225,6 +227,122 @@ class _RecordingApp(App[None]):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+async def _noop() -> None:
+    pass
+
+
+class _RefreshController:
+    def __init__(self) -> None:
+        self.cwd_values: list[Path] = []
+        self.force_values: list[bool] = []
+
+    def set_cwd(self, cwd: Path) -> None:
+        self.cwd_values.append(cwd)
+
+    def warm_cache(self, *, force: bool = False) -> Coroutine[object, object, None]:
+        self.force_values.append(force)
+        return _noop()
+
+
+class TestChatInputFileCacheRefresh:
+    def test_refresh_file_cache_uses_exclusive_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat._refresh_file_cache()
+
+        assert controller.force_values == [True]
+        assert worker_calls == [
+            {
+                "exclusive": True,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_set_cwd_uses_file_cache_worker_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat.set_cwd(tmp_path)
+
+        assert controller.cwd_values == [tmp_path]
+        assert controller.force_values == [False]
+        assert worker_calls == [
+            {
+                "exclusive": False,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_refresh_file_cache_noop_without_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refresh is a no-op before the file controller is wired up."""
+        chat = ChatInput()
+        worker_calls: list[object] = []
+        monkeypatch.setattr(
+            chat,
+            "run_worker",
+            lambda *args, **kwargs: worker_calls.append((args, kwargs)),
+        )
+
+        assert getattr(chat, "_file_controller", None) is None
+        chat._refresh_file_cache()
+
+        assert worker_calls == []
+
+    async def test_on_mount_schedules_file_cache_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`on_mount` schedules the periodic `@` file-cache refresh.
+
+        Without this the cache would only warm on mount and cwd switches, so
+        files created or deleted mid-session would never surface.
+        """
+        interval_calls: list[tuple[float, object]] = []
+
+        def fake_set_interval(
+            _self: ChatInput, interval: float, callback: object, **_kwargs: object
+        ) -> None:
+            interval_calls.append((interval, callback))
+
+        monkeypatch.setattr(ChatInput, "set_interval", fake_set_interval)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert (
+                chat_input_module._FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+                chat._refresh_file_cache,
+            ) in interval_calls
 
 
 class TestChatInputScrollbar:
@@ -847,6 +965,62 @@ class TestPromptIndicator:
             chat_input.mode = "shell"
             await pilot.pause()
             assert any(m.mode == "shell" for m in messages)
+
+
+class TestModeSwitchNoJitter:
+    """Regression tests: mode glyph and completion popup update atomically.
+
+    Switching modes (e.g. `/` → `!` or `!` → `/`) must change the prompt glyph
+    and completion popup visibility in the same frame. A deferred ordering that
+    closes the popup one frame before the glyph changes (or vice versa) creates
+    visible jitter.
+    """
+
+    async def test_slash_to_bang_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from command mode to shell mode atomically hides popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter command mode — popup visible, glyph is "/"
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
+
+            # Switch to shell mode — popup hidden AND glyph is "$" after one pause
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+    async def test_bang_to_slash_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from shell mode to command mode atomically shows popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter shell mode first — popup hidden, glyph is "$"
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+            # Switch to command mode — popup visible AND glyph is "/" after one pause
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
 
 
 class TestHistoryNavigationFlag:
@@ -1569,6 +1743,166 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_handle_mode_prefix_keystroke_switches_without_text_change(
+        self,
+    ) -> None:
+        """A typed mode selector is consumed without inserting the character.
+
+        Regression guard for the `!`-flash: `handle_mode_prefix_keystroke`
+        consumes the keystroke and flips the mode directly when needed, so the
+        trigger is never inserted (and thus never flashes for a frame before
+        stripping).
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            # Second bang promotes to incognito, still without inserted text.
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            # A third bang in incognito is literal body text — not consumed.
+            assert chat.handle_mode_prefix_keystroke("!") is False
+            # Non-trigger characters are never consumed.
+            assert chat.handle_mode_prefix_keystroke("a") is False
+
+    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
+        """A redundant `/` at the command prompt is consumed as a mode selector."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+    async def test_typed_bang_keystroke_skips_strip_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing `!` enters shell mode without an insert-then-strip round trip."""
+        strip_calls: list[int] = []
+        original = ChatInput._strip_mode_prefix
+
+        def _spy(self: ChatInput, length: int = 1) -> None:
+            strip_calls.append(length)
+            original(self, length)
+
+        monkeypatch.setattr(ChatInput, "_strip_mode_prefix", _spy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+            assert strip_calls == []
+
+    async def test_typed_slash_keystroke_enters_command_mode_with_completions(
+        self,
+    ) -> None:
+        """Pressing `/` enters command mode and activates completions, no flash."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+            assert chat._completion_manager is not None
+            assert chat._completion_manager._active is not None
+
+    async def test_typed_bang_not_at_start_is_literal(self) -> None:
+        """A `!` typed mid-text is body content, not a mode switch."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ab!"
+
+    async def test_typed_trigger_at_cursor_zero_with_text_switches_mode(self) -> None:
+        """A trigger typed at start of existing text switches mode, keeps text.
+
+        Exercises the `cursor_location == (0, 0)` arm of the `_on_key` guard
+        with a non-empty input: the keystroke is consumed (no inserted `!`) and
+        the body text is preserved, matching the legacy insert-then-strip path.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("abc")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "abc"
+
+    async def test_typed_trigger_with_selection_is_not_intercepted(self) -> None:
+        """A trigger typed over a selection replaces it instead of switching.
+
+        A backward selection puts the cursor at `(0, 0)` while leaving the
+        selection non-empty, so only the `selection.is_empty` arm of the
+        `_on_key` guard keeps the keystroke from being intercepted. Removing
+        that arm would swallow the `/` and strand the selected text in the
+        input, which this test catches.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            # Anchor at end, cursor at start: cursor_location is (0, 0) but the
+            # selection is non-empty.
+            chat._text_area.selection = Selection((0, 2), (0, 0))
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert not chat._text_area.selection.is_empty
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            # TextArea replaced the selected "ab" with "/", which the change
+            # handler then detected and stripped into command mode. The key
+            # point: the selected text did not survive as literal input.
+            assert chat._text_area.text == ""
+            assert chat.mode == "command"
+
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering shell mode should stay in mode."""
         app = _ChatInputTestApp()
@@ -1608,6 +1942,24 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
+    async def test_backspace_on_empty_incognito_exits_to_normal(self) -> None:
+        """Backspace cancels incognito mode instead of demoting to shell mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
     async def test_backspace_on_single_char_stays_in_mode(self) -> None:
         """Deleting last char in command mode should stay in mode, not exit."""
         app = _ChatInputTestApp()
@@ -1635,8 +1987,8 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
-        """Backspace at cursor position 0 with text after cursor exits mode."""
+    async def test_backspace_at_cursor_zero_with_text_stays_in_mode(self) -> None:
+        """Backspace only exits a mode prompt when the input is empty."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -1655,10 +2007,12 @@ class TestModePrefixStripping:
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
 
-            # Backspace at position 0 with text after cursor — should exit mode
+            # Backspace at position 0 with text after cursor is a text-editing
+            # no-op; it should not cancel the active mode.
             await pilot.press("backspace")
             await pilot.pause()
-            assert chat.mode == "normal"
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
 
     async def test_backspace_exit_mode_dismisses_completion(self) -> None:
         """Exiting mode via backspace-on-empty should hide the completion popup."""
@@ -1914,6 +2268,39 @@ class TestModePrefixStripping:
 
 class TestExitModePreservesText:
     """Exiting shell/command mode should preserve typed text."""
+
+    async def test_exit_empty_shell_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels shell mode; it does not turn `!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+    async def test_exit_empty_incognito_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels incognito mode; it does not turn `!!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
 
     async def test_exit_shell_mode_keeps_text(self) -> None:
         """Pressing Escape in shell mode should switch to normal but keep text."""
@@ -3576,7 +3963,7 @@ class TestArgumentHints:
             assert app.submitted[0].value == "/remember"
 
     async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
-        """Backspace mode exit clears ghost text without needing a text edit."""
+        """Backspace mode exit clears stale ghost text without a text edit."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -3584,19 +3971,17 @@ class TestArgumentHints:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            chat._text_area.insert("remember ")
-            await pilot.pause()
-            assert chat._text_area.argument_hint == "[context]"
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
 
-            chat._text_area.move_cursor((0, 0))
-            await pilot.pause()
+            chat._text_area.argument_hint = "[context]"
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
-            assert _render_text_area_line(chat._text_area) == "remember"
+            assert _render_text_area_line(chat._text_area) == ""
 
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""
@@ -3874,3 +4259,588 @@ class TestPasteBurstEnterSuppression:
             await pilot.pause()
 
             assert len(app.submitted) == 1
+
+
+class TestPasteCollapseHelpers:
+    """Unit tests for the paste_collapse module helpers."""
+
+    def test_should_collapse_short_text(self) -> None:
+        """Short single-line text should not be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("hello") is False
+
+    def test_should_collapse_long_text(self) -> None:
+        """Text exceeding the character threshold should be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("x" * 801) is True
+
+    def test_should_not_collapse_at_char_boundary(self) -> None:
+        """Text exactly at the character threshold should not be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("x" * 800) is False
+
+    def test_should_collapse_multi_line(self) -> None:
+        """Text with more lines than the threshold should be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("line1\nline2\nline3\nline4") is True
+
+    def test_should_not_collapse_two_lines(self) -> None:
+        """Exactly two newlines (three lines) should not be collapsed by line count."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("line1\nline2\nline3") is False
+
+    def test_format_paste_ref_single_line(self) -> None:
+        """Single-line paste ref has no line count suffix."""
+        from deepagents_code.paste_collapse import format_paste_ref
+
+        assert format_paste_ref(1, 0) == "[Pasted text #1]"
+
+    def test_format_paste_ref_multi_line(self) -> None:
+        """Multi-line paste ref includes the line count."""
+        from deepagents_code.paste_collapse import format_paste_ref
+
+        assert format_paste_ref(3, 5) == "[Pasted text #3 +5 lines]"
+
+    def test_expand_paste_refs(self) -> None:
+        """expand_paste_refs replaces placeholders with stored content."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {
+            1: PastedContent(content="FIRST\nSECOND"),
+            2: PastedContent(content="third"),
+        }
+        text = "before [Pasted text #1 +1 lines] after [Pasted text #2] end"
+        expanded = expand_paste_refs(text, contents)
+        assert expanded == "before FIRST\nSECOND after third end"
+
+    def test_expand_paste_refs_out_of_order_and_repeated(self) -> None:
+        """Placeholders expand by id regardless of order, and repeats reuse content."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {
+            1: PastedContent(content="ONE"),
+            2: PastedContent(content="TWO"),
+        }
+        text = "[Pasted text #2] [Pasted text #1] [Pasted text #1]"
+        assert expand_paste_refs(text, contents) == "TWO ONE ONE"
+
+    def test_expand_paste_refs_content_with_backslashes(self) -> None:
+        """Stored content is inserted literally, not as a regex replacement."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {1: PastedContent(content=r"\1 \g<0> back\slash")}
+        expanded = expand_paste_refs("[Pasted text #1]", contents)
+        assert expanded == r"\1 \g<0> back\slash"
+
+    def test_expand_paste_refs_unknown_id_left_as_is(self) -> None:
+        """Placeholders with unknown IDs are left unchanged."""
+        from deepagents_code.paste_collapse import expand_paste_refs
+
+        text = "[Pasted text #99 +5 lines]"
+        assert expand_paste_refs(text, {}) == text
+
+    def test_expand_paste_refs_empty_contents(self) -> None:
+        """Expanding with no stored contents returns text unchanged."""
+        from deepagents_code.paste_collapse import expand_paste_refs
+
+        text = "hello [Pasted text #1] world"
+        assert expand_paste_refs(text, {}) == text
+
+
+class TestPasteCollapseIntegration:
+    """Integration tests for paste collapsing in ChatInput."""
+
+    async def test_large_paste_inserts_placeholder(self) -> None:
+        """Pasting text > 800 chars inserts a placeholder, not the full text."""
+        big_text = "x" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "x" * 900 not in chat._text_area.text
+            assert 1 in chat._pasted_contents
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_small_paste_inserts_directly(self) -> None:
+        """Pasting text under the threshold is inserted as-is."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("short text")
+            await pilot.pause()
+
+            assert chat._text_area.text == "short text"
+            assert len(chat._pasted_contents) == 0
+
+    async def test_multi_line_paste_inserts_placeholder(self) -> None:
+        """Pasting text with > 2 newlines inserts a placeholder."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+
+            assert "[Pasted text #1 +4 lines]" in chat._text_area.text
+            assert "line 0" not in chat._text_area.text
+
+    async def test_submit_expands_placeholder(self) -> None:
+        """Submitting text with a placeholder sends the full expanded content."""
+        big_text = "A" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == big_text
+
+    async def test_submit_clears_paste_contents(self) -> None:
+        """Paste contents are cleared after submission."""
+        big_text = "B" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert len(chat._pasted_contents) == 1
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(chat._pasted_contents) == 0
+
+    async def test_multiple_pastes_get_incrementing_ids(self) -> None:
+        """Consecutive large pastes get incrementing placeholder IDs."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("X" * 900)
+            await pilot.pause()
+            chat.handle_external_paste("Y" * 900)
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "[Pasted text #2]" in chat._text_area.text
+            assert chat._pasted_contents[1].content == "X" * 900
+            assert chat._pasted_contents[2].content == "Y" * 900
+
+    async def test_multiple_pastes_submit_expands_all(self) -> None:
+        """Submitting with multiple placeholders expands all of them."""
+        text_a = "A" * 900
+        text_b = "B" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text_a)
+            await pilot.pause()
+            chat.handle_external_paste(text_b)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == text_a + text_b
+
+    async def test_text_around_placeholder_preserved_on_submit(self) -> None:
+        """Text typed around a placeholder is preserved on submission."""
+        big_text = "C" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in "fix this: ":
+                await pilot.press(char)
+            await pilot.pause()
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"fix this: {big_text}"
+
+    async def test_paste_content_survives_undo_restored_placeholder(self) -> None:
+        """A restored placeholder still expands after an undoable edit."""
+        big_text = "D" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            placeholder = chat._text_area.text
+            assert 1 in chat._pasted_contents
+
+            chat._text_area.text = "all gone"
+            await pilot.pause()
+
+            chat._text_area.text = f"fix: {placeholder}"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"fix: {big_text}"
+
+    @pytest.mark.parametrize(
+        ("pasted", "mode", "visible"),
+        [
+            ("/help " + ("x" * 900), "command", "help " + ("x" * 900)),
+            ("!echo " + ("x" * 900), "shell", "echo " + ("x" * 900)),
+            ("!!echo " + ("x" * 900), "shell_incognito", "echo " + ("x" * 900)),
+        ],
+    )
+    async def test_prefixed_large_paste_renders_mode_instead_of_collapsing(
+        self, pasted: str, mode: str, visible: str
+    ) -> None:
+        """Mode-prefixed large pastes stay visible so the prompt shows mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(pasted)
+            await pilot.pause()
+
+            assert chat.mode == mode
+            assert chat._text_area.text == visible
+            assert chat._pasted_contents == {}
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == pasted
+            assert app.submitted[0].mode == mode
+
+    async def test_identical_second_paste_expands_placeholder(self) -> None:
+        """Pasting identical content again expands the placeholder to full text."""
+        text = "S" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            # Second identical paste expands the placeholder inline. The stored
+            # copy stays available because this edit can be undone.
+            assert chat._text_area.text == text
+            assert chat._pasted_contents[1].content == text
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.submitted[0].value == text
+
+    async def test_repeat_paste_expansion_keeps_content_for_undo(self) -> None:
+        """Undo-restored placeholders still expand after repeat-paste expansion."""
+        text = "U" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            placeholder = chat._text_area.text
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == text
+
+            chat._text_area.text = placeholder
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == text
+
+    async def test_identical_second_paste_expands_preserving_surrounding_text(
+        self,
+    ) -> None:
+        """Expanding a repeated paste keeps text typed around the placeholder."""
+        text = "S" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in "fix: ":
+                await pilot.press(char)
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "fix: [Pasted text #1]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == f"fix: {text}"
+            assert chat._pasted_contents[1].content == text
+
+    async def test_repeat_paste_skips_stale_deleted_placeholder_ids(self) -> None:
+        """Repeat expansion targets a visible placeholder, not stale paste data."""
+        text = "R" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert chat._pasted_contents[1].content == text
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #2]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == text
+            assert chat._pasted_contents[1].content == text
+            assert chat._pasted_contents[2].content == text
+
+    async def test_bracketed_paste_event_collapses(self) -> None:
+        """A real Paste event over the threshold collapses to a placeholder.
+
+        Exercises the production path (`_on_paste` -> `PastedText` message ->
+        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`.
+        """
+        big_text = "z" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(big_text))
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert big_text not in chat._text_area.text
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_paste_burst_flush_collapses_large_payload(self) -> None:
+        """A large buffered paste burst collapses to a placeholder on flush."""
+        big_text = "q" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area._paste_burst_buffer = big_text
+            await chat._text_area._flush_paste_burst()
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert big_text not in chat._text_area.text
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_backspace_removes_full_paste_placeholder(self) -> None:
+        """Backspace deletes a [Pasted text #N] placeholder as a single token."""
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert "[Pasted text #1]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            # Backing content is preserved so an undo can restore the token;
+            # it is cleared only at submit.
+            assert 1 in chat._pasted_contents
+
+    async def test_forward_delete_removes_full_paste_placeholder(self) -> None:
+        """Forward delete removes a paste placeholder as a single token."""
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            # Like backspace, forward delete leaves the backing content for undo;
+            # it is cleared only at submit.
+            assert 1 in chat._pasted_contents
+
+    async def test_backspace_removes_only_targeted_paste_placeholder(self) -> None:
+        """Backspace deletes only the placeholder at the cursor, not others."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("A" * 900)
+            await pilot.pause()
+            chat.handle_external_paste("B" * 900)
+            await pilot.pause()
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "[Pasted text #2]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # Exact equality (not a substring check): a non-atomic delete that
+            # removed a single char would leave "[Pasted text #2" and still
+            # satisfy a `"[Pasted text #2]" not in text` assertion.
+            assert chat._text_area.text == "[Pasted text #1]"
+
+    async def test_backspace_removes_multiline_paste_placeholder(self) -> None:
+        """Backspace atomically deletes the `+M lines` placeholder variant."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+            # The multi-line form carries a "+M lines" suffix, so its span is
+            # longer than the bare "[Pasted text #N]" token.
+            assert chat._text_area.text == "[Pasted text #1 +4 lines]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    async def test_identical_multiline_repaste_expands_placeholder(self) -> None:
+        """Repeat-pasting multi-line content expands its `+M lines` placeholder."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1 +4 lines]"
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+
+            assert chat._text_area.text == multi_line
+            assert chat._pasted_contents[1].content == multi_line
+
+    async def test_copy_button_expands_placeholders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The copy button copies expanded text, not the placeholder."""
+        big_text = "E" * 900
+        copied: list[str] = []
+
+        def capture_copy(_app_arg: object, text: str, **_kwargs: object) -> None:
+            copied.append(text)
+
+        # _copy_via_button imports copy_text_with_feedback at call time, so
+        # patching the module attribute is picked up without a manual restore.
+        monkeypatch.setattr(
+            "deepagents_code.clipboard.copy_text_with_feedback", capture_copy
+        )
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            chat._copy_via_button()
+            await pilot.pause()
+
+        assert len(copied) == 1
+        assert copied[0] == big_text
+
+    async def test_paste_content_survives_undoable_clear(self) -> None:
+        """Undoable clear (discard_text) must not delete paste contents.
+
+        After clearing and undoing, the restored placeholder must still
+        have its backing content so submission expands correctly.
+        """
+        big_text = "F" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert 1 in chat._pasted_contents
+
+            # Undoable clear empties the text area
+            chat.discard_text()
+            await pilot.pause()
+
+            # Paste contents must survive so undo can restore them
+            assert 1 in chat._pasted_contents
+
+    async def test_orphan_cleanup_skips_empty_text(self) -> None:
+        """Setting text to empty must not trigger orphan cleanup."""
+        big_text = "G" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            chat._text_area.text = ""
+            await pilot.pause()
+
+            assert 1 in chat._pasted_contents

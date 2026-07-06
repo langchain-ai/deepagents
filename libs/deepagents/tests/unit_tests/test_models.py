@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     get_model_identifier,
     get_model_provider,
+    is_bedrock_model,
     model_matches_spec,
     resolve_model,
 )
@@ -30,6 +31,11 @@ from deepagents.profiles.harness.harness_profiles import (
     _merge_middleware,
     _merge_profiles,
 )
+from deepagents.profiles.provider._nvidia import (
+    _NVIDIA_APP_ORIGIN,
+    _NVIDIA_BILLING_ORIGIN_HEADER,
+    _nvidia_attribution_kwargs,
+)
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_ALLOW_AZURE_ENV,
     _OPENROUTER_APP_TITLE,
@@ -44,6 +50,7 @@ from deepagents.profiles.provider.provider_profiles import (
     apply_provider_profile,
     get_provider_profile,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 _OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
 """Expected default value of `openrouter_provider` injected by the SDK profile."""
@@ -99,6 +106,19 @@ class TestResolveModel:
             app_url=_OPENROUTER_APP_URL,
             app_title=_OPENROUTER_APP_TITLE,
             openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+        assert result is mock.return_value
+
+    def test_nvidia_prefix_sets_billing_origin(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        mock.assert_called_once_with(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            default_headers={
+                _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+            },
         )
         assert result is mock.return_value
 
@@ -224,6 +244,58 @@ class TestGetModelProvider:
         model = _make_model({})
         model._get_ls_params = MagicMock(return_value=None)
         assert get_model_provider(model) is None
+
+
+class TestIsBedrockModel:
+    """Tests for `is_bedrock_model`."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock_converse:us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "aws:amazon.nova-pro-v1:0",
+            "anthropic_bedrock:us.anthropic.claude-sonnet-4-6-20251117-v1:0",
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_detects_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "amazon.titan-text-express-v1:0",
+            "anthropic:claude-3-opus",
+            "openai:gpt-5",
+        ],
+    )
+    def test_rejects_non_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is False
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["amazon_bedrock", "anthropic-bedrock", "bedrock", "bedrock_converse", "aws"],
+    )
+    def test_detects_bedrock_model_providers(self, provider: str) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": provider})
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        ["ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"],
+    )
+    def test_detects_bedrock_model_classes_when_provider_unavailable(self, model_cls: str) -> None:
+        model = type(model_cls, (GenericFakeChatModel,), {})(messages=iter([]))
+        model._get_ls_params = MagicMock(return_value={})
+        assert is_bedrock_model(model) is True
+
+    def test_rejects_non_bedrock_model_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert is_bedrock_model(model) is False
 
 
 class TestModelMatchesSpec:
@@ -1094,6 +1166,10 @@ class TestBuiltInProfiles:
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
+    def test_nvidia_provider_profile_has_attribution_factory(self) -> None:
+        profile = get_provider_profile("nvidia:nvidia/nemotron-3-super-120b-a12b")
+        assert profile.init_kwargs_factory is _nvidia_attribution_kwargs
+
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
 
@@ -1732,6 +1808,26 @@ class TestResolveModelWithProviderProfiles:
         mock_check.assert_called_once()
         _, kwargs = mock.call_args
         assert "app_url" in kwargs or "app_title" in kwargs
+
+    def test_nvidia_runs_attribution_factory(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        _, kwargs = mock.call_args
+        assert kwargs["default_headers"] == {
+            _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+        }
+
+    def test_nvidia_caller_headers_override_attribution_default(self) -> None:
+        custom_headers = {_NVIDIA_BILLING_ORIGIN_HEADER: "CustomHarness"}
+
+        kwargs = apply_provider_profile(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            {"default_headers": custom_headers},
+        )
+
+        assert kwargs["default_headers"] is custom_headers
 
     def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:

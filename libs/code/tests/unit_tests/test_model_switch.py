@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from textual.app import App, ComposeResult
 
 from deepagents_code import model_config
 from deepagents_code.app import (
@@ -22,6 +23,7 @@ from deepagents_code.model_config import (
 )
 from deepagents_code.remote_client import RemoteAgent
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+from deepagents_code.widgets.status import StatusBar
 
 _CONFIGURED_AUTH_STATUS = ProviderAuthStatus(
     state=ProviderAuthState.CONFIGURED,
@@ -328,6 +330,36 @@ class TestModelSwitchNoOp:
         assert message.startswith("Already using anthropic:claude-opus-4-5")
         # Stable, key-sorted JSON in the echoed suffix.
         assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
+
+    async def test_same_model_with_new_params_refreshes_status_effort(self) -> None:
+        """Same-model param updates should refresh the status bar effort."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._status_bar = Mock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
+            ),
+        ):
+            await app._switch_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+            )
+
+        app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
+            provider="openai",
+            model="gpt-5.5",
+            effort="low",
+        )
 
     async def test_same_model_without_params_clears_prior_override(self) -> None:
         """Re-selecting the same model with no params must clear stale params.
@@ -1189,3 +1221,120 @@ class TestModelCommandIntegration:
 
         assert len(captured_errors) == 1
         assert "cannot be used with --default" in captured_errors[0]
+
+
+class _StatusBarHarness(App[None]):
+    """Minimal app that mounts a `StatusBar` so its child widgets exist.
+
+    `_switch_model`'s success path calls `set_model`, which queries the
+    `#model-display` child, so the bar must be mounted to be driven end-to-end.
+    """
+
+    def compose(self) -> ComposeResult:
+        """Yield a single status bar."""
+        yield StatusBar(id="status-bar")
+
+
+class TestModelSwitchBusyIndicator:
+    """Tests that `_switch_model` drives the status-bar busy indicator.
+
+    These use a real mounted `StatusBar` rather than a mock so the wiring is
+    verified against actual `set_busy` behavior end-to-end.
+    """
+
+    async def test_busy_set_during_switch_and_cleared_on_success(
+        self, mock_create_model: Mock
+    ) -> None:
+        """Busy shows "Switching model" mid-flight and clears after success."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        async with _StatusBarHarness().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            app._status_bar = bar
+
+            busy_mid_flight: list[str] = []
+
+            def capture_busy(
+                model_spec: str,
+                *,
+                extra_kwargs: dict[str, object] | None = None,
+                profile_overrides: dict[str, object] | None = None,
+            ) -> _FakeModelResult:
+                # Runs in the worker thread: record what the bar shows while the
+                # (normally slow) provider import is notionally in progress.
+                del model_spec, extra_kwargs, profile_overrides
+                busy_mid_flight.append(bar._busy_message)
+                return _FakeModelResult(
+                    model_name="claude-sonnet-4-5",
+                    provider="anthropic",
+                    context_limit=200_000,
+                )
+
+            mock_create_model.side_effect = capture_busy
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=_CONFIGURED_AUTH_STATUS,
+                ),
+                patch(
+                    "deepagents_code.model_config.save_recent_model",
+                    return_value=True,
+                ),
+            ):
+                await app._switch_model("anthropic:claude-sonnet-4-5")
+
+            assert busy_mid_flight == ["Switching model"]
+            assert bar._busy_message == ""
+
+    async def test_busy_cleared_when_switch_fails(
+        self, mock_create_model: Mock
+    ) -> None:
+        """A failed model creation must still clear busy via the `finally` block.
+
+        Regression guard: if busy were cleared only on the success path, a
+        failed switch would leave the status bar spinning "Switching model"
+        indefinitely. The clear lives in a `finally`, so it must run here too.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        async with _StatusBarHarness().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            app._status_bar = bar
+
+            busy_mid_flight: list[str] = []
+
+            def fail_after_capture(
+                model_spec: str,
+                *,
+                extra_kwargs: dict[str, object] | None = None,
+                profile_overrides: dict[str, object] | None = None,
+            ) -> _FakeModelResult:
+                del model_spec, extra_kwargs, profile_overrides
+                busy_mid_flight.append(bar._busy_message)
+                msg = "provider import blew up"
+                raise RuntimeError(msg)
+
+            mock_create_model.side_effect = fail_after_capture
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ):
+                await app._switch_model("anthropic:claude-sonnet-4-5")
+
+            # Busy showed while the switch ran, then cleared despite the failure.
+            assert busy_mid_flight == ["Switching model"]
+            assert bar._busy_message == ""
+            # The failure surfaced to the user rather than being swallowed.
+            app._mount_message.assert_called_once()  # ty: ignore

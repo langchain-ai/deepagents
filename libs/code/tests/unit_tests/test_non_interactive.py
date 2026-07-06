@@ -5,11 +5,12 @@ import io
 import signal
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -17,21 +18,32 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._tool_stream import (
+    TOOL_OUTPUT_TRUNCATION_MARKER,
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+)
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
+from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
+    InFlightToolCall,
     StreamState,
     ThreadUrlLookupState,
     _build_non_interactive_header,
     _collect_action_request_warnings,
+    _dispatch_orphaned_tool_result_hooks,
     _make_hitl_decision,
+    _make_stdio_encoding_safe,
     _process_ai_message,
+    _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
 )
+from deepagents_code.tool_display import format_tool_message_content
 
 
 @pytest.fixture
@@ -304,6 +316,7 @@ class TestSandboxTypeForwarding:
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+        assert kwargs["enable_interpreter"] is None
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -471,11 +484,40 @@ class TestQuietMode:
         assert "Calling tool" not in stdout
         assert "Task completed" not in stdout
         assert "Running task" not in stdout
-        # Tool notifications still go to stderr
-        assert "Calling tool" in stderr or "read_file" in stderr
-        # Header and completion messages are fully suppressed in quiet mode
+        # Quiet mode suppresses diagnostics on stderr too.
+        assert "Calling tool" not in stderr
+        assert "read_file" not in stderr
         assert "Task completed" not in stderr
         assert "Running task" not in stderr
+
+
+class TestQuietFileOpNotification:
+    """The file-operation (📝) notification honors quiet mode."""
+
+    @staticmethod
+    def _run(*, quiet: bool) -> str:
+        """Drive a file-op `ToolMessage` chunk and return captured stderr."""
+        record = SimpleNamespace(diff="--- a\n+++ b", display_path="src/foo.py")
+        tracker = MagicMock()
+        tracker.complete_with_message.return_value = record
+
+        stderr_buf = io.StringIO()
+        console = Console(file=stderr_buf, width=200)
+        state = StreamState(quiet=quiet, stream=True, spinner=None)
+
+        _process_message_chunk(
+            (ToolMessage(content="ok", tool_call_id="tc1"), {}),
+            state,
+            console,
+            tracker,
+        )
+        return stderr_buf.getvalue()
+
+    def test_quiet_suppresses_file_op_notification(self) -> None:
+        assert self._run(quiet=True) == ""
+
+    def test_non_quiet_emits_file_op_notification(self) -> None:
+        assert "foo.py" in self._run(quiet=False)
 
 
 class TestNoStreamMode:
@@ -1121,6 +1163,29 @@ def _make_looping_agent() -> MagicMock:
 class TestMaxTurns:
     """Tests for max_turns parameter in _run_agent_loop."""
 
+    async def test_run_agent_loop_passes_thread_id_context(self) -> None:
+        """Non-interactive runs mirror `configurable.thread_id` into context."""
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+        ):
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                console,
+                file_op_tracker,
+                quiet=True,
+            )
+
+        _, kwargs = agent.astream.call_args
+        assert kwargs["context"]["thread_id"] == "t1"
+
     async def test_raises_after_user_limit(self) -> None:
         """HITLIterationLimitError is raised after max_turns HITL iterations."""
         agent = _make_looping_agent()
@@ -1691,3 +1756,1449 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item
+
+
+class TestMakeStdioEncodingSafe:
+    """Tests for `_make_stdio_encoding_safe`."""
+
+    def test_cp1252_stream_survives_unicode_glyphs(self):
+        """Unencodable glyphs degrade to "?" instead of raising."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+            sys.stdout.write("✓ Server ready")
+            sys.stdout.flush()
+
+        assert buffer.getvalue() == b"? Server ready"
+
+    def test_stream_encoding_is_preserved(self):
+        """Only the error handler changes; the encoding stays untouched."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert stream.encoding == "cp1252"
+        assert stream.errors == "replace"
+
+    def test_non_reconfigurable_stream_is_left_alone(self):
+        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
+        stream = io.StringIO()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert not stream.closed
+
+    def test_streams_handled_independently(self):
+        """A non-reconfigurable stdout must not stop stderr from being hardened.
+
+        In quiet mode `run_non_interactive` routes glyph-emitting output to
+        stderr, so a per-stream `continue` (not `break`/`return`) is
+        load-bearing: skipping stdout must still leave stderr reconfigured.
+        """
+        stdout = io.StringIO()  # no `reconfigure` -> skipped
+        stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            _make_stdio_encoding_safe()
+
+        assert stderr.errors == "replace"
+        assert not stdout.closed
+
+    def test_closed_stream_is_swallowed(self):
+        """A closed stream raises `ValueError` on reconfigure; swallowed, no crash."""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        stream.close()
+        with (
+            patch.object(sys, "stdout", stream),
+            patch.object(sys, "stderr", io.StringIO()),
+        ):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert stream.closed
+
+    def test_duck_typed_reconfigure_typeerror_is_swallowed(self):
+        """A `reconfigure` with an incompatible signature must not crash the run."""
+        # This `reconfigure` takes no args, so calling it with `errors=` raises
+        # `TypeError` — the failure mode a non-stdlib stream wrapper (e.g. a
+        # capture/tee library) could exhibit. The guard must not propagate it.
+        stream = SimpleNamespace(reconfigure=lambda: None)
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert hasattr(stream, "reconfigure")
+
+    async def test_run_non_interactive_invokes_helper(self):
+        """`run_non_interactive` must call `_make_stdio_encoding_safe` at entry.
+
+        Guards against a silent revert: the fix only protects users if the
+        helper is actually invoked. Server-mocked tests run under pytest's
+        UTF-8 capture, so nothing else would fail if the call were removed.
+        """
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+            ) as mock_helper,
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="test task")
+
+        mock_helper.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
+# tool.use / tool.result hook dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProcessAIMessageHooks:
+    """Tests for tool.use hook dispatch in _process_ai_message."""
+
+    def test_tool_use_dispatched_with_direct_args_in_quiet_mode(self) -> None:
+        """tool.use fires with parsed args even when quiet mode suppresses output."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_any_call(
+            "tool.use",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+            },
+        )
+
+    def test_tool_use_dispatched_after_split_args_complete(self) -> None:
+        """tool.use waits for later args chunks before dispatching."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "execute",
+                "id": "call-1",
+                "index": 0,
+                "args": '{"command": "uv run',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": ' pytest"}',
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.use",
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "uv run pytest"},
+            },
+        )
+
+    def test_tool_use_waits_when_empty_chunk_precedes_real_args(self) -> None:
+        """An empty first args chunk must not clobber later real args."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-1",
+                "index": 0,
+                "args": "",
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": '{"file_path": "notes.txt", ',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": '"content": "hello"}',
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.use",
+            {
+                "tool_name": "write_file",
+                "tool_id": "call-1",
+                "tool_args": {"file_path": "notes.txt", "content": "hello"},
+            },
+        )
+
+    def test_tool_use_not_dispatched_when_no_name(self) -> None:
+        """tool.use must not fire while a chunk has complete args but no name.
+
+        Isolates the name guard: the args parse cleanly (so `parsed_args` is not
+        `None`), leaving the missing name as the only thing blocking dispatch.
+        """
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
+
+    def test_tool_use_not_dispatched_without_id(self) -> None:
+        """tool.use waits for a tool id so tool.result can be correlated.
+
+        Mirrors the interactive surface, which only dispatches once the id is
+        known. Here the args parse cleanly and the name is present, leaving the
+        missing id as the only thing blocking dispatch.
+        """
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": None,
+                "index": 0,
+                "args": '{"path": "foo.py"}',
+            }
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
+
+    def test_tool_use_not_dispatched_for_text_blocks(self) -> None:
+        """tool.use must not fire when the block is a text chunk, not a tool call."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "hello"}]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_not_called()
+
+    def test_tool_use_dispatched_once_per_tool_call(self) -> None:
+        """With two different tool calls, tool.use fires once each."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-2",
+                "index": 1,
+                "args": {"path": "bar.py", "content": "hello"},
+            },
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 2
+        names = {c[0][1]["tool_name"] for c in tool_use_calls}
+        assert names == {"read_file", "write_file"}
+
+    def test_reused_tool_call_index_dispatches_for_later_turns(self) -> None:
+        """A completed index-0 call must not suppress the next index-0 call."""
+        first_msg = MagicMock(spec=AIMessage)
+        first_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        second_msg = MagicMock(spec=AIMessage)
+        second_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-2",
+                "index": 0,
+                "args": {"path": "bar.py", "content": "hello"},
+            }
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(first_msg, state, console)
+            _process_ai_message(second_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "read_file",
+                    "tool_id": "call-1",
+                    "tool_args": {"path": "foo.py"},
+                },
+            ),
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-2",
+                    "tool_args": {"path": "bar.py", "content": "hello"},
+                },
+            ),
+        ]
+        assert state.tool_call_buffers == {}
+
+    def test_redelivered_completed_tool_call_displays_once(self) -> None:
+        """A redelivered completed call must not print another call line."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        state = StreamState()
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, color_system=None)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+            _process_ai_message(ai_msg, state, console)
+
+        assert stream.getvalue().count("Calling tool: read_file") == 1
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        assert state.tool_call_buffers == {}
+        assert state.displayed_tool_call_ids == {"call-1"}
+
+        tool_msg = ToolMessage(
+            content="ok",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        assert state.displayed_tool_call_ids == set()
+
+    def test_reused_index_after_malformed_dispatches_new_tool_use(self) -> None:
+        """A reused streaming index after a malformed call still fires tool.use.
+
+        Regression for the silent-drop bug: a malformed-complete call retained at
+        index 0 (its args never parse, so its own tool.use is correctly skipped)
+        must not poison a later well-formed call that reuses index 0 in a new
+        message. The differing tool id resets the buffer so the second call's
+        args parse and dispatch.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-a",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        good = MagicMock(spec=AIMessage)
+        good.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": "call-b",
+                "index": 0,
+                "args": '{"path": "x.py"}',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": None,
+                "index": 0,
+                "args": "",
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_ai_message(good, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-b",
+                    "tool_args": {"path": "x.py"},
+                },
+            )
+        ]
+
+    def test_reused_index_with_delayed_id_dispatches_under_new_id(self) -> None:
+        """A retained stale id must not claim the next call's parsed args.
+
+        Regression for delayed-id providers: the new call's name and args can
+        arrive on a reused index before its id. The stale id from the retained
+        malformed call must be cleared until the replacement id arrives.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-a",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        good = MagicMock(spec=AIMessage)
+        good.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": None,
+                "index": 0,
+                "args": '{"path": "x.py"}',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": "call-b",
+                "index": 0,
+                "args": "",
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_ai_message(good, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-b",
+                    "tool_args": {"path": "x.py"},
+                },
+            )
+        ]
+
+
+class TestProcessMessageChunkHooks:
+    """Tests for tool.result hook dispatch in _process_message_chunk."""
+
+    def test_tool_result_dispatched_for_tool_message(self) -> None:
+        """tool.result fires with correct fields when a ToolMessage is processed."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {},
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+
+    def test_tool_result_includes_tool_args_from_matching_use(self) -> None:
+        """tool.result includes the args from the matching tool.use event."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState(
+            in_flight_tool_calls={
+                "call-1": InFlightToolCall("read_file", {"path": "foo.py"})
+            }
+        )
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+        assert state.in_flight_tool_calls == {}
+
+    def test_tool_result_uses_correlated_name_when_message_name_missing(
+        self,
+    ) -> None:
+        """tool.result uses the matching tool.use name when ToolMessage omits it."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            status="success",
+        )
+        state = StreamState(
+            in_flight_tool_calls={
+                "call-1": InFlightToolCall("read_file", {"path": "foo.py"})
+            }
+        )
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+        assert state.in_flight_tool_calls == {}
+
+    def test_tool_result_dispatched_for_error_status(self) -> None:
+        """tool.error and tool.result fire when a tool call failed."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="Permission denied",
+            tool_call_id="call-2",
+            name="write_file",
+            status="error",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        assert mock_dispatch.call_args_list == [
+            call("tool.error", {"tool_names": ["write_file"]}),
+            call(
+                "tool.result",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-2",
+                    "tool_args": {},
+                    "tool_status": "error",
+                    "tool_output": "Permission denied",
+                },
+            ),
+        ]
+
+    def test_tool_result_output_truncated_to_2000_chars(self) -> None:
+        """tool_output in the payload is at most 2000 characters."""
+        from langchain_core.messages import ToolMessage
+
+        long_content = "x" * 5000
+        tool_msg = ToolMessage(
+            content=long_content,
+            tool_call_id="call-3",
+            name="execute",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert len(payload["tool_output"]) == 2000
+        # A capped output ends with the marker so a consumer can tell a
+        # truncated result from a genuinely short one.
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
+    def test_tool_result_sentinel_when_formatter_raises(self) -> None:
+        """A formatter error still dispatches tool.result with the sentinel.
+
+        The content-formatting guard must keep the terminal dispatch
+        unconditional; otherwise a formatter (or pathological `__str__`) error
+        would drop the tool.result for this tool and every later tool.
+        """
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="unformattable",
+            tool_call_id="call-boom",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        def boom(_content: object) -> str:
+            msg = "formatter boom"
+            raise RuntimeError(msg)
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.format_tool_message_content",
+                side_effect=boom,
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(result_calls) == 1
+        assert result_calls[0][0][1]["tool_output"] == UNRENDERABLE_TOOL_OUTPUT
+
+    def test_tool_output_uses_formatter_for_structured_content(self) -> None:
+        """tool_output is the formatted content, not a raw list repr.
+
+        Regression guard for cross-surface parity: list/structured ToolMessage
+        content (e.g. multimodal or MCP content blocks) must be run through the
+        same formatter the interactive surface uses, so the two emit identical
+        `tool_output` rather than extracted text here vs. a Python list repr.
+        """
+        from langchain_core.messages import ToolMessage
+
+        content: list[Any] = [
+            {"type": "text", "text": "line one"},
+            {"type": "text", "text": "line two"},
+        ]
+        tool_msg = ToolMessage(
+            content=content,
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert payload["tool_output"] == format_tool_message_content(tool_msg.content)
+        # The raw list repr is what this surface used to emit; guard against it.
+        assert payload["tool_output"] != str(tool_msg.content)
+
+    def test_tool_result_uncorrelated_str_id_sends_empty_args_and_logs(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A str tool_id with no stored tool.use args sends {} and logs the miss.
+
+        Distinguishes a lost correlation (logged) from a tool that genuinely
+        took no arguments, so a dropped pairing is not completely silent.
+        """
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="ok",
+            tool_call_id="ghost-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()  # no entry for "ghost-1"
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            caplog.at_level("WARNING", logger="deepagents_code.non_interactive"),
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert payload["tool_args"] == {}
+        # Warning level: an executed tool reported with empty args is degraded
+        # audit fidelity worth surfacing at default log levels.
+        assert any(
+            "no correlated tool.use args" in r.message and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
+    def test_tool_result_not_dispatched_for_ai_message(self) -> None:
+        """tool.result must not fire when the message is an AIMessage."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = []
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((ai_msg, {}), state, console, file_op_tracker)
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert not tool_result_calls
+
+    def test_tool_result_none_id_sends_empty_args(self) -> None:
+        """An id-less ToolMessage still emits tool.result with `{}` args, id None.
+
+        Mirrors the interactive surface so audit hooks observe every executed
+        tool even when the call carried no id to correlate on.
+        """
+        tool_msg = MagicMock(spec=ToolMessage)
+        tool_msg.tool_call_id = None
+        tool_msg.name = "read_file"
+        tool_msg.status = "success"
+        tool_msg.content = "ok"
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": None,
+                "tool_args": {},
+                "tool_status": "success",
+                "tool_output": "ok",
+            },
+        )
+
+    def test_unexpected_status_fails_closed_to_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unexpected `ToolMessage.status` is logged and treated as error.
+
+        Fail-closed so an audit hook is never told a non-successful tool
+        succeeded; `tool.error` fires alongside the error `tool.result`.
+        """
+        tool_msg = MagicMock(spec=ToolMessage)
+        tool_msg.tool_call_id = "call-9"
+        tool_msg.name = "execute"
+        tool_msg.status = "cancelled"
+        tool_msg.content = "stopped"
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            caplog.at_level("WARNING", logger="deepagents_code._tool_stream"),
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        assert mock_dispatch.call_args_list == [
+            call("tool.error", {"tool_names": ["execute"]}),
+            call(
+                "tool.result",
+                {
+                    "tool_name": "execute",
+                    "tool_id": "call-9",
+                    "tool_args": {},
+                    "tool_status": "error",
+                    "tool_output": "stopped",
+                },
+            ),
+        ]
+        assert any("Unexpected ToolMessage.status" in r.message for r in caplog.records)
+
+    def test_malformed_args_emit_result_without_use(self) -> None:
+        """A malformed-complete call emits tool.result but never tool.use.
+
+        End-to-end guard: when streamed args are complete-looking but
+        unparseable, no tool.use fires (the args can't be trusted), yet the
+        executed tool's tool.result still fires — with `{}` args, since none
+        were correlated.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        tool_msg = ToolMessage(
+            content="ok", tool_call_id="call-1", name="read_file", status="success"
+        )
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        events = [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.use" not in events
+        result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert result_calls == [
+            call(
+                "tool.result",
+                {
+                    "tool_name": "read_file",
+                    "tool_id": "call-1",
+                    "tool_args": {},
+                    "tool_status": "success",
+                    "tool_output": "ok",
+                },
+            )
+        ]
+
+
+class TestOrphanedToolResultHooks:
+    """`_dispatch_orphaned_tool_result_hooks` closes tool.use with no result.
+
+    Headless parity for the aborted-stream case: a `tool.use` whose `ToolMessage`
+    never arrives (e.g. a provider error mid-tool) must still be closed with a
+    terminal `tool.error`/`tool.result`, matching the TUI's cleanup paths.
+    """
+
+    def test_dispatches_terminal_hooks_and_clears_state(self) -> None:
+        """Each in-flight id gets a named error result, then the maps are drained."""
+        state = StreamState()
+        state.in_flight_tool_calls = {
+            "tool-1": InFlightToolCall("execute", {"command": "sleep 100"})
+        }
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert ("tool.error", {"tool_names": ["execute"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "tool-1",
+                "tool_args": {"command": "sleep 100"},
+                "tool_status": "error",
+                "tool_output": "Stream ended before tool result",
+            }
+        ]
+        assert state.in_flight_tool_calls == {}
+
+    def test_dispatches_terminal_hooks_for_every_orphan(self) -> None:
+        """Multiple in-flight ids are each closed, not just the first.
+
+        Guards the `for ... in list(...)` loop: an aborted stream can leave more
+        than one dangling `tool.use`, and every one must get a terminal
+        error/result so no invocation is left unterminated.
+        """
+        state = StreamState()
+        state.in_flight_tool_calls = {
+            "tool-1": InFlightToolCall("read_file", {"path": "a.py"}),
+            "tool-2": InFlightToolCall("execute", {"command": "ls"}),
+        }
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        error_names = [p["tool_names"][0] for e, p in events if e == "tool.error"]
+        assert error_names == ["read_file", "execute"]
+        result_ids = [p["tool_id"] for e, p in events if e == "tool.result"]
+        assert result_ids == ["tool-1", "tool-2"]
+        assert all(p["tool_status"] == "error" for e, p in events if e == "tool.result")
+        assert state.in_flight_tool_calls == {}
+
+    def test_noop_when_no_orphans(self) -> None:
+        """A clean run (every id already drained) dispatches nothing."""
+        state = StreamState()
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(state, "x")
+        mock_dispatch.assert_not_called()
+
+    async def test_run_agent_loop_drains_orphans_on_stream_error(self) -> None:
+        """A mid-stream error closes the in-flight tool.use before propagating."""
+
+        async def boom(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            _console: object,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            # Simulate a tool.use having fired just before the stream dies.
+            state.in_flight_tool_calls["tool-1"] = InFlightToolCall(
+                "execute", {"command": "x"}
+            )
+            msg = "provider blew up"
+            raise RuntimeError(msg)
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=boom),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            pytest.raises(RuntimeError, match="provider blew up"),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "hi",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "tool-1",
+                "tool_args": {"command": "x"},
+                "tool_status": "error",
+                "tool_output": "Stream ended before tool result",
+            }
+        ]
+
+    async def test_run_agent_loop_logs_unemitted_buffers_at_stream_end(
+        self, caplog
+    ) -> None:
+        """Both end-of-stream diagnostics fire for buffers that never emitted.
+
+        Drives the real `_run_agent_loop` finally block: a buffer whose args never
+        parse and one whose args parse but carry no id are left in
+        `state.tool_call_buffers` at a clean stream end. Pins that the shared
+        `count_unemitted_tool_calls` counts are wired to the correct log lines —
+        a swap of the two counts, a deleted branch, or a garbled message fails
+        here, none of which the helper-level unit test can catch.
+        """
+
+        async def seed(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            _console: object,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            unparsed = ToolCallBuffer()
+            unparsed.ingest(name="f", tool_id="t1", args='{"a": ')  # never closes
+            idless_parsed = ToolCallBuffer()
+            idless_parsed.ingest(name="g", tool_id=None, args='{"b": 2}')
+            state.tool_call_buffers["k1"] = unparsed
+            state.tool_call_buffers["k2"] = idless_parsed
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=seed),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.non_interactive"),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "hi",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+            )
+
+        assert any("arguments never parsed" in r.message for r in caplog.records)
+        assert any("carried no tool-call id" in r.message for r in caplog.records)
+
+
+class TestRunAgentLoopHITLReject:
+    """Headless HITL reject closes the tool.use through the full resume cycle.
+
+    The parity contract's headless reject route is "a rejection arrives as a
+    synthetic `ToolMessage` handled by the normal result path." This drives that
+    end-to-end through `_run_agent_loop`'s interrupt -> `Command(resume=...)` ->
+    resumed-stream cycle, not just the `_process_message_chunk` unit, so the
+    documented cross-surface guarantee is exercised as a loop.
+    """
+
+    async def test_resumed_reject_closes_tool_use_with_correlated_args(self) -> None:
+        """Turn 1 fires tool.use; the resumed reject closes it with real args."""
+        ai_chunk = MagicMock(spec=AIMessage)
+        ai_chunk.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "execute",
+                "id": "call-1",
+                "index": 0,
+                "args": '{"command": "rm -rf /"}',
+            }
+        ]
+        reject_msg = ToolMessage(
+            content="Tool rejected by user",
+            tool_call_id="call-1",
+            name="execute",
+            status="error",
+        )
+        calls = {"n": 0}
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            file_op_tracker: FileOpTracker,
+            _context: object,
+        ) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Turn 1: the model emits a tool call — the real gating fires
+                # tool.use and records it in-flight — then the turn pauses on a
+                # HITL interrupt.
+                _process_ai_message(ai_chunk, state, console)
+                state.interrupt_occurred = True
+            else:
+                # Resumed turn: the rejection streams back as a synthetic error
+                # ToolMessage on the normal result path.
+                _process_message_chunk(
+                    (reject_msg, {}), state, console, file_op_tracker
+                )
+
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=staged_stream),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "run a command",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                file_op_tracker,
+                quiet=True,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        # Exactly one tool.use, with the correlated args.
+        use_payloads = [p for e, p in events if e == "tool.use"]
+        assert use_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "rm -rf /"},
+            }
+        ]
+        # The reject closes the tool.use: a co-fired tool.error plus an error
+        # tool.result that carries the correlated args, not the uncorrelated
+        # `{}` fallback, proving the resume drained the in-flight record.
+        assert ("tool.error", {"tool_names": ["execute"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "rm -rf /"},
+                "tool_status": "error",
+                "tool_output": "Tool rejected by user",
+            }
+        ]
+
+
+class TestDrainWiring:
+    """`run_non_interactive` awaits `drain_pending_hooks` in its `finally`.
+
+    This is the headless half of the feature's guarantee that the final
+    `tool.result` is not cancelled when `asyncio.run` tears the loop down. The
+    drain must run on both the success and error return paths without replacing
+    the computed exit code.
+    """
+
+    async def test_drains_pending_hooks_on_success(self) -> None:
+        """The success path (exit 0) still awaits the drain."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+            ),
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 0
+        mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_error_and_preserves_exit_code(self) -> None:
+        """An error return (exit 1) still awaits the drain, exit code intact."""
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=OSError("boom"),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 1
+        mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_keyboard_interrupt_130(self) -> None:
+        """A Ctrl-C (exit 130) still awaits the drain, exit code intact.
+
+        The unconditional `finally` drain must run on the KeyboardInterrupt path,
+        not only success/OSError, so the final `tool.result` is not dropped when a
+        user interrupts a headless run.
+        """
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=KeyboardInterrupt,
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 130
+        mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_iteration_limit_124(self) -> None:
+        """A turn-budget hit (exit 124) still awaits the drain, exit code intact."""
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=HITLIterationLimitError("Exceeded 1 agentic turns."),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 124
+        mock_drain.assert_awaited_once()

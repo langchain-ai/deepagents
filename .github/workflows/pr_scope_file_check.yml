@@ -8,10 +8,13 @@
 #   changed-file list, posts a sticky warning when they disagree, and FAILS the
 #   check so the mismatch is fixed before merge.
 #
-# Escape hatch:
-#   Apply the `allow-scope-mismatch` label when the mismatch is intentional. The
-#   check re-runs on `labeled`/`unlabeled`, leaves an informational sticky note,
-#   and passes while the label is present.
+# Bypasses:
+#   - `release(...)` PR titles pass only when every changed file matches a
+#     release-please generated/version-file pattern. Release-please PRs can touch
+#     those files across package dirs.
+#   - Apply the `allow-scope-mismatch` label when another mismatch is intentional.
+#     The check re-runs on `labeled`/`unlabeled`, leaves an informational sticky
+#     note, and passes while the label is present.
 #
 # To actually gate merges, add this check to the branch's required status checks.
 #
@@ -30,6 +33,12 @@
 #     still neuter the check. Gate integrity therefore also relies on branch
 #     protection (this job as a required status check) and review of
 #     `.github/workflows/` edits.
+#   - The `release(...)` bypass is title-driven, so it rests on the same
+#     author-controlled title input — but it cannot be abused because it
+#     requires *every* changed file to match a release-please artifact pattern
+#     (see `is_release_file`); a single source file re-arms the gate. The
+#     detector emits a `::notice::` when the bypass fires so the stood-down gate
+#     is visible in the Checks UI rather than silent.
 #
 # Limitations:
 #   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks get
@@ -72,13 +81,13 @@ jobs:
         # `persist-credentials: false` so the job token is not written into the
         # checkout's git config; the detector needs no git credentials, and the
         # github-script steps receive their own token directly.
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 

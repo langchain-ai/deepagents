@@ -10,7 +10,6 @@ from deepagents_code._env_vars import (
     DEBUG,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
-    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
     SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
@@ -18,7 +17,6 @@ from deepagents_code._env_vars import (
 )
 from deepagents_code._version import __version__
 from deepagents_code.tui.widgets.welcome import (
-    _TIPS,
     WelcomeBanner,
     _home_prefixed,
     _langsmith_project_link,
@@ -30,7 +28,6 @@ _EDITABLE_PATH = "deepagents_code.tui.widgets.welcome._get_editable_install_path
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"
 _REPLICA_PROJECT = "deepagents_code.tui.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.tui.widgets.welcome.fetch_langsmith_project_url"
-_PICK_TIP = "deepagents_code.tui.widgets.welcome._pick_tip"
 
 
 def _make_banner(
@@ -503,61 +500,6 @@ class TestMcpToolLine:
         assert "mcp:" not in plain
 
 
-class TestTipLine:
-    """Tests for the startup tip row."""
-
-    def test_shows_tip_by_default(self) -> None:
-        """The compact banner still renders a weighted startup tip."""
-        plain = _make_banner()._build_banner().plain
-        assert "tip:" in plain
-        assert any(tip in plain for tip in _TIPS)
-
-    def test_tip_is_stable_across_rerenders(self) -> None:
-        """A banner instance keeps one selected tip when other rows update."""
-        tip = "Use /copy to copy the latest assistant message"
-        with patch(_PICK_TIP, return_value=tip) as pick_tip:
-            widget = _make_banner()
-        assert tip in widget._build_banner().plain
-
-        with patch.object(widget, "update"):
-            widget.set_connected(3)
-
-        plain = widget._build_banner().plain
-        assert tip in plain
-        assert "3 tools" in plain
-        pick_tip.assert_called_once()
-
-    def test_hide_splash_tips_env_var_hides_tip(self) -> None:
-        """`HIDE_SPLASH_TIPS` removes the tip row."""
-        plain = _make_banner(env={HIDE_SPLASH_TIPS: "1"})._build_banner().plain
-        assert "tip:" not in plain
-        assert not any(tip in plain for tip in _TIPS)
-
-    def test_hide_splash_tips_env_var_skips_random_tip(self) -> None:
-        """Disabling tips should avoid selecting a random tip."""
-        with patch(_PICK_TIP) as pick_tip:
-            _make_banner(env={HIDE_SPLASH_TIPS: "1"})
-
-        pick_tip.assert_not_called()
-
-    def test_startup_cmd_tip_registered(self) -> None:
-        """The `--startup-cmd` flag keeps a discoverability tip."""
-        assert any("--startup-cmd" in tip for tip in _TIPS)
-
-    def test_incognito_shell_tip_registered(self) -> None:
-        """The `!!` shell mode keeps a discoverability tip."""
-        assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)
-
-    def test_copy_command_tip_registered(self) -> None:
-        """The `/copy` command keeps a discoverability tip."""
-        assert "Use /copy to copy the latest assistant message" in _TIPS
-
-    def test_workflow_subagent_tip_registered(self) -> None:
-        """The workflow trigger phrase keeps its higher relative weight."""
-        tip = "Ask for a workflow to fan work out to subagents in parallel"
-        assert _TIPS[tip] == 3
-
-
 class TestMcpWarnings:
     """Tests for MCP server warning lines."""
 
@@ -586,7 +528,7 @@ class TestMcpWarnings:
 
     def test_no_warnings_when_all_zero(self) -> None:
         """No warning lines when all warning counts are zero."""
-        plain = _make_banner(env={HIDE_SPLASH_TIPS: "1"})._build_banner().plain
+        plain = _make_banner()._build_banner().plain
         assert "login" not in plain
         assert "failed to load" not in plain
         assert "reconnect" not in plain
@@ -656,7 +598,7 @@ class TestRemovedSections:
     def test_no_legacy_sections(self) -> None:
         """None of the old splash footer sections appear."""
         plain = _make_banner()._build_banner().plain
-        for absent in ("Ready to code", "Tip:"):
+        for absent in ("Ready to code", "Tip:", "tip:"):
             assert absent not in plain
 
 

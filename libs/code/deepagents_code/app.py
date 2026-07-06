@@ -91,6 +91,7 @@ from deepagents_code.tui.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
+from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
 from deepagents_code.tui.widgets.welcome import WelcomeBanner
@@ -2913,6 +2914,8 @@ class DeepAgentsApp(App):
             # Live fan-out panel for subagents spawned from js_eval. Hidden
             # until the first spawn event; sits just above the input.
             yield SubagentPanel(id="subagent-panel")
+            if show_startup_tip():
+                yield StartupTip(id="startup-tip")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -7418,7 +7421,13 @@ class DeepAgentsApp(App):
 
         await dispatch_hook("user.prompt", {})
 
+        await self._dismiss_startup_tip()
         await self._submit_input(value, mode)
+
+    async def _dismiss_startup_tip(self) -> None:
+        """Remove the startup tip after the first chat input submission."""
+        with suppress(NoMatches):
+            await self.query_one("#startup-tip", StartupTip).remove()
 
     async def on_external_input(self, event: ExternalInput) -> None:
         """Route external prompt and command events through the app queue.

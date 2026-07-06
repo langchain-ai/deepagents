@@ -872,7 +872,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="display.hide_splash_tips",
         group="Display",
-        summary="Hide rotating tips in the startup welcome banner.",
+        summary="Hide rotating tips above the chat input.",
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.HIDE_SPLASH_TIPS,

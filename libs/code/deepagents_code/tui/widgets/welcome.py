@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -21,7 +20,6 @@ from deepagents_code._env_vars import (
     DEBUG,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
-    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
     SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
@@ -44,47 +42,6 @@ logger = logging.getLogger(__name__)
 _ANSI_THEMES: Final[frozenset[str]] = frozenset({"ansi-dark", "ansi-light"})
 """Theme names whose color palette is determined by the terminal emulator
 rather than by the app, so link styles use bold instead of a parsed color."""
-
-_TIPS: dict[str, int] = {
-    "Use @ to reference files and / for commands": 3,
-    "Try /threads to resume a previous conversation": 2,
-    "Use /offload when your conversation gets long": 2,
-    "Use /copy to copy the latest assistant message": 3,
-    "Use /mcp to search your MCP servers and inspect tool parameters": 1,
-    "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
-    "Use /remember to save learnings from this conversation": 1,
-    "Use /model to switch models mid-conversation": 2,
-    "Use /effort high to change the current model's reasoning effort": 1,
-    "Press ctrl+x to compose prompts in your external editor": 1,
-    "Press ctrl+u to delete to the start of the line in the chat input": 1,
-    "Use /skill:<name> to invoke a skill directly": 1,
-    "Type /update to check for and install updates": 1,
-    "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
-    "Use /theme to customize the TUI's colors": 1,
-    "Use /skill-creator to build reusable agent skills": 1,
-    "Ask for a workflow to fan work out to subagents in parallel": 3,
-    "Use /auto-update to toggle automatic updates": 1,
-    "Use /timestamps to show or hide message timestamp footers": 1,
-    "Use /agents to browse and switch between your available agents": 2,
-    "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
-    "Press Shift+Tab to toggle auto-approve mode": 2,
-    "Use --startup-cmd to run a shell command before the first prompt": 1,
-    "Use !! for incognito shell commands that stay out of model context": 1,
-    "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
-}
-"""Rotating tips shown in the welcome banner, with relative selection weights."""
-
-
-def _pick_tip() -> str:
-    """Pick one startup tip using the configured relative weights.
-
-    Returns:
-        Tip text selected from `_TIPS`.
-    """
-    tips = list(_TIPS.keys())
-    weights = list(_TIPS.values())
-    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
-
 
 _LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
 """UTM source tag appended to LangSmith project URLs in the welcome banner."""
@@ -221,8 +178,6 @@ class WelcomeBanner(Static):
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
-        self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
-        self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
@@ -445,8 +400,6 @@ class WelcomeBanner(Static):
             rows.append(
                 [("mcp:       ", "dim"), (f"{self._mcp_tool_count} {label}", accent)]
             )
-        if self._tip is not None:
-            rows.append([("tip:       ", "dim"), (self._tip, "dim italic")])
 
         for index, row in enumerate(rows):
             parts.append("\n\n" if index == 0 else "\n")

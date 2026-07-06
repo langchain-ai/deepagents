@@ -99,7 +99,7 @@ The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, sepa
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/tui/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/tui/widgets/startup_tip.py`. Tips are shown randomly above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
 
 ## Slash commands
 

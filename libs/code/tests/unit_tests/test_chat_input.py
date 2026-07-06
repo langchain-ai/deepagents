@@ -4852,6 +4852,28 @@ class TestPasteCollapseIntegration:
             # satisfy a `"[Pasted text #2]" not in text` assertion.
             assert chat._text_area.text == "[Pasted text #1]"
 
+    async def test_typed_paste_placeholder_is_not_atomic(self) -> None:
+        """A paste placeholder with no backing content edits char-by-char.
+
+        Regression test for the bound-token guard: `[Pasted text #99]` that the
+        user typed (or a stale token whose id is absent from `_pasted_contents`)
+        must not delete atomically, so backspace removes a single character.
+        Without the `id not in pasted_ids` arm this whole token would vanish.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            assert chat._pasted_contents == {}
+
+            chat._text_area.text = "[Pasted text #99]"
+            chat._text_area.move_cursor((0, len("[Pasted text #99]")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[Pasted text #99"
+
     async def test_backspace_removes_multiline_paste_placeholder(self) -> None:
         """Backspace atomically deletes the `+M lines` placeholder variant."""
         multi_line = "\n".join(f"line {i}" for i in range(5))

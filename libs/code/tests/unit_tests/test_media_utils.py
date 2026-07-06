@@ -296,6 +296,22 @@ class TestCreateMultimodalContent:
         assert "[image 2]" not in result[0]["text"]
         assert result[0]["text"] == "and differ how?"
 
+    def test_mixed_image_and_video_placeholders_stripped(self) -> None:
+        """Image and video placeholders in one message are both stripped.
+
+        Exercises the combined `images + videos` placeholder assembly and the
+        heterogeneous `|`-token strip together, which same-type cases miss.
+        """
+        img = ImageData(base64_data="a", format="png", placeholder="[image 1]")
+        vid = VideoData(base64_data="v", format="mp4", placeholder="[video 1]")
+        result = create_multimodal_content("[image 1] vs [video 1]", [img], [vid])
+
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "vs"
+        # Both media blocks follow the single text block.
+        assert result[1]["type"] == "image_url"
+        assert result[2]["type"] == "video"
+
     def test_unbound_placeholder_like_text_preserved(self) -> None:
         """Placeholder-shaped text not bound to attached media is preserved.
 
@@ -349,6 +365,13 @@ class TestStripMediaPlaceholders:
             "keep [image 2] drop [image 1]", ["[image 1]"]
         )
         assert result == "keep [image 2] drop"
+
+    def test_mixed_image_and_video_tokens_removed(self) -> None:
+        """Heterogeneous image and video tokens are stripped in one pass."""
+        result = strip_media_placeholders(
+            "[image 1] and [video 1] together", ["[image 1]", "[video 1]"]
+        )
+        assert result == "and together"
 
     def test_text_without_placeholder_unchanged(self) -> None:
         """Text without a bound placeholder is unchanged (aside from trim)."""

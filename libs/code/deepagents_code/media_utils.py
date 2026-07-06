@@ -74,6 +74,8 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
     Returns:
         Text with the given media placeholders removed and surrounding whitespace
         tidied. Newlines are preserved so multi-line prompts keep their structure.
+        Returns an empty string when only whitespace remains after removal, so
+        callers can treat a placeholder-only message as having no text block.
     """
     counts = Counter(p for p in placeholders if p)
     if not counts:

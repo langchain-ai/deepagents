@@ -2438,14 +2438,15 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
     trust_lists = load_mcp_server_trust_lists()
     from rich.console import Console as _Console
+    from rich.markup import escape
 
     prompt_console = _Console(stderr=True)
     if trust_lists.read_error is not None:
         # The user's allow/deny policy could not be read; the loader fails closed
         # (treats project configs as untrusted). Make that visible here too.
         prompt_console.print(
-            f"[yellow]Warning: {trust_lists.read_error}; treating project MCP "
-            "servers as untrusted.[/yellow]",
+            f"[yellow]Warning: {escape(str(trust_lists.read_error))}; treating "
+            "project MCP servers as untrusted.[/yellow]",
             highlight=False,
         )
     prompt_servers: list[tuple[str, str, str]] = []
@@ -2470,14 +2471,14 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         )
         for name, kind, summary in preapproved:
             prompt_console.print(
-                f'  [green]"{name}"[/green] ({kind}): pre-approved '
-                f"(enabled_project_servers):  {summary}",
+                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
+                f"(enabled_project_servers):  {escape(summary)}",
                 highlight=False,
             )
         for name, kind, summary in blocked:
             prompt_console.print(
-                f'  [red]"{name}"[/red] ({kind}): blocked '
-                f"(disabled_project_servers):  {summary}",
+                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
+                f"(disabled_project_servers):  {escape(summary)}",
                 highlight=False,
             )
 
@@ -2496,7 +2497,9 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
     for name, kind, summary in prompt_servers:
-        prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
+        prompt_console.print(
+            f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
     _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(

@@ -2385,7 +2385,7 @@ class TestCheckMcpProjectTrustPrompt:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When every server is list-resolved, show what happened but don't ask."""
+        """List-resolved server rows escape project-controlled Rich markup."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2397,8 +2397,8 @@ class TestCheckMcpProjectTrustPrompt:
         user_config = tmp_path / "config.toml"
         user_config.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["docs"]\n'
-            'disabled_project_servers = ["blocked"]\n'
+            'enabled_project_servers = ["docs[/green]"]\n'
+            'disabled_project_servers = ["blocked[/red]"]\n'
         )
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
 
@@ -2427,16 +2427,16 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
                 return_value={
                     "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "blocked": {"command": "echo"},
+                        "docs[/green]": {"command": "echo"},
+                        "blocked[/red]": {"command": "echo"},
                     }
                 },
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[
-                    ("docs", "stdio", "echo"),
-                    ("blocked", "stdio", "echo"),
+                    ("docs[/green]", "stdio[/green]", "echo [/green]"),
+                    ("blocked[/red]", "http[/red]", "https://x.test/[/red]"),
                 ],
             ),
             patch(
@@ -2449,11 +2449,18 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is None
         err = capsys.readouterr().err
+        flattened = err.replace("\n", "")
         # No approval question, but the config's decisions are surfaced.
         assert "require approval" not in err
         assert "Resolved by your config" in err
-        assert '"docs" (stdio): pre-approved (enabled_project_servers):  echo' in err
-        assert '"blocked" (stdio): blocked (disabled_project_servers):  echo' in err
+        assert (
+            '"docs[/green]" (stdio[/green]): pre-approved '
+            "(enabled_project_servers):  echo [/green]" in flattened
+        )
+        assert (
+            '"blocked[/red]" (http[/red]): blocked '
+            "(disabled_project_servers):  https://x.test/[/red]" in flattened
+        )
 
     def test_prompt_asks_only_about_unlisted_but_shows_preapproved(
         self,

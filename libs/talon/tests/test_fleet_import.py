@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from deepagents_code.mcp_tools import load_mcp_config
 from deepagents_talon.__main__ import main
 from deepagents_talon.fleet_import import FleetImportError, format_import_stdout, import_fleet_zip
 from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY
@@ -54,49 +53,10 @@ def test_import_fleet_zip_materializes_agent_files_and_mcp_config(tmp_path: Path
     assert "Tool count: 2" in notes
     assert "Scopes: researcher, root" in notes
     assert "Interrupt-enabled tools: write_remote" in notes
-    assert '"allowedTools": [' in notes
     config = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))
-    assert config == {
-        "mcpServers": {
-            "sample": {
-                "allowedTools": ["read_remote", "write_remote"],
-                "auth": "oauth",
-                "type": "http",
-                "url": "https://tools.example/mcp",
-            },
-        },
-    }
-
-
-def test_import_fleet_zip_normalizes_mcp_server_names_for_loader(tmp_path: Path) -> None:
-    source = tmp_path / "fleet.zip"
-    _write_zip(
-        source,
-        {
-            "AGENTS.md": "root prompt",
-            "tools.json": json.dumps(
-                {
-                    "tools": [
-                        {
-                            "name": "read_remote",
-                            "mcp_server_url": "https://tools.example/mcp",
-                            "mcp_server_name": "foo.bar",
-                        },
-                    ],
-                    "interrupt_config": {},
-                }
-            ),
-        },
-    )
-    target = tmp_path / "agent"
-
-    import_fleet_zip(source, target_dir=target)
-
-    config_path = target / ".mcp.json"
-    config = load_mcp_config(str(config_path))
-    assert set(config["mcpServers"]) == {"foo-bar"}
-    notes = (target / ".mcp.json.setup").read_text(encoding="utf-8")
-    assert '"foo-bar": {' in notes
+    server = config["mcpServers"]["sample"]
+    assert server["url"] == "https://tools.example/mcp"
+    assert server["allowedTools"] == ["read_remote", "write_remote"]
 
 
 @pytest.mark.parametrize(

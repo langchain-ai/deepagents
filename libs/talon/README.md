@@ -146,7 +146,7 @@ uv run --directory libs/talon deepagents-talon import-fleet ./fleet-export.zip \
 ```
 
 By default, `import-fleet` writes into the selected assistant manifest directory:
-`~/.deepagents/<assistant_id>/agent/`, with subagent prompts in
+`~/.deepagents/<assistant_id>/`, with subagent prompts in
 `~/.deepagents/<assistant_id>/agents/`. The selected assistant id comes from
 `DEEPAGENTS_TALON_ASSISTANT_ID`, `AGENT_ASSISTANT_ID`, or `default`; pass
 `--assistant-id <id>` to select a different assistant for the import, or

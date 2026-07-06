@@ -133,11 +133,11 @@ def test_import_fleet_cli_resolves_target_assistant(
         main()
 
     assert exc.value.code == 0
-    target = tmp_path / "home" / expected_id / "agent"
+    target = tmp_path / "home" / expected_id
     assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
-    assert (tmp_path / "home" / expected_id / "agents" / "researcher" / "AGENTS.md").is_file()
+    assert (target / "agents" / "researcher" / "AGENTS.md").is_file()
     if unexpected_id is not None:
-        assert not (tmp_path / "home" / unexpected_id / "agent" / "AGENTS.md").exists()
+        assert not (tmp_path / "home" / unexpected_id / "AGENTS.md").exists()
 
 
 def test_import_fleet_cli_explicit_target_keeps_subagents_under_target(

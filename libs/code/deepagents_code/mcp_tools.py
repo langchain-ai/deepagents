@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from langchain_mcp_adapters.client import Connection
     from mcp import ClientSession
 
+    from deepagents_code.model_config import McpServerTrustLists
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -710,6 +711,93 @@ def _json_error_snippet(
     return f"    {source}\n    {' ' * caret_col}^"
 
 
+def _load_mcp_config_json(config_path: str) -> dict[str, Any]:
+    """Load MCP configuration JSON with parser diagnostics.
+
+    Args:
+        config_path: Path to the MCP JSON configuration file.
+
+    Returns:
+        Parsed configuration dictionary.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        json.JSONDecodeError: If config file contains invalid JSON.
+    """
+    path = Path(config_path)
+
+    if not path.exists():
+        error_msg = f"MCP config file not found: {config_path}"
+        raise FileNotFoundError(error_msg)
+
+    try:
+        with path.open(encoding="utf-8") as file_obj:
+            return json.load(file_obj)
+    except json.JSONDecodeError as exc:
+        # Build a layered message: core reason, an actionable hint for common
+        # mistakes, then a caret snippet last so the auto-appended
+        # "line X column Y" suffix reads as the location of the caret.
+        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
+        hint = _json_error_hint(exc)
+        if hint is not None:
+            parts.append(hint)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
+        if snippet is not None:
+            parts.append(snippet)
+        error_msg = "\n".join(parts)
+        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
+
+
+def _validate_mcp_config_top_level(config: dict[str, Any]) -> None:
+    """Validate top-level MCP configuration fields.
+
+    Args:
+        config: Parsed MCP config dictionary.
+
+    Raises:
+        TypeError: If top-level fields have wrong types.
+        ValueError: If required top-level fields are missing.
+    """
+    if "mcpServers" not in config:
+        error_msg = (
+            "MCP config must contain 'mcpServers' field. "
+            'Expected format: {"mcpServers": {"server-name": {...}}}'
+        )
+        raise ValueError(error_msg)
+
+    if not isinstance(config["mcpServers"], dict):
+        error_msg = "'mcpServers' field must be a dictionary"
+        raise TypeError(error_msg)
+
+    if not config["mcpServers"]:
+        error_msg = "'mcpServers' field is empty - no servers configured"
+        raise ValueError(error_msg)
+
+
+def _validate_mcp_config_servers(config: dict[str, Any]) -> None:
+    """Validate every server in an MCP configuration.
+
+    Args:
+        config: Parsed MCP config dictionary.
+    """
+    for server_name, server_config in config["mcpServers"].items():
+        _validate_server_config(server_name, server_config)
+
+
+def _load_mcp_config_top_level(config_path: Path) -> dict[str, Any]:
+    """Load an MCP config file and validate only its top-level shape.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        Parsed configuration dictionary with a valid `mcpServers` mapping.
+    """
+    config = _load_mcp_config_json(str(config_path))
+    _validate_mcp_config_top_level(config)
+    return config
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -741,48 +829,9 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-        RuntimeError: If header env-var interpolation references an unset var.
-    """  # noqa: DOC502 - `_validate_server_config()` raises `RuntimeError` indirectly
-    path = Path(config_path)
-
-    if not path.exists():
-        error_msg = f"MCP config file not found: {config_path}"
-        raise FileNotFoundError(error_msg)
-
-    try:
-        with path.open(encoding="utf-8") as file_obj:
-            config = json.load(file_obj)
-    except json.JSONDecodeError as exc:
-        # Build a layered message: core reason, an actionable hint for common
-        # mistakes, then a caret snippet last so the auto-appended
-        # "line X column Y" suffix reads as the location of the caret.
-        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
-        hint = _json_error_hint(exc)
-        if hint is not None:
-            parts.append(hint)
-        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
-        if snippet is not None:
-            parts.append(snippet)
-        error_msg = "\n".join(parts)
-        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
-
-    if "mcpServers" not in config:
-        error_msg = (
-            "MCP config must contain 'mcpServers' field. "
-            'Expected format: {"mcpServers": {"server-name": {...}}}'
-        )
-        raise ValueError(error_msg)
-
-    if not isinstance(config["mcpServers"], dict):
-        error_msg = "'mcpServers' field must be a dictionary"
-        raise TypeError(error_msg)
-
-    if not config["mcpServers"]:
-        error_msg = "'mcpServers' field is empty - no servers configured"
-        raise ValueError(error_msg)
-
-    for server_name, server_config in config["mcpServers"].items():
-        _validate_server_config(server_name, server_config)
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` header interpolation is deferred to activation time, so no RuntimeError here)
+    config = _load_mcp_config_top_level(Path(config_path))
+    _validate_mcp_config_servers(config)
 
     return config
 
@@ -924,6 +973,11 @@ def extract_project_server_summaries(
         return results
     for name, server in servers.items():
         if not isinstance(server, dict):
+            logger.debug(
+                "Skipping malformed MCP server entry %r: expected a table, got %s",
+                name,
+                type(server).__name__,
+            )
             continue
         kind = _resolve_server_type(server)
         if kind == "stdio":
@@ -990,6 +1044,31 @@ def load_mcp_config_with_error(
         logger.warning("Skipping unreadable MCP config %s: %s", config_path, exc)
         return None, f"Unreadable: {exc}"
     except (json.JSONDecodeError, ValueError, TypeError, RuntimeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None, str(exc)
+
+
+def _load_mcp_config_top_level_with_error(
+    config_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Load an MCP config file, validating only its top-level structure.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        `(parsed_config, None)` on success, `(None, None)` when the file
+        doesn't exist, or `(None, error_message)` on load/top-level validate
+        failure.
+    """
+    try:
+        return _load_mcp_config_top_level(config_path), None
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        logger.warning("Skipping unreadable MCP config %s: %s", config_path, exc)
+        return None, f"Unreadable: {exc}"
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
         return None, str(exc)
 
@@ -1477,26 +1556,40 @@ async def _load_tools_from_config(
                         server_name=server_name,
                     )
 
-                if server_config.get("auth") == "oauth":
-                    from deepagents_code.mcp_auth import (
-                        FileTokenStorage,
-                        build_oauth_provider,
-                    )
+                from deepagents_code.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
 
-                    storage = FileTokenStorage(
+                explicit_oauth = server_config.get("auth") == "oauth"
+                header_names = {
+                    name.lower() for name in (server_config.get("headers") or {})
+                }
+                has_authorization_header = "authorization" in header_names
+                storage = FileTokenStorage(
+                    server_name,
+                    server_url=server_config["url"],
+                )
+                stored_tokens = await storage.get_tokens()
+
+                if explicit_oauth and stored_tokens is None:
+                    # Config opted into OAuth but no tokens are stored yet —
+                    # require an upfront login before connecting.
+                    auth_msg = f"MCP server {server_name!r} needs re-authentication."
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated.",
                         server_name,
-                        server_url=server_config["url"],
                     )
-                    if await storage.get_tokens() is None:
-                        auth_msg = (
-                            f"MCP server {server_name!r} needs re-authentication."
-                        )
-                        logger.warning(
-                            "MCP server '%s' skipped: not authenticated.",
-                            server_name,
-                        )
-                        skipped[server_name] = ("unauthenticated", auth_msg)
-                        continue
+                    skipped[server_name] = ("unauthenticated", auth_msg)
+                    continue
+
+                if explicit_oauth or (
+                    stored_tokens is not None and not has_authorization_header
+                ):
+                    # Attach the provider when the user opted in, or when a
+                    # prior login (possibly triggered by 401 auto-detection)
+                    # already stored tokens for this server. Static
+                    # Authorization headers take precedence over stored OAuth.
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -1550,10 +1643,32 @@ async def _load_tools_from_config(
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
-            from deepagents_code.mcp_auth import find_reauth_required
+            from deepagents_code.mcp_auth import (
+                find_oauth_challenge,
+                find_reauth_required,
+            )
 
-            reauth = find_reauth_required(exc)
             status: MCPServerStatus
+            try:
+                reauth = find_reauth_required(exc)
+                challenge_url = (
+                    find_oauth_challenge(exc)
+                    if transport in _SUPPORTED_REMOTE_TYPES
+                    else None
+                )
+            except Exception:
+                # Classifying the failure is best-effort. If a classifier
+                # itself raises, degrade this one server to a plain error
+                # rather than letting the exception abort tool loading for
+                # every remaining server.
+                reauth = None
+                challenge_url = None
+                logger.debug(
+                    "MCP server '%s': failed to classify discovery error",
+                    server_name,
+                    exc_info=True,
+                )
+
             if reauth is not None:
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
@@ -1572,6 +1687,27 @@ async def _load_tools_from_config(
                 )
                 logger.debug(
                     "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
+            elif challenge_url is not None:
+                # A remote server answered with a 401 OAuth challenge
+                # (RFC 9728) that wasn't already handled as a token refresh —
+                # typically a server not opted into OAuth in config. Surface it
+                # as unauthenticated so the user can log in, rather than as an
+                # opaque connection error.
+                status = "unauthenticated"
+                error = (
+                    f"MCP server {server_name!r} requires authentication; "
+                    f"run `dcode mcp login {server_name}`."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: 401 OAuth challenge detected",
                     server_name,
                     exc_info=True,
                 )
@@ -1696,6 +1832,47 @@ async def get_mcp_tools(
     return await _load_tools_from_config(config)
 
 
+def _log_skipped_project_servers(
+    dropped: list[tuple[str, str, str]],
+    *,
+    trust_project_mcp: bool | None,
+    config_trusted: bool,
+) -> None:
+    """Log project MCP servers that were dropped, explaining why.
+
+    Split out so the trust/drop loop stays readable. The message distinguishes an
+    explicit reject on an otherwise-trusted config from the untrusted-drop cases,
+    which themselves differ by whether trust was declined outright
+    (`--trust-project-mcp` off) or merely not yet granted.
+
+    Args:
+        dropped: `(name, kind, summary)` tuples for each skipped server.
+        trust_project_mcp: The caller's tri-state trust flag.
+        config_trusted: Whether the project config was otherwise trusted (so the
+            only reason to drop is an explicit user-level deny entry).
+    """
+    skipped_list = "\n".join(
+        f"- {name} [{kind}]: {summary}" for name, kind, summary in dropped
+    )
+    if config_trusted:
+        logger.warning(
+            "Skipped project MCP servers rejected by user config "
+            "(disabled_project_servers):\n%s",
+            skipped_list,
+        )
+    elif trust_project_mcp is False:
+        logger.warning(
+            "Skipped untrusted project MCP servers:\n%s",
+            skipped_list,
+        )
+    else:
+        logger.warning(
+            "Skipped untrusted project MCP servers "
+            "(config changed or not yet approved):\n%s",
+            skipped_list,
+        )
+
+
 async def resolve_and_load_mcp_tools(
     *,
     explicit_config_path: str | None = None,
@@ -1715,12 +1892,23 @@ async def resolve_and_load_mcp_tools(
         explicit_config_path: Extra config file to layer on top of
             auto-discovered configs.
         no_mcp: If `True`, disable all MCP loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust.
 
-            - `True`: always trust project configs, including stdio servers.
-            - `False`: drop stdio entries from project configs.
+            Applies to stdio and remote (http/sse) servers alike — remote entries
+            are gated too because an attacker-controlled `.mcp.json` can SSRF or
+            exfiltrate `${VAR}` headers during the discovery preflight.
+
+            - `True`: always trust project configs (all servers).
+            - `False`: drop all project servers (stdio and remote).
             - `None`: consult the persistent trust store — trusted configs
-              load fully, untrusted project stdio servers are dropped.
+                load fully; all servers from untrusted project configs are
+                dropped.
+
+            Regardless of this flag, the user-level allow/deny lists
+            (`[mcp].enabled_project_servers` /`disabled_project_servers` and
+            their env equivalents, via `load_mcp_server_trust_lists`) are
+            applied: named servers load from an otherwise-untrusted config,
+            and explicitly denied servers are dropped even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
         stateless: When `True`, do not return an owned runtime session manager.
@@ -1738,9 +1926,10 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed, or header
-            env-var interpolation in `explicit_config_path` references an
-            unset variable.
+        RuntimeError: If the merged MCP config is malformed. (Header `${VAR}`
+            interpolation is deferred to activation inside
+            `_load_tools_from_config`, which captures such failures into the
+            returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
     if no_mcp:
         return [], None, []
@@ -1765,8 +1954,9 @@ async def resolve_and_load_mcp_tools(
             configs.append(config)
 
     project_trusted: bool | None = None
+    trust_lists: McpServerTrustLists | None = None
     for path in project_configs:
-        config, error = load_mcp_config_with_error(path)
+        config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:
             config_load_errors.append((path, error))
         if config is None:
@@ -1774,46 +1964,110 @@ async def resolve_and_load_mcp_tools(
 
         project_servers = extract_project_server_summaries(config)
         if not project_servers:
-            configs.append(config)
+            # No dict servers yielded a summary, so every entry is malformed.
+            # Re-validate the already-loaded config (no second file read) to
+            # surface a precise per-server error; this always fails today, but
+            # the append path is kept so a future validator that accepts such a
+            # shape would still load it.
+            try:
+                _validate_mcp_config_servers(config)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                config_load_errors.append((path, str(exc)))
+            else:
+                configs.append(config)
             continue
 
+        # Whether the config as a whole is trusted (flag/env/fingerprint). This
+        # governs the default for un-listed servers; the user-level allow/deny
+        # lists below refine it per server.
         if trust_project_mcp is True:
-            configs.append(config)
-            continue
-
-        if trust_project_mcp is None and project_trusted is None:
-            from deepagents_code.mcp_trust import (
-                compute_config_fingerprint,
-                is_project_mcp_trusted,
-            )
-
-            project_root = str(_resolve_project_config_base(project_context).resolve())
-            fingerprint = compute_config_fingerprint(project_configs)
-            project_trusted = is_project_mcp_trusted(project_root, fingerprint)
-
-        if project_trusted is True:
-            configs.append(config)
-            continue
-
-        # Untrusted project config: drop ALL servers (stdio + remote). Remote
-        # entries from an attacker-controlled .mcp.json can SSRF localhost or
-        # cloud metadata endpoints during the preflight HEAD probe, and any
-        # `${VAR}` references in their `headers` would exfiltrate the value
-        # to the attacker URL during the discovery handshake.
-        skipped = [
-            f"- {name} [{kind}]: {summary}" for name, kind, summary in project_servers
-        ]
-        skipped_list = "\n".join(skipped)
-        if trust_project_mcp is False:
-            logger.warning(
-                "Skipped untrusted project MCP servers:\n%s",
-                skipped_list,
-            )
+            config_trusted = True
+        elif trust_project_mcp is False:
+            config_trusted = False
         else:
-            logger.warning(
-                "Skipped untrusted project MCP servers "
-                "(config changed or not yet approved):\n%s",
-                skipped_list,
+            if project_trusted is None:
+                from deepagents_code.mcp_trust import (
+                    compute_config_fingerprint,
+                    is_project_mcp_trusted,
+                )
+
+                project_root = str(
+                    _resolve_project_config_base(project_context).resolve()
+                )
+                fingerprint = compute_config_fingerprint(project_configs)
+                project_trusted = is_project_mcp_trusted(project_root, fingerprint)
+            config_trusted = project_trusted
+
+        # The allow/deny lists are sourced only from the user's own config (home
+        # config.toml + env) — never from the repo — so a committed .mcp.json
+        # cannot self-approve. Loaded lazily and reused across project configs.
+        if trust_lists is None:
+            from deepagents_code.model_config import (
+                DEFAULT_CONFIG_PATH,
+                load_mcp_server_trust_lists,
+            )
+
+            trust_lists = load_mcp_server_trust_lists()
+            if trust_lists.read_error is not None:
+                # Surface the read failure as a visible config error (a bare
+                # logger.warning has no handler outside debug mode).
+                config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+
+        if trust_lists.load_failed:
+            # Fail closed: the user's allow/deny policy could not be read, so do
+            # not honor whole-config trust — otherwise a server the user meant to
+            # deny would load. Names explicitly enabled via a readable source
+            # (shell env) still survive the filter below.
+            config_trusted = False
+
+        # Keep only servers that survive the trust decision. Dropping the rest
+        # here (rather than loading all or none) preserves the SSRF/header-
+        # exfiltration gate: a non-allowlisted remote entry from an attacker-
+        # controlled .mcp.json never reaches the preflight HEAD probe or the
+        # `${VAR}` header interpolation during the discovery handshake.
+        servers = config["mcpServers"]
+        kept: dict[str, Any] = {}
+        for name, server in servers.items():
+            if name in trust_lists.disabled:
+                # Explicit reject always wins, even for a trusted config.
+                continue
+            if config_trusted or name in trust_lists.enabled:
+                kept[name] = server
+        if kept:
+            filtered = {**config, "mcpServers": kept}
+            try:
+                _validate_mcp_config_servers(filtered)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                # The whole filtered config is dropped, so name the kept
+                # (trusted/allowlisted) servers that will NOT load — otherwise
+                # they vanish silently (the skip-log below only covers servers
+                # dropped by the trust decision, not by this validation failure).
+                logger.warning(
+                    "Skipping invalid MCP config %s after project trust "
+                    "filtering; these trusted/allowlisted servers will not "
+                    "load: %s (%s)",
+                    path,
+                    ", ".join(kept),
+                    exc,
+                )
+                config_load_errors.append((path, str(exc)))
+            else:
+                configs.append(filtered)
+
+        # Servers dropped by the trust *decision* (disabled, or not allowlisted
+        # in an untrusted config). A validation failure above is reported
+        # separately, so those kept-but-unloaded names are intentionally not
+        # re-listed here with a trust-based reason.
+        dropped = [
+            (name, kind, summary)
+            for name, kind, summary in project_servers
+            if name not in kept
+        ]
+        if dropped:
+            _log_skipped_project_servers(
+                dropped,
+                trust_project_mcp=trust_project_mcp,
+                config_trusted=config_trusted,
             )
 
     if explicit_config_path:
@@ -1857,7 +2111,7 @@ async def resolve_and_load_mcp_tools(
                         if isinstance(server_config, dict)
                         else "unknown",
                         status="disabled",
-                        error="Disabled by user (`/mcp` F2 to re-enable).",
+                        error="Disabled by user (F2 to re-enable).",
                     ),
                 )
             else:

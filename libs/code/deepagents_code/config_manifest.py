@@ -789,6 +789,22 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_HEADER,
     ),
     ConfigOption(
+        key="display.splash_show_model",
+        group="Display",
+        summary="Show the active model row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_MODEL,
+    ),
+    ConfigOption(
+        key="display.splash_show_cwd",
+        group="Display",
+        summary="Show the working-directory row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_CWD,
+    ),
+    ConfigOption(
         key="display.kitty_keyboard",
         group="Display",
         summary="Override kitty-keyboard detection (1 forces on, 0 forces off).",
@@ -803,6 +819,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.SHOW_SCROLLBAR,
         toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
+        key="display.collapse_pastes",
+        group="Display",
+        summary="Collapse large chat-input pastes into compact placeholders.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.COLLAPSE_PASTES,
+        toml_keys=("ui", "collapse_pastes"),
     ),
     ConfigOption(
         key="display.hide_cwd",
@@ -837,14 +862,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
     ),
     ConfigOption(
-        key="display.hide_splash_tips",
-        group="Display",
-        summary="Hide rotating tips in the startup splash.",
-        kind=OptionKind.BOOL,
-        default=False,
-        env_var=_env_vars.HIDE_SPLASH_TIPS,
-    ),
-    ConfigOption(
         key="display.hide_splash_version",
         group="Display",
         summary="Hide version and local-install details in the splash screen.",
@@ -859,6 +876,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
+    ),
+    ConfigOption(
+        key="display.show_url_open_toast",
+        group="Display",
+        summary="Show a confirmation toast after clicking a URL.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_URL_OPEN_TOAST,
+        toml_keys=("ui", "show_url_open_toast"),
     ),
     ConfigOption(
         key="display.onboarding_integrations_screen",
@@ -1062,13 +1088,59 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
     ),
-    # --- Warnings (config.toml-only) -----------------------------------
+    # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary="Warning keys to suppress (e.g. 'ripgrep').",
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
+    ),
+    ConfigOption(
+        key="warnings.suppress_env_override",
+        group="Warnings",
+        summary="Silence the LangSmith env-var override warning at startup.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
+    ),
+    # --- MCP ------------------------------------------------------------
+    # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
+    # which reads them only from the user-level config.toml (never a project file),
+    # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
+    # env overrides are named in the summaries instead of `env_var` because the
+    # scalar resolver rejects env-backed STRUCTURED options by design.
+    ConfigOption(
+        key="mcp.enabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to pre-approve by name from an untrusted "
+            ".mcp.json; command/URL changes under the same name still match "
+            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_servers"),
+    ),
+    ConfigOption(
+        key="mcp.disabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to always reject; reject wins over approval "
+            "and trust (env: DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_project_servers"),
+    ),
+    # Unlike the two trust lists above, this one is managed by `mcp_disabled`
+    # (the server viewer's disable toggle), not `load_mcp_server_trust_lists`;
+    # it plays no part in the project-trust security boundary. It is STRUCTURED
+    # here purely for discovery.
+    ConfigOption(
+        key="mcp.disabled_servers",
+        group="MCP",
+        summary="MCP server names disabled by the user from the server viewer.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_servers"),
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
@@ -1157,13 +1229,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
     ),
-    ConfigOption(
-        key="debug.override_startup_subheader",
-        group="Debug",
-        summary="Override the startup splash subheader text.",
-        kind=OptionKind.STR,
-        env_var=_env_vars.DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
-    ),
 )
 
 
@@ -1176,6 +1241,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
+        # Env equivalents of the STRUCTURED `[mcp]` lists. They are read by the
+        # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
+        # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
+        # resolver, so they intentionally have no scalar `env_var` ConfigOption.
+        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DISABLED_PROJECT_MCP_SERVERS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

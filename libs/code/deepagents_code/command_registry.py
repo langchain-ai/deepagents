@@ -119,6 +119,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/effort",
+        description="Set reasoning effort for the current model",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="reasoning thinking level",
+        argument_hint="[none|low|medium|high|xhigh|max|clear]",
+    ),
+    SlashCommand(
         name="/mcp",
         description="Manage MCP servers and authentication",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
@@ -138,7 +145,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/offload",
-        description="Offload older messages to free context",
+        description="Summarize and offload older messages to free context",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="compact",
         aliases=("/compact",),

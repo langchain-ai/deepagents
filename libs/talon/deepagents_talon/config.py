@@ -32,15 +32,12 @@ class TalonConfig:
         assistant_id: Stable identifier used to namespace all local assistant state.
         home: Per-assistant home directory for state, manifests, sessions, and jobs.
         model: Chat model identifier supplied by the operator environment.
-        fleet_dir: Optional operator-unzipped Fleet export directory to load with
-            `fleet-deepagents-export`.
         env: Environment values visible to channels, providers, and future adapters.
     """
 
     assistant_id: str
     home: Path
     model: str | None = None
-    fleet_dir: Path | None = None
     env: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -80,18 +77,10 @@ class TalonConfig:
             root = Path.home() / ".deepagents"
 
         model = _first_present(values, "DEEPAGENTS_TALON_MODEL", "AGENT_MODEL", default=None)
-        fleet_dir = _first_present(
-            values,
-            "DEEPAGENTS_TALON_FLEET_DIR",
-            "AGENT_FLEET_DIR",
-            "FLEET_DIR",
-            default=None,
-        )
         return cls(
             assistant_id=assistant_id,
             home=root.expanduser() / assistant_id,
             model=model,
-            fleet_dir=Path(fleet_dir).expanduser() if fleet_dir else None,
             env={key: value for key, value in values.items() if _is_runtime_env(key)},
         )
 
@@ -103,7 +92,13 @@ class TalonConfig:
         """
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
-        for child in (self.manifest_dir, self.cron_dir, self.channel_dir, self.inbound_media_dir):
+        for child in (
+            self.manifest_dir,
+            self.agents_dir,
+            self.cron_dir,
+            self.channel_dir,
+            self.inbound_media_dir,
+        ):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         return self.home
@@ -111,7 +106,12 @@ class TalonConfig:
     @property
     def manifest_dir(self) -> Path:
         """Directory where agent manifest files are materialized."""
-        return self.home / "agent"
+        return self.home
+
+    @property
+    def agents_dir(self) -> Path:
+        """Directory reserved for custom subagent definitions."""
+        return self.home / "agents"
 
     @property
     def cron_dir(self) -> Path:

@@ -305,13 +305,6 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
-    @staticmethod
-    def _coerce_glob_result(raw: GlobResult | list[FileInfo]) -> GlobResult:
-        """Normalize legacy `list[FileInfo]` returns to `GlobResult`."""
-        if isinstance(raw, GlobResult):
-            return raw
-        return GlobResult(matches=raw)
-
     def grep(
         self,
         pattern: str,
@@ -475,7 +468,7 @@ class CompositeBackend(BackendProtocol):
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(matches=results, truncated=truncated)
 
-        return self._coerce_glob_result(self.default.glob(pattern, path))
+        return self.default.glob(pattern, path)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Async version of glob.
@@ -525,7 +518,7 @@ class CompositeBackend(BackendProtocol):
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(matches=results, truncated=truncated)
 
-        return self._coerce_glob_result(await self.default.aglob(pattern, path))
+        return await self.default.aglob(pattern, path)
 
     def write(
         self,

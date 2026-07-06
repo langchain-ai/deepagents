@@ -77,12 +77,10 @@ def test_from_env_keeps_legacy_speech_env(tmp_path: Path) -> None:
     assert config.env["SPEECH_DEVICE"] == "cuda"
 
 
-def test_from_env_reads_fleet_dir_and_keeps_fleet_env(tmp_path: Path) -> None:
-    fleet_dir = tmp_path / "fleet"
+def test_from_env_keeps_runtime_env_vars(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "assistant-1",
-            "DEEPAGENTS_TALON_FLEET_DIR": str(fleet_dir),
             "LANGSMITH_TENANT_ID": "tenant",
             "LANGSMITH_ORGANIZATION_ID": "org",
             "LANGSMITH_USER_ID": "user",
@@ -93,7 +91,7 @@ def test_from_env_reads_fleet_dir_and_keeps_fleet_env(tmp_path: Path) -> None:
         base_home=tmp_path,
     )
 
-    assert config.fleet_dir == fleet_dir
+    assert not hasattr(config, "fleet_dir")
     assert config.env["LANGSMITH_TENANT_ID"] == "tenant"
     assert config.env["LANGSMITH_ORGANIZATION_ID"] == "org"
     assert config.env["LANGSMITH_USER_ID"] == "user"
@@ -106,3 +104,23 @@ def test_from_env_reads_fleet_dir_and_keeps_fleet_env(tmp_path: Path) -> None:
 def test_from_env_rejects_unsafe_assistant_id(tmp_path: Path, assistant_id: str) -> None:
     with pytest.raises(TalonConfigError):
         TalonConfig.from_env({"AGENT_ASSISTANT_ID": assistant_id}, base_home=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "env_key",
+    ["DEEPAGENTS_TALON_FLEET_DIR", "AGENT_FLEET_DIR", "FLEET_DIR"],
+)
+def test_from_env_has_no_fleet_dir_field(tmp_path: Path, env_key: str) -> None:
+    """Legacy Fleet direct-run env vars no longer configure a Fleet source."""
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant-1",
+            env_key: str(tmp_path / "fleet"),
+            "AGENT_MODEL": "provider:model",
+        },
+        base_home=tmp_path,
+    )
+
+    assert not hasattr(config, "fleet_dir")
+    assert config.model == "provider:model"
+    assert config.assistant_id == "assistant-1"

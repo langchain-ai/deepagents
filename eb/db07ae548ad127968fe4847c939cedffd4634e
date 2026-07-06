@@ -1,0 +1,29 @@
+libs/deepagents/deepagents/graph.py
+  s_8516700a79d7f6::t_602b131f77d446 10-11,72,120-141,145-208,251-272,277,279-282,292-328,363,432-450,476-477,506-508,549,551-559,757-758,762,777-787,795-796,846-857,864-867,934-937,941,964-974,990-1007
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_a9edec618038f0::t_85e5772615d091 23,29-30,37-38,358-439,728-790,2262-2628
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ebdb07ae548ad127968fe4847c939cedffd4634e",
+  "prompts": {},
+  "sessions": {
+    "s_8516700a79d7f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7694cb4d-c975-4786-86e2-6b95150e5fa2",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_a9edec618038f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a389baeadc8e88c52",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -14737,10 +14737,10 @@ class DeepAgentsApp(App):
         """Begin in-TUI OAuth login for `server_name`.
 
         Guards against remote-server mode (no owned server to restart),
-        an absent local server, missing MCP config, an unknown server
-        name, and busy states. When the session is mid-run, the login
-        attempt is queued via `_defer_action` and runs once the user is
-        idle.
+        missing MCP config, an unknown server name, and busy states.
+        When the local server is still connecting or the session is
+        mid-run, the login is queued via `_defer_action` and runs once
+        the server is ready and the user is idle.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -14765,10 +14765,21 @@ class DeepAgentsApp(App):
             return
 
         if self._connecting or self._server_proc is None:
+            # The server is still coming up (initial connect, a reconnect,
+            # or waiting on a model/credentials before startup). Queue the
+            # login instead of dropping the command so it runs once the
+            # server is ready; deferred actions drain from
+            # `_drain_startup_backlog` after connecting finishes.
             self.notify(
-                "MCP login is unavailable until the local server is ready.",
-                severity="warning",
+                "MCP login will start once the local server is ready.",
+                timeout=5,
                 markup=False,
+            )
+            self._defer_action(
+                DeferredAction(
+                    kind="mcp_login",
+                    execute=lambda: self._run_mcp_login_worker(server_name),
+                ),
             )
             return
 

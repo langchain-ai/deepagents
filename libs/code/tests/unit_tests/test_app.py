@@ -13519,6 +13519,76 @@ class TestDeferredActions:
             assert executed == ["thread", "second_model"]
 
 
+class TestStartMcpLogin:
+    """Tests for `_start_mcp_login` queueing before the server is connected."""
+
+    def _make_app(self) -> DeepAgentsApp:
+        """Build an app that owns a server and has MCP enabled."""
+        app = DeepAgentsApp()
+        app._mcp_preload_kwargs = {"mcp_config_path": None}  # ty: ignore
+        app._server_kwargs = {"model_name": "x"}  # ty: ignore
+        app._agent_switching = False
+        app._agent_running = False
+        app._shell_running = False
+        app._defer_action = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
+        return app
+
+    async def test_queues_login_while_connecting(self) -> None:
+        """A login sent while the server is connecting is deferred, not dropped."""
+        app = self._make_app()
+        app._connecting = True
+        app._server_proc = object()  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        action = app._defer_action.call_args.args[0]  # ty: ignore
+        assert action.kind == "mcp_login"
+        app.run_worker.assert_not_called()  # ty: ignore
+        app.notify.assert_called_once()  # ty: ignore
+
+    async def test_queues_login_when_server_proc_missing(self) -> None:
+        """A login sent before the subprocess exists is deferred, not dropped."""
+        app = self._make_app()
+        app._connecting = False
+        app._server_proc = None  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        app._defer_action.assert_called_once()  # ty: ignore
+        assert app._defer_action.call_args.args[0].kind == "mcp_login"  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
+
+    async def test_deferred_login_runs_target_worker(self) -> None:
+        """The queued action invokes the login worker for the requested server."""
+        app = self._make_app()
+        app._connecting = True
+        app._server_proc = None  # ty: ignore
+        app._run_mcp_login_worker = MagicMock()  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        action = app._defer_action.call_args.args[0]  # ty: ignore
+        action.execute()
+        app._run_mcp_login_worker.assert_called_once_with("provider")  # ty: ignore
+
+    async def test_starts_worker_immediately_when_ready(self) -> None:
+        """When the server is ready and idle, the login runs without deferral."""
+        app = self._make_app()
+        app._connecting = False
+        app._server_proc = object()  # ty: ignore
+        # Mock the worker coroutine factory so building the `run_worker`
+        # argument doesn't create an un-awaited coroutine.
+        app._run_mcp_login_worker = MagicMock()  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        app.run_worker.assert_called_once()  # ty: ignore
+        app._defer_action.assert_not_called()  # ty: ignore
+
+
 class TestBuildModelSwitchErrorBody:
     """Tests for `_build_model_switch_error_body` link-aware formatting."""
 

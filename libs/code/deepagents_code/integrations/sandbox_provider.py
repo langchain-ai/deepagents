@@ -68,7 +68,7 @@ class SandboxError(Exception):
 
     @property
     def original_exc(self) -> BaseException | None:
-        """Return the original exception that caused this error, if any."""
+        """Original exception that caused this error, if any."""
         return self.__cause__
 
 

@@ -51,7 +51,7 @@ jobs:
     steps:
       # Checks out the base branch (NOT the PR head) so that
       # require('./.github/scripts/pr-labeler.js') resolves.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Generate GitHub App token
         if: github.event.action == 'opened'
@@ -85,12 +85,12 @@ jobs:
             );
             core.setOutput('is-external', isExternal ? 'true' : 'false');
 
-      # Rename `deepagents` scope → `sdk` for non-release PRs.
-      # Release PRs (e.g. `release(deepagents): 1.2.0`) are left
-      # untouched since their titles are canonical version records.
-      # Runs before labeling so title-based labels read the
-      # corrected title.
-      - name: Rename deepagents scope to sdk
+      # Rename package-component scopes to their canonical PR scopes for
+      # non-release PRs. Release PRs (e.g. `release(deepagents): 1.2.0` or
+      # `release(deepagents-code): 1.2.0`) are left untouched since their titles
+      # are canonical version records. Runs before labeling so title-based labels
+      # read the corrected title.
+      - name: Rename package component scopes
         id: rename-scope
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
@@ -115,10 +115,17 @@ jobs:
               return;
             }
 
+            const scopeAliases = new Map([
+              ['deepagents', 'sdk'],
+              ['deepagents-acp', 'acp'],
+              ['deepagents-cli', 'cli'],
+              ['deepagents-code', 'code'],
+              ['deepagents-talon', 'talon'],
+            ]);
             const scopeStr = match[2];
             const newScope = scopeStr
               .split(',')
-              .map(s => s.trim() === 'deepagents' ? 'sdk' : s.trim())
+              .map(s => scopeAliases.get(s.trim()) ?? s.trim())
               .join(',');
 
             if (newScope === scopeStr) return;

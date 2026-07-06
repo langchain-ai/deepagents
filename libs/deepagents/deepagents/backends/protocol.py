@@ -31,7 +31,7 @@ r"""File storage format version.
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GREP_TIMEOUT: Final = 30
+DEFAULT_GREP_TIMEOUT: Final = 15
 """Default timeout in seconds for one sync grep phase."""
 
 ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
@@ -287,6 +287,23 @@ class EditResult:
 
 
 @dataclass
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of the deleted file, None on failure.
+
+    Examples:
+        >>> DeleteResult(path="/f.txt")
+        >>> DeleteResult(error="File not found")
+    """
+
+    error: str | None = None
+    path: str | None = None
+
+
+@dataclass
 class LsResult:
     """Result from backend `ls` operations.
 
@@ -305,11 +322,16 @@ class GrepResult:
 
     Attributes:
         error: Error message on failure, `None` on success.
-        matches: List of grep match dicts on success, `None` on failure.
+        matches: List of grep match dicts. Populated on success and, when the
+            search was cut short, with whatever was found before stopping.
+            `None` only on a hard failure.
+        truncated: True when the search stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
     """
 
     error: str | None = None
     matches: list["GrepMatch"] | None = None
+    truncated: bool = False
 
 
 @dataclass
@@ -318,11 +340,16 @@ class GlobResult:
 
     Attributes:
         error: Error message on failure, `None` on success.
-        matches: List of matching file info dicts on success, `None` on failure.
+        matches: List of matching file info dicts. Populated on success and,
+            when the walk was cut short, with whatever was found before
+            stopping. `None` only on a hard failure.
+        truncated: True when the walk stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
     """
 
     error: str | None = None
     matches: list["FileInfo"] | None = None
+    truncated: bool = False
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
@@ -544,10 +571,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Write content to a new file in the filesystem, error if file exists.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Absolute path where the file should be created.
+            file_path: Absolute path where the file should be written.
 
                 Must start with '/'.
             content: String content to write to the file.
@@ -601,6 +628,38 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a path, recursively removing anything nested under it.
+
+        This method is optional. Backends that do not implement it inherit this
+        default, which raises `NotImplementedError`. Callers that need to support
+        a mix of backends should guard with
+        [`supports_delete`][deepagents.backends.protocol.supports_delete] before
+        calling, or catch `NotImplementedError`.
+
+        Deletion is recursive: it removes `file_path` plus everything nested
+        under it. On hierarchical backends (e.g.
+        [`FilesystemBackend`][deepagents.backends.filesystem.FilesystemBackend])
+        that means a directory and its contents; on key-value backends it means
+        the exact key plus every key sharing the `file_path` + "/" prefix.
+
+        Args:
+            file_path: Absolute path to delete (a file, or a directory/prefix to
+                remove recursively). Must start with '/'.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if
+                nothing exists at or under the path or removal fails.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `delete`.
+        """
+        raise NotImplementedError
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of `delete`."""
+        return await asyncio.to_thread(self.delete, file_path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
@@ -800,6 +859,26 @@ class ExecuteResponse:
     """Whether the output was truncated due to backend limitations."""
 
 
+@dataclass(frozen=True, slots=True)
+class ExecuteOffloadResult:
+    """Result of [`BaseSandbox.execute_with_offload`][deepagents.backends.sandbox.BaseSandbox.execute_with_offload].
+
+    `offloaded` describes the capture mechanism and is kept off `ExecuteResponse`
+    (which an ordinary `execute` never sets).
+    """
+
+    offloaded: bool
+    """Whether the output was left at the capture path.
+
+    When `True`, `response.output` holds only a head/tail preview and the full
+    output lives at the capture path on the sandbox filesystem. When `False`,
+    `response.output` is the complete output.
+    """
+
+    response: ExecuteResponse
+    """The command result. `response.truncated` indicates the output hit the size cap."""
+
+
 class SandboxBackendProtocol(BackendProtocol):
     """Extension of `BackendProtocol` that adds shell command execution.
 
@@ -879,6 +958,25 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return False
     else:
         return "timeout" in sig.parameters
+
+
+def _supports_delete(backend: BackendProtocol) -> bool:
+    """Check whether a backend implements `delete`.
+
+    `delete` is optional: backends that don't override it inherit the
+    `NotImplementedError` default from
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol]. This
+    helper lets callers detect support without invoking the method (and
+    triggering the error), mirroring the override check used for the legacy
+    `ls_info`/`grep_raw`/`glob_info` methods.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        True if the backend overrides `delete`, False otherwise.
+    """
+    return type(backend).delete is not BackendProtocol.delete
 
 
 BackendFactory: TypeAlias = Callable[[ToolRuntime[Any, Any]], BackendProtocol]

@@ -19,9 +19,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
-from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.channels import DeltaChannel
 from langgraph.config import get_config
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
+from langchain_quickjs._snapshot import encode_snapshot, replay_snapshot_chain
 from langchain_quickjs._subagent import find_subagent_task_tool
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,19 @@ _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 
+PersistenceMode = Literal["thread", "turn", "call"]
+
 
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
+    _quickjs_snapshot_payload: NotRequired[
+        Annotated[
+            bytes,
+            DeltaChannel(replay_snapshot_chain),
+            PrivateStateAttr,
+        ]
+    ]
 
 
 class EvalSchema(BaseModel):
@@ -69,45 +78,21 @@ class EvalSchema(BaseModel):
     )
 
 
-def _resolve_persistence_flags(
+def _resolve_mode(
     *,
-    mode: Literal["thread", "turn", "call"] | None,
-    snapshot_between_turns: bool | None,
-) -> tuple[Literal["thread", "turn", "call"], bool, bool]:
-    """Normalize persistence configuration and enforce invariant constraints."""
-    if snapshot_between_turns is not None:
-        warn_deprecated(
-            since="0.1.2",
-            removal="0.2.0",
-            message=(
-                "Passing `snapshot_between_turns` to "
-                "`CodeInterpreterMiddleware` is deprecated and will be "
-                "removed in langchain-quickjs==0.2.0. Use `mode='thread'` "
-                "or `mode='turn'` instead."
-            ),
-            package="langchain-quickjs",
-        )
-    if mode is None:
-        if snapshot_between_turns is None or snapshot_between_turns:
-            return "thread", True, False
-        return "turn", False, False
-
-    if mode == "thread":
-        if snapshot_between_turns is False:
-            msg = "`snapshot_between_turns=False` is incompatible with `mode='thread'`."
+    mode: str | None,
+) -> PersistenceMode:
+    """Normalize persistence mode and enforce invariant constraints."""
+    match mode:
+        case None | "thread":
+            return "thread"
+        case "turn":
+            return "turn"
+        case "call":
+            return "call"
+        case _:
+            msg = "`mode` must be one of 'thread', 'turn', or 'call'."
             raise ValueError(msg)
-        return "thread", True, False
-
-    if mode == "turn":
-        if snapshot_between_turns is True:
-            msg = "`snapshot_between_turns=True` is incompatible with `mode='turn'`."
-            raise ValueError(msg)
-        return "turn", False, False
-
-    if snapshot_between_turns is True:
-        msg = "`snapshot_between_turns=True` is incompatible with `mode='call'`."
-        raise ValueError(msg)
-    return "call", False, True
 
 
 def _resolve_thread_id(fallback: str) -> str:
@@ -204,15 +189,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             - `"turn"`: state persists across calls within a turn only.
             - `"call"`: each eval call runs in a fresh REPL.
             If omitted, defaults to `"thread"`
-        snapshot_between_turns: Compatibility knob for turn-vs-thread
-            behavior. When `mode` is omitted, `True` resolves to
-            `"thread"` and `False` resolves to `"turn"`. When `mode` is
-            provided, incompatible combinations raise `ValueError`.
-
-            !!! deprecated
-
-                Passing `snapshot_between_turns` is deprecated. Use
-                `mode="thread"` or `mode="turn"` instead.
         max_snapshot_bytes: Maximum serialized snapshot payload size allowed
             in middleware state. If a snapshot exceeds this size, it is
             dropped (`_quickjs_snapshot_payload=None`). Defaults to
@@ -243,8 +219,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         capture_console: bool = True,
         subagents: bool = True,
         ptc: PTCOption | None = None,
-        mode: Literal["thread", "turn", "call"] | None = None,
-        snapshot_between_turns: bool | None = None,
+        mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
@@ -263,14 +238,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._capture_console = capture_console
         self._subagents = subagents
         self._ptc = ptc
-        (
-            self._mode,
-            self._snapshot_between_turns,
-            self._reset_between_calls,
-        ) = _resolve_persistence_flags(
-            mode=mode,
-            snapshot_between_turns=snapshot_between_turns,
-        )
+        self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
         )
@@ -324,7 +292,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_runtime=runtime,
                 )
             finally:
-                if middleware._reset_between_calls:
+                if middleware._mode == "call":
                     middleware._registry.reset_repl(thread_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
@@ -341,7 +309,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_loop=asyncio.get_running_loop(),
                 )
             finally:
-                if middleware._reset_between_calls:
+                if middleware._mode == "call":
                     middleware._registry.reset_repl(thread_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
@@ -368,7 +336,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def _repl_for_eval(self, thread_id: str) -> Any:
         """Return the REPL slot for one eval invocation."""
         repl = self._registry.get(thread_id)
-        if self._reset_between_calls and self._ptc is not None:
+        if self._mode == "call" and self._ptc is not None:
             repl.install_tools(list(self._ptc_tools_by_thread.get(thread_id, ())))
         return repl
 
@@ -378,10 +346,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Restore REPL snapshot bytes into the current thread slot."""
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
@@ -402,10 +370,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent` snapshot restore."""
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
@@ -513,9 +481,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return append_to_system_message(system_message, prompt)
 
     def _snapshot_update(
-        self, *, payload: bytes, thread_id: str
-    ) -> dict[str, bytes | None]:
-        """Build state update for a serialized snapshot payload."""
+        self, *, payload: bytes, prior: bytes, thread_id: str
+    ) -> dict[str, Any]:
+        """Build a patch-chain state update for a fresh snapshot ``payload``."""
         size = len(payload)
         if size > self._max_snapshot_bytes:
             logger.warning(
@@ -528,27 +496,29 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 self._max_snapshot_bytes,
             )
             return {"_quickjs_snapshot_payload": None}
-        return {"_quickjs_snapshot_payload": payload}
+        return {"_quickjs_snapshot_payload": encode_snapshot(payload, prior)}
 
     def after_agent(
         self,
-        state: REPLState,  # noqa: ARG002
+        state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         self._ptc_tools_by_thread.pop(thread_id, None)
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             self._registry.evict(thread_id)
             return None
 
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
+        prior = state.get("_quickjs_snapshot_payload") or b""
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=repl.create_snapshot(),
+                prior=prior,
                 thread_id=thread_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
@@ -564,23 +534,25 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     async def aafter_agent(
         self,
-        state: REPLState,  # noqa: ARG002
+        state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent` snapshot+evict behavior."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         self._ptc_tools_by_thread.pop(thread_id, None)
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             await self._registry.aevict(thread_id)
             return None
 
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
+        prior = state.get("_quickjs_snapshot_payload") or b""
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=await repl.acreate_snapshot(),
+                prior=prior,
                 thread_id=thread_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path

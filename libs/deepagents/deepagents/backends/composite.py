@@ -10,6 +10,7 @@ from typing import cast
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
@@ -25,6 +26,8 @@ from deepagents.backends.protocol import (
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
+
+_DELETE_UNSUPPORTED_ERROR = "Error: deletion is not supported for '{file_path}'."
 
 
 def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
@@ -69,6 +72,11 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
             "path": f"{route_prefix[:-1]}{fi['path']}",
         },
     )
+
+
+def _glob_truncated(result: GlobResult | list[FileInfo]) -> bool:
+    """Read the `truncated` flag off a glob result, tolerating legacy list returns."""
+    return result.truncated if isinstance(result, GlobResult) else False
 
 
 def _route_for_path(
@@ -336,24 +344,30 @@ class CompositeBackend(BackendProtocol):
                 grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
-                return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
+                return GrepResult(
+                    matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])],
+                    truncated=grep_result.truncated,
+                )
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
+            truncated = False
             default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
+            truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
                 grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                truncated = truncated or grep_result.truncated
 
-            return GrepResult(matches=all_matches)
+            return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
@@ -377,24 +391,30 @@ class CompositeBackend(BackendProtocol):
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
-                return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
+                return GrepResult(
+                    matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])],
+                    truncated=grep_result.truncated,
+                )
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
+            truncated = False
             default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
+            truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                truncated = truncated or grep_result.truncated
 
-            return GrepResult(matches=all_matches)
+            return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
@@ -413,22 +433,34 @@ class CompositeBackend(BackendProtocol):
                 matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
                 if isinstance(glob_result, GlobResult) and glob_result.error:
                     return glob_result
-                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+                return GlobResult(
+                    matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
+                    truncated=_glob_truncated(glob_result),
+                )
 
         # Path doesn't match any specific route - search default backend AND all routed backends
+        truncated = False
         default_result = self.default.glob(pattern, path)
+        # A backend error must not be swallowed as a partial success (mirrors the
+        # grep merge path); surface it instead of returning default-only matches.
+        if isinstance(default_result, GlobResult) and default_result.error:
+            return default_result
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
+        truncated = truncated or _glob_truncated(default_result)
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = backend.glob(route_pattern, "/")
+            if isinstance(sub_result, GlobResult) and sub_result.error:
+                return sub_result
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            truncated = truncated or _glob_truncated(sub_result)
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results)
+        return GlobResult(matches=results, truncated=truncated)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Async version of glob."""
@@ -445,22 +477,34 @@ class CompositeBackend(BackendProtocol):
                 matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
                 if isinstance(glob_result, GlobResult) and glob_result.error:
                     return glob_result
-                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+                return GlobResult(
+                    matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
+                    truncated=_glob_truncated(glob_result),
+                )
 
         # Path doesn't match any specific route - search default backend AND all routed backends
+        truncated = False
         default_result = await self.default.aglob(pattern, path)
+        # A backend error must not be swallowed as a partial success (mirrors the
+        # grep merge path); surface it instead of returning default-only matches.
+        if isinstance(default_result, GlobResult) and default_result.error:
+            return default_result
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
+        truncated = truncated or _glob_truncated(default_result)
 
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = await backend.aglob(route_pattern, "/")
+            if isinstance(sub_result, GlobResult) and sub_result.error:
+                return sub_result
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            truncated = truncated or _glob_truncated(sub_result)
 
         # Deterministic ordering
         results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results)
+        return GlobResult(matches=results, truncated=truncated)
 
     def write(
         self,
@@ -528,6 +572,42 @@ class CompositeBackend(BackendProtocol):
         """Async version of edit."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
+        if res.path is not None:
+            res.path = file_path
+        return res
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file, routing to the appropriate backend.
+
+        `CompositeBackend` always advertises delete support (it overrides this
+        method), so the `delete` tool is never filtered out for it. A
+        route may still point at a backend that does not implement `delete`;
+        rather than letting `NotImplementedError` escape to the caller, that
+        case is converted into a `DeleteResult` error.
+
+        Args:
+            file_path: Absolute file path.
+
+        Returns:
+            `DeleteResult` with the original path on success, or an error
+            (including when the routed backend does not support deletion).
+        """
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        try:
+            res = backend.delete(stripped_key)
+        except NotImplementedError:
+            return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
+        if res.path is not None:
+            res.path = file_path
+        return res
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of delete."""
+        backend, stripped_key = self._get_backend_and_key(file_path)
+        try:
+            res = await backend.adelete(stripped_key)
+        except NotImplementedError:
+            return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
         return res

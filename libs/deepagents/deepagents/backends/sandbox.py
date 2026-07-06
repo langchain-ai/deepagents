@@ -25,7 +25,9 @@ from typing import Final
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
+    DeleteResult,
     EditResult,
+    ExecuteOffloadResult,
     ExecuteResponse,
     FileData,
     FileDownloadResponse,
@@ -38,8 +40,9 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_file_type
+from deepagents.backends.utils import _get_backend_read_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +82,76 @@ except PermissionError:
 Uses base64-encoded parameters to avoid shell escaping issues.
 """
 
+
+_GREP_PATH_GLOB_TEMPLATE = """python3 -c "
+import glob, os, base64, sys
+
+search_path = base64.b64decode('{path_b64}').decode('utf-8')
+glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
+pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+
+# When the search path is a directory, chdir to it so glob patterns
+# resolve relative to it. When it is a single file, search it directly
+# (glob filtering is irrelevant for a single-file search).
+if os.path.isdir(search_path):
+    os.chdir(search_path)
+    # A leading `/` would make `glob.glob` treat the pattern as an
+    # absolute filesystem path, searching outside the search root (e.g.
+    # `/*.py` after `chdir('/workspace')` would match `/top.py` on
+    # the host, not `/workspace/top.py`). Strip it so anchored globs
+    # stay relative to the search root, matching the `FilesystemBackend`
+    # semantics where `/` anchors to the root, not the filesystem.
+    rel_glob = glob_pat.lstrip('/')
+    rel_files = sorted(glob.glob(rel_glob, recursive=True))
+    # Open the glob-relative path (cwd is the search root) but report the
+    # path prefixed with the search root, so GrepResult.path matches the
+    # `<root>/<match>` form that `grep -r` emits on the --include route.
+    targets = [(rel, os.path.join(search_path, rel)) for rel in rel_files]
+else:
+    targets = [(search_path, search_path)]
+
+for open_path, display_path in targets:
+    try:
+        with open(open_path, 'r', encoding='utf-8', errors='ignore') as fh:
+            for i, line in enumerate(fh, 1):
+                if pattern in line:
+                    # GNU grep -HnFZ always terminates each record with a
+                    # newline, even when the matched line has none. Strip
+                    # the line's own trailing newline and add an explicit
+                    # one so records never concatenate when a file's last
+                    # line lacks a final newline.
+                    sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
+    except OSError:
+        pass
+" 2>/dev/null"""
+"""Search file contents for a literal string, filtered by a path-relative glob.
+
+Used when the glob pattern contains a `/` (e.g. `src/**/*.py`), because
+GNU `grep --include` only matches basenames and would silently return zero
+results for such patterns. All three parameters are base64-encoded to avoid
+shell escaping issues.
+
+Emits the same `path\0line_num:text` record structure that `grep -HnFZ`
+produces — each match path is prefixed with the search root to mirror
+grep's output — so `_parse_grep_output` consumes it unchanged. Unlike the
+`grep -r` route, results are sorted, hidden files and directories are
+skipped (Python `glob` semantics), and file contents are decoded as UTF-8
+with `errors='ignore'` rather than matched byte-for-byte.
+
+`stderr` is discarded, but `|| true` is deliberately omitted: the script
+exits 0 on a legitimate no-match, so a non-zero exit signals a genuine
+failure (bad base64, an inaccessible search root) that `_parse_grep_output`
+surfaces as an error instead of a silent empty result.
+"""
+
+
 _WRITE_CHECK_TEMPLATE = """python3 -c "
-import os, sys, base64
+import os, base64
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
-if os.path.exists(path):
-    print('Error: File already exists: ' + repr(path))
-    sys.exit(1)
 os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
 " 2>&1"""
-"""Preflight check for write operations: verify the target file does not already
-exist and create parent directories.
+"""Preflight for write operations: create parent directories for the target path if it doesn't exist.
 
 Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
@@ -439,7 +501,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 
 
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
-    file_type = _get_file_type(file_path)
+    file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
     # Defensive int coercion in case callers bypass type checking.
     return _READ_COMMAND_TEMPLATE.format(
@@ -487,8 +549,24 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
     # `-Z` separates the filename from line data with NUL, so filenames may
     # contain `:` without making the output ambiguous.
     grep_opts = "-rHnFZ"
-    glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
     pattern_escaped = shlex.quote(pattern)
+
+    # GNU `grep --include` only matches basenames, so a slash-containing glob
+    # like `src/**/*.py` would silently match zero files. Route those to the
+    # in-process Python template that resolves the glob relative to the search
+    # root. Basename-only globs (no `/`) work correctly with `--include` and
+    # are faster to run through GNU grep.
+    if glob and "/" in glob:
+        path_b64 = base64.b64encode((path or ".").encode("utf-8")).decode("ascii")
+        glob_b64 = base64.b64encode(glob.encode("utf-8")).decode("ascii")
+        pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+        return _GREP_PATH_GLOB_TEMPLATE.format(
+            path_b64=path_b64,
+            glob_b64=glob_b64,
+            pattern_b64=pattern_b64,
+        )
+
+    glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
     return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
 
 
@@ -583,6 +661,148 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
     )
 
 
+_EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
+"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
+
+_EXECUTE_CAPTURE_HEAD_LINES: Final = 5
+_EXECUTE_CAPTURE_TAIL_LINES: Final = 5
+_EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
+_EXECUTE_CAPTURE_TAIL_BYTES: Final = 2000
+
+_EXECUTE_CAPTURE_MAX_BYTES: Final = 10 * 1024 * 1024
+"""Hard cap on captured stdout/stderr persisted to the sandbox.
+
+Bounds sandbox disk use for runaway output: the captured stream is piped through
+`head -c`, so when the cap is hit the writer receives `SIGPIPE` and nothing
+further reaches disk even if the command ignores the signal. Set well above the
+inline budget so legitimately large output is still preserved in full; output
+beyond the cap is truncated and flagged.
+"""
+
+# The captured stream is piped into `head -c` (caps the on-disk file) followed by
+# `cat > /dev/null` (drains the rest), so the file can never exceed the cap yet the
+# command still reaches EOF and exits normally -- closing the pipe early would
+# SIGPIPE-kill it and corrupt its exit code. Because the command is in a pipeline,
+# its real exit code is recovered from a sidecar file rather than `$?` (which would
+# be the pipeline's). The command runs in a subshell so a command `exit` cannot
+# abort the wrapper, and `eval` preserves the backend's own shell/env. The command
+# is embedded via a quoted heredoc with a random delimiter to avoid shell-quoting
+# issues; the (internal, sanitized) path is shell-quoted.
+_EXECUTE_CAPTURE_CMD_TEMPLATE = """# ===== deepagents capture-at-source offload (auto-generated wrapper) =====
+# Runs the requested command below, capturing its combined output to a file in
+# the sandbox: returned inline when small, or as a head/tail preview when large
+# (the full result stays at the path for read_file). Disable this wrapping with
+# BaseSandbox.enable_capture_offload = False.
+__da_f=__PATH_Q__
+__da_ecf="$__da_f.ec"
+mkdir -p "$(dirname "$__da_f")" 2>/dev/null
+# ----- requested command (verbatim, between the heredoc markers) -----
+__da_cmd=$(cat <<'__DELIM__'
+__COMMAND__
+__DELIM__
+)
+# ----- end requested command; everything below is offload machinery -----
+{ ( eval "$__da_cmd" ); echo "$?" > "$__da_ecf"; } 2>&1 | { head -c __MAXBYTES__ > "$__da_f"; cat > /dev/null; }
+__da_ec=$(cat "$__da_ecf" 2>/dev/null)
+: "${__da_ec:=1}"
+rm -f "$__da_ecf"
+__da_bytes=$(wc -c < "$__da_f" 2>/dev/null | tr -d ' ')
+: "${__da_bytes:=0}"
+__da_capped=0
+[ "$__da_bytes" -ge __MAXBYTES__ ] && __da_capped=1
+if [ "$__da_bytes" -le __BUDGET__ ]; then
+  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0
+  cat "$__da_f"
+  rm -f "$__da_f"
+else
+  __da_lines=$(wc -l < "$__da_f" 2>/dev/null | tr -d ' ')
+  : "${__da_lines:=0}"
+  __da_omitted=$((__da_lines - __HEADLINES__ - __TAILLINES__))
+  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped"
+  if [ "$__da_omitted" -gt 0 ]; then
+    head -c __HEAD__ "$__da_f" | head -n __HEADLINES__
+    printf '... [%s lines truncated] ...\\n' "$__da_omitted"
+    tail -c __TAIL__ "$__da_f" | tail -n __TAILLINES__
+  else
+    head -c $((__HEAD__ + __TAIL__)) "$__da_f"
+  fi
+fi
+"""
+# Pure POSIX sh wrapper for capture-at-source `execute`; see the comment above the template.
+
+
+def _new_heredoc_delim() -> str:
+    """Return a random heredoc delimiter, e.g. `__DEEPAGENTS_CMD_<80 random bits>__`."""
+    return "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
+
+
+def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int, max_capture_bytes: int | None = None) -> str:
+    """Build the capture-at-source wrapper command for `execute`.
+
+    `inline_budget` is the byte threshold at or below which output is returned
+    inline; above it the output is left at `capture_path` and only a head/tail
+    preview is returned. Captured output is hard-capped at `max_capture_bytes`
+    (defaulting to `_EXECUTE_CAPTURE_MAX_BYTES`, resolved here so it stays
+    overridable/patchable); beyond that it is truncated and flagged.
+    """
+    cap = max_capture_bytes if max_capture_bytes is not None else _EXECUTE_CAPTURE_MAX_BYTES
+    # The command is embedded in a quoted heredoc; guarantee the delimiter cannot
+    # appear in it so the command can never terminate the heredoc early. The
+    # delimiter is 80 random bits, so this regenerates only astronomically rarely.
+    delim = _new_heredoc_delim()
+    while delim in command:
+        delim = _new_heredoc_delim()
+    # __COMMAND__ is substituted last so command content can never collide with a
+    # remaining placeholder token.
+    return (
+        _EXECUTE_CAPTURE_CMD_TEMPLATE.replace("__PATH_Q__", shlex.quote(capture_path))
+        .replace("__DELIM__", delim)
+        .replace("__MAXBYTES__", str(cap))
+        .replace("__BUDGET__", str(inline_budget))
+        .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
+        .replace("__HEADLINES__", str(_EXECUTE_CAPTURE_HEAD_LINES))
+        .replace("__TAILLINES__", str(_EXECUTE_CAPTURE_TAIL_LINES))
+        .replace("__HEAD__", str(_EXECUTE_CAPTURE_HEAD_BYTES))
+        .replace("__TAIL__", str(_EXECUTE_CAPTURE_TAIL_BYTES))
+        .replace("__COMMAND__", command)
+    )
+
+
+def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteOffloadResult:
+    r"""Parse capture-wrapper stdout into an `ExecuteOffloadResult`.
+
+    The wrapper emits a meta line followed by the body:
+
+        <sentinel> <exit_code> <offloaded> <capped>\n<inline output or preview>
+
+    i.e. four space-separated fields on the first line — the sentinel, the
+    command's exit code, `1`/`0` for whether output was offloaded to the capture
+    file, and `1`/`0` for whether it hit the size cap — then everything after the
+    first newline is the body (full output when inline, head/tail preview when
+    offloaded).
+
+    Falls back to `offloaded=False` with the raw output when the meta line is
+    absent or malformed — e.g. if the backend truncated transport; the caller
+    must not re-run the command in that case. `response.truncated` is set when the
+    captured output hit the size cap (the saved file is incomplete) or
+    `backend_truncated` is passed through from the underlying `execute`.
+    """
+    first, _, body = output.partition("\n")
+    parts = first.split(" ")
+    # Expect exactly the four meta fields described above; anything else is not
+    # our wrapper's output, so fall back to returning it verbatim.
+    if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+    try:
+        exit_code = int(parts[1])
+    except ValueError:
+        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+    return ExecuteOffloadResult(
+        offloaded=parts[2] == "1",
+        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
+    )
+
+
 class BaseSandbox(SandboxBackendProtocol, ABC):
     """Base sandbox implementation with `execute()` as the core abstract method.
 
@@ -605,6 +825,18 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     and the `id` property.
     """
 
+    enable_capture_offload: bool = False
+    """Whether `FilesystemMiddleware` may use capture-at-source offload for `execute`.
+
+    When `True`, large `execute` output is captured to a file in the sandbox and
+    only a preview is returned, avoiding a round-trip back through the agent
+    process. Defaults to `False` (opt-in) because the capture wrapper's shell and
+    coreutils assumptions are not guaranteed on every sandbox image; subclasses
+    known to be compatible set it to `True`. When `False`, `execute_with_offload`
+    runs the command unwrapped and the middleware falls back to inline execution
+    plus generic eviction.
+    """
+
     @abstractmethod
     def execute(
         self,
@@ -623,6 +855,57 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         Returns:
             `ExecuteResponse` with combined output, exit code, and truncation flag.
         """
+
+    def execute_with_offload(
+        self,
+        command: str,
+        capture_path: str,
+        *,
+        max_inline_bytes: int,
+        max_capture_bytes: int | None = None,
+        timeout: int | None = None,
+    ) -> ExecuteOffloadResult:
+        """Run `command`, offloading large output to a file in the sandbox.
+
+        Captures the command's combined output: returned inline when it is at or
+        below `max_inline_bytes`, otherwise left at `capture_path` (so the caller
+        can surface a `read_file` pointer) with only a head/tail preview returned.
+        Captured output is hard-capped at `max_capture_bytes` (default
+        `_EXECUTE_CAPTURE_MAX_BYTES`) without killing the command, so the exit
+        code is preserved. When `enable_capture_offload` is `False`, the command
+        runs unwrapped and the full output is returned (`offloaded=False`), so
+        callers can fall back to their own handling (e.g. generic eviction).
+
+        Returns:
+            An `ExecuteOffloadResult`. `offloaded=True` when the result was left
+            at `capture_path` and `response.output` holds only the preview;
+            `offloaded=False` when `response.output` is the complete output.
+        """
+        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        if not self.enable_capture_offload:
+            result = self.execute(command, timeout=timeout) if use_timeout else self.execute(command)
+            return ExecuteOffloadResult(offloaded=False, response=result)
+        wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
+        result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
+        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+
+    async def aexecute_with_offload(
+        self,
+        command: str,
+        capture_path: str,
+        *,
+        max_inline_bytes: int,
+        max_capture_bytes: int | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109  # forwarded to the backend, not an asyncio timeout
+    ) -> ExecuteOffloadResult:
+        """Async version of `execute_with_offload`, delegating to `aexecute`."""
+        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        if not self.enable_capture_offload:
+            result = await self.aexecute(command, timeout=timeout) if use_timeout else await self.aexecute(command)
+            return ExecuteOffloadResult(offloaded=False, response=result)
+        wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
+        result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
+        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
@@ -679,21 +962,20 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         return _parse_read_output(result.output, file_path)
 
     def _write_preflight(self, file_path: str) -> WriteResult | None:
-        """Run the existence check + parent-directory creation for `write()`.
+        """Create parent directories for `write()`.
 
         Subclasses overriding `write()` (e.g., to use a native SDK transport)
-        should call this first so they preserve the same "fail if file exists"
-        and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
-        window between this check and the actual write — an inherent limitation
-        of splitting the operation across two backend calls.
+        should call this first so they preserve the parent-mkdir semantics of
+        `BaseSandbox.write()`. There is a TOCTOU window between this and the
+        actual write — an inherent limitation of splitting the operation across
+        two backend calls.
 
         Args:
             file_path: Absolute path for the file about to be written.
 
         Returns:
-            `None` if the preflight passes (target does not exist, parents
-                created); a populated `WriteResult` with `error` set if the
-                check fails.
+            `None` if the preflight passes (parents created); a populated
+                `WriteResult` with `error` set if the preflight fails.
         """
         result = self.execute(_build_write_preflight_cmd(file_path))
         return _check_preflight_result(result, file_path)
@@ -708,10 +990,10 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file, failing if it already exists.
+        """Write content to a file, creating or overwriting it if it already exists.
 
         Args:
-            file_path: Absolute path for the new file.
+            file_path: Absolute path for the file.
             content: UTF-8 text content to write.
 
         Returns:
@@ -934,6 +1216,48 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
 
         return EditResult(path=file_path, occurrences=data.get("count", 1))
 
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the sandbox via a server-side `rm`.
+
+        Runs `test -e || test -L` first: a path that does not exist (and is not
+        a broken symlink) returns a not-found error, matching the contract of
+        `FilesystemBackend` and `StateBackend`. Because a shell `test` has no
+        error channel, a non-zero probe conflates "absent" with "unstattable"
+        (e.g. an unsearchable parent directory); an unknown exit code is not
+        treated as absent and falls through to the delete.
+
+        Uses `rm -rf`, so directories are removed recursively along with their
+        contents. A recursive delete may remove some entries before failing
+        partway; a non-zero `rm` exit (e.g. a permission error) is reported as
+        a failure.
+
+        Args:
+            file_path: Absolute path to the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                path does not exist or the deletion command fails.
+        """
+        # `shlex.quote` only neutralizes shell metacharacters so the path is
+        # passed to `rm` as a single literal argument. It is NOT a security
+        # boundary: it does not confine the deletion to any sandbox root or
+        # block traversal. Whatever the sandbox shell can reach, this can delete.
+        quoted = shlex.quote(file_path)
+        exists = self.execute(f"test -e {quoted} || test -L {quoted}")
+        # `exit_code` may be None when the backend cannot determine a status;
+        # only a definite non-zero means the path is absent. Treating None as
+        # not-found would fabricate a diagnosis and skip the delete, so fall
+        # through to `rm` on an unknown probe result (matches the `rm` check
+        # below and `_parse_grep_output`, which both guard `is not None`).
+        if exists.exit_code is not None and exists.exit_code != 0:
+            return DeleteResult(error=f"Error: '{file_path}' not found")
+        result = self.execute(f"rm -rf {quoted}")
+
+        if result.exit_code == 0:
+            return DeleteResult(path=file_path)
+
+        return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
+
     def grep(
         self,
         pattern: str,
@@ -947,8 +1271,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             path: Directory or file to search in.
 
                 Defaults to `"."`.
-            glob: Optional file-name glob to restrict the search
-                (e.g. `'*.py'`).
+            glob: Optional glob to restrict the search. Patterns without a
+                `/` (e.g. `'*.py'`) match basenames at any depth via
+                `grep --include`; patterns containing a `/` (e.g.
+                `'src/**/*.py'`) match the search-root-relative path via an
+                in-process Python glob.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.

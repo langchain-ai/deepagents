@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
-from deepagents_code.remote_client import (
+from deepagents_code.client.remote_client import (
     RemoteAgent,
     _convert_ai_message,
     _convert_human_message,
@@ -556,6 +557,19 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
+    async def test_forwards_as_node(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"}, as_node="model")
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        update_args = mock_graph.aupdate_state.await_args
+        assert update_args is not None
+        assert update_args.kwargs["as_node"] == "model"
+
     async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         with pytest.raises(ValueError, match="thread_id"):
@@ -581,6 +595,42 @@ class TestRemoteAgentUpdateState:
         )
         call_config = mock_graph.aupdate_state.call_args[0][0]
         uuid.UUID(call_config["configurable"]["thread_id"])
+
+
+class TestRemoteAgentCancelActiveRuns:
+    """`acancel_active_runs` exposes best-effort remote run cancellation."""
+
+    async def test_cancels_running_and_pending_runs(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}],
+                [{"run_id": "run-2"}],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+
+        await agent.acancel_active_runs(_config())
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 2
+        assert {call.args[1] for call in runs_cancel.await_args_list} == {
+            "run-1",
+            "run-2",
+        }
+
+    async def test_raises_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.acancel_active_runs({"configurable": {}})
 
 
 def _conflict_error() -> Exception:
@@ -684,7 +734,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
             update_side_effect=[_conflict_error(), None],
         )
 
-        with patch("deepagents_code.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01):
+        with patch(
+            "deepagents_code.client.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01
+        ):
             await agent.aupdate_state(_config(), {"messages": []})
 
         assert mock_graph.aupdate_state.await_count == 2
@@ -789,6 +841,44 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert mock_graph.aupdate_state.await_count == 1
         runs_list.assert_not_called()
         runs_cancel.assert_not_called()
+
+
+class TestRemoteAgentStore:
+    async def test_aput_store_item_uses_unindexed_put(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock())
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        store.put_item.assert_awaited_once_with(
+            ("ns",),
+            "key",
+            {"auto_approve": True},
+            index=False,
+        )
+
+    async def test_aput_store_item_logs_and_reraises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock(side_effect=RuntimeError("boom")))
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        with (
+            caplog.at_level("DEBUG", logger="deepagents_code.client.remote_client"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        assert "Failed to write store item ns/key" in caplog.text
 
 
 class TestRemoteAgentEnsureThread:

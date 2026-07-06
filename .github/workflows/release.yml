@@ -154,7 +154,7 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -257,7 +257,7 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -282,6 +282,10 @@ jobs:
       - name: Build project for distribution
         run: uv build
         working-directory: ${{ env.WORKING_DIR }}
+        env:
+          # Stamp the exact release commit into deepagents-code so `dcode doctor`
+          # reports it on installed wheels. Other packages ignore this env var.
+          DEEPAGENTS_CODE_BUILD_COMMIT: ${{ needs.setup.outputs.release-sha }}
 
       - name: Upload build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -371,7 +375,7 @@ jobs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -458,6 +462,64 @@ jobs:
           echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
+      # Resolve the human who shipped this release so release notes can credit
+      # them. Primary source is whoever merged the release PR (the release commit
+      # is that PR's squash-merge); when the release commit has no associated
+      # merged PR (initial release, or a direct push / manual recovery), fall back
+      # to the actor who triggered the workflow. Bot accounts are dropped — there's
+      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
+      - name: Resolve releaser
+        id: resolve-releaser
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          RELEASER=""
+
+          # Primary: the user who merged the release PR. Distinguish "commit has no
+          # associated merged PR" (initial release, direct push, manual recovery, or
+          # eventual-consistency on a fresh squash-merge) from a real API failure.
+          # The latter must warn rather than silently fall through to the actor —
+          # on a manual release that would credit the dispatcher instead of the
+          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
+          # release-label resolution.
+          if [ -n "$RELEASE_COMMIT" ]; then
+            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
+              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
+            else
+              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
+              PR_NUM=""
+            fi
+            if [ -n "$PR_NUM" ]; then
+              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
+                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
+                RELEASER="$MERGED_BY"
+              else
+                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
+              fi
+            fi
+          fi
+
+          # Fallback: the actor who dispatched the workflow (manual releases).
+          if [ -z "$RELEASER" ]; then
+            RELEASER="$ACTOR"
+          fi
+
+          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
+          # literal suffix, not a glob char class — "*[bot]" matches any login ending
+          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
+          # without the "[bot]" suffix, which "*[bot]" would not catch.
+          case "$RELEASER" in
+            ""|*"[bot]"|github-actions) RELEASER="" ;;
+          esac
+
+          echo "Resolved releaser: ${RELEASER:-<none>}"
+          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
+
       - name: Generate release body
         id: generate-release-body
         env:
@@ -466,6 +528,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
           BASE_BRANCH: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -633,7 +696,9 @@ jobs:
             fi
           done
 
-          echo "Found community contributors: $CONTRIBUTOR_LIST"
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            echo "Found community contributors: $CONTRIBUTOR_LIST"
+          fi
 
           # Build internal maintainers list: @ghuser, @ghuser, ...
           INTERNAL_LIST=""
@@ -645,7 +710,13 @@ jobs:
             fi
           done
 
-          echo "Found internal maintainers: $INTERNAL_LIST"
+          if [ -n "$INTERNAL_LIST" ]; then
+            echo "Found internal maintainers: $INTERNAL_LIST"
+          fi
+
+          if [ -n "$RELEASER" ]; then
+            echo "Found releaser: @$RELEASER"
+          fi
 
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then
@@ -675,8 +746,20 @@ jobs:
           if [ -n "$INTERNAL_LIST" ]; then
             if [ "$SEPARATOR_ADDED" = "false" ]; then
               RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
             fi
             RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
+          fi
+
+          # Credit whoever shipped the release. This is a distinct role from
+          # contributing release changes, so show it even when the same user also
+          # appears as a community contributor or internal maintainer.
+          if [ -n "$RELEASER" ]; then
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
+            fi
+            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
           fi
 
           # Output release body using heredoc for proper multiline handling
@@ -704,7 +787,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -740,7 +823,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -769,44 +852,53 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Verify package pins latest SDK version
+      - name: Verify package pins SDK at or ahead of workspace version
         if: |
           needs.build.outputs.pkg-name == 'deepagents-code'
           && !inputs.dangerous-skip-sdk-pin-check
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
-          case "$PKG_NAME" in
-            deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
-            *)
-              echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"
-              exit 1
-              ;;
-          esac
+          python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
 
-          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
-          if [ -z "$SDK_VERSION" ]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          fi
+          pkg_name = os.environ["PKG_NAME"]
+          root = Path.cwd()
+          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
+          if spec is None or spec.loader is None:
+              print(f"::error::Could not load {script}")
+              raise SystemExit(1)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
-          if [ -z "$PKG_SDK_PIN" ]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          fi
+          try:
+              sdk_version = module._sdk_version(root)
+              pkg_pin = module._code_pin(root)
+              comparison = module.compare_versions(pkg_pin, sdk_version)
+          except ValueError as e:
+              print(
+                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  f"Could not determine {pkg_name} SDK pin status: {e}"
+              )
+              raise SystemExit(1) from None
 
-          if [ "$SDK_VERSION" != "$PKG_SDK_PIN" ]; then
-            echo "::error::${PKG_NAME} SDK pin does not match SDK version!"
-            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
-            echo "${PKG_NAME} SDK pin (${PKG_PYPROJECT}): $PKG_SDK_PIN"
-            echo ""
-            echo "Update the deepagents dependency in ${PKG_PYPROJECT} to deepagents==$SDK_VERSION"
-            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
-            exit 1
-          else
-            echo "${PKG_NAME} SDK pin matches SDK version: $SDK_VERSION"
-          fi
+          if comparison < 0:
+              print(f"::error::{pkg_name} SDK pin is older than the workspace SDK version!")
+              print(f"SDK version (libs/deepagents/pyproject.toml): {sdk_version}")
+              print(f"{pkg_name} SDK pin (libs/code/pyproject.toml): {pkg_pin}")
+              print("")
+              print(f"Update the deepagents dependency in libs/code/pyproject.toml to deepagents=={sdk_version}")
+              print("Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass.")
+              raise SystemExit(1)
+
+          if comparison > 0:
+              print(f"{pkg_name} SDK pin is ahead of workspace SDK: {pkg_pin} >= {sdk_version}")
+          else:
+              print(f"{pkg_name} SDK pin matches SDK version: {sdk_version}")
+          PY
 
       - name: Import dist package
         shell: bash
@@ -817,7 +909,12 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -842,7 +939,12 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
@@ -905,7 +1007,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -956,7 +1058,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 

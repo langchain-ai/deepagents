@@ -13,10 +13,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code.mcp_tools import (
+    MCP_CONFIG_DISCOVERY_PATHS,
     MCPConfigError,
     MCPServerInfo,
-    get_mcp_tools,
+    discover_mcp_configs,
+    resolve_and_load_mcp_tools,
 )
+from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -28,6 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MCP_CONFIG_ENV_KEYS = ("DEEPAGENTS_TALON_MCP_CONFIG", "MCP_CONFIG")
+_WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +48,7 @@ class MCPTools:
 
 
 def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
-    """Return existing MCP config files in Talon fallback order.
+    """Return existing MCP config files in Deep Agents Code discovery order.
 
     Args:
         config: Talon runtime configuration.
@@ -52,11 +56,7 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
     Returns:
         Existing files, ordered from lowest to highest precedence.
     """
-    paths = [
-        Path.home() / ".deepagents" / ".mcp.json",
-        config.manifest_dir / "tools.json",
-    ]
-    return [path for path in paths if _is_file(path)]
+    return discover_mcp_configs(project_context=_project_context(config))
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:
@@ -71,11 +71,12 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     Raises:
         MCPConfigError: If a selected config source is malformed.
     """
-    path = _select_mcp_config_path(config)
-    if path is None:
-        return MCPTools(tools=(), servers=())
     try:
-        tools, manager, infos = await get_mcp_tools(str(path))
+        tools, manager, infos = await resolve_and_load_mcp_tools(
+            explicit_config_path=_first_env_value(config.env),
+            trust_project_mcp=None,
+            project_context=_project_context(config),
+        )
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         msg = str(exc)
         raise MCPConfigError(msg) from exc
@@ -85,36 +86,35 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
 
 
 def print_mcp_config_paths(config: TalonConfig) -> None:
-    """Print Talon MCP config discovery paths.
+    """Print Deep Agents Code MCP config discovery paths.
 
     Args:
         config: Talon runtime configuration.
     """
-    rows = [
-        ("~/.deepagents/.mcp.json", Path.home() / ".deepagents" / ".mcp.json"),
-        ("<assistant-home>/agent/tools.json", config.manifest_dir / "tools.json"),
-    ]
-    width = max(len(label) for label, _ in rows)
-    print("MCP config discovery paths (lowest to highest precedence):")  # noqa: T201
-    for label, path in rows:
-        marker = "found" if _is_file(path) else "missing"
-        print(f"  [{marker:>7}]  {label:<{width}}  {path}")  # noqa: T201
-    print(  # noqa: T201
-        "Override with DEEPAGENTS_TALON_MCP_CONFIG or MCP_CONFIG as a config file path.",
+    project_context = _project_context(config)
+    found = {str(path.resolve()) for path in discover_mcp_config_paths(config)}
+    project_root = (
+        project_context.project_root
+        if project_context is not None and project_context.project_root is not None
+        else (project_context.user_cwd if project_context is not None else Path.cwd())
     )
-    print("The highest-precedence existing path is loaded; configs are not merged.")  # noqa: T201
-    print("Edit <assistant-home>/agent/tools.json directly to add Talon MCP servers.")  # noqa: T201
-
-
-def _select_mcp_config_path(config: TalonConfig) -> Path | None:
-    env_value = _first_env_value(config.env)
-    if env_value:
-        return Path(env_value).expanduser()
-
-    paths = discover_mcp_config_paths(config)
-    if paths:
-        return paths[-1]
-    return None
+    rows = [
+        (
+            display,
+            label,
+            _resolve_discovery_display_path(display, project_root),
+        )
+        for display, label in MCP_CONFIG_DISCOVERY_PATHS
+    ]
+    width = max(len(path) for path, _, _ in rows)
+    print("MCP config discovery paths (lowest to highest precedence):")  # noqa: T201
+    for display, label, path in rows:
+        marker = "found" if str(path.resolve()) in found or _is_file(path) else "missing"
+        print(f"  [{marker:>7}]  {display:<{width}}  ({label})")  # noqa: T201
+    print()  # noqa: T201
+    print(  # noqa: T201
+        "<project-root> = nearest ancestor with `.git`, else current directory.",
+    )
 
 
 def _first_env_value(env: Mapping[str, str]) -> str | None:
@@ -123,6 +123,25 @@ def _first_env_value(env: Mapping[str, str]) -> str | None:
         if value:
             return value
     return None
+
+
+def _project_context(config: TalonConfig) -> ProjectContext | None:
+    raw = config.env.get(_WORKSPACE_ENV)
+    try:
+        return ProjectContext.from_user_cwd(raw or Path.cwd())
+    except OSError:
+        logger.warning("Could not determine working directory for MCP discovery")
+        return None
+
+
+def _resolve_discovery_display_path(display: str, project_root: Path) -> Path:
+    if display == "~/.deepagents/.mcp.json":
+        return Path.home() / ".deepagents" / ".mcp.json"
+    if display == "<project-root>/.deepagents/.mcp.json":
+        return project_root / ".deepagents" / ".mcp.json"
+    if display == "<project-root>/.mcp.json":
+        return project_root / ".mcp.json"
+    return Path(display).expanduser()
 
 
 def _is_file(path: Path) -> bool:

@@ -828,3 +828,88 @@ class TestReloadSkillReport:
         # Critical: must not claim every prior skill was removed.
         assert "Removed:" not in text
         assert "Skills updated" not in text
+
+
+class TestReloadThemeReapply:
+    """`/reload` should re-apply the resolved theme preference.
+
+    Guards the cross-session behavior: saving a per-terminal (or global)
+    default theme in one window should be picked up by an already-running
+    session's `/reload`, matching startup resolution.
+    """
+
+    async def _run_reload_theme(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        initial_theme: str,
+        resolved_theme: str,
+    ) -> tuple[str, str]:
+        """Drive `/reload` once with a stubbed preference resolver.
+
+        Args:
+            monkeypatch: pytest fixture for restorable patching.
+            initial_theme: theme active before reload.
+            resolved_theme: value `_load_theme_preference` returns on reload.
+
+        Returns:
+            The active theme after reload and the mounted `AppMessage` text.
+        """
+        from deepagents_code import app as app_module
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.theme = initial_theme
+
+            async def _fake_discover() -> bool:  # noqa: RUF029  # awaited by handler
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                app_module, "_load_theme_preference", lambda: resolved_theme
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            return app.theme, text
+
+    async def test_switches_to_new_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A newly resolved preference should become the active theme."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="langchain-light",
+        )
+        assert active == "langchain-light"
+        assert "Switched theme to" in text
+
+    async def test_no_switch_when_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the resolved preference matches the active theme, no switch."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="langchain",
+        )
+        assert active == "langchain"
+        assert "Switched theme to" not in text
+
+    async def test_unregistered_preference_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolved name that isn't registered must not change the theme."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="not-a-real-theme",
+        )
+        assert active == "langchain"
+        assert "Switched theme to" not in text

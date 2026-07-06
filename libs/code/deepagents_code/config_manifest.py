@@ -870,6 +870,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.HIDE_SPLASH_VERSION,
     ),
     ConfigOption(
+        key="display.hide_splash_tips",
+        group="Display",
+        summary="Hide rotating tips in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.HIDE_SPLASH_TIPS,
+    ),
+    ConfigOption(
         key="display.no_terminal_escape",
         group="Display",
         summary="Disable all terminal escape/control sequence output.",

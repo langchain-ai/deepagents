@@ -25,7 +25,6 @@ classifiers = [
 dependencies = [
     "deepagents>=0.7.0a3",
     "deepagents-code>=0.1.30,<1.0.0",
-    "fleet-deepagents-export>=0.0.1,<1.0.0",
     "langchain-mcp-adapters>=0.3.0,<1.0.0",
 ]
 

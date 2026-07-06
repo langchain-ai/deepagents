@@ -1,4 +1,9 @@
-"""Internal chat models used by local integration tests."""
+"""Internal fake chat models.
+
+Shared by local integration tests and the `dcode tools list` tool-enumeration
+path (`tool_catalog._CatalogModel`), which both need a model that binds tools
+during agent compilation but is never invoked.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +38,49 @@ TOP_LEVEL_WRITE_CONTENT = "auto-approved"
 SUBAGENT_WRITE_CONTENT = "auto-approved-subagent"
 
 
-class DeterministicIntegrationChatModel(GenericFakeChatModel):
+_TOOL_BINDING_MODEL_PROFILE: dict[str, Any] = {
+    "tool_calling": True,
+    "max_input_tokens": 8000,
+}
+"""Minimal capability profile the agent runtime reads while compiling a model.
+
+Only `tool_calling` is load-bearing — the agent negotiates tool support at
+setup. `max_input_tokens` is required by the profile surface but inert here:
+these models are compiled to bind tools and are never invoked, so no token
+budget ever applies. Defined once so both the fakes below and
+`tool_catalog._CatalogModel` share a single source of truth.
+"""
+
+
+class _ToolBindingFakeModel(GenericFakeChatModel):
+    """Base for fake chat models that must bind tools but are never invoked.
+
+    The agent runtime calls `model.bind_tools(schemas)` and reads
+    `model.profile` while compiling the graph; `GenericFakeChatModel` provides
+    neither, so a bare fake raises `AttributeError` in any agent-loop context.
+    This base supplies a no-op `bind_tools` passthrough and the minimal
+    `profile`, leaving subclasses to add generation behavior (tests) or nothing
+    at all (tool enumeration).
+    """
+
+    # Required by `GenericFakeChatModel`, but subclasses never consume it.
+    messages: object = Field(default_factory=lambda: iter(()))
+    profile: dict[str, Any] | None = Field(
+        default_factory=lambda: dict(_TOOL_BINDING_MODEL_PROFILE)
+    )
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Return self so the agent can bind tool schemas without a real model."""
+        return self
+
+
+class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
     """Deterministic chat model for integration tests.
 
     This subclasses LangChain's `GenericFakeChatModel` so the implementation
@@ -68,24 +115,8 @@ class DeterministicIntegrationChatModel(GenericFakeChatModel):
     """
 
     model: str = "fake"
-    # Required by `GenericFakeChatModel`, but our override does not consume it.
-    messages: object = Field(default_factory=lambda: iter(()))
-    profile: dict[str, Any] | None = Field(
-        default_factory=lambda: {
-            "tool_calling": True,
-            "max_input_tokens": 8000,
-        }
-    )
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
-        *,
-        tool_choice: str | None = None,  # noqa: ARG002
-        **kwargs: Any,  # noqa: ARG002
-    ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Return self so the agent can bind tool schemas during tests."""
-        return self
+    # `messages`, `profile`, and the `bind_tools` passthrough are inherited from
+    # `_ToolBindingFakeModel`; this model adds only prompt-driven generation.
 
     def _generate(
         self,

@@ -8,12 +8,18 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from rich.console import Console
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
-from deepagents_code.tool_catalog import ToolEntry, ToolGroup
-from deepagents_code.tools_commands import run_tools_command
+from deepagents_code.tool_catalog import (
+    ToolCatalog,
+    ToolEntry,
+    ToolGroup,
+    UnavailableServer,
+)
+from deepagents_code.tools_commands import _truncate, run_tools_command
 
 
 def _run_text(args: argparse.Namespace) -> tuple[int, str]:
@@ -145,7 +151,7 @@ class TestToolsInstall:
         show_help.assert_called_once()
 
 
-_SAMPLE_GROUPS = [
+_SAMPLE_GROUPS = (
     ToolGroup(
         label="Built-in",
         source="built-in",
@@ -159,7 +165,8 @@ _SAMPLE_GROUPS = [
         source="mcp",
         tools=(ToolEntry(name="search_docs", description="Search the docs"),),
     ),
-]
+)
+_SAMPLE_CATALOG = ToolCatalog(groups=_SAMPLE_GROUPS, unavailable=(), mcp_error=None)
 
 
 class TestToolsList:
@@ -168,8 +175,8 @@ class TestToolsList:
     def test_list_text_output(self) -> None:
         args = argparse.Namespace(tools_command="list", output_format="text")
         with patch(
-            "deepagents_code.tool_catalog.collect_tool_groups",
-            return_value=_SAMPLE_GROUPS,
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=_SAMPLE_CATALOG,
         ):
             code, output = _run_text(args)
         assert code == 0
@@ -184,8 +191,8 @@ class TestToolsList:
     def test_list_json_output(self, capsys) -> None:
         args = argparse.Namespace(tools_command="list", output_format="json")
         with patch(
-            "deepagents_code.tool_catalog.collect_tool_groups",
-            return_value=_SAMPLE_GROUPS,
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=_SAMPLE_CATALOG,
         ):
             code = run_tools_command(args)
         assert code == 0
@@ -203,6 +210,112 @@ class TestToolsList:
         }
         assert data["tools"][-1]["source"] == "mcp"
         assert data["tools"][-1]["group"] == "docs"
+        # No discovery problems for this catalog.
+        assert data["unavailable"] == []
+        assert data["mcp_error"] is None
+
+    def test_list_reports_unavailable_servers_text(self) -> None:
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
+            ),
+            unavailable=(
+                UnavailableServer(name="broken", status="error", detail="boom"),
+            ),
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+        assert code == 0
+        # The broken server is shown with its status and reason, not hidden.
+        assert "Unavailable MCP servers" in output
+        assert "broken" in output
+        assert "error" in output
+        assert "boom" in output
+
+    def test_list_json_includes_unavailable_and_mcp_error(self, capsys) -> None:
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        # `output_format` defaults to text on the namespace; force json below.
+        args.output_format = "json"
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
+            ),
+            unavailable=(
+                UnavailableServer(
+                    name="needslogin", status="unauthenticated", detail="run login"
+                ),
+            ),
+            mcp_error="MCP discovery failed; showing built-in tools only.",
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code = run_tools_command(args)
+        # No explicit --mcp-config on this namespace, so degradation is exit 0.
+        assert code == 0
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert data["unavailable"] == [
+            {"name": "needslogin", "status": "unauthenticated", "detail": "run login"}
+        ]
+        assert data["mcp_error"] == "MCP discovery failed; showing built-in tools only."
+
+    def test_list_explicit_mcp_config_failure_exits_nonzero(self, capsys) -> None:
+        """A failed explicit --mcp-config is a failed user request → exit 1."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            mcp_config="/tmp/mcp.json",
+        )
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
+            ),
+            mcp_error="MCP discovery failed; showing built-in tools only.",
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code = run_tools_command(args)
+        assert code == 1
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert data["mcp_error"]
+
+    def test_list_discovery_failure_without_explicit_config_exits_zero(self) -> None:
+        """Best-effort auto-discovery failure stays exit 0 (built-ins render)."""
+        args = argparse.Namespace(
+            tools_command="list", output_format="text", mcp_config=None
+        )
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
+            ),
+            mcp_error="MCP discovery failed; showing built-in tools only.",
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+        assert code == 0
+        assert "showing built-in tools only" in output
 
     def test_list_forwards_runtime_options(self) -> None:
         """`--no-mcp`, `--mcp-config`, and interpreter resolution reach the catalog."""
@@ -216,10 +329,12 @@ class TestToolsList:
             trust_project_mcp=True,
         )
         with patch(
-            "deepagents_code.tool_catalog.collect_tool_groups",
-            return_value=[],
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=ToolCatalog(groups=()),
         ) as collect:
             code = run_tools_command(args)
+        # --no-mcp means no discovery, so mcp_error is None → exit 0 even with
+        # an explicit --mcp-config on the namespace.
         assert code == 0
         collect.assert_called_once_with(
             enable_interpreter=True,
@@ -239,8 +354,8 @@ class TestToolsList:
             mcp_config=None,
         )
         with patch(
-            "deepagents_code.tool_catalog.collect_tool_groups",
-            return_value=[],
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=ToolCatalog(groups=()),
         ) as collect:
             code = run_tools_command(args)
         assert code == 0
@@ -268,8 +383,8 @@ class TestToolsList:
                 return_value=True,
             ),
             patch(
-                "deepagents_code.tool_catalog.collect_tool_groups",
-                return_value=[],
+                "deepagents_code.tool_catalog.collect_catalog",
+                return_value=ToolCatalog(groups=()),
             ) as collect,
         ):
             code = run_tools_command(args)
@@ -279,17 +394,42 @@ class TestToolsList:
 
     def test_list_singular_noun_for_one_tool(self) -> None:
         args = argparse.Namespace(tools_command="list", output_format="text")
-        one_group = [
-            ToolGroup(
-                label="Built-in",
-                source="built-in",
-                tools=(ToolEntry(name="ls", description="List files"),),
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
             )
-        ]
+        )
         with patch(
-            "deepagents_code.tool_catalog.collect_tool_groups",
-            return_value=one_group,
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=catalog,
         ):
             code, output = _run_text(args)
         assert code == 0
         assert "1 tool available" in output
+
+
+class TestTruncate:
+    """Tests for `_truncate` description clipping."""
+
+    @pytest.mark.parametrize(
+        ("text", "width", "ellipsis", "expected"),
+        [
+            ("hello", 10, "...", "hello"),  # fits comfortably
+            ("hello", 5, "...", "hello"),  # exact fit, no clip
+            ("hello world", 9, "...", "hello..."),  # clip + rstrip before ellipsis
+            ("hello world", 8, "...", "hello..."),  # trailing space dropped
+            ("abcdef", 3, "...", "abc"),  # width == len(ellipsis)
+            ("abcdef", 2, "...", "ab"),  # width < len(ellipsis)
+            ("abcdef", 0, "...", "abcdef"),  # zero width → unchanged
+            ("abcdef", -5, "...", "abcdef"),  # negative width → unchanged
+            ("hello world", 8, "…", "hello w…"),  # single-char ellipsis
+        ],
+    )
+    def test_truncate(
+        self, text: str, width: int, ellipsis: str, expected: str
+    ) -> None:
+        assert _truncate(text, width, ellipsis) == expected

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 from deepagents_code.config import Settings
@@ -9,10 +10,13 @@ from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
     BUILT_IN_GROUP,
     ToolEntry,
+    ToolGroup,
+    UnavailableServer,
     _first_line,
+    _load_mcp_server_info,
     collect_built_in_tools,
-    collect_mcp_tool_groups,
-    collect_tool_groups,
+    collect_catalog,
+    collect_mcp_catalog,
 )
 
 # Core tools the agent always binds, independent of optional integrations.
@@ -79,10 +83,10 @@ class TestCollectBuiltInTools:
         assert "js_eval" in with_interp
 
 
-class TestCollectMcpToolGroups:
-    """Tests for MCP tool grouping."""
+class TestCollectMcpCatalog:
+    """Tests for MCP discovery: grouping tools and surfacing broken servers."""
 
-    def test_groups_per_server_and_skips_toolless(self) -> None:
+    def test_groups_ok_servers_and_surfaces_unavailable(self) -> None:
         servers = [
             MCPServerInfo(
                 name="docs",
@@ -98,13 +102,20 @@ class TestCollectMcpToolGroups:
                 status="error",
                 error="boom",
             ),
+            MCPServerInfo(
+                name="needslogin",
+                transport="http",
+                status="unauthenticated",
+                error="run login",
+            ),
         ]
         loader = AsyncMock(return_value=servers)
         with patch("deepagents_code.tool_catalog._load_mcp_server_info", new=loader):
-            groups = collect_mcp_tool_groups(
+            groups, unavailable, mcp_error = collect_mcp_catalog(
                 mcp_config_path="/tmp/mcp.json",
                 trust_project_mcp=True,
             )
+        assert mcp_error is None
         assert len(groups) == 1
         group = groups[0]
         assert group.label == "docs"
@@ -112,26 +123,141 @@ class TestCollectMcpToolGroups:
         assert group.tools == (
             ToolEntry(name="search_docs", description="Search the docs"),
         )
+        # Non-ok servers are reported, not dropped, so the omission is explained.
+        assert unavailable == [
+            UnavailableServer(name="broken", status="error", detail="boom"),
+            UnavailableServer(
+                name="needslogin", status="unauthenticated", detail="run login"
+            ),
+        ]
         # MCP options are forwarded to discovery unchanged.
         loader.assert_awaited_once_with(
             mcp_config_path="/tmp/mcp.json", trust_project_mcp=True
         )
 
-    def test_discovery_failure_returns_no_groups(self) -> None:
+    def test_ok_server_without_tools_is_neither_group_nor_unavailable(self) -> None:
+        servers = [MCPServerInfo(name="empty", transport="http", status="ok")]
         with patch(
             "deepagents_code.tool_catalog._load_mcp_server_info",
-            new=AsyncMock(side_effect=RuntimeError("no config")),
+            new=AsyncMock(return_value=servers),
         ):
-            assert collect_mcp_tool_groups() == []
+            groups, unavailable, mcp_error = collect_mcp_catalog()
+        assert groups == []
+        assert unavailable == []
+        assert mcp_error is None
+
+    def test_discovery_failure_returns_generic_error_without_leaking(self) -> None:
+        with patch(
+            "deepagents_code.tool_catalog._load_mcp_server_info",
+            new=AsyncMock(side_effect=RuntimeError("secret /path/mcp.json boom")),
+        ):
+            groups, unavailable, mcp_error = collect_mcp_catalog()
+        assert groups == []
+        assert unavailable == []
+        # Generic message only — raw exception text must not leak to output.
+        assert mcp_error == "MCP discovery failed; showing built-in tools only."
+        assert "secret" not in mcp_error
+        assert "/path/mcp.json" not in mcp_error
 
 
-class TestCollectToolGroups:
+class TestLoadMcpServerInfo:
+    """Tests for `_load_mcp_server_info` session lifecycle and cwd handling."""
+
+    def test_cleans_up_session_manager(self) -> None:
+        session_manager = AsyncMock()
+        server_info = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="t", description="d"),),
+            )
+        ]
+        loader = AsyncMock(return_value=([], session_manager, server_info))
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=None,
+            ),
+            patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", new=loader),
+        ):
+            result = asyncio.run(
+                _load_mcp_server_info(mcp_config_path=None, trust_project_mcp=None)
+            )
+        assert result == server_info
+        session_manager.cleanup.assert_awaited_once()
+
+    def test_cleanup_failure_is_swallowed(self) -> None:
+        session_manager = AsyncMock()
+        session_manager.cleanup.side_effect = RuntimeError("cleanup boom")
+        server_info = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="t", description="d"),),
+            )
+        ]
+        loader = AsyncMock(return_value=([], session_manager, server_info))
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=None,
+            ),
+            patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", new=loader),
+        ):
+            # A cleanup failure must not mask the return value or propagate.
+            result = asyncio.run(
+                _load_mcp_server_info(mcp_config_path=None, trust_project_mcp=None)
+            )
+        assert result == server_info
+
+    def test_cwd_oserror_forwards_none_project_context(self) -> None:
+        loader = AsyncMock(return_value=([], None, []))
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                side_effect=OSError("no cwd"),
+            ),
+            patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", new=loader),
+        ):
+            result = asyncio.run(
+                _load_mcp_server_info(mcp_config_path=None, trust_project_mcp=None)
+            )
+        assert result == []
+        await_args = loader.await_args
+        assert await_args is not None
+        assert await_args.kwargs["project_context"] is None
+
+
+class TestCollectCatalog:
     """Tests for the combined built-in + MCP assembly."""
 
     def test_built_in_group_first_and_mcp_optional(self) -> None:
-        with patch("deepagents_code.tool_catalog.collect_mcp_tool_groups") as mock_mcp:
-            groups = collect_tool_groups(include_mcp=False)
+        with patch("deepagents_code.tool_catalog.collect_mcp_catalog") as mock_mcp:
+            catalog = collect_catalog(include_mcp=False)
         mock_mcp.assert_not_called()
-        assert groups[0].label == BUILT_IN_GROUP
-        assert groups[0].source == "built-in"
-        assert len(groups) == 1
+        assert len(catalog.groups) == 1
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[0].source == "built-in"
+        assert catalog.unavailable == ()
+        assert catalog.mcp_error is None
+
+    def test_appends_mcp_groups_and_carries_unavailable(self) -> None:
+        mcp_groups = [
+            ToolGroup(
+                label="docs",
+                source="mcp",
+                tools=(ToolEntry(name="search_docs", description="Search"),),
+            )
+        ]
+        unavailable = [UnavailableServer(name="broken", status="error", detail="boom")]
+        with patch(
+            "deepagents_code.tool_catalog.collect_mcp_catalog",
+            return_value=(mcp_groups, unavailable, None),
+        ):
+            catalog = collect_catalog(include_mcp=True, mcp_config_path="/tmp/mcp.json")
+        # Built-in group stays first; MCP groups follow.
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[-1].label == "docs"
+        assert catalog.unavailable == (
+            UnavailableServer(name="broken", status="error", detail="boom"),
+        )

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     import argparse
 
     from deepagents_code.output import OutputFormat
-    from deepagents_code.tool_catalog import ToolGroup
+    from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
 
 logger = logging.getLogger(__name__)
 
@@ -66,33 +66,45 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     """List the tools available to the agent, grouped by source.
 
     Enumerates the real tool objects the agent binds (see
-    `tool_catalog.collect_tool_groups`) so names and descriptions never drift
-    from what the model sees. The same runtime options that shape the agent's
-    tool set are honored: the resolved interpreter setting controls whether
-    `js_eval` is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
-    `--trust-project-mcp`) control MCP discovery. MCP discovery is best-effort:
-    failures leave the built-in group intact.
+    `tool_catalog.collect_catalog`) so names and descriptions never drift from
+    what the model sees. The same runtime options that shape the agent's tool
+    set are honored: the resolved interpreter setting controls whether `js_eval`
+    is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
+    `--trust-project-mcp`) control MCP discovery. Those are top-level flags, so
+    they must precede the subcommand (e.g. `dcode --no-mcp tools list`).
+
+    MCP discovery is best-effort: the built-in tools always render. Servers that
+    errored, need login, or are disabled are still reported (not hidden) so a
+    user debugging a missing tool can see why it is absent. When discovery fails
+    outright while an explicit `--mcp-config` was supplied, the command exits
+    non-zero because the user's explicit request could not be satisfied.
 
     Args:
         args: Parsed CLI namespace. Reads `output_format`, `interpreter`,
             `sandbox`, `no_mcp`, `mcp_config`, and `trust_project_mcp`.
 
     Returns:
-        `0` — listing is informational and always succeeds.
+        `0` on success (including best-effort MCP degradation); `1` when an
+        explicit `--mcp-config` was given but MCP discovery failed.
     """
     from deepagents_code._server_config import _resolve_enable_interpreter
-    from deepagents_code.tool_catalog import collect_tool_groups
+    from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
+    mcp_config_path: str | None = getattr(args, "mcp_config", None)
     enable_interpreter = _resolve_enable_interpreter(
         getattr(args, "interpreter", None), getattr(args, "sandbox", None)
     )
-    groups = collect_tool_groups(
+    catalog = collect_catalog(
         enable_interpreter=enable_interpreter,
         include_mcp=not getattr(args, "no_mcp", False),
-        mcp_config_path=getattr(args, "mcp_config", None),
+        mcp_config_path=mcp_config_path,
         trust_project_mcp=_tools_list_project_mcp_trust(args),
     )
+
+    # A failed *explicit* --mcp-config is a failed user request → non-zero exit;
+    # best-effort auto-discovery failures stay exit 0 (built-ins still render).
+    exit_code = 1 if catalog.mcp_error and mcp_config_path else 0
 
     if output_format == "json":
         tools_payload = [
@@ -102,17 +114,29 @@ def _run_tools_list(args: argparse.Namespace) -> int:
                 "group": group.label,
                 "source": group.source,
             }
-            for group in groups
+            for group in catalog.groups
             for entry in group.tools
         ]
         write_json(
             "tools list",
-            {"tools": tools_payload, "count": len(tools_payload)},
+            {
+                "tools": tools_payload,
+                "count": len(tools_payload),
+                "unavailable": [
+                    {
+                        "name": server.name,
+                        "status": server.status,
+                        "detail": server.detail,
+                    }
+                    for server in catalog.unavailable
+                ],
+                "mcp_error": catalog.mcp_error,
+            },
         )
-        return 0
+        return exit_code
 
-    _print_tool_groups(groups)
-    return 0
+    _print_catalog(catalog)
+    return exit_code
 
 
 def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
@@ -130,22 +154,25 @@ def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
     return None
 
 
-def _print_tool_groups(groups: list[ToolGroup]) -> None:
-    """Render tool groups as aligned `name  description` rows.
+def _print_catalog(catalog: ToolCatalog) -> None:
+    """Render a tool catalog to the console.
+
+    Prints the count header, the tool groups, then any unavailable MCP servers
+    and a discovery-failure notice.
 
     Args:
-        groups: Ordered tool groups (built-in first, then MCP servers).
+        catalog: Collected groups, unavailable servers, and discovery status.
     """
     from deepagents_code.config import console, get_glyphs
 
     ellipsis = get_glyphs().ellipsis
-    total = sum(len(group.tools) for group in groups)
+    total = sum(len(group.tools) for group in catalog.groups)
     noun = "tool" if total == 1 else "tools"
 
     console.print()
     console.print(f"{total} {noun} available", highlight=False)
 
-    for group in groups:
+    for group in catalog.groups:
         if not group.tools:
             continue
         name_width = max(len(entry.name) for entry in group.tools)
@@ -166,7 +193,44 @@ def _print_tool_groups(groups: list[ToolGroup]) -> None:
                 no_wrap=True,
                 crop=True,
             )
+
+    _print_unavailable_servers(catalog.unavailable)
+
+    if catalog.mcp_error:
+        console.print()
+        console.print(f"Note: {catalog.mcp_error}", style="yellow", highlight=False)
+
     console.print()
+
+
+def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
+    """Render MCP servers that were discovered but expose no tools.
+
+    Args:
+        servers: Unavailable servers (errored, needing login, or disabled).
+    """
+    if not servers:
+        return
+    from deepagents_code.config import console
+
+    name_width = max(len(server.name) for server in servers)
+    console.print()
+    console.print(
+        "Unavailable MCP servers", style="bold", markup=False, highlight=False
+    )
+    for server in servers:
+        padded = server.name.ljust(name_width)
+        # `status: detail` (ASCII-only, no em-dash) so legacy consoles don't hit
+        # an encoding error; detail is discovery's own curated reason string.
+        detail = f": {server.detail}" if server.detail else ""
+        console.print(
+            f"  {padded}  {server.status}{detail}".rstrip(),
+            style="dim",
+            markup=False,
+            highlight=False,
+            no_wrap=True,
+            crop=True,
+        )
 
 
 def _truncate(text: str, width: int, ellipsis: str) -> str:

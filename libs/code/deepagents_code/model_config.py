@@ -3194,12 +3194,12 @@ def load_mcp_server_trust_lists(
     Source resolution differs by list, matching each one's security direction:
 
     - `enabled` (permissive): the env var, when set, *replaces* the TOML list
-      (env-beats-config, as elsewhere). Clearing it via an empty env value is
-      fail-closed — it only ever pre-approves fewer servers.
+        (env-beats-config, as elsewhere). Clearing it via an empty env value is
+        fail-closed — it only ever pre-approves fewer servers.
     - `disabled` (restrictive): the env var *unions* with the TOML list — denies
-      accumulate and a lower-effort source can never silently empty a deny entry
-      set in the other, which would be a fail-open. There is deliberately no way
-      to *remove* a configured deny via env.
+        accumulate and a lower-effort source can never silently empty a deny
+        entry set in the other, which would be a fail-open. There is
+        deliberately no way to *remove* a configured deny via env.
 
     Rejection wins: a name appearing in both the enabled and disabled result is
     reported only in `disabled`.

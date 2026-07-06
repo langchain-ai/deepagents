@@ -133,10 +133,10 @@ class ModelLabel(Widget):
 class BranchLabel(Widget):
     """A label that displays the git branch with glyph-aware truncation.
 
-    Unlike CSS ``text-overflow: ellipsis`` (which always uses the Unicode
-    ``…``), this widget truncates manually in :meth:`render` using
-    :func:`get_glyphs` so ASCII mode (``DEEPAGENTS_CODE_UI_CHARSET_MODE=ascii``)
-    gets ``"..."`` instead of ``"…"``.
+    Unlike CSS `text-overflow: ellipsis` (which always uses the Unicode
+    ellipsis character), this widget truncates manually in :meth:`render` using
+    :func:`get_glyphs` so ASCII mode (`DEEPAGENTS_CODE_UI_CHARSET_MODE=ascii`)
+    gets `"..."` instead of `"…"`.
     """
 
     branch: reactive[str] = reactive("", layout=True)

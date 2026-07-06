@@ -119,7 +119,8 @@ def _local_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
 
     Returns:
         A bold markup style under ANSI themes (whose palette the terminal owns,
-        so a parsed color could be invisible) or a bold themed color otherwise.
+            so a parsed color could be invisible) or a bold themed
+            color otherwise.
     """
     if ansi:
         return "bold"

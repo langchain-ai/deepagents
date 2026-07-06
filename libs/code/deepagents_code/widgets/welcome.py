@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -20,6 +21,7 @@ from deepagents_code._env_vars import (
     DEBUG,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
     SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
@@ -70,7 +72,19 @@ _TIPS: dict[str, int] = {
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
-"""Rotating tips shown in the welcome footer, with relative selection weights."""
+"""Rotating tips shown in the welcome banner, with relative selection weights."""
+
+
+def _pick_tip() -> str:
+    """Pick one startup tip using the configured relative weights.
+
+    Returns:
+        Tip text selected from `_TIPS`.
+    """
+    tips = list(_TIPS.keys())
+    weights = list(_TIPS.values())
+    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
+
 
 _LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
 """UTM source tag appended to LangSmith project URLs in the welcome banner."""
@@ -207,6 +221,8 @@ class WelcomeBanner(Static):
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
+        self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
+        self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
@@ -429,6 +445,8 @@ class WelcomeBanner(Static):
             rows.append(
                 [("mcp:       ", "dim"), (f"{self._mcp_tool_count} {label}", accent)]
             )
+        if self._tip is not None:
+            rows.append([("tip:       ", "dim"), (self._tip, "dim italic")])
 
         for index, row in enumerate(rows):
             parts.append("\n\n" if index == 0 else "\n")

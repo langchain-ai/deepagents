@@ -92,7 +92,13 @@ class TalonConfig:
         """
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
-        for child in (self.manifest_dir, self.cron_dir, self.channel_dir, self.inbound_media_dir):
+        for child in (
+            self.manifest_dir,
+            self.agents_dir,
+            self.cron_dir,
+            self.channel_dir,
+            self.inbound_media_dir,
+        ):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         return self.home
@@ -100,7 +106,12 @@ class TalonConfig:
     @property
     def manifest_dir(self) -> Path:
         """Directory where agent manifest files are materialized."""
-        return self.home / "agent"
+        return self.home
+
+    @property
+    def agents_dir(self) -> Path:
+        """Directory reserved for custom subagent definitions."""
+        return self.home / "agents"
 
     @property
     def cron_dir(self) -> Path:

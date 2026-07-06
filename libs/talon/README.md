@@ -11,7 +11,7 @@ Talon currently includes:
 - A host process with graceful shutdown, per-conversation serialization, and `/stop` cancellation.
 - A generic channel protocol plus a WhatsApp adapter backed by a loopback Node bridge.
 - A persistent cron scheduler with agent-facing cron tool helpers.
-- MCP tool loading from the assistant manifest directory.
+- MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
 - Optional LangSmith tracing for each channel or cron-triggered run.
 
 ## Quickstart
@@ -116,7 +116,7 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/<assistant_id>/agent/tools.json`, then `~/.deepagents/.mcp.json`. Add Talon-local servers by editing `tools.json` directly:
+Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/.mcp.json`. For user-level MCP servers, edit `~/.deepagents/.mcp.json`:
 
 ```json
 {
@@ -163,6 +163,7 @@ Outbound data leaves Talon through these integrations:
 
 Sensitive local state is stored under `~/.deepagents/<assistant_id>/` by default with `0700` directories and `0600` cron files:
 
+- `AGENTS.md`, `skills/`, and `agents/` store the materialized assistant instructions, skills, and subagent definitions.
 - `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Completed jobs are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
 - `channels/whatsapp/` stores WhatsApp `LocalAuth` credentials and Chromium profile state. These credentials are retained until the operator deletes the directory, because automatic deletion would silently unpair the channel.
 - `media/inbound/` is reserved for downloaded inbound media. Files older than `DEEPAGENTS_TALON_INBOUND_MEDIA_RETENTION_HOURS`, default `24`, are deleted on startup. Inbound and outbound channel media are capped by `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`, default `1073741824` (1 GiB); WhatsApp is further clamped to `67108864` (64 MiB). The WhatsApp bridge stores downloaded inbound media under the assistant's inbound media directory and passes local paths plus MIME metadata to the host.

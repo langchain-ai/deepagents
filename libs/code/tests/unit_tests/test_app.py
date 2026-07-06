@@ -3218,14 +3218,17 @@ class TestMessageQueue:
 
             assert not app.query(StartupTip)
 
-    async def test_startup_tip_removed_after_first_submission(self) -> None:
+    async def test_startup_tip_removed_after_first_submission(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """The startup tip disappears after the first chat input submission."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             assert len(app.query(StartupTip)) == 1
             submit = AsyncMock()
-            app._submit_input = submit  # ty: ignore[method-assign]
+            monkeypatch.setattr(app, "_submit_input", submit)
 
             app.post_message(ChatInput.Submitted("hello", "normal"))
             await pilot.pause()

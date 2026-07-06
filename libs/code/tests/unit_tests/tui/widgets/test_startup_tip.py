@@ -24,7 +24,9 @@ class TestStartupTip:
 
     def test_renders_tip_text(self) -> None:
         """The widget labels and renders the selected tip."""
-        assert StartupTip("Use /copy").render().plain == "Tip: Use /copy"
+        rendered = StartupTip("Use /copy").render()
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "Tip: Use /copy"
 
     def test_selects_weighted_tip_when_omitted(self) -> None:
         """A tip is selected when no explicit text is provided."""
@@ -32,7 +34,9 @@ class TestStartupTip:
             widget = StartupTip()
 
         assert widget.tip == "Use /copy"
-        assert widget.render().plain == "Tip: Use /copy"
+        rendered = widget.render()
+        assert isinstance(rendered, Content)
+        assert rendered.plain == "Tip: Use /copy"
         pick_tip.assert_called_once()
 
     def test_show_startup_tip_defaults_to_true(

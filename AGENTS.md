@@ -286,6 +286,8 @@ For dependency internals, first locate the dependency file from the package envi
 
 ### Deep Agents Code (`libs/code/`)
 
+The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).
+
 See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
 
 ### Deep Agents CLI (`libs/cli/`)

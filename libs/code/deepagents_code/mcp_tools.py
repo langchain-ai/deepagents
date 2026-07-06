@@ -1914,7 +1914,7 @@ async def resolve_and_load_mcp_tools(
                         if isinstance(server_config, dict)
                         else "unknown",
                         status="disabled",
-                        error="Disabled by user (`/mcp` F2 to re-enable).",
+                        error="Disabled by user (F2 to re-enable).",
                     ),
                 )
             else:

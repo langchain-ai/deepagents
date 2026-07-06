@@ -9,7 +9,7 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, NewType
 
 SpinnerStatus = (
     Literal[
@@ -27,6 +27,32 @@ TurnSpinnerStatus = Literal["Thinking", "Offloading"]
 
 Excludes `None`: the adapter can update the spinner's phase but never hides
 it. Spinner lifecycle is owned by the app's turn lifecycle."""
+
+
+def _assert_turn_spinner_status_subtype(status: TurnSpinnerStatus) -> SpinnerStatus:
+    """Static drift guard, never called at runtime.
+
+    `TurnSpinnerStatus` is a hand-written subset of `SpinnerStatus` (its phase
+    values minus `None`). This function fails type-checking if the two ever
+    drift — e.g. a phase renamed in `SpinnerStatus` but not here — so keep the
+    two definitions in sync.
+
+    Returns:
+        The `status` unchanged; only its static type is meaningful here.
+    """
+    return status
+
+
+SpinnerTurnId = NewType("SpinnerTurnId", int)
+"""Opaque identity for an agent turn's top-level spinner.
+
+Compared only for equality to drop stale phase updates from a previous turn;
+it is never treated as an ordinal or mixed with other ints (e.g. turn counts).
+`0` is the initial "no turn started yet" value; live turns start at `1`.
+"""
+
+NO_SPINNER_TURN = SpinnerTurnId(0)
+"""The "no turn started yet" spinner id. Live agent turns start at `1`."""
 
 
 @dataclass

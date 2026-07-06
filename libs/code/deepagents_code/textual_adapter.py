@@ -49,10 +49,11 @@ from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
+    NO_SPINNER_TURN as NO_SPINNER_TURN,
     ModelStats as ModelStats,
     ModelStatsKey as ModelStatsKey,
     SessionStats as SessionStats,
-    SpinnerStatus as SpinnerStatus,
+    SpinnerTurnId as SpinnerTurnId,
     TurnSpinnerStatus as TurnSpinnerStatus,
     format_token_count as format_token_count,
 )
@@ -94,7 +95,12 @@ _hitl_adapter_cache: TypeAdapter | None = None
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
 _TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
-"""Tool calls whose argument/approval phase can be long enough to need feedback."""
+"""Tool calls that skip the per-tool "Running…" indicator at mount.
+
+Members rely on the top-level turn spinner for feedback instead of getting a
+per-tool running state. `edit_file` streams large args and then awaits HITL
+approval before it actually runs, so marking its row "Running…" during that
+pending phase would be misleading; the persistent turn spinner covers it."""
 
 
 def _dispatch_tool_use_hook(
@@ -378,9 +384,8 @@ class TextualUIAdapter:
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
         on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
-        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_turn_spinner_status: (
-            Callable[[TurnSpinnerStatus, int], Awaitable[None]] | None
+            Callable[[TurnSpinnerStatus, SpinnerTurnId], Awaitable[None]] | None
         ) = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -412,15 +417,12 @@ class TextualUIAdapter:
         allowing the app to sync its status bar and session state.
         """
 
-        self._set_spinner = set_spinner
-        """Callback to show/hide loading spinner."""
-
         self._set_turn_spinner_status = set_turn_spinner_status
         """Async callback to update the live turn spinner's phase.
 
-        Unlike `_set_spinner`, this never hides the spinner: the app owns
-        spinner lifecycle. Passed the current `turn_id` so the app can drop
-        stale phase updates from a previous turn."""
+        This never hides the spinner: the app owns spinner lifecycle. Passed
+        the current `spinner_turn_id` so the app can drop stale phase updates
+        from a previous turn."""
 
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
@@ -580,7 +582,7 @@ async def execute_task_textual(
     rubric: str | None = None,
     blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
-    turn_id: int = 0,
+    spinner_turn_id: SpinnerTurnId = NO_SPINNER_TURN,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -617,9 +619,9 @@ async def execute_task_textual(
 
             If `None`, a new instance is created internally.
 
-        turn_id: Identifies the agent turn that owns the top-level spinner.
-            Forwarded with each phase update so the app can ignore stale
-            updates issued after the turn ended.
+        spinner_turn_id: Identifies the agent turn that owns the top-level
+            spinner. Forwarded with each phase update so the app can ignore
+            stale updates issued after the turn ended.
 
     Returns:
         Stats accumulated over this turn (request count, token counts,
@@ -685,9 +687,9 @@ async def execute_task_textual(
     # once per user prompt, before building the stream config. `session_state`
     # is duck-typed (`Any`): the production `TextualSessionState` always has
     # `advance_turn`, but lightweight callers/test doubles may not, so probe for
-    # it and degrade to no turn markers rather than raising. The spinner
-    # `turn_id` (an int passed by the app for stale-phase suppression) is
-    # separate from the trace-metadata `turn_id` (a str from `advance_turn`).
+    # it and degrade to no turn markers rather than raising. This trace-metadata
+    # `turn_id` (a str from `advance_turn`) is separate from the `spinner_turn_id`
+    # param (a `SpinnerTurnId` int the app passes for stale-phase suppression).
     trace_turn_id: str | None = None
     turn_number: int | None = None
     advance_turn = getattr(session_state, "advance_turn", None)
@@ -812,10 +814,10 @@ async def execute_task_textual(
             # Keep the top-level turn spinner on "Thinking" at the start of
             # each astream iteration (first turn and HITL/ask_user resumes).
             # The app mounts the spinner once for the whole turn; this only
-            # refreshes its phase and re-anchors it. It never hides the
-            # spinner and is independent of per-tool running indicators.
+            # refreshes its phase. It never hides the spinner and is
+            # independent of per-tool running indicators.
             if adapter._set_turn_spinner_status:
-                await adapter._set_turn_spinner_status("Thinking", turn_id)
+                await adapter._set_turn_spinner_status("Thinking", spinner_turn_id)
 
             async for chunk in agent.astream(
                 stream_input,
@@ -1011,7 +1013,7 @@ async def execute_task_textual(
                             summarization_in_progress = True
                             if adapter._set_turn_spinner_status:
                                 await adapter._set_turn_spinner_status(
-                                    "Offloading", turn_id
+                                    "Offloading", spinner_turn_id
                                 )
                         continue
 
@@ -1027,7 +1029,9 @@ async def execute_task_textual(
                                 exc_info=True,
                             )
                         if adapter._set_turn_spinner_status:
-                            await adapter._set_turn_spinner_status("Thinking", turn_id)
+                            await adapter._set_turn_spinner_status(
+                                "Thinking", spinner_turn_id
+                            )
 
                     if isinstance(message, HumanMessage):
                         content = message.text
@@ -1160,12 +1164,15 @@ async def execute_task_textual(
                                     DiffMessage(record.diff, record.display_path)
                                 )
 
-                        # Re-anchor the persistent turn spinner below any diff
-                        # mounted above so it stays at the bottom of the
-                        # messages container. Tool widget state is tracked
-                        # separately and no longer gates the top-level spinner.
+                        # Keep the persistent turn spinner on "Thinking" after a
+                        # tool completes. Newer widgets (e.g. the diff above)
+                        # mount above the spinner, so it already stays at the
+                        # bottom; this just refreshes its phase. Tool widget
+                        # state is tracked separately and no longer gates it.
                         if adapter._set_turn_spinner_status:
-                            await adapter._set_turn_spinner_status("Thinking", turn_id)
+                            await adapter._set_turn_spinner_status(
+                                "Thinking", spinner_turn_id
+                            )
 
                         if adapter._on_tool_complete is not None:
                             try:
@@ -1252,14 +1259,14 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Re-anchor the persistent turn spinner
-                                    # below the newly-mounted assistant message
-                                    # so it stays at the bottom while the model
-                                    # streams. This only refreshes the
-                                    # spinner's phase/position; never hides it.
+                                    # Keep the persistent turn spinner on
+                                    # "Thinking" after mounting a new assistant
+                                    # message. The message mounts above the
+                                    # spinner, so it already stays at the bottom;
+                                    # this only refreshes its phase, never hides.
                                     if adapter._set_turn_spinner_status:
                                         await adapter._set_turn_spinner_status(
-                                            "Thinking", turn_id
+                                            "Thinking", spinner_turn_id
                                         )
 
                                 # Append just the new text chunk for smoother
@@ -1369,19 +1376,23 @@ async def execute_task_textual(
                                     )
                                 else:
                                     if not keep_thinking_spinner:
-                                        # Show a per-tool running spinner immediately so
-                                        # auto-executed tools such as grep, glob,
-                                        # read_file, and ls display activity instead of
-                                        # sitting idle until their result arrives. Tools
-                                        # in `_TOOL_CALLS_KEEP_THINKING_SPINNER` rely on
-                                        # the top-level spinner and get no per-tool one.
+                                        # Mark the tool row "Running…". In the
+                                        # default collapsed tool group the row is
+                                        # hidden, so this drives the group's live
+                                        # state (and the animation shown if the
+                                        # user expands it) rather than a second
+                                        # visible spinner beside the top-level
+                                        # one. Tools in
+                                        # `_TOOL_CALLS_KEEP_THINKING_SPINNER` skip
+                                        # this and lean on the top-level spinner.
                                         tool_msg.set_running()
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                # Re-anchor the persistent turn spinner below the
-                                # newly-mounted tool row.
+                                # Keep the persistent turn spinner on "Thinking"
+                                # after mounting the tool row (which mounts above
+                                # it, so it stays pinned at the bottom).
                                 if adapter._set_turn_spinner_status:
                                     await adapter._set_turn_spinner_status(
-                                        "Thinking", turn_id
+                                        "Thinking", spinner_turn_id
                                     )
 
                             if buffer_id is not None:
@@ -1411,7 +1422,7 @@ async def execute_task_textual(
                         exc_info=True,
                     )
                 if adapter._set_turn_spinner_status:
-                    await adapter._set_turn_spinner_status("Thinking", turn_id)
+                    await adapter._set_turn_spinner_status("Thinking", spinner_turn_id)
 
             # Flush any remaining text from all namespaces
             for ns_key, pending_text in list(pending_text_by_namespace.items()):
@@ -2040,10 +2051,6 @@ async def _handle_interrupt_cleanup(
     # blocking all future pruning.
     if adapter._set_active_message:
         adapter._set_active_message(None)
-
-    # Hide spinner (may still show "Offloading" if interrupted mid-offload)
-    if adapter._set_spinner:
-        await adapter._set_spinner(None)
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 

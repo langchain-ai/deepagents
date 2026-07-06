@@ -39,7 +39,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
-from deepagents_code._session_stats import SessionStats
+from deepagents_code._session_stats import SessionStats, SpinnerTurnId
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
@@ -21660,9 +21660,9 @@ class TestTurnSpinnerOwnership:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
-            app._spinner_turn_id = 9
+            app._spinner_turn_id = SpinnerTurnId(9)
 
-            await app._set_turn_spinner_status("Offloading", 9)
+            await app._set_turn_spinner_status("Offloading", SpinnerTurnId(9))
             await pilot.pause()
 
             assert app._loading_widget is not None
@@ -21673,9 +21673,9 @@ class TestTurnSpinnerOwnership:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = True
-            app._spinner_turn_id = 9
+            app._spinner_turn_id = SpinnerTurnId(9)
 
-            await app._set_turn_spinner_status("Thinking", 8)
+            await app._set_turn_spinner_status("Thinking", SpinnerTurnId(8))
             await pilot.pause()
 
             assert app._loading_widget is None
@@ -21686,12 +21686,88 @@ class TestTurnSpinnerOwnership:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent_running = False
-            app._spinner_turn_id = 9
+            app._spinner_turn_id = SpinnerTurnId(9)
 
-            await app._set_turn_spinner_status("Thinking", 9)
+            await app._set_turn_spinner_status("Thinking", SpinnerTurnId(9))
             await pilot.pause()
 
             assert app._loading_widget is None
+
+    async def test_run_agent_task_forwards_current_spinner_turn_id(self) -> None:
+        """`_run_agent_task` forwards the app's live `_spinner_turn_id`.
+
+        Guards the wiring end-to-end: if the kwarg were dropped (defaulting to
+        `0`), every phase update would be dropped by `_set_turn_spinner_status`
+        on the turn-id mismatch and "Offloading" would never render.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is not None
+            app._spinner_turn_id = SpinnerTurnId(5)
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            mock_execute.assert_awaited_once()
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["spinner_turn_id"] == 5
+
+    async def test_send_to_agent_resets_state_if_setup_fails(self) -> None:
+        """A failure before the worker launches must not strand the spinner.
+
+        `_cleanup_agent_task` (which hides the spinner and clears
+        `_agent_running`) runs from the worker's `finally`, so it never fires if
+        setup raises before the worker starts. `_send_to_agent` must undo that
+        state itself, or the spinner spins forever and the queue stays busy.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            spinner = AsyncMock()
+            app._agent = MagicMock()  # ty: ignore
+            app._ui_adapter = MagicMock()  # ty: ignore
+            app._session_state = MagicMock()  # ty: ignore
+            app._set_spinner = spinner  # ty: ignore
+            app._flush_pending_shell_messages = AsyncMock(
+                side_effect=RuntimeError("boom"),
+            )  # ty: ignore
+
+            with pytest.raises(RuntimeError, match="boom"):
+                await app._send_to_agent("hello")
+            await pilot.pause()
+
+            assert app._agent_running is False
+            # Spinner was shown "Thinking", then hidden with `None` on failure.
+            assert spinner.await_args_list[0].args == ("Thinking",)
+            assert spinner.await_args_list[-1].args == (None,)
+
+    async def test_request_ask_user_pauses_and_resumes_spinner(self) -> None:
+        """The prompt freezes the turn spinner and resumes it on completion.
+
+        The adapter can no longer hide the spinner, so while the agent is
+        blocked on the user the app pauses it (mirroring the approval flow) to
+        avoid a misleading "Thinking" animation.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pause_loading_spinner = MagicMock()  # ty: ignore
+            app._resume_loading_spinner = MagicMock()  # ty: ignore
+
+            future = await app._request_ask_user(
+                [{"question": "Continue?", "type": "text"}],
+            )
+            await pilot.pause()
+
+            app._pause_loading_spinner.assert_called_once()
+            if not future.done():
+                future.set_result({"type": "cancelled"})
+                await pilot.pause()
+            app._resume_loading_spinner.assert_called_once()
 
 
 class TestNotifyInterpreterToolsWithoutInterpreter:

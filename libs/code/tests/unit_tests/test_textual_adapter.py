@@ -33,6 +33,7 @@ from deepagents_code.non_interactive import (
 from deepagents_code.textual_adapter import (
     ModelStats,
     SessionStats,
+    SpinnerTurnId,
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _format_rubric_event,
@@ -70,28 +71,14 @@ def _noop_status(_: str) -> None:
 class TestTextualUIAdapterInit:
     """Tests for `TextualUIAdapter` initialization."""
 
-    def test_set_spinner_callback_stored(self) -> None:
-        """Verify `set_spinner` callback is properly stored."""
-
-        async def mock_spinner(status: str | None) -> None:
-            pass
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=mock_spinner,
-        )
-        assert adapter._set_spinner is mock_spinner
-
-    def test_set_spinner_defaults_to_none(self) -> None:
-        """Verify `set_spinner` is optional and defaults to `None`."""
+    def test_turn_spinner_status_defaults_to_none(self) -> None:
+        """Verify `set_turn_spinner_status` is optional and defaults to `None`."""
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        assert adapter._set_spinner is None
+        assert adapter._set_turn_spinner_status is None
 
     def test_current_tool_messages_initialized_empty(self) -> None:
         """Verify `_current_tool_messages` is initialized as empty dict."""
@@ -225,13 +212,11 @@ class TestInterruptCleanup:
             mounted.append(widget)
             await asyncio.sleep(0)
 
-        set_spinner = AsyncMock()
         set_active = MagicMock()
         adapter = TextualUIAdapter(
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=set_spinner,
             set_active_message=set_active,
         )
 
@@ -269,7 +254,6 @@ class TestInterruptCleanup:
         assert show_calls == [True]
         assert turn_stats.wall_time_seconds == pytest.approx(1.0)
         set_active.assert_called_once_with(None)
-        set_spinner.assert_awaited_once_with(None)
         tool_widget.set_rejected.assert_called_once_with()
         assert adapter._current_tool_messages == {}
 
@@ -404,7 +388,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
             sync_message_content=sync_message_content,
         )
@@ -444,7 +427,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
         agent = SimpleNamespace(
@@ -477,7 +459,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -509,7 +490,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -538,7 +518,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -574,7 +553,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -616,7 +594,6 @@ class TestInterruptCleanup:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
         adapter._current_tool_messages = {"call-1": tool_widget}
@@ -655,7 +632,6 @@ class TestInterruptCleanupTokenPersist:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -688,7 +664,6 @@ class TestInterruptCleanupTokenPersist:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -718,7 +693,6 @@ class TestInterruptCleanupTokenPersist:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -755,7 +729,6 @@ class TestInterruptCleanupTokenPersist:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
 
@@ -790,7 +763,6 @@ class TestInterruptCleanupTokenPersist:
             mount_message=AsyncMock(),
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
             set_active_message=MagicMock(),
         )
         adapter._current_tool_messages = {"call-1": tool_widget}
@@ -2057,12 +2029,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
 
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
         """Notification should render when regular chunks resume after summarization."""
-        statuses: list[str | None] = []
         mounted_widgets: list[object] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -2082,7 +2049,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
         )
 
         await execute_task_textual(
@@ -2101,9 +2067,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
         """Notification should still render if stream exhausts during summarization."""
         mounted_widgets: list[object] = []
 
-        async def record_spinner(_status: str | None) -> None:
-            await asyncio.sleep(0)
-
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
             mounted_widgets.append(widget)
@@ -2121,7 +2084,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=record_spinner,
         )
 
         await execute_task_textual(
@@ -2437,6 +2399,54 @@ class TestExecuteTaskTextualParallelToolSpinner:
         assert len(mounted_tools) == 1
         assert mounted_tools[0]._status == "pending"
 
+    async def test_edit_file_no_per_tool_running_through_completion(self) -> None:
+        """`edit_file` never gets a per-tool running indicator, even on result.
+
+        It is in `_TOOL_CALLS_KEEP_THINKING_SPINNER`, so `set_running()` must not
+        fire at mount nor when the `ToolMessage` result arrives — it relies on
+        the top-level turn spinner for the whole call.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": "example.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="edited", tool_call_id="tool-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        with patch.object(
+            ToolCallMessage, "set_running", autospec=True
+        ) as mock_running:
+            await execute_task_textual(
+                user_input="edit",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        mock_running.assert_not_called()
+
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Top-level spinner stays "Thinking" with three out-of-order tools."""
         statuses: list[str] = []
@@ -2540,7 +2550,6 @@ class TestExecuteTaskTextualTextThenToolSpinner:
     async def test_spinner_not_hidden_when_text_chunk_arrives(self) -> None:
         """Streaming a text block must not hide the top-level turn spinner."""
         statuses: list[str] = []
-        set_spinner = AsyncMock()
 
         async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
@@ -2556,7 +2565,6 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=set_spinner,
             set_turn_spinner_status=record_status,
         )
 
@@ -2575,8 +2583,6 @@ class TestExecuteTaskTextualTextThenToolSpinner:
 
         # The turn spinner is never hidden during streaming; the adapter only
         # updates its phase, and that phase is always "Thinking" here.
-        for call in set_spinner.await_args_list:
-            assert call.args != (None,)
         assert statuses
         assert statuses[0] == "Thinking"
         assert statuses[-1] == "Thinking"
@@ -4108,7 +4114,6 @@ class TestTurnSpinnerContract:
     async def test_assistant_text_does_not_hide_top_level_spinner(self) -> None:
         """Streaming assistant text must never hide the turn spinner."""
         statuses: list[str] = []
-        set_spinner = AsyncMock()
 
         async def record_status(status: str, _turn_id: int) -> None:
             await asyncio.sleep(0)
@@ -4122,7 +4127,6 @@ class TestTurnSpinnerContract:
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=set_spinner,
             set_turn_spinner_status=record_status,
         )
         await execute_task_textual(
@@ -4132,14 +4136,11 @@ class TestTurnSpinnerContract:
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
             adapter=adapter,
         )
-        for call in set_spinner.await_args_list:
-            assert call.args != (None,)
         assert statuses
         assert all(s == "Thinking" for s in statuses)
 
     async def test_mounting_tool_call_does_not_hide_top_level_spinner(self) -> None:
         """Mounting a tool call widget must not hide the turn spinner."""
-        set_spinner = AsyncMock()
         statuses: list[str] = []
 
         async def record_status(status: str, _turn_id: int) -> None:
@@ -4166,7 +4167,6 @@ class TestTurnSpinnerContract:
             mount_message=capture_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
-            set_spinner=set_spinner,
             set_turn_spinner_status=record_status,
         )
         await execute_task_textual(
@@ -4176,8 +4176,6 @@ class TestTurnSpinnerContract:
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
             adapter=adapter,
         )
-        for call in set_spinner.await_args_list:
-            assert call.args != (None,)
         assert len(mounted_tools) == 1
         assert mounted_tools[0]._status == "running"
 
@@ -4212,7 +4210,7 @@ class TestTurnSpinnerContract:
         assert all(s == "Thinking" for s in statuses)
 
     async def test_phase_updates_forward_turn_id(self) -> None:
-        """The adapter forwards the given `turn_id` on each phase update."""
+        """The adapter forwards the given `spinner_turn_id` on each phase update."""
         seen: list[int] = []
 
         async def record_status(_status: str, turn_id: int) -> None:
@@ -4232,7 +4230,7 @@ class TestTurnSpinnerContract:
             assistant_id="assistant",
             session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
             adapter=adapter,
-            turn_id=7,
+            spinner_turn_id=SpinnerTurnId(7),
         )
         assert seen
         assert all(t == 7 for t in seen)

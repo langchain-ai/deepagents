@@ -52,8 +52,10 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
 )
 from deepagents_code._session_stats import (
+    NO_SPINNER_TURN,
     SessionStats,
     SpinnerStatus,
+    SpinnerTurnId,
     TurnSpinnerStatus,
     format_token_count,
 )
@@ -2484,7 +2486,7 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
-        self._spinner_turn_id = 0
+        self._spinner_turn_id: SpinnerTurnId = NO_SPINNER_TURN
         """Monotonic id for the current agent turn's top-level spinner.
 
         Incremented when a turn starts so delayed phase updates from the
@@ -3260,7 +3262,6 @@ class DeepAgentsApp(App):
             update_status=self._update_status,
             request_approval=self._request_approval,
             on_auto_approve_enabled=self._on_auto_approve_enabled,
-            set_spinner=self._set_spinner,
             set_turn_spinner_status=self._set_turn_spinner_status,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
@@ -5912,16 +5913,21 @@ class DeepAgentsApp(App):
             # Cosmetic only: must never break app startup or theme changes.
             logger.warning("set_terminal_background raised unexpectedly", exc_info=True)
 
-    def _pause_loading_spinner_for_approval(self) -> None:
-        """Pause the global spinner timer while an approval widget is visible."""
+    def _pause_loading_spinner(self) -> None:
+        """Pause the spinner animation while awaiting a user decision.
+
+        Used by both the approval and `ask_user` flows: while the agent is
+        blocked on the human, freezing the spinner (to "Awaiting decision")
+        avoids a misleading "Thinking" animation.
+        """
         if self._loading_widget is not None:
             self._loading_widget.pause()
 
-    def _resume_loading_spinner_after_approval(
+    def _resume_loading_spinner(
         self,
         _future: asyncio.Future[Any] | None = None,
     ) -> None:
-        """Resume the global spinner timer after an approval decision.
+        """Resume the spinner animation after a user decision (approval/ask_user).
 
         Accepts an unused `_future` argument so it can be registered directly as
         a `Future.add_done_callback`, which always passes the completed future
@@ -5933,15 +5939,16 @@ class DeepAgentsApp(App):
     async def _set_turn_spinner_status(
         self,
         status: TurnSpinnerStatus,
-        turn_id: int,
+        turn_id: SpinnerTurnId,
     ) -> None:
         """Update the live turn spinner's phase without owning its lifetime.
 
         The streaming adapter calls this to reflect the current phase
-        (`"Thinking"` or `"Offloading"`) and to re-anchor the spinner below
-        freshly-mounted widgets. It deliberately cannot hide the spinner:
-        lifecycle is owned by `_send_to_agent` (show) and
-        `_cleanup_agent_task` (hide).
+        (`"Thinking"` or `"Offloading"`). It deliberately cannot hide the
+        spinner: lifecycle is owned by `_send_to_agent` (show) and
+        `_cleanup_agent_task` (hide). Freshly-mounted widgets mount above the
+        spinner (see `_set_spinner`), so it already stays pinned at the bottom;
+        this call just keeps its phase current.
 
         Stale updates are dropped: a phase update is applied only while the
         agent is still running and `turn_id` matches the current turn, so a
@@ -6126,8 +6133,8 @@ class DeepAgentsApp(App):
         # when the decision future completes. Resolve, reject, and cancel all
         # fire the done-callback; the `_set_spinner` backstop covers the
         # remaining case where a future is abandoned without completing.
-        self._pause_loading_spinner_for_approval()
-        result_future.add_done_callback(self._resume_loading_spinner_after_approval)
+        self._pause_loading_spinner()
+        result_future.add_done_callback(self._resume_loading_spinner)
 
         # Create menu with unique ID to avoid conflicts
         from deepagents_code.widgets.approval import ApprovalMenu
@@ -6362,6 +6369,14 @@ class DeepAgentsApp(App):
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
         menu.set_future(result_future)
+
+        # Freeze the turn spinner while the agent is blocked on the user's
+        # answer, then resume it when the future completes. The adapter can no
+        # longer hide the spinner (the app owns its lifecycle), so without this
+        # it would keep animating "Thinking" during an idle prompt. Mirrors the
+        # approval flow in `_request_approval`.
+        self._pause_loading_spinner()
+        result_future.add_done_callback(self._resume_loading_spinner)
 
         self._pending_ask_user_widget = menu
 
@@ -9988,6 +10003,12 @@ class DeepAgentsApp(App):
 
         # Prevent concurrent user input while offload modifies state
         self._agent_running = True
+        # Bump the turn id so any late phase update from the *previous* agent
+        # turn's adapter is dropped by `_set_turn_spinner_status` instead of
+        # clobbering this offload's "Offloading" spinner. (Offload is entered
+        # only when idle, so this is belt-and-suspenders, but it keeps the
+        # stale-suppression invariant holding structurally rather than by luck.)
+        self._spinner_turn_id = SpinnerTurnId(self._spinner_turn_id + 1)
         try:
             from deepagents_code.hooks import dispatch_hook
 
@@ -10124,60 +10145,77 @@ class DeepAgentsApp(App):
             # lifecycle: mount it once here at the start and hide it once in
             # `_cleanup_agent_task()`. The streaming adapter only updates its
             # phase (e.g. "Offloading") during the turn; it never hides it.
-            self._spinner_turn_id += 1
-            await self._set_spinner("Thinking")
-
-            # Flush any buffered non-incognito `!` shell output into thread
-            # state so this turn's model sees commands run since the last turn.
-            await self._flush_pending_shell_messages()
-
-            # Any send (typed reply or skill invocation) counts as the user
-            # acting on a blocked goal, so reset it and attach one-turn context.
-            blocker_note = await self._reset_blocked_goal_for_user_turn()
-            resuming_blocked = blocker_note is not None
-            blocked_goal_retry_context = (
-                self._blocked_goal_retry_context(blocker_note)
-                if resuming_blocked
-                else None
-            )
-
-            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
-            # just above, so the status alone can't distinguish an already-active
-            # goal from one resumed this turn. Branch the wording on the reset
-            # signal instead. The status guard still holds: a failed reset rolls
-            # the status back to blocked, so no notice fires in that case.
             #
-            # The `message != _active_goal` check suppresses the notice on the
-            # goal-setting turn, and works only because acceptance sends the
-            # objective verbatim as the message. If a future change wraps or
-            # annotates the objective before sending (as the skill path already
-            # does with its envelope prompt), the equality would no longer match
-            # and the notice would wrongly fire on the initial turn.
-            if (
-                self._active_goal
-                and self._goal_status == "active"
-                and message.strip() != self._active_goal.strip()
-            ):
-                notice = (
-                    f"Resuming previously blocked goal: {self._active_goal}"
+            # `_cleanup_agent_task` runs from the worker's `finally`, so if any
+            # setup below raises *before* the worker is launched it never fires.
+            # Undo the turn state in the `except` so a failed setup can't leave
+            # the spinner spinning forever and the input queue permanently busy.
+            self._spinner_turn_id = SpinnerTurnId(self._spinner_turn_id + 1)
+            try:
+                await self._set_spinner("Thinking")
+
+                # Flush any buffered non-incognito `!` shell output into thread
+                # state so this turn's model sees commands run since last turn.
+                await self._flush_pending_shell_messages()
+
+                # Any send (typed reply or skill invocation) counts as the user
+                # acting on a blocked goal, so reset it and attach one-turn
+                # context.
+                blocker_note = await self._reset_blocked_goal_for_user_turn()
+                resuming_blocked = blocker_note is not None
+                blocked_goal_retry_context = (
+                    self._blocked_goal_retry_context(blocker_note)
                     if resuming_blocked
-                    else f"Continuing active goal: {self._active_goal}"
+                    else None
                 )
-                await self._mount_message(AppMessage(notice))
 
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=False)
+                # `_reset_blocked_goal_for_user_turn` flips a blocked goal to
+                # active just above, so the status alone can't distinguish an
+                # already-active goal from one resumed this turn. Branch the
+                # wording on the reset signal instead. The status guard still
+                # holds: a failed reset rolls the status back to blocked, so no
+                # notice fires in that case.
+                #
+                # The `message != _active_goal` check suppresses the notice on
+                # the goal-setting turn, and works only because acceptance sends
+                # the objective verbatim as the message. If a future change
+                # wraps or annotates the objective before sending (as the skill
+                # path already does with its envelope prompt), the equality
+                # would no longer match and the notice would wrongly fire on the
+                # initial turn.
+                if (
+                    self._active_goal
+                    and self._goal_status == "active"
+                    and message.strip() != self._active_goal.strip()
+                ):
+                    notice = (
+                        f"Resuming previously blocked goal: {self._active_goal}"
+                        if resuming_blocked
+                        else f"Continuing active goal: {self._active_goal}"
+                    )
+                    await self._mount_message(AppMessage(notice))
 
-            # Use run_worker to avoid blocking the main event loop
-            # This allows the UI to remain responsive during agent execution
-            self._agent_worker = self.run_worker(
-                self._run_agent_task(
-                    message,
-                    message_kwargs=message_kwargs,
-                    blocked_goal_retry_context=blocked_goal_retry_context,
-                ),
-                exclusive=False,
-            )
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=False)
+
+                # Use run_worker to avoid blocking the main event loop
+                # This allows the UI to remain responsive during agent execution
+                self._agent_worker = self.run_worker(
+                    self._run_agent_task(
+                        message,
+                        message_kwargs=message_kwargs,
+                        blocked_goal_retry_context=blocked_goal_retry_context,
+                    ),
+                    exclusive=False,
+                )
+            except BaseException:
+                # Worker never launched, so nothing will call
+                # `_cleanup_agent_task`. Reset the turn state and hide the
+                # spinner here, then re-raise so the failure still surfaces.
+                self._agent_running = False
+                with suppress(Exception):
+                    await self._set_spinner(None)
+                raise
         elif self._server_startup_deferred:
             await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
         elif not self._server_startup_error:
@@ -10481,7 +10519,7 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                 ),
                 turn_stats=turn_stats,
-                turn_id=self._spinner_turn_id,
+                spinner_turn_id=self._spinner_turn_id,
             )
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,

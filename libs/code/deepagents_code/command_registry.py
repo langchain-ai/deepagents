@@ -145,7 +145,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/offload",
-        description="Offload older messages to free context",
+        description="Summarize and offload older messages to free context",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="compact",
         aliases=("/compact",),

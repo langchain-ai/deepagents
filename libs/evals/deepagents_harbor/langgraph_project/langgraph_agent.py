@@ -43,13 +43,7 @@ _SHELL_ENV_DENYLIST = frozenset(
 )
 
 _SYSTEM_PROMPT = """You are an autonomous coding agent in a sandboxed environment with shell and
-filesystem access. No human is available to answer questions: make reasonable
-assumptions and keep working until the task is fully complete, rather than
-stopping to report what you would do.
-
-Never end your turn and hand control back to the human while the task is unfinished — no
-questions, no "shall I proceed?", no confirming a detail that the instruction already specifies.
-Reason through any ambiguity, pick the best interpretation, and keep acting.
+filesystem access.
 
 Work from the sandbox working directory (run `pwd` if unsure). Prefer
 non-interactive command flags; never run a command that waits for human input.

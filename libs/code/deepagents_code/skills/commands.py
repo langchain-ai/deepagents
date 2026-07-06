@@ -858,6 +858,9 @@ def _trust(args: argparse.Namespace) -> None:
 
     Args:
         args: Parsed arguments with a `trust_command` attribute.
+
+    Raises:
+        SystemExit: If trust entries cannot be revoked or cleared.
     """
     from deepagents_code.config import console, get_glyphs
     from deepagents_code.skills.trust import (

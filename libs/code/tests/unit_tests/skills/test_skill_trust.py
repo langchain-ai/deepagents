@@ -54,6 +54,22 @@ class TestSkillTrustStore:
         store = tmp_path / "skill_trust.json"
         assert revoke_skill_dir_trust(tmp_path / "nope", store_path=store)
 
+    def test_revoke_stale_entry_after_symlink_swap(self, tmp_path: Path) -> None:
+        """Revoking the listed path removes stale trust after a symlink swap."""
+        store = tmp_path / "skill_trust.json"
+        approved = tmp_path / "approved"
+        approved.mkdir()
+        trust_skill_dir(approved, store_path=store)
+        listed = list_trusted_skill_dirs(store_path=store)
+
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        approved.rmdir()
+        approved.symlink_to(attacker)
+
+        assert revoke_skill_dir_trust(listed[0], store_path=store)
+        assert list_trusted_skill_dirs(store_path=store) == []
+
     def test_list_sorted(self, tmp_path: Path) -> None:
         """Listing returns resolved paths in sorted order."""
         store = tmp_path / "skill_trust.json"

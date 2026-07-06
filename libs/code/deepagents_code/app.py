@@ -279,6 +279,11 @@ def _create_model_with_deepagents_import_lock(
         )
 
 
+def _resolve_parent_dir(path: str | Path) -> str:
+    """Return the resolved parent directory for a path."""
+    return str(Path(path).resolve().parent)
+
+
 def _extra_is_ready(extra: str) -> bool | None:
     """Return whether all dependencies for `extra` are installed.
 
@@ -9883,21 +9888,17 @@ class DeepAgentsApp(App):
             The skill content on approval and successful reload, or `None` when
                 the user declined or the retry failed (an error was mounted).
         """
-        from pathlib import Path as _Path
-
         from deepagents_code.skills.load import load_skill_content
         from deepagents_code.skills.trust import trust_skill_dir
         from deepagents_code.widgets.skill_trust import SkillTrustScreen
 
-        target_dir = str(_Path(skill_path).resolve().parent)
+        target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
 
         if target_dir in self._skill_trust_denied:
             await mount_error(fallback_error)
             return None
 
-        allowed = await self._push_screen_wait(
-            SkillTrustScreen(skill_name, target_dir)
-        )
+        allowed = await self._push_screen_wait(SkillTrustScreen(skill_name, target_dir))
         if not allowed:
             self._skill_trust_denied.add(target_dir)
             await mount_error(fallback_error)
@@ -9906,7 +9907,7 @@ class DeepAgentsApp(App):
         if not await asyncio.to_thread(trust_skill_dir, target_dir):
             logger.warning("Could not persist skill trust for %s", target_dir)
 
-        target_path = _Path(target_dir)
+        target_path = Path(target_dir)
         for roots in (allowed_roots, self._skill_allowed_roots):
             if target_path not in roots:
                 roots.append(target_path)

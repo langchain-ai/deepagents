@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -165,9 +165,7 @@ def trust_skill_dir(
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
         dirs = {}
-    dirs[_normalize(target_dir)] = {
-        "trusted_at": datetime.now(timezone.utc).isoformat()
-    }
+    dirs[_normalize(target_dir)] = {"trusted_at": datetime.now(UTC).isoformat()}
     data["version"] = _STORAGE_VERSION
     data["dirs"] = dirs
     return _save_store(data, store_path)
@@ -193,10 +191,16 @@ def revoke_skill_dir_trust(
 
     data = _load_store(store_path)
     dirs = data.get("dirs")
-    key = _normalize(target_dir)
-    if not isinstance(dirs, dict) or key not in dirs:
+    if not isinstance(dirs, dict):
         return True
-    del dirs[key]
+    keys = {str(Path(target_dir).expanduser()), _normalize(target_dir)}
+    removed = False
+    for key in keys:
+        if key in dirs:
+            del dirs[key]
+            removed = True
+    if not removed:
+        return True
     data["version"] = _STORAGE_VERSION
     data["dirs"] = dirs
     return _save_store(data, store_path)

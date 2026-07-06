@@ -29,33 +29,9 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
-## Fleet Exports
-
-Talon can host an operator-unzipped LangSmith Fleet export through the `fleet-deepagents-export` library:
-
-```bash
-unzip path/to/fleet-export.zip -d ./fleet
-
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --once
-```
-
-In Fleet mode, Talon uses the model from `fleet/config.json` unless `DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP registry references through LangSmith, so provide the required `LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and `HOST_LANGCHAIN_API_URL`. Locally-authored agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest directory and Talon's plain MCP config discovery.
-
-OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
-
-```bash
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --once
-```
-
-During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as an expired OAuth credential signal. It reloads the Fleet components once, which re-mints tokens and rebuilds MCP connections, then retries the failed graph invocation once. If authorization still fails, Talon returns a structured `mcp_auth_failed` error instead of looping.
-
 ## Tool Approval Overrides
 
-Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with Fleet-provided HITL configuration and also applies to non-Fleet MCP or local runtime tools.
+Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with agent-provided HITL configuration and applies to MCP or local runtime tools.
 
 ```bash
 DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=bash,execute,github_create_pr
@@ -98,7 +74,7 @@ See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and 
 
 ## Telegram
 
-The Telegram channel uses the Bot API with long polling. Provide a bot token from BotFather and either a model or Fleet export so Talon runs the real Deep Agents runtime instead of the echo runtime:
+The Telegram channel uses the Bot API with long polling. Provide a bot token from BotFather and a model so Talon runs the real Deep Agents runtime instead of the echo runtime:
 
 ```bash
 DEEPAGENTS_TALON_TELEGRAM_ENABLED=true \
@@ -124,7 +100,7 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --telegram
 ```
 
-In `allowlist` mode, `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS` allows private bot DMs from specific Telegram user IDs, while `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS` allows channel posts from specific channel chat IDs. `DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB); Telegram's smaller Bot API upload limits still apply. If `AGENT_MODEL`, `DEEPAGENTS_TALON_MODEL`, and `DEEPAGENTS_TALON_FLEET_DIR` are all unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+In `allowlist` mode, `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS` allows private bot DMs from specific Telegram user IDs, while `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS` allows channel posts from specific channel chat IDs. `DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB); Telegram's smaller Bot API upload limits still apply. If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Tracing
 

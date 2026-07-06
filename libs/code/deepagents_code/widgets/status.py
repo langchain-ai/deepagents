@@ -336,6 +336,11 @@ class StatusBar(Horizontal):
         # Reactives are `init=False`, so the connection watcher never fires on
         # mount; render once to hide the empty indicator (and its padding).
         self._render_connection()
+        # Same reasoning for the message and token slots: both start empty, so
+        # hide them on mount so their padding doesn't reserve a blank gap.
+        self.watch_status_message(self.status_message)
+        with suppress(NoMatches):
+            self.query_one("#tokens-display", Static).display = False
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -402,6 +407,9 @@ class StatusBar(Horizontal):
             return
 
         msg_widget.remove_class("thinking")
+        # Hide when empty so the widget's padding doesn't reserve a blank gap
+        # in the footer (mirrors the connection indicator).
+        msg_widget.display = bool(new_value)
         if new_value:
             msg_widget.update(new_value)
             if "thinking" in new_value.lower() or "executing" in new_value.lower():
@@ -491,6 +499,7 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
         widget.remove_class("thinking")
+        widget.display = True
         frame = self._spinner.current_frame()
         widget.update(Content.assemble(frame, " ", Content(self._busy_message)))
 
@@ -610,6 +619,8 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
+        # Hide when empty so the widget's padding doesn't reserve a blank gap.
+        display.display = count > 0
         if count > 0:
             suffix = "+" if approximate else ""
             # Format with K suffix for thousands

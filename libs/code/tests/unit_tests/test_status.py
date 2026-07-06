@@ -361,6 +361,58 @@ class TestTokenDisplay:
             assert "8.0K" in rendered
             assert "+" not in rendered
 
+    async def test_empty_tokens_hidden_on_mount(self) -> None:
+        """An empty token slot is hidden so its padding adds no gap."""
+        async with StatusBarApp().run_test() as pilot:
+            display = pilot.app.query_one("#tokens-display")
+            assert display.display is False
+
+    async def test_set_tokens_shows_then_zero_hides(self) -> None:
+        """A positive count reveals the token slot; zeroing hides it again."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert display.display is True
+            bar.set_tokens(0)
+            await pilot.pause()
+            assert display.display is False
+
+
+class TestStatusMessageVisibility:
+    """The status-message slot hides when empty so its padding adds no gap."""
+
+    async def test_empty_message_hidden_on_mount(self) -> None:
+        """The status-message slot starts empty and is hidden on mount."""
+        async with StatusBarApp().run_test() as pilot:
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is False
+
+    async def test_setting_message_shows_then_clearing_hides(self) -> None:
+        """Setting a message reveals the slot; clearing it hides it again."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_status_message("Thinking")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is True
+            bar.set_status_message("")
+            await pilot.pause()
+            assert msg.display is False
+
+    async def test_busy_shows_slot_and_clearing_hides(self) -> None:
+        """A busy indicator reveals the slot; clearing busy (no message) hides it."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is True
+            bar.set_busy("")
+            await pilot.pause()
+            assert msg.display is False
+
 
 class TestModeIndicator:
     """Tests for the input-mode indicator in the status bar."""

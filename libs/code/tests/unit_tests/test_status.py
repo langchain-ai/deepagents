@@ -116,17 +116,47 @@ class TestBranchDisplay:
         )
 
     async def test_long_branch_name_truncates_with_ellipsis(self) -> None:
-        """A branch too long for the footer should render a trailing ellipsis."""
+        """A branch too long for the footer should render a trailing ellipsis.
+
+        The branch widget's width is pinned directly (rather than relying on
+        whole-status-bar layout arithmetic) so truncation is deterministic and
+        independent of the other status items' sizes.
+        """
         long_branch = "feature/some-really-long-descriptive-branch-name-here"
         async with StatusBarApp().run_test(size=(110, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.cwd = "/Users/someone/dev/projects/deepagents/libs/code"
             bar.branch = long_branch
-            await pilot.pause()
             display = pilot.app.query_one("#branch-display", Static)
+            # Force a box far narrower than the branch text so overflow applies.
+            display.styles.width = 20
+            await pilot.pause()
             visible = self._visible_branch_text(display)
-            assert "\u2026" in visible
-            assert visible != long_branch
+            # A *trailing* ellipsis (text-overflow: ellipsis), not a leading
+            # one, with the head of the name preserved.
+            assert visible.rstrip().endswith("\u2026")
+            assert "feature/" in visible
+
+    async def test_long_branch_truncates_with_ellipsis_when_cwd_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Truncation still applies in the cwd-hidden layout.
+
+        With `HIDE_CWD` set, the branch is shown at a lower width threshold
+        and fills the collapsible region alone; a too-long name must still
+        ellipsize rather than hard-clip.
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = long_branch
+            display = pilot.app.query_one("#branch-display", Static)
+            display.styles.width = 20
+            await pilot.pause()
+            assert display.display is True
+            visible = self._visible_branch_text(display)
+            assert visible.rstrip().endswith("\u2026")
+            assert "feature/" in visible
 
     async def test_short_branch_name_not_truncated(self) -> None:
         """A branch that fits should render in full with no ellipsis."""
@@ -153,19 +183,28 @@ class TestBranchDisplay:
 
 
 class TestResizePriority:
-    """Branch hides before cwd, cwd hides before model."""
+    """The cwd hides on narrow terminals; the branch truncates but never hides."""
 
-    async def test_branch_hidden_on_narrow_terminal(self) -> None:
-        """Branch display should be hidden when terminal width < 100."""
+    async def test_branch_stays_visible_on_narrow_terminal(self) -> None:
+        """The branch truncates rather than hiding on a narrow terminal."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
-            assert branch.display is False
+            assert branch.display is True
+
+    async def test_branch_stays_visible_below_cwd_threshold(self) -> None:
+        """Even below the cwd hide threshold the branch stays visible."""
+        async with StatusBarApp().run_test(size=(50, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            branch = pilot.app.query_one("#branch-display")
+            assert branch.display is True
 
     async def test_branch_visible_on_wide_terminal(self) -> None:
-        """Branch display should be visible when terminal width >= 100."""
+        """Branch display should be visible on a wide terminal."""
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
@@ -179,8 +218,8 @@ class TestResizePriority:
             cwd = pilot.app.query_one("#cwd-display")
             assert cwd.display is False
 
-    async def test_cwd_visible_branch_hidden_at_medium_width(self) -> None:
-        """Between 70-99 cols: cwd visible, branch hidden."""
+    async def test_cwd_and_branch_visible_at_medium_width(self) -> None:
+        """Between 70-99 cols: cwd visible and branch visible (truncating)."""
         async with StatusBarApp().run_test(size=(85, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
@@ -188,17 +227,20 @@ class TestResizePriority:
             cwd = pilot.app.query_one("#cwd-display")
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is True
-            assert branch.display is False
+            assert branch.display is True
 
-    async def test_resize_restores_branch_visibility(self) -> None:
-        """Widening terminal should restore branch display."""
+    async def test_resize_never_hides_branch(self) -> None:
+        """Resizing must never toggle the branch off; it only truncates."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
-            assert branch.display is False
+            assert branch.display is True
             await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert branch.display is True
+            await pilot.resize_terminal(50, 24)
             await pilot.pause()
             assert branch.display is True
 

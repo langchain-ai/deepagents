@@ -291,26 +291,17 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
-    _BRANCH_WIDTH_THRESHOLD = 100
-    """Hide git branch display below this terminal width."""
     _CWD_WIDTH_THRESHOLD = 70
     """Hide cwd display below this terminal width."""
 
     def on_resize(self, event: events.Resize) -> None:
-        """Manage visibility of status items based on terminal width.
+        """Hide the cwd on very narrow terminals.
 
-        Priority (highest first): model, cwd, git branch.
+        The git branch stays visible at any width (unless disabled via
+        `HIDE_GIT_BRANCH`) and ellipsizes to fit; only the cwd is dropped
+        outright to reclaim space when the terminal gets narrow.
         """
         width = event.size.width
-        branch_threshold = (
-            self._CWD_WIDTH_THRESHOLD
-            if self._hide_cwd
-            else self._BRANCH_WIDTH_THRESHOLD
-        )
-        with suppress(NoMatches):
-            self.query_one("#branch-display", Static).display = (
-                not self._hide_git_branch and width >= branch_threshold
-            )
         with suppress(NoMatches):
             self.query_one("#cwd-display", Static).display = (
                 not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD

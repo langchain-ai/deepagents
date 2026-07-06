@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    from deepagents_code.mcp_commands import setup_mcp_parsers
+    from deepagents_code.client.commands.mcp import setup_mcp_parsers
 
     def _make_help_action(help_fn: Callable[[], None]) -> type[argparse.Action]:
         class _ShowHelp(argparse.Action):
@@ -68,7 +68,7 @@ class TestRunMCPLogin:
 
     async def test_happy_path(self, tmp_path: Path) -> None:
         """Explicit config loads and forwards the target server config."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
         config_path.write_text(
@@ -90,7 +90,7 @@ class TestRunMCPLogin:
 
     async def test_server_not_in_config(self, tmp_path: Path) -> None:
         """Unknown server names return exit code 1."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
         config_path.write_text(
@@ -103,7 +103,7 @@ class TestRunMCPLogin:
 
     async def test_autodiscover_searches_merged_view(self, tmp_path: Path) -> None:
         """Auto-discovery merges all discovered configs before lookup."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         lower = tmp_path / "lower.json"
         lower.write_text(
@@ -137,7 +137,7 @@ class TestRunMCPLogin:
 
     async def test_autodiscover_higher_precedence_wins(self, tmp_path: Path) -> None:
         """When two configs define the same server, the later one wins."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         lower = tmp_path / "lower.json"
         lower.write_text(
@@ -171,7 +171,7 @@ class TestRunMCPLogin:
 
     async def test_no_config_found_returns_2(self) -> None:
         """No discovered config files yields exit code 2."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         with patch(
             "deepagents_code.mcp_tools.discover_mcp_configs",
@@ -186,7 +186,7 @@ class TestRunMCPLogin:
         tmp_path: Path,
     ) -> None:
         """Untrusted project configs must not be used for login."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         project_cfg = tmp_path / "project.json"
         project_cfg.write_text(
@@ -218,7 +218,7 @@ class TestRunMCPLogin:
         capsys,
     ) -> None:
         """Skipping an untrusted project config tells the user how to proceed."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         project_cfg = tmp_path / "project.json"
         project_cfg.write_text(
@@ -251,7 +251,7 @@ class TestRunMCPLogin:
         monkeypatch,
     ) -> None:
         """Configs under `~/.deepagents` are always trusted."""
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         fake_home = tmp_path / "home"
         user_dir = fake_home / ".deepagents"
@@ -290,7 +290,7 @@ class TestRunMCPLogin:
         types to a class-name chain, so the user sees the failure class
         but not its (potentially-token-bearing) message.
         """
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
         config_path.write_text(
@@ -322,7 +322,7 @@ class TestRunMCPLogin:
         """Login raising `httpx.HTTPError` is caught (not propagated as a crash)."""
         import httpx
 
-        from deepagents_code.mcp_commands import run_mcp_login
+        from deepagents_code.client.commands.mcp import run_mcp_login
 
         config_path = tmp_path / "mcp.json"
         config_path.write_text(

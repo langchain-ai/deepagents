@@ -12,7 +12,7 @@ import argparse
 import pytest
 
 from deepagents_code import _env_vars
-from deepagents_code.config_commands import (
+from deepagents_code.client.commands.config import (
     _display_value,
     _missing_extra_hint,
     _resolve,
@@ -183,7 +183,7 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
         install_extra="missing-provider",
     )
     monkeypatch.setattr(
-        "deepagents_code.config_commands.importlib.util.find_spec",
+        "deepagents_code.client.commands.config.importlib.util.find_spec",
         lambda name: None if name == "langchain_missing_provider" else object(),
     )
     assert _missing_extra_hint(option) is True
@@ -1523,7 +1523,7 @@ def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -
     from pathlib import Path
 
     from deepagents_code import model_config
-    from deepagents_code.config_commands import _config_paths
+    from deepagents_code.client.commands.config import _config_paths
 
     target = model_config.DEFAULT_CONFIG_PATH
     real_stat = Path.stat

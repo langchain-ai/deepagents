@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 from deepagents_code import auth_store
-from deepagents_code.auth_commands import (
+from deepagents_code.client.commands.auth import (
     _known_providers,
     _resolution_label,
     run_auth_command,

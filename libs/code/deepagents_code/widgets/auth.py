@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from textual.binding import Binding, BindingType
@@ -43,6 +43,7 @@ from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import (
     LANGSMITH_EU_ENDPOINT,
+    LANGSMITH_US_ENDPOINT,
     apply_stored_langsmith_auth,
     get_glyphs,
     is_ascii_mode,
@@ -80,22 +81,33 @@ CONFIGURATION_DOCS_URL = (
 )
 
 
-_REGION_US = "us"
-_REGION_EU = "eu"
-_REGION_CUSTOM = "custom"
+Region = Literal["us", "eu", "custom"]
+"""The closed set of LangSmith region selections in the `/auth` prompt."""
+
+_REGION_US: Region = "us"
+_REGION_EU: Region = "eu"
+_REGION_CUSTOM: Region = "custom"
+
+_REGION_BY_RADIO_ID: dict[str, Region] = {
+    "auth-region-us": _REGION_US,
+    "auth-region-eu": _REGION_EU,
+    "auth-region-custom": _REGION_CUSTOM,
+}
+"""Map each region radio's widget id to its region, avoiding string-munging."""
 
 
-def _region_for_endpoint(base_url: str) -> str:
+def _region_for_endpoint(base_url: str) -> Region:
     """Map a stored LangSmith endpoint to its `/auth` region selection.
 
     Args:
         base_url: The stored endpoint, or an empty string for the SaaS default.
 
     Returns:
-        `_REGION_US` (blank/default), `_REGION_EU` (the EU SaaS URL), or
+        `_REGION_US` (blank, or the canonical US SaaS URL that the CLI
+            `--base-url us` shorthand stores), `_REGION_EU` (the EU SaaS URL), or
             `_REGION_CUSTOM` (any other endpoint, e.g. self-hosted).
     """
-    if not base_url:
+    if not base_url or base_url == LANGSMITH_US_ENDPOINT:
         return _REGION_US
     if base_url == LANGSMITH_EU_ENDPOINT:
         return _REGION_EU
@@ -613,7 +625,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             self._advanced_visible = bool(
                 self._existing_base_url or self._existing_project
             )
-            self._region = _region_for_endpoint(self._existing_base_url)
+            self._region: Region = _region_for_endpoint(self._existing_base_url)
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
@@ -630,6 +642,20 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             self._region = _REGION_US
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
+            )
+        # Surface when an environment endpoint is currently overriding the stored
+        # region: at startup an existing `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
+        # wins, so without this note the radio could show one region while traces
+        # route somewhere else. Saving here applies the selection (the save path
+        # replaces the env value), so word the note around that.
+        self._endpoint_env_notice: str | None = None
+        if self._is_langsmith and any(
+            os.environ.get(var) for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+        ):
+            self._endpoint_env_notice = (
+                "An endpoint is set in your environment "
+                "(LANGSMITH_ENDPOINT/LANGCHAIN_ENDPOINT) and takes precedence at "
+                "startup; saving a region here applies your selection instead."
             )
 
     def compose(self) -> ComposeResult:
@@ -789,6 +815,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 key_meta.display = self._advanced_visible
                 yield key_meta
             if self._is_langsmith:
+                if self._endpoint_env_notice:
+                    yield Static(
+                        Content.from_markup("$msg", msg=self._endpoint_env_notice),
+                        classes="auth-prompt-meta",
+                        id="auth-prompt-endpoint-env-notice",
+                    )
                 region_label = Static(
                     Content.from_markup("[bold]LangSmith region[/bold]"),
                     classes="auth-prompt-meta",
@@ -1074,8 +1106,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         """Track the chosen LangSmith region and reveal the custom URL field."""
         event.stop()
-        pressed_id = event.pressed.id or ""
-        self._region = pressed_id.removeprefix("auth-region-") or _REGION_US
+        region = _REGION_BY_RADIO_ID.get(event.pressed.id or "")
+        if region is None:
+            # An unknown id (e.g. a renamed radio) must not silently degrade to a
+            # region — leave the current selection unchanged rather than guess.
+            return
+        self._region = region
         self._refresh_langsmith_custom_visibility()
         if self._region == _REGION_CUSTOM:
             self.query_one("#auth-prompt-base-url", Input).focus()
@@ -1120,8 +1156,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         Returns:
             A `(endpoint, error)` pair: the canonical endpoint to persist (empty
                 for the US SaaS default), and a non-`None` error message when a
-                custom URL is malformed (so the key is never paired with a
-                non-http(s) endpoint).
+                custom URL is missing or malformed (so an explicit `Custom`
+                selection never silently routes the key to the US SaaS default,
+                and the key is never paired with a non-http(s) endpoint).
         """
         if self._region == _REGION_EU:
             return LANGSMITH_EU_ENDPOINT, None
@@ -1129,7 +1166,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             return "", None
         raw = self.query_one("#auth-prompt-base-url", Input).value.strip()
         if not raw:
-            return "", None
+            # `Custom` is a deliberate non-default choice; a blank field must not
+            # silently fall back to the US SaaS default (which would reroute the
+            # key and traces to the very endpoint a self-hosted user is avoiding).
+            missing_url_error = (
+                "Custom endpoint URL is required (or choose United States/Europe)."
+            )
+            return "", missing_url_error
         endpoint = normalize_langsmith_endpoint(raw)
         if not is_http_url(endpoint):
             return "", "Custom endpoint must be an http(s) URL."
@@ -1153,6 +1196,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             base_url = resolved
         else:
             base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+            if base_url and not is_http_url(base_url):
+                # Match the CLI `--base-url` guard: never pair the key with a
+                # non-http(s) endpoint, whichever surface the user came through.
+                self._show_error("Base URL must be an http(s) URL.")
+                return
             project = ""
         if not cleaned:
             if self._allow_empty_submit:

@@ -423,10 +423,16 @@ def is_http_url(value: str) -> bool:
 
     Returns:
         `True` when `value` parses as an `http`/`https` URL with a network
-            location.
+            location that contains no whitespace.
     """
     parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    # A real host never contains whitespace, but `urlparse` keeps an internal
+    # space in the netloc (e.g. "exa mple.com"). Such a value would be stored,
+    # written to `LANGSMITH_ENDPOINT`, and then silently drop every trace at
+    # ingest (SDK errors are null-handled). Reject it loudly at save time.
+    return not any(char.isspace() for char in parsed.netloc)
 
 
 _TRACING_RUNS_ENDPOINTS_ENV_VARS = (
@@ -781,10 +787,17 @@ def _apply_stored_langsmith_endpoint(endpoint: str | None, *, replace: bool) -> 
     - `replace` (the immediate `/auth` save): the stored endpoint replaces the
         current value, and a blank endpoint (the US default) clears both names so
         ingestion falls back to the LangSmith SaaS default.
-    - Startup (`replace=False`): an explicit `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
+    - Startup (`replace=False`): a non-empty `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
         already in the environment stays authoritative, so a stored endpoint is
         applied only when neither is set. A stored credential without an endpoint
         never clears an existing env value (self-hosted setups keep working).
+
+    Like a stored key, a stored endpoint is trusted by *presence*, not
+    reachability: this never connects to it. A wrong-but-well-formed endpoint (a
+    typo'd or dead host) is applied anyway, and its traces are then silently
+    dropped at ingest with only null-handled SDK errors. `is_http_url` rejects the
+    obviously malformed cases at save time, but if traces never appear the stored
+    endpoint is worth re-checking via `/auth` alongside the key.
 
     Args:
         endpoint: The stored endpoint URL, or `None` when none is stored.

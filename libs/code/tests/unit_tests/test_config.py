@@ -2790,6 +2790,29 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing(replace_project=True)
         assert "LANGSMITH_ENDPOINT" not in os.environ
 
+    def test_disabled_tracing_leaves_endpoint_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A paused key (tracing off) never applies its stored endpoint.
+
+        The endpoint is applied only after the enable decision, so a deliberate
+        opt-out must not leak a stored endpoint into the process env.
+        """
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+
 
 class TestNormalizeLangSmithEndpoint:
     """Tests for normalize_langsmith_endpoint() and is_http_url()."""
@@ -2820,6 +2843,9 @@ class TestNormalizeLangSmithEndpoint:
         assert is_http_url("ftp://example.com") is False
         assert is_http_url("not-a-url") is False
         assert is_http_url("https://") is False
+        # A host with internal whitespace is malformed: rejecting it at save time
+        # stops a wrong endpoint from being stored and silently dropping traces.
+        assert is_http_url("https://exa mple.com") is False
 
 
 class TestGetTracingStatus:

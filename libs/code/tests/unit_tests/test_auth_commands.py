@@ -318,6 +318,44 @@ class TestSet:
         assert code == 0
         assert auth_store.get_stored_base_url("langsmith") == LANGSMITH_EU_ENDPOINT
 
+    def test_set_non_langsmith_base_url_stored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A valid `--base-url` is stored for a non-LangSmith provider."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-openai-abc\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="openai",
+                from_env=None,
+                project=None,
+                base_url="https://proxy.internal.example.com/v1",
+            )
+        )
+        assert code == 0
+        assert (
+            auth_store.get_stored_base_url("openai")
+            == "https://proxy.internal.example.com/v1"
+        )
+
+    def test_set_non_langsmith_base_url_rejects_region_alias(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Region aliases are LangSmith-only: `eu` stays a literal (invalid) URL."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-openai-abc\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="openai",
+                from_env=None,
+                project=None,
+                base_url="eu",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("openai") is None
+        assert "--base-url must be an http(s) URL" in capsys.readouterr().err
+
     def test_set_from_unset_env_fails(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

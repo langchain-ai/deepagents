@@ -742,6 +742,97 @@ api_key_url = "javascript:alert(1)"
             eu = app.screen.query_one("#auth-region-eu", RadioButton)
             assert eu.value is True
 
+    async def test_langsmith_existing_custom_endpoint_preselects_and_prefills(
+        self,
+    ) -> None:
+        """Reopening a stored self-hosted URL preselects Custom and prefills it."""
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_existing", base_url="https://self.example.com"
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            custom = app.screen.query_one("#auth-region-custom", RadioButton)
+            assert custom.value is True
+            field = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert field.display is True
+            assert field.value == "https://self.example.com"
+
+    async def test_langsmith_cli_stored_us_url_preselects_us(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CLI-stored literal US URL reopens as United States, not Custom."""
+        from deepagents_code.config import LANGSMITH_US_ENDPOINT
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_existing", base_url=LANGSMITH_US_ENDPOINT
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            us = app.screen.query_one("#auth-region-us", RadioButton)
+            assert us.value is True
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is False
+
+    async def test_langsmith_custom_empty_url_blocks_save(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom with a blank URL errors instead of silently defaulting to US."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            error = app.screen.query_one("#auth-prompt-error", Static)
+            assert "required" in str(error.render())
+            assert auth_store.get_stored_key("langsmith") is None
+
+    async def test_langsmith_region_switch_discards_typed_custom_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing a custom URL then switching to US saves the US default, not it."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "https://typed.example.com"
+            app.screen.query_one("#auth-region-us", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("langsmith") is None
+
+    async def test_langsmith_env_endpoint_shows_precedence_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An env endpoint surfaces a notice so the UI never silently diverges."""
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://from-env.example.com")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert app.screen.query("#auth-prompt-endpoint-env-notice")
+
     async def test_base_url_round_trips_on_submit(self) -> None:
         """A base URL typed alongside the key is persisted as the pair."""
         app = _AuthHostApp()

@@ -174,6 +174,53 @@ class TestThreadFunctions:
             assert by_id["thread2"]["cwd"] == "/tmp/workspace"
             assert by_id["thread3"]["cwd"] is None
 
+    def test_list_threads_creates_covering_index(self, temp_db):
+        """`list_threads` creates the covering index and the plan uses it.
+
+        Regression guard for the `threads list` slowdown on large profiles: the
+        GROUP BY must be an index-only scan of `idx_dcode_threads_list`, not a
+        full scan of the blob-bearing checkpoints table.
+        """
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            asyncio.run(sessions.list_threads())
+
+        conn = sqlite3.connect(str(temp_db))
+        try:
+            index_names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            assert "idx_dcode_threads_list" in index_names
+
+            plan = " ".join(
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT thread_id, "
+                    "MAX(json_extract(metadata, '$.updated_at')) u, "
+                    "MAX(checkpoint_id), "
+                    "MAX(json_extract(metadata, '$.agent_name')), "
+                    "MAX(json_extract(metadata, '$.git_branch')), "
+                    "MAX(json_extract(metadata, '$.cwd')) "
+                    "FROM checkpoints GROUP BY thread_id ORDER BY u DESC LIMIT 20"
+                )
+            )
+            # Index-only scan of the covering index, not the PK autoindex (which
+            # would drag the checkpoint state blobs through I/O).
+            assert "idx_dcode_threads_list" in plan
+            assert "sqlite_autoindex_checkpoints_1" not in plan
+        finally:
+            conn.close()
+
+    def test_list_threads_index_creation_is_idempotent(self, temp_db):
+        """Repeated `list_threads` calls succeed once the index already exists."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            first = asyncio.run(sessions.list_threads())
+            second = asyncio.run(sessions.list_threads())
+        assert len(first) == len(second) == 3
+
     def test_list_threads_filter_by_agent(self, temp_db):
         """List filters by agent name."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):

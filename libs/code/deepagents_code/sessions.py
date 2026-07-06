@@ -311,6 +311,56 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
+_THREADS_LIST_INDEX = "idx_dcode_threads_list"
+"""Covering index that makes the `list_threads` GROUP BY an index-only scan.
+
+LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
+`checkpoints` row alongside the small `metadata` field. The thread-list query
+only needs `metadata` (per-thread latest `updated_at`, `agent_name`, etc.), but
+without a covering index SQLite scans the whole table — dragging every state
+blob through I/O. On a large profile (e.g. ~12 GB of blobs) that scan takes
+tens of seconds. This index carries exactly the expressions the query reads, so
+the planner satisfies the GROUP BY from the index alone and never touches the
+blob-bearing rows, turning a ~60 s scan into a sub-second lookup.
+
+The column order (leading `thread_id`) also lets the GROUP BY consume the index
+in order. Keep the indexed expressions in sync with the `list_threads` query.
+"""
+
+
+async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
+    """Create the `list_threads` covering index if it does not already exist.
+
+    Idempotent: `CREATE INDEX IF NOT EXISTS` is a near-instant catalog check once
+    the index exists. The one-time build on a pre-existing large database costs a
+    single full table scan (seconds to tens of seconds), after which every
+    `list_threads` call is a sub-second index-only scan. Runs in the aiosqlite
+    worker thread, so it does not block the event loop.
+
+    A failure here is non-fatal: the list query still returns correct results via
+    the slower table scan, so we log and continue rather than break `threads
+    list` (e.g. on a read-only database or under write-lock contention).
+    """
+    try:
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS {_THREADS_LIST_INDEX} ON checkpoints("
+            "thread_id, "
+            "json_extract(metadata, '$.updated_at'), "
+            "checkpoint_id, "
+            "json_extract(metadata, '$.agent_name'), "
+            "json_extract(metadata, '$.git_branch'), "
+            "json_extract(metadata, '$.cwd'))"
+        )
+        await conn.commit()
+    except Exception:
+        logger.warning(
+            "Failed to create the %s index; `threads list` will fall back to a "
+            "full table scan and may be slow on large databases",
+            _THREADS_LIST_INDEX,
+            exc_info=True,
+        )
+
+
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
@@ -344,6 +394,11 @@ async def list_threads(
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return []
+
+        # Ensure the covering index exists before the GROUP BY below, so the
+        # query is an index-only scan instead of a full scan over the (large,
+        # blob-bearing) checkpoints table.
+        await _ensure_threads_list_index(conn)
 
         if sort_by not in {"updated", "created"}:
             msg = f"Invalid sort_by {sort_by!r}; expected 'updated' or 'created'"

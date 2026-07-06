@@ -853,7 +853,7 @@ class TestReloadSkillReport:
                 (preserves cache and returns `False`).
         """
         from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.widgets.messages import AppMessage
+        from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -977,7 +977,7 @@ class TestReloadThemeReapply:
         """
         from deepagents_code import app as app_module
         from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.widgets.messages import AppMessage
+        from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

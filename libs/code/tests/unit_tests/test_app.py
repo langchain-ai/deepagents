@@ -19915,6 +19915,29 @@ class TestCanBypassQueue:
         assert app._pending_messages[0].text == "/clear"
 
 
+def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:
+    """Return a `query_one` stand-in that raises for the welcome banner only.
+
+    Non-banner selectors delegate to the app's real `query_one`, so unrelated
+    lookups in the code under test keep working while the banner lookup fails.
+
+    Args:
+        app: App whose `query_one` is being replaced.
+        exc: Exception to raise when the welcome banner is queried.
+
+    Returns:
+        A callable suitable for `patch.object(app, "query_one", side_effect=...)`.
+    """
+    real_query_one = app.query_one
+
+    def _query_one(selector: str, *args: object, **kwargs: object) -> Widget:
+        if selector == "#welcome-banner":
+            raise exc
+        return real_query_one(selector, *args, **kwargs)
+
+    return _query_one
+
+
 class _ChatScrollTestApp(App[None]):
     """Small app for exercising chat scroll anchoring."""
 
@@ -20046,6 +20069,55 @@ class TestChatScrollAnchoring:
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == 0
 
+    async def test_anchor_reengages_after_release_when_scrollable(self) -> None:
+        """A fresh anchor() after a manual scroll re-arms bottom-follow.
+
+        The app calls anchor() on every content-producing turn, so releasing
+        (user scrolls up) then re-anchoring must reset `_anchor_released` and
+        re-engage because content already overflows.
+        """
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+            assert chat.scroll_y == 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_false_disables_bottom_follow(self) -> None:
+        """anchor(False) disarms bottom-follow and delegates to the base class."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.anchor(False)
+            await pilot.pause()
+
+            assert not chat._follow_bottom_when_scrollable
+            assert not chat.is_anchored
+
 
 class TestWelcomeBannerLiveUpdates:
     """The banner starts top-aligned and mirrors live model/cwd changes.
@@ -20092,6 +20164,69 @@ class TestWelcomeBannerLiveUpdates:
                 await pilot.pause()
                 banner = app.query_one("#welcome-banner", WelcomeBanner)
                 assert "/work/proj" in banner._build_banner().plain
+
+    async def test_sync_status_model_swallows_screen_stack_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `ScreenStackError` during banner lookup is absorbed at debug level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, ScreenStackError("empty")),
+                ),
+                caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                # Must not propagate — the guard exists precisely for this.
+                app._sync_status_model()
+        assert "Screen stack empty during model sync" in caplog.text
+
+    async def test_sync_status_model_warns_when_banner_missing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `NoMatches` on the persistent banner is surfaced at warning level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                app._sync_status_model()
+        assert "Welcome banner not found during model sync" in caplog.text
+
+    async def test_apply_cwd_survives_missing_banner(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`_apply_cwd_to_ui` still updates cwd state when the banner lookup fails."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                # Must not propagate; cwd state is set before the banner update.
+                app._apply_cwd_to_ui(Path("/work/proj"))
+            assert app._cwd == "/work/proj"
+        assert "Welcome banner not found during cwd sync" in caplog.text
 
 
 class TestStatusBarConnectionMirroring:

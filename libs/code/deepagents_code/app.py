@@ -1802,8 +1802,18 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    # The deferred-anchor logic below drives the base class through its private
+    # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
+    # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
+    # rename or reflow change could break it silently, so `TestChatScrollAnchoring`
+    # is the safety net for Textual upgrades.
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialize the chat scroll container."""
+        """Initialize the chat scroll container.
+
+        Sets `_follow_bottom_when_scrollable`, the bottom-follow intent flag that
+        `arrange()` only honors once content overflows the viewport (see
+        `anchor()`).
+        """
         super().__init__(*args, **kwargs)
         self._follow_bottom_when_scrollable = False
 
@@ -1814,6 +1824,12 @@ class _ChatScroll(VerticalScroll):
         shorter than the viewport, which makes the welcome banner snap down as
         soon as the first message arrives. Deferring the real anchor preserves
         the top-aligned banner while still following the bottom after overflow.
+
+        Args:
+            anchor: When `True`, arm bottom-follow so the view sticks to the
+                bottom once content overflows (engaging immediately if it
+                already does). When `False`, disarm bottom-follow entirely and
+                delegate to the base class.
         """
         self._follow_bottom_when_scrollable = anchor
         if not anchor:
@@ -1851,8 +1867,11 @@ class _ChatScroll(VerticalScroll):
             self._anchored = True
         else:
             self._anchored = False
-            self.scroll_y = 0
-            self.scroll_target_y = 0
+            # Reset the scroll offset without firing `watch_scroll_y`, matching
+            # how the compositor mutates scroll state mid-arrange (avoids a
+            # redundant refresh cycle from within the layout pass itself).
+            self.set_reactive(VerticalScroll.scroll_y, 0.0)
+            self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
         return result
 
     def _is_scrollable(self) -> bool:
@@ -4046,18 +4065,8 @@ class DeepAgentsApp(App):
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
 
-        # `set_idle()` is a no-op today (the banner has no failure state); the
-        # chat surface owns the error. The call is kept for API symmetry with
-        # `set_connected()`/`set_connecting()`.
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_idle()
-        except NoMatches:
-            logger.warning("Welcome banner not found during server failure transition")
-        except ScreenStackError:
-            logger.debug(
-                "Screen stack empty during server failure transition", exc_info=True
-            )
+        # The banner has no failure state — the status bar owns connection
+        # progress and the chat surface owns the error message below.
         self._sync_status_connection()
 
         # Keep any queued messages and widgets in place — `/model` retry can
@@ -9371,9 +9380,13 @@ class DeepAgentsApp(App):
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
-                except (NoMatches, ScreenStackError):
+                except NoMatches:
+                    # The banner is composed once and never removed, so a miss
+                    # here means it has silently vanished — surface it.
+                    logger.warning("Welcome banner not found during thread reset")
+                except ScreenStackError:
                     logger.debug(
-                        "Welcome banner unavailable during thread reset", exc_info=True
+                        "Screen stack empty during thread reset", exc_info=True
                     )
                 thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
                 await self._mount_message(thread_msg_widget)
@@ -13168,14 +13181,6 @@ class DeepAgentsApp(App):
                 self._connecting = True
                 self._reconnecting = True
                 self._agent = None
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.set_connecting()
-                except (NoMatches, ScreenStackError):
-                    logger.debug(
-                        "Welcome banner unavailable during reconnect teardown",
-                        exc_info=True,
-                    )
                 self._sync_status_connection()
 
                 if self._chat_input:
@@ -13249,9 +13254,15 @@ class DeepAgentsApp(App):
                         mcp_errored=self._mcp_errored,
                         mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
-                except (NoMatches, ScreenStackError):
+                except NoMatches:
+                    # The banner is composed once and never removed, so a miss
+                    # here means it has silently vanished — surface it.
+                    logger.warning(
+                        "Welcome banner not found during agent-swap rollback"
+                    )
+                except ScreenStackError:
                     logger.debug(
-                        "Welcome banner unavailable during agent-swap rollback",
+                        "Screen stack empty during agent-swap rollback",
                         exc_info=True,
                     )
                 self._sync_status_connection()
@@ -13313,9 +13324,15 @@ class DeepAgentsApp(App):
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(self._mcp_tool_count)
-            except (NoMatches, ScreenStackError):
+            except NoMatches:
+                # The banner is composed once and never removed, so a miss here
+                # means it has silently vanished — surface it.
+                logger.warning(
+                    "Welcome banner not found during agent-swap confirmation"
+                )
+            except ScreenStackError:
                 logger.debug(
-                    "Welcome banner unavailable during agent-swap confirmation",
+                    "Screen stack empty during agent-swap confirmation",
                     exc_info=True,
                 )
             self._sync_status_connection()
@@ -14105,7 +14122,12 @@ class DeepAgentsApp(App):
         )
 
     def _refresh_welcome_banner_mcp_counts(self) -> None:
-        """Push current MCP counts into the welcome banner when it is mounted."""
+        """Push current MCP counts into the welcome banner when it is mounted.
+
+        Best-effort: this can run during MCP initialization before the banner is
+        composed, so a miss is benign and stays at debug (unlike the post-startup
+        banner-update paths, where a miss signals a real regression).
+        """
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
         except (NoMatches, ScreenStackError):
@@ -15216,14 +15238,6 @@ class DeepAgentsApp(App):
             self._connecting = True
             self._reconnecting = True
             self._agent = None
-            try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.set_connecting()
-            except (NoMatches, ScreenStackError):
-                logger.debug(
-                    "Welcome banner unavailable during server restart",
-                    exc_info=True,
-                )
             self._sync_status_connection()
 
             try:
@@ -15584,14 +15598,6 @@ class DeepAgentsApp(App):
             self._connecting = True
             self._reconnecting = True
             self._agent = None
-            try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.set_connecting()
-            except (NoMatches, ScreenStackError):
-                logger.debug(
-                    "Welcome banner unavailable during cwd-switch teardown",
-                    exc_info=True,
-                )
             self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
@@ -15685,9 +15691,13 @@ class DeepAgentsApp(App):
                     mcp_errored=self._mcp_errored,
                     mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 )
-            except (NoMatches, ScreenStackError):
+            except NoMatches:
+                # The banner is composed once and never removed, so a miss here
+                # means it has silently vanished — surface it.
+                logger.warning("Welcome banner not found during cwd-switch rollback")
+            except ScreenStackError:
                 logger.debug(
-                    "Welcome banner unavailable during cwd-switch rollback",
+                    "Screen stack empty during cwd-switch rollback",
                     exc_info=True,
                 )
             self._sync_status_connection()
@@ -16322,11 +16332,6 @@ class DeepAgentsApp(App):
         self._server_startup_deferred = False
         self._connecting = True
         self._reconnecting = True
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connecting()
-        except (NoMatches, ScreenStackError):
-            logger.debug("Welcome banner not found during startup retry", exc_info=True)
         self._sync_status_connection()
 
         if self._retry_status_widget is not None:

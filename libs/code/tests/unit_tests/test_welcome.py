@@ -113,10 +113,18 @@ class TestHomePrefixed:
         assert _home_prefixed(str(Path.home())) == "~"
 
     def test_falls_back_to_absolute_path_when_home_unresolved(self) -> None:
-        """When `Path.home()` raises, the accurate absolute path is returned."""
+        """When `Path.home()` raises `RuntimeError`, the absolute path is returned."""
         with patch(
             "deepagents_code.widgets.welcome.Path.home",
             side_effect=RuntimeError("no home"),
+        ):
+            assert _home_prefixed("/srv/app") == "/srv/app"
+
+    def test_falls_back_to_absolute_path_on_value_error(self) -> None:
+        """A `ValueError` from path comparison (e.g. embedded NUL) is absorbed."""
+        with patch(
+            "deepagents_code.widgets.welcome.Path.home",
+            side_effect=ValueError("embedded null byte"),
         ):
             assert _home_prefixed("/srv/app") == "/srv/app"
 
@@ -211,13 +219,24 @@ class TestModelLine:
         assert "model:" not in plain
 
     def test_update_model_refreshes_line(self) -> None:
-        """`update_model` updates the rendered model row."""
+        """`update_model` re-renders (calls `update`) and shows the new model."""
         widget = _make_banner(model_provider="anthropic", model_name="claude-opus-4-8")
-        with patch.object(widget, "update"):
+        with patch.object(widget, "update") as mock_update:
             widget.update_model(provider="openai", model="gpt-5")
+            mock_update.assert_called_once()
         plain = widget._build_banner().plain
         assert "openai:gpt-5" in plain
         assert "claude-opus-4-8" not in plain
+
+    def test_update_model_does_not_render_when_hidden(self) -> None:
+        """`update_model` tracks the model but skips re-render when the row is off."""
+        widget = _make_banner(
+            model_provider="anthropic", model_name="claude-opus-4-8", show_model=False
+        )
+        with patch.object(widget, "update") as mock_update:
+            widget.update_model(provider="openai", model="gpt-5")
+            mock_update.assert_not_called()
+        assert widget._model_name == "gpt-5"
 
     def test_hidden_without_show_model_flag(self) -> None:
         """No model row when `SPLASH_SHOW_MODEL` is not set (opt-in)."""
@@ -246,13 +265,22 @@ class TestDirectoryLine:
         assert "directory:" not in plain
 
     def test_update_cwd_refreshes_when_shown(self) -> None:
-        """`update_cwd` re-renders the directory row when the row is enabled."""
+        """`update_cwd` re-renders (calls `update`) the directory row when enabled."""
         widget = _make_banner(cwd="/work/project", show_cwd=True)
-        with patch.object(widget, "update"):
+        with patch.object(widget, "update") as mock_update:
             widget.update_cwd("/work/other")
+            mock_update.assert_called_once()
         plain = widget._build_banner().plain
         assert "/work/other" in plain
         assert "/work/project" not in plain
+
+    def test_update_cwd_does_not_render_when_hidden(self) -> None:
+        """`update_cwd` tracks the path but skips re-render when the row is off."""
+        widget = _make_banner(cwd="/work/project", show_cwd=False)
+        with patch.object(widget, "update") as mock_update:
+            widget.update_cwd("/work/other")
+            mock_update.assert_not_called()
+        assert widget._cwd == "/work/other"
 
 
 class TestTracingLine:
@@ -582,28 +610,24 @@ class TestReturnType:
         assert isinstance(_make_banner()._build_banner(), Content)
 
 
-class TestCompatibilityMethods:
-    """Retained no-op/state methods keep the app's call sites working."""
-
-    def test_set_connecting_and_idle_are_noops(self) -> None:
-        """`set_connecting`/`set_idle` do not raise and render nothing extra."""
-        widget = _make_banner()
-        widget.set_connecting()
-        widget.set_idle()
-        assert "Ready to code" not in widget._build_banner().plain
+class TestThreadIdUpdates:
+    """`update_thread_id` tracks the id and only re-renders in debug mode."""
 
     def test_update_thread_id_tracks_without_rendering(self) -> None:
-        """`update_thread_id` stores the id but does not display it without debug."""
+        """`update_thread_id` stores the id but does not re-render without debug."""
         widget = _make_banner()
-        widget.update_thread_id("abc123")
+        with patch.object(widget, "update") as mock_update:
+            widget.update_thread_id("abc123")
+            mock_update.assert_not_called()
         assert widget._cli_thread_id == "abc123"
         assert "abc123" not in widget._build_banner().plain
 
     def test_update_thread_id_renders_in_debug(self) -> None:
-        """`update_thread_id` re-renders to show the id when debug mode is on."""
+        """`update_thread_id` re-renders (calls `update`) to show the id in debug."""
         widget = _make_banner(env={DEBUG: "1"})
-        with patch.object(widget, "update"):
+        with patch.object(widget, "update") as mock_update:
             widget.update_thread_id("abc123")
+            mock_update.assert_called_once()
         plain = widget._build_banner().plain
         assert "abc123" in plain
         assert "thread:" in plain

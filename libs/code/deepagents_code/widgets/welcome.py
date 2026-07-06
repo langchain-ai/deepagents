@@ -39,7 +39,7 @@ from deepagents_code.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
 
-_ANSI_THEMES: Final[set[str]] = {"ansi-dark", "ansi-light"}
+_ANSI_THEMES: Final[frozenset[str]] = frozenset({"ansi-dark", "ansi-light"})
 """Theme names whose color palette is determined by the terminal emulator
 rather than by the app, so link styles use bold instead of a parsed color."""
 
@@ -164,6 +164,10 @@ class WelcomeBanner(Static):
         self._model_name = model_name
         self._cwd = cwd if cwd is not None else str(Path.cwd())
         self._show_model = is_env_truthy(SPLASH_SHOW_MODEL)
+        # `_show_cwd` and `_hide_cwd` are deliberately orthogonal: `_show_cwd`
+        # gates the working-directory row (opt-in), while `_hide_cwd` gates the
+        # editable-install path below. They govern different surfaces, so both
+        # can be set without contradiction.
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
@@ -290,12 +294,6 @@ class WelcomeBanner(Static):
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self.update(self._build_banner())
-
-    def set_connecting(self) -> None:
-        """No-op retained for API compatibility; status bar owns progress."""
-
-    def set_idle(self) -> None:
-        """No-op retained for API compatibility; status bar owns failures."""
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""

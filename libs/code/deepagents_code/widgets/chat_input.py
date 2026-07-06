@@ -1329,6 +1329,33 @@ class ChatTextArea(TextArea):
         self.move_cursor(start_location)
         return True
 
+    def _bound_media_placeholders(self) -> set[str]:
+        """Return placeholder tokens bound to currently tracked media.
+
+        Returns:
+            The set of `[image N]`/`[video N]` tokens for media the tracker is
+                actually holding. Empty when there is no owner/tracker.
+        """
+        owner = self._chat_input_owner
+        tracker = owner._image_tracker if owner is not None else None
+        if tracker is None:
+            return set()
+        placeholders = {img.placeholder for img in tracker.images}
+        placeholders.update(video.placeholder for video in tracker.videos)
+        return placeholders
+
+    def _bound_paste_ids(self) -> set[int]:
+        """Return paste ids that have backing content in the owner.
+
+        Returns:
+            The set of paste ids present in `ChatInput._pasted_contents`. Empty
+                when there is no owner.
+        """
+        owner = self._chat_input_owner
+        if owner is None:
+            return set()
+        return set(owner._pasted_contents)
+
     def _find_placeholder_span(
         self, cursor_offset: int, *, backwards: bool
     ) -> tuple[int, int] | None:
@@ -1340,6 +1367,12 @@ class ChatTextArea(TextArea):
         here so an undo can restore the token with its content (it is cleared
         only at submit).
 
+        Only tokens bound to real attachments are treated as atomic: image/video
+        placeholders must correspond to a tracked media item and paste
+        placeholders to an entry in `ChatInput._pasted_contents`. Placeholder-
+        shaped text the user typed by hand (e.g. literally typing ``[image 2]``)
+        is left as ordinary text and edits character by character.
+
         Args:
             cursor_offset: Character offset of the cursor from the start of text.
             backwards: Whether the delete action is backwards (backspace) or
@@ -1347,15 +1380,23 @@ class ChatTextArea(TextArea):
 
         Returns:
             The `(start, end)` character span of the placeholder to delete, or
-                `None` when the cursor is not adjacent to a placeholder token.
+                `None` when the cursor is not adjacent to a bound placeholder
+                token.
         """
         text = self.text
+        media_placeholders = self._bound_media_placeholders()
+        pasted_ids = self._bound_paste_ids()
         for pattern in (
             IMAGE_PLACEHOLDER_PATTERN,
             VIDEO_PLACEHOLDER_PATTERN,
             PASTE_PLACEHOLDER_PATTERN,
         ):
             for match in pattern.finditer(text):
+                if pattern is PASTE_PLACEHOLDER_PATTERN:
+                    if int(match.group(1)) not in pasted_ids:
+                        continue
+                elif match.group(0) not in media_placeholders:
+                    continue
                 start, end = match.span()
                 if backwards:
                     # Cursor is inside token or right after a trailing space inserted
@@ -1927,8 +1968,11 @@ class ChatInput(Vertical):
         # preserves replacement edits where selected text is replaced by a path
         # of similar length.
         should_check_path_payload = self._should_check_path_payload(text)
+        previous_text = self._prev_text
+        self._sync_media_tracker_to_text(
+            text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
+        )
         self._prev_text = text
-        self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -2328,6 +2372,16 @@ class ChatInput(Vertical):
         if prefix and not value.startswith(prefix):
             value = prefix + value
 
+        # Placeholder spans were captured against the raw draft; the transforms
+        # above (whitespace strip, paste expansion, path substitution, prefix)
+        # shifted offsets. Re-map spans onto the final submitted text so the
+        # adapter strips the correct display token from the model-facing message
+        # instead of a same-looking literal the user typed.
+        if self._text_area is not None and self._image_tracker is not None:
+            self._image_tracker.remap_spans_to_text(
+                value, previous_text=self._text_area.text
+            )
+
         self._history.add(value)
         self.post_message(self.Submitted(value, mode))
 
@@ -2343,11 +2397,19 @@ class ChatInput(Vertical):
         self._next_paste_id = 1
         self.mode = "normal"
 
-    def _sync_media_tracker_to_text(self, text: str) -> None:
+    def _sync_media_tracker_to_text(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> None:
         """Keep tracked media aligned with placeholder tokens in input text.
 
         Args:
             text: Current text in the input area.
+            previous_text: Previous text in the input area.
+            cursor_offset: Current cursor offset in the input area.
         """
         if not self._image_tracker:
             return
@@ -2361,7 +2423,9 @@ class ChatInput(Vertical):
             else:
                 self._skip_media_sync_events -= 1
             return
-        self._image_tracker.sync_to_text(text)
+        self._image_tracker.sync_to_text(
+            text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
 
     def on_chat_text_area_typing(
         self,
@@ -2579,7 +2643,14 @@ class ChatInput(Vertical):
             media = get_media_from_path(path)
             if media is not None:
                 kind = "image" if isinstance(media, ImageData) else "video"
-                parts.append(self._image_tracker.add_media(media, kind))
+                existing_text = self._text_area.text if self._text_area else raw_text
+                parts.append(
+                    self._image_tracker.add_media(
+                        media,
+                        kind,
+                        existing_text=existing_text,
+                    )
+                )
                 attached = True
                 continue
 

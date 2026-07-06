@@ -250,9 +250,10 @@ class StatusBar(Horizontal):
         width: auto;
         text-align: right;
         color: $text-muted;
-        /* Right padding only, so the cwd/branch gap collapses with the cwd
-           when it hides (a left pad on the branch would ghost in its place). */
-        padding: 0 1 0 0;
+        /* Own both adjacent gaps so they disappear with the cwd: the left gap
+           separates it from the auto-approve pill when transient status slots
+           are hidden, and the right gap separates it from the branch. */
+        padding: 0 1 0 1;
     }
 
     StatusBar .status-branch {
@@ -291,9 +292,14 @@ class StatusBar(Horizontal):
 
     StatusBar BranchLabel {
         color: $text-muted;
-        /* No left pad: the separating gap is owned by the cwd's right pad (or
-           the message's) so nothing lingers where the cwd was once it hides. */
+        /* No left pad while cwd is visible: the cwd owns that gap. */
         padding: 0 1 0 0;
+    }
+
+    StatusBar BranchLabel.cwd-hidden {
+        /* When cwd is hidden, the branch needs the same left separator that
+           cwd normally provides after the auto-approve pill. */
+        padding: 0 1 0 1;
     }
     """
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
@@ -357,10 +363,18 @@ class StatusBar(Horizontal):
         outright to reclaim space when the terminal gets narrow.
         """
         width = event.size.width
+        self._set_cwd_visible(not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD)
+
+    def _set_cwd_visible(self, visible: bool) -> None:
+        """Show or hide cwd and keep adjacent branch spacing in sync."""
         with suppress(NoMatches):
-            self.query_one("#cwd-display", Static).display = (
-                not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD
-            )
+            self.query_one("#cwd-display", Static).display = visible
+        with suppress(NoMatches):
+            branch = self.query_one("#branch-display", BranchLabel)
+            if visible:
+                branch.remove_class("cwd-hidden")
+            else:
+                branch.add_class("cwd-hidden")
 
     def on_unmount(self) -> None:
         """Stop the spinner timer so it can't tick on a detached widget."""
@@ -372,8 +386,7 @@ class StatusBar(Horizontal):
 
         self.cwd = self._initial_cwd
         if self._hide_cwd:
-            with suppress(NoMatches):
-                self.query_one("#cwd-display", Static).display = False
+            self._set_cwd_visible(False)
         if self._hide_git_branch:
             with suppress(NoMatches):
                 self.query_one("#branch-display", BranchLabel).display = False

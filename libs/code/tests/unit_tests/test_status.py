@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
@@ -9,7 +11,19 @@ from textual.geometry import Size
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
+from deepagents_code.config import reset_glyphs_cache
 from deepagents_code.widgets.status import BranchLabel, ModelLabel, StatusBar
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def reset_glyphs_between_tests() -> Iterator[None]:
+    """Clear process-global glyph detection before and after each test."""
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 class StatusBarApp(App):
@@ -47,6 +61,19 @@ class TestCwdDisplay:
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is False
             assert branch.display is True
+            assert branch.styles.padding.left == 2
+
+    async def test_cwd_owns_left_gap_after_auto_approve_pill(self) -> None:
+        """The cwd keeps visible spacing when transient status slots are hidden."""
+        async with StatusBarApp().run_test() as pilot:
+            cwd = pilot.app.query_one("#cwd-display")
+            connection = pilot.app.query_one("#connection-indicator")
+            status = pilot.app.query_one("#status-message")
+
+            assert connection.display is False
+            assert status.display is False
+            assert cwd.styles.padding.left == 2
+            assert cwd.styles.padding.right == 1
 
 
 class TestBranchDisplay:
@@ -115,13 +142,17 @@ class TestBranchDisplay:
             seg.text for seg in display.render_line(0) if isinstance(seg, Segment)
         )
 
-    async def test_long_branch_name_truncates_with_ellipsis(self) -> None:
+    async def test_long_branch_name_truncates_with_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A branch too long for the footer should render a trailing ellipsis.
 
         The branch widget's width is pinned directly (rather than relying on
         whole-status-bar layout arithmetic) so truncation is deterministic and
         independent of the other status items' sizes.
         """
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
         long_branch = "feature/some-really-long-descriptive-branch-name-here"
         async with StatusBarApp().run_test(size=(110, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
@@ -146,6 +177,8 @@ class TestBranchDisplay:
         ellipsize rather than hard-clip.
         """
         monkeypatch.setenv(HIDE_CWD, "1")
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
         long_branch = "feature/some-really-long-descriptive-branch-name-here"
         async with StatusBarApp().run_test(size=(90, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
@@ -178,8 +211,6 @@ class TestBranchDisplay:
         character; `BranchLabel` truncates manually via `get_glyphs` so
         the configured glyph (ASCII `"..."` in ascii mode) is used instead.
         """
-        from deepagents_code.config import reset_glyphs_cache
-
         monkeypatch.setenv("UI_CHARSET_MODE", "ascii")
         reset_glyphs_cache()
         long_branch = "feature/some-really-long-descriptive-branch-name-here"
@@ -232,6 +263,18 @@ class TestResizePriority:
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
             assert branch.display is True
+            assert branch.styles.padding.left == 2
+
+    async def test_branch_removes_fallback_gap_when_cwd_returns(self) -> None:
+        """Resizing wide again restores branch spacing to the cwd-visible layout."""
+        async with StatusBarApp().run_test(size=(50, 24)) as pilot:
+            branch = pilot.app.query_one("#branch-display")
+            await pilot.pause()
+            assert branch.styles.padding.left == 2
+
+            await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert branch.styles.padding.left == 0
 
     async def test_branch_visible_on_wide_terminal(self) -> None:
         """Branch display should be visible on a wide terminal."""

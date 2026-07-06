@@ -39,8 +39,9 @@ from deepagents_talon.interfaces import (
 from deepagents_talon.observability import log_event, stable_log_ref
 
 if TYPE_CHECKING:
-    from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.async_subagents import AsyncSubAgent
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
@@ -55,6 +56,9 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
+_ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
+    {"start_async_task", "update_async_task", "cancel_async_task"}
+)
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -259,6 +263,7 @@ class DeepAgentRuntime:
         self.tools = tuple(tools)
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
+        self._has_async_subagents = _has_async_subagents(self.subagents)
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -290,7 +295,10 @@ class DeepAgentRuntime:
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
-            interrupt_on=self.interrupt_on,
+            interrupt_on=_interrupt_on_with_async_subagents(
+                self.interrupt_on,
+                has_async_subagents=self._has_async_subagents,
+            ),
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
@@ -489,14 +497,12 @@ class DeepAgentRuntime:
         return sources or None
 
     def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+        resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+        if self.assistant_dir is not None:
+            resolved.extend(_load_local_subagents(self.assistant_dir))
         if self.subagents is not None:
-            return list(self.subagents) or None
-        if self.assistant_dir is None:
-            return None
-        return cast(
-            "list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None",
-            _load_local_subagents(self.assistant_dir) or None,
-        )
+            resolved.extend(self.subagents)
+        return resolved or None
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
@@ -692,6 +698,30 @@ def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
     if raw is None or not raw.strip():
         return {}
     return {name: True for name in (part.strip() for part in raw.split(",")) if name}
+
+
+def _interrupt_on_with_async_subagents(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    has_async_subagents: bool,
+) -> dict[str, bool | InterruptOnConfig] | None:
+    if not has_async_subagents:
+        return dict(interrupt_on) if interrupt_on is not None else None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    for tool_name in _ASYNC_SUBAGENT_TOOL_NAMES:
+        merged.setdefault(tool_name, True)
+    return merged
+
+
+def _has_async_subagents(
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None,
+) -> bool:
+    return any(
+        isinstance(subagent, Mapping) and "graph_id" in subagent for subagent in subagents or ()
+    )
 
 
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:

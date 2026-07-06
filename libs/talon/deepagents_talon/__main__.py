@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -177,6 +178,7 @@ async def _agent_runtime(
     if config.model is None:
         return EchoAgentRuntime()
 
+    async_subagents = tuple(load_async_subagents())
     mcp = await load_mcp_tools(config)
     for server in mcp.servers:
         if server.error is not None:
@@ -187,6 +189,7 @@ async def _agent_runtime(
         model=config.model,
         tools=mcp.tools,
         assistant_dir=config.manifest_dir,
+        subagents=async_subagents or None,
         cron_store=cron_store,
         interrupt_on=interrupt_on_with_env_overlay(None, env),
         env=env,

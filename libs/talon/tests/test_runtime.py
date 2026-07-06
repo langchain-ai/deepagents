@@ -199,6 +199,85 @@ async def test_runtime_wires_subagents(
     assert captured["subagents"] == subagents
 
 
+async def test_runtime_requires_approval_for_async_subagent_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    async_subagent = {
+        "name": "researcher",
+        "description": "Research tasks",
+        "graph_id": "agent",
+    }
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        subagents=cast("Any", [async_subagent]),
+        interrupt_on={"custom_tool": True, "start_async_task": False},
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [async_subagent]
+    assert captured["interrupt_on"] == {
+        "custom_tool": True,
+        "start_async_task": False,
+        "update_async_task": True,
+        "cancel_async_task": True,
+    }
+
+
+async def test_runtime_merges_local_and_async_subagents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
+    researcher_dir.mkdir(parents=True)
+    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    async_subagent = {
+        "name": "remote_reviewer",
+        "description": "Remote review tasks",
+        "graph_id": "review",
+    }
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        subagents=cast("Any", [async_subagent]),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={},
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "researcher",
+            "description": "Use the researcher subagent.",
+            "system_prompt": "Research carefully.",
+        },
+        async_subagent,
+    ]
+
+
 async def test_runtime_loads_local_subagents_from_user_agents_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

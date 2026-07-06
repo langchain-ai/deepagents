@@ -102,6 +102,15 @@ def _is_fireworks_model(model: object) -> bool:
     return _get_ls_provider(model) == "fireworks"
 
 
+def _is_google_genai_model(model: object) -> bool:
+    """Check whether a resolved model reports `'google_genai'` as its provider.
+
+    Returns:
+        `True` if the model's `ls_provider` is `'google_genai'`.
+    """
+    return _get_ls_provider(model) == "google_genai"
+
+
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 """Keys injected by Anthropic-specific middleware (e.g.
 `AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
@@ -398,6 +407,31 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
     )
 
 
+def _apply_gemini_tool_repair(request: ModelRequest) -> ModelRequest:
+    """Return `request` with tool schemas repaired for Gemini, else unchanged."""
+    if not _is_google_genai_model(request.model):
+        return request
+    if not request.tools:
+        return request
+    from deepagents_code._gemini_schema import repair_tools_for_gemini
+
+    repaired = repair_tools_for_gemini(request.tools)
+    if repaired == list(request.tools):
+        return request
+    logger.debug("Repaired Gemini tool schemas (%d tools)", len(repaired))
+    return request.override(tools=repaired)
+
+
+def _translate_gemini_error(exc: BaseException) -> Exception | None:
+    """Return a translated exception for a Gemini tool-schema `400`, else `None`."""
+    from deepagents_code._gemini_schema import translate_gemini_tool_schema_error
+
+    message = translate_gemini_tool_schema_error(exc)
+    if message is None:
+        return None
+    return RuntimeError(message)
+
+
 def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
     """Build the private resume-state update for a completed model call.
 
@@ -453,7 +487,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        outbound = _apply_gemini_tool_repair(resolved.request)
+        try:
+            response = handler(outbound)
+        except Exception as exc:
+            translated = _translate_gemini_error(exc)
+            if translated is None:
+                raise
+            raise translated from exc
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -471,7 +512,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        outbound = _apply_gemini_tool_repair(resolved.request)
+        try:
+            response = await handler(outbound)
+        except Exception as exc:
+            translated = _translate_gemini_error(exc)
+            if translated is None:
+                raise
+            raise translated from exc
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

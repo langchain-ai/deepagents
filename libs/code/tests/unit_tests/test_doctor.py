@@ -103,7 +103,9 @@ class TestCollectTracing:
             "replica_project": None,
         }
         defaults.update(kwargs)
-        status = TracingStatus(**defaults)  # type: ignore[arg-type]
+        # `defaults` is intentionally heterogeneous (`dict[str, object]`), so the
+        # unpack can't be statically matched to each field's type.
+        status = TracingStatus(**defaults)  # ty: ignore[invalid-argument-type]
         with patch("deepagents_code.config.get_tracing_status", return_value=status):
             return _collect_tracing()
 
@@ -199,6 +201,8 @@ class TestCollectTracing:
         )
         labels = {item.label: item.value for item in section.items}
         assert labels["Gateway"] == "yes"
+        # A configured endpoint surfaces both items; they must not interfere.
+        assert "Endpoint" in labels
 
     def test_gateway_no_for_custom_endpoint(self) -> None:
         """A self-hosted/dev endpoint is not the LangSmith managed gateway."""
@@ -209,6 +213,38 @@ class TestCollectTracing:
         )
         labels = {item.label: item.value for item in section.items}
         assert labels["Gateway"] == "no"
+
+    def test_gateway_unknown_for_unparseable_endpoint(self) -> None:
+        """An endpoint with no parseable host reports `unknown`, never `no`."""
+        section = self._section(
+            enabled=True,
+            has_credentials=True,
+            endpoint="not a url",
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "unknown"
+
+    def test_gateway_no_when_replica_endpoint_is_self_hosted(self) -> None:
+        """A self-hosted replica target counts even with no primary endpoint."""
+        section = self._section(
+            enabled=True,
+            has_credentials=True,
+            endpoint=None,
+            runs_endpoints=("http://localhost:1984",),
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "no"
+
+    def test_gateway_yes_when_replica_endpoint_is_gateway(self) -> None:
+        """Replica targets on the managed gateway keep the report `yes`."""
+        section = self._section(
+            enabled=True,
+            has_credentials=True,
+            endpoint=None,
+            runs_endpoints=("https://eu.api.smith.langchain.com",),
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "yes"
 
     def test_gateway_absent_when_not_enabled(self) -> None:
         """The Gateway line only appears when tracing is enabled."""
@@ -227,39 +263,56 @@ class TestCollectTracing:
         assert labels["Replica project"] == "replica"
 
 
-class TestIsLangSmithGatewayEndpoint:
-    """Tests for the tracing gateway-host detection helper."""
-
-    def test_none_is_gateway(self) -> None:
-        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
-
-        assert _is_langsmith_gateway_endpoint(None) is True
+class TestEndpointGatewayState:
+    """Tests for the single-endpoint tracing gateway-host classifier."""
 
     def test_exact_host_is_gateway(self) -> None:
-        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+        from deepagents_code.doctor import _endpoint_gateway_state
 
-        assert _is_langsmith_gateway_endpoint("https://smith.langchain.com") is True
+        assert _endpoint_gateway_state("https://smith.langchain.com") == "yes"
 
     def test_regional_subdomain_is_gateway(self) -> None:
-        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+        from deepagents_code.doctor import _endpoint_gateway_state
 
-        assert (
-            _is_langsmith_gateway_endpoint("https://eu.api.smith.langchain.com") is True
-        )
+        assert _endpoint_gateway_state("https://eu.api.smith.langchain.com") == "yes"
+
+    def test_whitespace_padded_endpoint_is_gateway(self) -> None:
+        """A padded env value (a classic misconfiguration) still classifies."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("  https://smith.langchain.com  ") == "yes"
 
     def test_self_hosted_is_not_gateway(self) -> None:
-        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+        from deepagents_code.doctor import _endpoint_gateway_state
 
-        assert _is_langsmith_gateway_endpoint("http://localhost:1984") is False
+        assert _endpoint_gateway_state("http://localhost:1984") == "no"
 
-    def test_lookalike_host_is_not_gateway(self) -> None:
-        """A host merely containing the domain as a substring is not the gateway."""
-        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+    def test_suffix_lookalike_host_is_not_gateway(self) -> None:
+        """A host containing the domain as a substring is not the gateway."""
+        from deepagents_code.doctor import _endpoint_gateway_state
 
         assert (
-            _is_langsmith_gateway_endpoint("https://smith.langchain.com.evil.example")
-            is False
+            _endpoint_gateway_state("https://smith.langchain.com.evil.example") == "no"
         )
+
+    def test_prefix_lookalike_host_is_not_gateway(self) -> None:
+        """The leading-dot boundary rejects a host that only shares a suffix."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("https://notsmith.langchain.com") == "no"
+
+    def test_unparseable_endpoint_is_unknown(self) -> None:
+        """A string with no parseable host is `unknown`, not a false `no`."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("not a url") == "unknown"
+        assert _endpoint_gateway_state("") == "unknown"
+
+    def test_bracket_malformed_ipv6_is_unknown(self) -> None:
+        """A `urlsplit` `ValueError` degrades to `unknown` rather than crashing."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("http://[::1") == "unknown"
 
 
 class TestCollectUpdates:

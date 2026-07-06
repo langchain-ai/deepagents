@@ -275,34 +275,72 @@ def _sanitize_endpoint(endpoint: str) -> str:
 
 
 _LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host suffix identifying LangSmith's managed (SaaS) tracing gateway.
+"""Host identifying LangSmith's managed (SaaS) tracing gateway.
 
-Traces sent to a custom self-hosted or dev/staging endpoint whose host is not
-`smith.langchain.com` (or a subdomain of it) are not going through the managed
-gateway. Mirrors the gateway-host convention used elsewhere in the codebase.
+Traces sent to an endpoint whose host is `smith.langchain.com` (or a subdomain
+of it) route through the managed gateway; any other host is a self-hosted or
+dev/staging target. `app.py` keeps the same constant for its model-gateway
+key-mismatch check, but matches a raw-URL substring; this module matches the
+parsed hostname exactly or by subdomain suffix so lookalike hosts such as
+`smith.langchain.com.evil.example` are not treated as the gateway.
 """
 
 
-def _is_langsmith_gateway_endpoint(endpoint: str | None) -> bool:
-    """Whether the resolved tracing endpoint targets the LangSmith gateway.
-
-    A `None` endpoint means no custom endpoint is configured, so tracing falls
-    back to the LangSmith SDK default (`https://api.smith.langchain.com`), which
-    is the managed gateway. A configured endpoint counts only when its host is
-    `smith.langchain.com` or a subdomain of it.
+def _endpoint_gateway_state(endpoint: str) -> str:
+    """Classify a single tracing endpoint as gateway, non-gateway, or unknown.
 
     Args:
-        endpoint: Configured tracing endpoint URL, or `None` for the default.
+        endpoint: A configured tracing endpoint URL.
 
     Returns:
-        `True` when traces route through the LangSmith managed gateway.
+        `"yes"` when the endpoint's host is the LangSmith managed gateway (an
+            exact host or a subdomain), `"no"` for any other resolvable host,
+            and `"unknown"` when the endpoint cannot be parsed into a host — so
+            a typo'd or malformed URL is never silently reported as `"no"`.
     """
-    if endpoint is None:
-        return True
-    host = (urlsplit(endpoint.strip()).hostname or "").lower()
-    return host == _LANGSMITH_GATEWAY_HOST or host.endswith(
-        f".{_LANGSMITH_GATEWAY_HOST}"
-    )
+    try:
+        host = urlsplit(endpoint.strip()).hostname or ""
+    except ValueError:
+        # urlsplit raises on bracket-malformed IPv6 (e.g. `http://[::1`); a
+        # diagnostic must degrade to "unknown" rather than crash `dcode doctor`.
+        return "unknown"
+    if not host:
+        return "unknown"
+    if host == _LANGSMITH_GATEWAY_HOST or host.endswith(f".{_LANGSMITH_GATEWAY_HOST}"):
+        return "yes"
+    return "no"
+
+
+def _tracing_gateway_state(status: TracingStatus) -> str:
+    """Report whether all trace ingestion targets are the managed gateway.
+
+    Considers both the primary endpoint and any replica ingestion URLs
+    (`LANGSMITH_RUNS_ENDPOINTS`), since a self-hosted replica means traces leave
+    for a custom target even when the primary endpoint is unset. With no target
+    configured, tracing falls back to the LangSmith SDK default
+    (`https://api.smith.langchain.com`), which is the managed gateway.
+
+    Args:
+        status: The resolved tracing status.
+
+    Returns:
+        `"yes"` when every configured target is the managed gateway (or none is
+            configured, i.e. the SDK default), `"no"` when any target is a
+            self-hosted or dev/staging host, and `"unknown"` when a target
+            cannot be parsed and none is a definite non-gateway host.
+    """
+    states = [
+        _endpoint_gateway_state(target)
+        for target in (status.endpoint, *status.runs_endpoints)
+        if target
+    ]
+    if not states:
+        return "yes"
+    if "no" in states:
+        return "no"
+    if "unknown" in states:
+        return "unknown"
+    return "yes"
 
 
 def _format_tracing_project(status: TracingStatus) -> str:
@@ -330,7 +368,9 @@ def _collect_tracing() -> DiagnosticSection:
     endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
     self-hosted endpoint is a valid, healthy setup). When tracing is enabled, a
     `Gateway` item reports whether traces route through LangSmith's managed
-    (SaaS) gateway or a custom self-hosted/dev/staging endpoint.
+    (SaaS) gateway (`yes`), a custom self-hosted/dev/staging endpoint (`no`), or
+    an endpoint that could not be parsed (`unknown`), accounting for both the
+    primary endpoint and any replica ingestion targets.
 
     Returns:
         The `Tracing` section.
@@ -357,12 +397,7 @@ def _collect_tracing() -> DiagnosticSection:
     if status.endpoint:
         items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))
     if status.enabled:
-        items.append(
-            DiagnosticItem(
-                "Gateway",
-                "yes" if _is_langsmith_gateway_endpoint(status.endpoint) else "no",
-            )
-        )
+        items.append(DiagnosticItem("Gateway", _tracing_gateway_state(status)))
     if status.replica_project:
         items.append(DiagnosticItem("Replica project", status.replica_project))
     return DiagnosticSection(title="Tracing", items=items)

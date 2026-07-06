@@ -1,0 +1,87 @@
+libs/code/deepagents_code/config.py
+  s_1ce74ea99647b4::t_13f2d9956ff1ff 400-402
+  s_1ce74ea99647b4::t_b72c1c82abde4e 261,353,363-369,383,387
+  s_1ce74ea99647b4::t_eed0f2d7190492 163-188
+  s_1ce74ea99647b4::t_60bc87e4336709 290
+  s_1ce74ea99647b4::t_7a226e6d218394 235,255-260
+  s_1ce74ea99647b4::t_05c28ccc1befb6 22-27
+  s_1ce74ea99647b4::t_1ad6720b1e8c29 278
+libs/code/deepagents_code/main.py
+  s_1ce74ea99647b4::t_a72cec44e51be3 2060-2061
+  s_1ce74ea99647b4::t_b6f5e205d05605 2440-2450
+  s_1ce74ea99647b4::t_f7ab1692431bcf 1900-1901
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_1ce74ea99647b4::t_b087c10cedd0c1 3493-3505,3518-3549,3551-3563
+  s_1ce74ea99647b4::t_ad4a583a5c711e 3506-3517
+  s_1ce74ea99647b4::t_3580873aaa38e4 3550
+  s_bcbef08850db42::t_ec7fe86abb08fb 1703-1730
+  s_1ce74ea99647b4::t_0f58b0675b96c7 3358-3362,3368-3369
+  s_1ce74ea99647b4::t_26e4b4896527e5 1700-1702
+libs/code/deepagents_code/mcp_tools.py
+  s_bcbef08850db42::t_bee9e64007ff79 1965-1970
+  s_1ce74ea99647b4::t_3580873aaa38e4 2007
+  s_1ce74ea99647b4::t_a11e379d524feb 1998-2001,2004-2006,2008-2014
+  s_1ce74ea99647b4::t_c0ed612124ea51 832
+  s_1ce74ea99647b4::t_8f11933385c7e8 976-980
+libs/code/THREAT_MODEL.md
+  s_1ce74ea99647b4::t_c90b4c94d8b4bb 235
+libs/code/tests/unit_tests/test_model_config.py
+  s_1ce74ea99647b4::t_ad019e3841647e 5456-5457,5459,5461-5463,5470,5472
+  s_1ce74ea99647b4::t_f610cb9f0b65b6 5219-5243
+  s_1ce74ea99647b4::t_3d9c30e1c40bb5 5278-5283,5287
+  s_1ce74ea99647b4::t_9dafa7d338b2a1 5315-5323,5330-5331
+  s_1ce74ea99647b4::t_2d67f5c9c56793 5289-5304
+  s_1ce74ea99647b4::t_369708b3a655f7 5333-5334,5338,5344
+  s_1ce74ea99647b4::t_bf8fdf1a9a41dc 5405,5408-5412,5425,5428,5431-5437,5444
+  s_2f7114c31c6011::t_8cfa8a7ab145a8 5288
+libs/code/deepagents_code/_env_vars.py
+  s_1ce74ea99647b4::t_328f29ea7c72cf 92-98
+  s_1ce74ea99647b4::t_17e92fe1ef70c7 107-113
+libs/code/tests/unit_tests/test_reload.py
+  s_1ce74ea99647b4::t_d90ad60a98c895 439-470
+libs/code/deepagents_code/model_config.py
+  s_1ce74ea99647b4::t_5f09afef6b5cf4 3053-3057,3070-3076
+  s_1ce74ea99647b4::t_59b591fd473b23 3106-3112,3122-3124,3128-3130
+  s_1ce74ea99647b4::t_b5760c2c6db582 3077
+  s_af0e505a099d15::t_86aebdccd52fd5 3173-3182,3192-3195,3202,3225-3228,3230-3231,3239-3240,3242,3245-3247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1e8911b08a88775b979f9b95f81bc93a110e462",
+  "prompts": {},
+  "sessions": {
+    "s_1ce74ea99647b4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "29e546f2-3e1f-4479-8fed-834315459bea",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_2f7114c31c6011": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa8d6001-fe21-4c1f-9cb9-f37a2abf012b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_af0e505a099d15": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2357df48d63bfec2",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_bcbef08850db42": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35e8-04c6-78d2-87b9-f3a003b4d4c3",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -8,8 +8,10 @@ from textual.content import Content
 
 from deepagents_code._env_vars import (
     DEBUG,
+    HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_VERSION,
+    SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
     SPLASH_SHOW_MODEL,
 )
@@ -24,6 +26,7 @@ from deepagents_code.widgets.welcome import (
 _EDITABLE = "deepagents_code.widgets.welcome._is_editable_install"
 _EDITABLE_PATH = "deepagents_code.widgets.welcome._get_editable_install_path"
 _PROJECT_NAME = "deepagents_code.widgets.welcome.get_langsmith_project_name"
+_REPLICA_PROJECT = "deepagents_code.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.widgets.welcome.fetch_langsmith_project_url"
 
 
@@ -38,7 +41,8 @@ def _make_banner(
     mcp_errored: int = 0,
     mcp_awaiting_reconnect: int = 0,
     project_name: str | None = None,
-    project_url: str | None = None,
+    replica_project: str | None = None,
+    project_urls: dict[str, str] | None = None,
     show_model: bool = True,
     show_cwd: bool = False,
     env: dict[str, str] | None = None,
@@ -55,7 +59,8 @@ def _make_banner(
         mcp_errored: Number of MCP servers that failed to load.
         mcp_awaiting_reconnect: Number of MCP servers awaiting reconnect.
         project_name: LangSmith project name to inject (or `None`).
-        project_url: LangSmith project URL to inject (or `None`).
+        replica_project: Replica LangSmith project name to inject (or `None`).
+        project_urls: LangSmith project URLs keyed by project name.
         show_model: Set `SPLASH_SHOW_MODEL` so the model row renders. Defaults to
             `True` so model tests exercise the row; the real default is off.
         show_cwd: Set `SPLASH_SHOW_CWD` so the directory row renders.
@@ -73,6 +78,7 @@ def _make_banner(
         resolved_env.update(env)
     with (
         patch(_PROJECT_NAME, return_value=project_name),
+        patch(_REPLICA_PROJECT, return_value=replica_project),
         patch.dict("os.environ", resolved_env, clear=True),
     ):
         widget = WelcomeBanner(
@@ -85,8 +91,8 @@ def _make_banner(
             mcp_errored=mcp_errored,
             mcp_awaiting_reconnect=mcp_awaiting_reconnect,
         )
-        if project_url:
-            widget._project_url = project_url
+        if project_urls:
+            widget._project_urls = project_urls
         return widget
 
 
@@ -101,6 +107,18 @@ class TestHomePrefixed:
     def test_leaves_non_home_path_unchanged(self) -> None:
         """Paths outside the home directory are returned as-is."""
         assert _home_prefixed("/tmp/work") == "/tmp/work"
+
+    def test_exact_home_collapses_to_bare_tilde(self) -> None:
+        """The home directory itself renders as `~`, not `~/.`."""
+        assert _home_prefixed(str(Path.home())) == "~"
+
+    def test_falls_back_to_absolute_path_when_home_unresolved(self) -> None:
+        """When `Path.home()` raises, the accurate absolute path is returned."""
+        with patch(
+            "deepagents_code.widgets.welcome.Path.home",
+            side_effect=RuntimeError("no home"),
+        ):
+            assert _home_prefixed("/srv/app") == "/srv/app"
 
 
 class TestLangsmithLinkHelpers:
@@ -252,7 +270,9 @@ class TestTracingLine:
 
         widget = _make_banner(
             project_name="dcode-johannes",
-            project_url="https://smith.langchain.com/o/org/p/dcode-johannes",
+            project_urls={
+                "dcode-johannes": "https://smith.langchain.com/o/org/p/dcode-johannes"
+            },
         )
         content = widget._build_banner()
         linked_spans = [
@@ -301,8 +321,8 @@ class TestTracingLine:
             patch.object(widget, "update"),
         ):
             await widget._fetch_and_update()
-        assert widget._project_url is not None
-        assert "dcode-johannes" in widget._project_url
+        assert widget._project_urls["dcode-johannes"] is not None
+        assert "dcode-johannes" in widget._project_urls["dcode-johannes"]
 
     async def test_fetch_and_update_handles_timeout(self) -> None:
         """`_fetch_and_update` does not crash on timeout."""
@@ -316,7 +336,96 @@ class TestTracingLine:
             patch.object(widget, "update"),
         ):
             await widget._fetch_and_update()
-        assert widget._project_url is None
+        assert widget._project_urls == {}
+
+
+class TestReplicaTracingLine:
+    """Tests for the LangSmith replica tracing project row."""
+
+    def test_shows_replica_project_by_default(self) -> None:
+        """The replica row renders when a primary project and replica are set."""
+        plain = (
+            _make_banner(
+                project_name="dcode-primary",
+                replica_project="dcode-replica",
+            )
+            ._build_banner()
+            .plain
+        )
+        assert "tracing:" in plain
+        assert "'dcode-primary'" in plain
+        assert "replica:" in plain
+        assert "'dcode-replica'" in plain
+
+    def test_hidden_when_show_replica_flag_disabled(self) -> None:
+        """The replica row respects `SHOW_LANGSMITH_REPLICA_TRACING`."""
+        plain = (
+            _make_banner(
+                project_name="dcode-primary",
+                replica_project="dcode-replica",
+                env={SHOW_LANGSMITH_REPLICA_TRACING: "0"},
+            )
+            ._build_banner()
+            .plain
+        )
+        assert "tracing:" in plain
+        assert "replica:" not in plain
+        assert "dcode-replica" not in plain
+
+    def test_hidden_when_primary_tracing_hidden(self) -> None:
+        """Replica tracing is hidden with the primary tracing row."""
+        plain = (
+            _make_banner(
+                project_name="dcode-primary",
+                replica_project="dcode-replica",
+                env={HIDE_LANGSMITH_TRACING: "1"},
+            )
+            ._build_banner()
+            .plain
+        )
+        assert "tracing:" not in plain
+        assert "replica:" not in plain
+        assert "dcode-replica" not in plain
+
+    def test_replica_project_is_clickable_when_url_resolved(self) -> None:
+        """The replica project is a hyperlink when the URL has been fetched."""
+        from textual.style import Style as TStyle
+
+        widget = _make_banner(
+            project_name="dcode-primary",
+            replica_project="dcode-replica",
+            project_urls={
+                "dcode-replica": "https://smith.langchain.com/o/org/p/dcode-replica"
+            },
+        )
+        content = widget._build_banner()
+        linked_spans = [
+            s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
+        ]
+        assert any(
+            "dcode-replica" in content._text[s.start : s.end] for s in linked_spans
+        )
+
+    async def test_fetch_and_update_sets_primary_and_replica_urls(self) -> None:
+        """`_fetch_and_update` fetches URLs for primary and replica projects."""
+        widget = _make_banner(
+            project_name="dcode-primary",
+            replica_project="dcode-replica",
+        )
+        urls = {
+            "dcode-primary": "https://smith.langchain.com/o/org/p/dcode-primary",
+            "dcode-replica": "https://smith.langchain.com/o/org/p/dcode-replica",
+        }
+
+        def _fetch_url(project: str) -> str:
+            return urls[project]
+
+        with (
+            patch(_FETCH_URL, side_effect=_fetch_url),
+            patch.object(widget, "update"),
+        ):
+            await widget._fetch_and_update()
+        assert widget._project_urls == urls
 
 
 class TestThreadLine:
@@ -443,6 +552,16 @@ class TestEditableInstallPath:
         ):
             plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
         assert "installed:" not in plain
+
+    def test_no_install_path_when_cwd_hidden(self) -> None:
+        """No install path row when local path displays are hidden."""
+        with (
+            patch(_EDITABLE, return_value=True),
+            patch(_EDITABLE_PATH, return_value="~/code"),
+        ):
+            plain = _make_banner(env={HIDE_CWD: "1"})._build_banner().plain
+        assert "installed:" not in plain
+        assert "~/code" not in plain
 
 
 class TestRemovedSections:

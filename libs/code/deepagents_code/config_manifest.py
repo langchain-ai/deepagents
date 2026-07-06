@@ -1182,13 +1182,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
     ),
-    ConfigOption(
-        key="debug.override_startup_subheader",
-        group="Debug",
-        summary="Override the startup splash subheader text.",
-        kind=OptionKind.STR,
-        env_var=_env_vars.DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
-    ),
 )
 
 

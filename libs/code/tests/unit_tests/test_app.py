@@ -20047,6 +20047,53 @@ class TestChatScrollAnchoring:
             assert chat.scroll_y == 0
 
 
+class TestWelcomeBannerLiveUpdates:
+    """The banner starts top-aligned and mirrors live model/cwd changes.
+
+    These bind the PR's user-visible behaviors at the app<->widget seam: the
+    empty chat must not bottom-anchor at startup, and `/model` / cwd switches
+    must reach the banner (not just the status bar).
+    """
+
+    async def test_startup_leaves_chat_top_aligned(self) -> None:
+        """An empty chat keeps the welcome banner pinned to the top (unanchored)."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one("#chat", _ChatScroll)
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_sync_status_model_updates_banner(self) -> None:
+        """`_sync_status_model` pushes the active model into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_MODEL
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                with patch("deepagents_code.config.settings") as mock_settings:
+                    mock_settings.model_provider = "openai"
+                    mock_settings.model_name = "gpt-5.5"
+                    app._sync_status_model()
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "openai:gpt-5.5" in banner._build_banner().plain
+
+    async def test_apply_cwd_updates_banner(self) -> None:
+        """`_apply_cwd_to_ui` pushes the working directory into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_CWD
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_CWD: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                app._apply_cwd_to_ui(Path("/work/proj"))
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "/work/proj" in banner._build_banner().plain
+
+
 class TestStatusBarConnectionMirroring:
     """The bottom status bar must mirror the connection + queue state.
 

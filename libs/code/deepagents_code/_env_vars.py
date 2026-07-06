@@ -34,11 +34,6 @@ AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
 
-DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
-    "DEEPAGENTS_CODE_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
-)
-"""Override the startup splash subheader text when set."""
-
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 

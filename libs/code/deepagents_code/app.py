@@ -2910,8 +2910,10 @@ class DeepAgentsApp(App):
         # Don't establish bottom-follow intent at startup. `_ChatScroll.anchor()`
         # defers the real anchor until content overflows, but not calling it at
         # all keeps the welcome banner pinned to the top of an empty chat (like
-        # Claude Code). Streaming, shell, command, and thread-resume paths call
-        # `anchor()` to opt into bottom-follow as content arrives.
+        # Claude Code). Content-producing paths (streaming, shell output,
+        # commands, model switches) call `anchor()` to opt into bottom-follow as
+        # content arrives; thread resume instead scrolls to the bottom once via
+        # `scroll_end()`.
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -3945,6 +3947,10 @@ class DeepAgentsApp(App):
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+        except ScreenStackError:
+            logger.debug(
+                "Screen stack empty during server ready transition", exc_info=True
+            )
         self._sync_status_connection()
 
         # Refresh the status bar model so a successful retry after a failed
@@ -4040,12 +4046,18 @@ class DeepAgentsApp(App):
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
 
-        # Drop the banner's connecting spinner — chat surface owns the error.
+        # `set_idle()` is a no-op today (the banner has no failure state); the
+        # chat surface owns the error. The call is kept for API symmetry with
+        # `set_connected()`/`set_connecting()`.
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.set_idle()
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
+        except ScreenStackError:
+            logger.debug(
+                "Screen stack empty during server failure transition", exc_info=True
+            )
         self._sync_status_connection()
 
         # Keep any queued messages and widgets in place — `/model` retry can
@@ -9359,8 +9371,10 @@ class DeepAgentsApp(App):
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
-                except NoMatches:
-                    pass
+                except (NoMatches, ScreenStackError):
+                    logger.debug(
+                        "Welcome banner unavailable during thread reset", exc_info=True
+                    )
                 thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
                 await self._mount_message(thread_msg_widget)
                 self._schedule_thread_message_link(
@@ -10170,10 +10184,13 @@ class DeepAgentsApp(App):
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
-        except (NoMatches, ScreenStackError):
-            logger.debug(
-                "Welcome banner not available during model sync", exc_info=True
-            )
+        except NoMatches:
+            # The banner is composed once and never removed, so a miss here in
+            # steady state means the live model row has silently stopped
+            # updating — surface it rather than swallow at debug.
+            logger.warning("Welcome banner not found during model sync")
+        except ScreenStackError:
+            logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
         if not provider or not model:
@@ -13154,8 +13171,11 @@ class DeepAgentsApp(App):
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.set_connecting()
-                except NoMatches:
-                    pass
+                except (NoMatches, ScreenStackError):
+                    logger.debug(
+                        "Welcome banner unavailable during reconnect teardown",
+                        exc_info=True,
+                    )
                 self._sync_status_connection()
 
                 if self._chat_input:
@@ -13229,8 +13249,11 @@ class DeepAgentsApp(App):
                         mcp_errored=self._mcp_errored,
                         mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
-                except NoMatches:
-                    pass
+                except (NoMatches, ScreenStackError):
+                    logger.debug(
+                        "Welcome banner unavailable during agent-swap rollback",
+                        exc_info=True,
+                    )
                 self._sync_status_connection()
                 self.notify(
                     f"Could not prepare to switch to {agent_name!r}. "
@@ -13290,8 +13313,11 @@ class DeepAgentsApp(App):
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(self._mcp_tool_count)
-            except NoMatches:
-                pass
+            except (NoMatches, ScreenStackError):
+                logger.debug(
+                    "Welcome banner unavailable during agent-swap confirmation",
+                    exc_info=True,
+                )
             self._sync_status_connection()
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
@@ -14082,7 +14108,7 @@ class DeepAgentsApp(App):
         """Push current MCP counts into the welcome banner when it is mounted."""
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             logger.debug("Welcome banner not mounted during MCP count refresh")
             return
         banner.set_connected(
@@ -15193,8 +15219,11 @@ class DeepAgentsApp(App):
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connecting()
-            except NoMatches:
-                pass
+            except (NoMatches, ScreenStackError):
+                logger.debug(
+                    "Welcome banner unavailable during server restart",
+                    exc_info=True,
+                )
             self._sync_status_connection()
 
             try:
@@ -15325,6 +15354,8 @@ class DeepAgentsApp(App):
                 logger.warning(missing_message, thread_id)
             else:
                 logger.debug(missing_message, thread_id)
+        except ScreenStackError:
+            logger.debug("Screen stack empty during thread-id sync", exc_info=True)
 
     def _apply_cwd_to_ui(self, cwd: Path) -> None:
         """Update cwd-dependent UI state after changing process cwd."""
@@ -15336,8 +15367,12 @@ class DeepAgentsApp(App):
             self._status_bar.cwd = cwd_text
         try:
             self.query_one("#welcome-banner", WelcomeBanner).update_cwd(cwd_text)
-        except (NoMatches, ScreenStackError):
-            logger.debug("Welcome banner not available during cwd sync", exc_info=True)
+        except NoMatches:
+            # Persistent banner: a steady-state miss means the live directory
+            # row has silently stopped updating — surface it.
+            logger.warning("Welcome banner not found during cwd sync")
+        except ScreenStackError:
+            logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
     @staticmethod
     def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:
@@ -15552,8 +15587,11 @@ class DeepAgentsApp(App):
             try:
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connecting()
-            except NoMatches:
-                pass
+            except (NoMatches, ScreenStackError):
+                logger.debug(
+                    "Welcome banner unavailable during cwd-switch teardown",
+                    exc_info=True,
+                )
             self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
@@ -15647,8 +15685,11 @@ class DeepAgentsApp(App):
                     mcp_errored=self._mcp_errored,
                     mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 )
-            except NoMatches:
-                pass
+            except (NoMatches, ScreenStackError):
+                logger.debug(
+                    "Welcome banner unavailable during cwd-switch rollback",
+                    exc_info=True,
+                )
             self._sync_status_connection()
             if not isinstance(exc, Exception):
                 # Cancellation / SystemExit: state is restored; let it propagate.

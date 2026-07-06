@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -17,8 +18,10 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code._env_vars import (
     DEBUG,
+    HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_VERSION,
+    SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
     SPLASH_SHOW_MODEL,
     is_env_truthy,
@@ -30,8 +33,11 @@ from deepagents_code.config import (
     fetch_langsmith_project_url,
     get_glyphs,
     get_langsmith_project_name,
+    get_langsmith_replica_project,
 )
 from deepagents_code.widgets._links import open_style_link
+
+logger = logging.getLogger(__name__)
 
 _ANSI_THEMES: Final[set[str]] = {"ansi-dark", "ansi-light"}
 """Theme names whose color palette is determined by the terminal emulator
@@ -87,8 +93,13 @@ def _home_prefixed(cwd: str) -> str:
     path = Path(cwd)
     try:
         home = Path.home()
+        if path == home:
+            return "~"
         if path.is_relative_to(home):
             return "~/" + path.relative_to(home).as_posix()
+    # `Path.home()` raises `RuntimeError` when the home dir can't be resolved
+    # (no HOME/passwd entry); `ValueError` guards odd paths (e.g. embedded NUL).
+    # Either way, fall back to the accurate absolute path.
     except (ValueError, RuntimeError):
         pass
     return str(path)
@@ -97,12 +108,12 @@ def _home_prefixed(cwd: str) -> str:
 class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
-    Renders a bordered box with the product title and version. Additional rows
-    appear only when their data is present: the LangSmith tracing project
-    (clickable once the URL resolves), the MCP tool count, MCP server warnings,
-    and the editable-install path. The active model (`SPLASH_SHOW_MODEL`) and working
-    directory (`SPLASH_SHOW_CWD`) rows are opt-in, and the thread ID appears only in
-    debug mode.
+    Renders a bordered box with the product title and version, followed by rows
+    that appear only when their data (and any env gate) is present. In render
+    order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
+    (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
+    clickable once its URL resolves), thread ID (debug mode only), and the MCP
+    tool count. MCP server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -154,6 +165,7 @@ class WelcomeBanner(Static):
         self._cwd = cwd if cwd is not None else str(Path.cwd())
         self._show_model = is_env_truthy(SPLASH_SHOW_MODEL)
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
+        self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id = thread_id
@@ -165,12 +177,21 @@ class WelcomeBanner(Static):
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
-        self._project_url: str | None = None
+        show_replica_tracing = is_env_truthy(
+            SHOW_LANGSMITH_REPLICA_TRACING,
+            default=True,
+        )
+        self._replica_project: str | None = (
+            get_langsmith_replica_project()
+            if self._project_name and show_replica_tracing
+            else None
+        )
+        self._project_urls: dict[str, str] = {}
         self._show_thread_id = is_env_truthy(DEBUG)
         super().__init__(self._build_banner(), **kwargs)
 
     def on_mount(self) -> None:
-        """Re-render the banner when the app theme changes."""
+        """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
@@ -183,19 +204,41 @@ class WelcomeBanner(Static):
         """Fetch the LangSmith URL in a thread and update the banner."""
         if not self._project_name:
             return
-        try:
-            project_url = await asyncio.wait_for(
-                asyncio.to_thread(fetch_langsmith_project_url, self._project_name),
-                timeout=2.0,
-            )
-        except (TimeoutError, OSError):
-            project_url = None
-        if project_url:
-            self._project_url = project_url
-            self.update(self._build_banner())
+        projects = dict.fromkeys(
+            project
+            for project in (self._project_name, self._replica_project)
+            if project
+        )
+        for project in projects:
+            try:
+                project_url = await asyncio.wait_for(
+                    asyncio.to_thread(fetch_langsmith_project_url, project),
+                    timeout=2.0,
+                )
+            except (TimeoutError, OSError):
+                logger.debug(
+                    "LangSmith project URL fetch failed for %r", project, exc_info=True
+                )
+                project_url = None
+            if project_url:
+                self._project_urls[project] = project_url
+                self.update(self._build_banner())
+
+    def _project_url(self, project: str | None) -> str | None:
+        """Return the resolved LangSmith URL for a project.
+
+        Args:
+            project: Project name to look up.
+
+        Returns:
+            Resolved project URL, or `None` when missing or not yet fetched.
+        """
+        if project is None:
+            return None
+        return self._project_urls.get(project)
 
     def update_model(self, *, provider: str, model: str) -> None:
-        """Update the displayed model and re-render.
+        """Track a new model and re-render when it is displayed.
 
         Args:
             provider: Active model provider.
@@ -203,7 +246,8 @@ class WelcomeBanner(Static):
         """
         self._model_provider = provider
         self._model_name = model
-        self.update(self._build_banner())
+        if self._show_model:
+            self.update(self._build_banner())
 
     def update_cwd(self, cwd: str) -> None:
         """Track a new working directory and re-render when it is displayed.
@@ -271,9 +315,9 @@ class WelcomeBanner(Static):
         Returns:
             Content with the title and version, followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
-            `SPLASH_SHOW_CWD`), tracing (clickable once the URL resolves), thread
-            ID (debug only), MCP tool count, MCP server warnings, and the
-            editable-install path.
+            `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
+            resolves), thread ID (debug only), MCP tool count, MCP server
+            warnings, and the editable-install path.
         """
         colors = theme.get_theme_colors(self)
         ansi = self.app.theme in _ANSI_THEMES
@@ -312,14 +356,15 @@ class WelcomeBanner(Static):
         if self._show_cwd and self._cwd:
             rows.append([("directory: ", "dim"), (_home_prefixed(self._cwd), accent)])
         if self._project_name:
-            if self._project_url:
+            project_url = self._project_url(self._project_name)
+            if project_url:
                 rows.append(
                     [
                         ("tracing:   ", "dim"),
                         (
                             f"'{self._project_name}'",
                             _langsmith_project_link_style(
-                                self._project_url,
+                                project_url,
                                 ansi=ansi,
                                 colors=colors,
                             ),
@@ -329,6 +374,26 @@ class WelcomeBanner(Static):
             else:
                 rows.append(
                     [("tracing:   ", "dim"), (f"'{self._project_name}'", accent)]
+                )
+        if self._replica_project:
+            replica_url = self._project_url(self._replica_project)
+            if replica_url:
+                rows.append(
+                    [
+                        ("replica:   ", "dim"),
+                        (
+                            f"'{self._replica_project}'",
+                            _langsmith_project_link_style(
+                                replica_url,
+                                ansi=ansi,
+                                colors=colors,
+                            ),
+                        ),
+                    ]
+                )
+            else:
+                rows.append(
+                    [("replica:   ", "dim"), (f"'{self._replica_project}'", accent)]
                 )
         if self._show_thread_id and self._cli_thread_id:
             rows.append([("thread:    ", "dim"), (self._cli_thread_id, "dim")])
@@ -393,7 +458,7 @@ class WelcomeBanner(Static):
             parts.extend(line)
 
         # Editable-install path for local development visibility.
-        if not self._hide_version:
+        if not self._hide_version and not self._hide_cwd:
             editable_path = _get_editable_install_path()
             if editable_path:
                 parts.append("\n")

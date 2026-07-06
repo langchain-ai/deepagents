@@ -296,10 +296,18 @@ class StatusBar(Horizontal):
         padding: 0 1 0 0;
     }
 
+    StatusBar .status-cwd.after-status {
+        padding: 0 1 0 0;
+    }
+
     StatusBar BranchLabel.cwd-hidden {
         /* When cwd is hidden, the branch needs the same left separator that
            cwd normally provides after the auto-approve pill. */
         padding: 0 1 0 1;
+    }
+
+    StatusBar BranchLabel.cwd-hidden.after-status {
+        padding: 0 1 0 0;
     }
     """
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
@@ -375,6 +383,26 @@ class StatusBar(Horizontal):
                 branch.remove_class("cwd-hidden")
             else:
                 branch.add_class("cwd-hidden")
+        self._sync_left_separator()
+
+    def _sync_left_separator(self) -> None:
+        """Use one separator between the last transient status item and cwd/branch."""
+        preceded_by_status = False
+        with suppress(NoMatches):
+            preceded_by_status = bool(
+                self.query_one("#connection-indicator", Static).display
+                or self.query_one("#status-message", Static).display
+            )
+        for selector, widget_type in (
+            ("#cwd-display", Static),
+            ("#branch-display", BranchLabel),
+        ):
+            with suppress(NoMatches):
+                widget = self.query_one(selector, widget_type)
+                if preceded_by_status:
+                    widget.add_class("after-status")
+                else:
+                    widget.remove_class("after-status")
 
     def on_unmount(self) -> None:
         """Stop the spinner timer so it can't tick on a detached widget."""
@@ -478,6 +506,7 @@ class StatusBar(Horizontal):
                 msg_widget.add_class("thinking")
         else:
             msg_widget.update("")
+        self._sync_left_separator()
 
     def watch_connection_state(self, _new_value: ConnectionState) -> None:
         """Start or stop the spinner and re-render when connection state changes."""
@@ -551,6 +580,7 @@ class StatusBar(Horizontal):
         # leave a 2-column gap between the auto-approve pill and the cwd.
         widget.display = bool(text)
         widget.update(text)
+        self._sync_left_separator()
 
     def _render_busy(self) -> None:
         """Render the animated busy indicator into the status-message slot."""
@@ -564,6 +594,7 @@ class StatusBar(Horizontal):
         widget.display = True
         frame = self._spinner.current_frame()
         widget.update(Content.assemble(frame, " ", Content(self._busy_message)))
+        self._sync_left_separator()
 
     def set_busy(self, message: str) -> None:
         """Show or clear an animated busy indicator in the status-message slot.

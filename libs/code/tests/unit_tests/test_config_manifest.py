@@ -853,6 +853,32 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={})[0] is False
 
 
+def test_collapse_pastes_default_enabled() -> None:
+    """Paste collapsing is enabled by default when unset."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL
+    assert resolve_scalar(opt, toml_data={}) == (True, "default")
+
+
+def test_collapse_pastes_env_disables(monkeypatch) -> None:
+    """A falsy env var disables paste collapsing."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    monkeypatch.setenv(opt.env_var, "0")
+    assert resolve_scalar(opt, toml_data={})[0] is False
+
+
+def test_collapse_pastes_toml_disables() -> None:
+    """A `[ui].collapse_pastes = false` entry disables paste collapsing."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"ui": {"collapse_pastes": False}}) == (
+        False,
+        "config.toml",
+    )
+
+
 def test_thread_relative_time_default_matches_runtime_loader() -> None:
     """Fresh thread config shows relative timestamps by default."""
     opt = get_option("threads.relative_time")

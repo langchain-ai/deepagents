@@ -220,6 +220,162 @@ class TestSet:
         assert auth_store.get_stored_key("anthropic") is None
         assert "--project is only valid for langsmith" in capsys.readouterr().err
 
+    def test_set_langsmith_base_url_eu_alias(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--base-url eu` resolves the shorthand to the canonical EU URL."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="eu",
+            )
+        )
+        assert code == 0
+        assert auth_store.get_stored_base_url("langsmith") == LANGSMITH_EU_ENDPOINT
+
+    def test_set_langsmith_base_url_full_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A full custom endpoint URL is stored verbatim."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="https://langsmith.internal.example.com",
+            )
+        )
+        assert code == 0
+        assert (
+            auth_store.get_stored_base_url("langsmith")
+            == "https://langsmith.internal.example.com"
+        )
+
+    def test_set_base_url_invalid_scheme_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A non-http(s) `--base-url` exits non-zero and stores nothing."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="ftp://nope.example.com",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("langsmith") is None
+        assert "--base-url must be an http(s) URL" in capsys.readouterr().err
+
+    def test_set_base_url_malformed_ipv6_rejected_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A malformed IPv6 `--base-url` is a clean input error, not a traceback."""
+        # `urlparse("http://[::1")` raises ValueError; the guard must catch it and
+        # exit 1 with the standard message rather than crash the CLI.
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="http://[::1",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("langsmith") is None
+        assert "--base-url must be an http(s) URL" in capsys.readouterr().err
+
+    def test_set_empty_base_url_clears_existing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit empty `--base-url` clears a previously stored endpoint."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        auth_store.set_stored_key("langsmith", "old", base_url=LANGSMITH_EU_ENDPOINT)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("new\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="",
+            )
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("langsmith") == "new"
+        assert auth_store.get_stored_base_url("langsmith") is None
+
+    def test_set_base_url_none_preserves_existing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotating the key without `--base-url` keeps the stored endpoint."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        auth_store.set_stored_key("langsmith", "old", base_url=LANGSMITH_EU_ENDPOINT)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("new\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url=None,
+            )
+        )
+        assert code == 0
+        assert auth_store.get_stored_base_url("langsmith") == LANGSMITH_EU_ENDPOINT
+
+    def test_set_non_langsmith_base_url_stored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A valid `--base-url` is stored for a non-LangSmith provider."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-openai-abc\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="openai",
+                from_env=None,
+                project=None,
+                base_url="https://proxy.internal.example.com/v1",
+            )
+        )
+        assert code == 0
+        assert (
+            auth_store.get_stored_base_url("openai")
+            == "https://proxy.internal.example.com/v1"
+        )
+
+    def test_set_non_langsmith_base_url_rejects_region_alias(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Region aliases are LangSmith-only: `eu` stays a literal (invalid) URL."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-openai-abc\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="openai",
+                from_env=None,
+                project=None,
+                base_url="eu",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("openai") is None
+        assert "--base-url must be an http(s) URL" in capsys.readouterr().err
+
     def test_set_from_unset_env_fails(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

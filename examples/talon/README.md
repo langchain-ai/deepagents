@@ -8,7 +8,7 @@ This example runs a Talon host process with one or more channel adapters in the 
 
 ```bash
 cp .env.example .env
-mkdir -p ~/talon-workspace
+mkdir -p ~/talon-workspace ~/.deepagents
 # Fill AGENT_MODEL provider credentials, then uncomment the channel you want to use.
 # Build once and run:
 docker compose build
@@ -27,7 +27,7 @@ Uncomment the Telegram env vars in `.env` and set `DEEPAGENTS_TALON_TELEGRAM_BOT
 
 Voice transcription is enabled by default in `.env.example`. The Docker example installs `ffmpeg` plus the Talon `media` extra, so inbound voice notes are transcribed locally with NVIDIA Parakeet through Transformers before reaching the agent. The first voice message can be slow because the ASR model is downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when running on a GPU-enabled host.
 
-Cron records, downloaded inbound media, and channel session state persist under `~/talon-workspace/.deepagents/`. The agent's default working directory is `/workspace`, so files it creates are written into `~/talon-workspace/` on the host.
+Cron records, downloaded inbound media, and channel session state persist under `~/.deepagents/<assistant-id>/`. The agent's default working directory is `/workspace`, so files it creates are written into `~/talon-workspace/` on the host.
 
 The image installs the Talon package at build time. Rebuild after changing the Dockerfile, system packages, Node dependencies, or Talon Python dependencies.
 
@@ -44,7 +44,8 @@ npm install
 
 cd ../../../..
 uv sync --directory libs/talon --extra media
-cp examples/talon/AGENTS.md ~/.deepagents/talon-local/agent/AGENTS.md
+mkdir -p ~/.deepagents/talon-local/agents
+cp examples/talon/AGENTS.md ~/.deepagents/talon-local/AGENTS.md
 export DEEPAGENTS_TALON_WORKSPACE=~/talon-workspace
 uv run --directory libs/talon deepagents-talon --whatsapp
 ```
@@ -57,9 +58,9 @@ uv run --directory libs/talon deepagents-talon --telegram
 
 ## Environment Reference
 
-`AGENT_ASSISTANT_ID` names the local state directory under `~/.deepagents/`. `AGENT_MODEL` selects the Deep Agents chat model. If it is unset, Talon runs the echo runtime for smoke tests.
+`AGENT_ASSISTANT_ID` names the local state directory under `~/.deepagents/`. The materialized assistant lives at `~/.deepagents/<assistant-id>/AGENTS.md`, with custom subagents under `~/.deepagents/<assistant-id>/agents/`. `AGENT_MODEL` selects the Deep Agents chat model. If it is unset, Talon runs the echo runtime for smoke tests.
 
-The Docker example overrides `DEEPAGENTS_TALON_HOME` to `/workspace/.deepagents`, so cron jobs are stored at `~/talon-workspace/.deepagents/<assistant-id>/cron/jobs.json`. Assistant Markdown image/video attachments must use relative paths inside `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or inside `DEEPAGENTS_TALON_WORKSPACE` when no outbound media directory is configured.
+The Docker example mounts `~/.deepagents` to `/root/.deepagents`, so cron jobs are stored at `~/.deepagents/<assistant-id>/cron/jobs.json`. Assistant Markdown image/video attachments must use relative paths inside `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or inside `DEEPAGENTS_TALON_WORKSPACE` when no outbound media directory is configured.
 
 Set `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` to trace each channel or cron-triggered run. `LANGSMITH_PROJECT` defaults to `deepagents-talon`.
 

@@ -27,7 +27,9 @@ def test_from_env_creates_assistant_home(tmp_path: Path) -> None:
 
     assert home == tmp_path / "assistant-1"
     assert home.stat().st_mode & 0o777 == 0o700
+    assert config.manifest_dir == config.home
     assert config.manifest_dir.stat().st_mode & 0o777 == 0o700
+    assert config.agents_dir.stat().st_mode & 0o777 == 0o700
     assert config.cron_dir.stat().st_mode & 0o777 == 0o700
     assert config.channel_dir.stat().st_mode & 0o777 == 0o700
     assert config.inbound_media_dir.stat().st_mode & 0o777 == 0o700

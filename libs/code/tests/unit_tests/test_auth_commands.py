@@ -277,6 +277,26 @@ class TestSet:
         assert auth_store.get_stored_key("langsmith") is None
         assert "--base-url must be an http(s) URL" in capsys.readouterr().err
 
+    def test_set_base_url_malformed_ipv6_rejected_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A malformed IPv6 `--base-url` is a clean input error, not a traceback."""
+        # `urlparse("http://[::1")` raises ValueError; the guard must catch it and
+        # exit 1 with the standard message rather than crash the CLI.
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project=None,
+                base_url="http://[::1",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("langsmith") is None
+        assert "--base-url must be an http(s) URL" in capsys.readouterr().err
+
     def test_set_empty_base_url_clears_existing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

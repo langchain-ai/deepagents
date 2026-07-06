@@ -2754,6 +2754,27 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing()
         assert os.environ["LANGSMITH_ENDPOINT"] == "https://self-hosted.example.com"
 
+    def test_alternate_env_endpoint_blocks_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lone LANGCHAIN_ENDPOINT (the alternate) also wins over a stored one."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://alt-env.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        # The stored endpoint must not be applied, and the alternate is preserved.
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+        assert os.environ["LANGCHAIN_ENDPOINT"] == "https://alt-env.example.com"
+
     def test_replace_applies_stored_endpoint_over_existing_env(
         self,
         fake_state_dir: Path,  # noqa: ARG002
@@ -2813,6 +2834,46 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing()
         assert "LANGSMITH_ENDPOINT" not in os.environ
 
+    def test_prefixed_key_override_leaves_stored_endpoint_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A session-scoped key is not paired with a stale stored endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_matching_prefixed_key_allows_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped key with the stored value still uses the stored endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_stored")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
 
 class TestNormalizeLangSmithEndpoint:
     """Tests for normalize_langsmith_endpoint() and is_http_url()."""
@@ -2843,6 +2904,7 @@ class TestNormalizeLangSmithEndpoint:
         assert is_http_url("ftp://example.com") is False
         assert is_http_url("not-a-url") is False
         assert is_http_url("https://") is False
+        assert is_http_url("http://[::1") is False
         # A host with internal whitespace is malformed: rejecting it at save time
         # stops a wrong endpoint from being stored and silently dropping traces.
         assert is_http_url("https://exa mple.com") is False
@@ -5484,8 +5546,12 @@ class TestLazyModuleAttributes:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
             monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
             monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
             monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
-            auth_store.set_stored_key("langsmith", "lsv2_stored")
+            auth_store.set_stored_key(
+                "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+            )
 
             with (
                 patch("deepagents_code.config._load_dotenv"),
@@ -5498,6 +5564,8 @@ class TestLazyModuleAttributes:
 
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
             assert os.environ["LANGSMITH_TRACING"] == "true"
+            assert "LANGSMITH_ENDPOINT" not in os.environ
+            assert "LANGCHAIN_ENDPOINT" not in os.environ
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls

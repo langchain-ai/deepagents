@@ -55,7 +55,6 @@ _TIPS: dict[str, int] = {
     "Type /update to check for and install updates": 1,
     "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
     "Use /theme to customize the TUI's colors": 1,
-    "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /auto-update to toggle automatic updates": 1,

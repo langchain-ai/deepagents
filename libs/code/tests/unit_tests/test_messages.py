@@ -753,6 +753,96 @@ class TestToolCallMessageDuration:
             assert "Took" not in getattr(content, "plain", str(content))
 
 
+class TestToolCallMessageTerminalStateGuards:
+    """A rejected/skipped row must not flip to success/error on a resumed turn."""
+
+    async def test_set_success_noop_on_rejected_row(self) -> None:
+        """A resumed synthetic success ToolMessage keeps a rejected row rejected.
+
+        After a reasoned reject the turn can resume and stream a synthetic
+        ToolMessage for the rejected tool; `set_success` must be ignored so the
+        row keeps its terminal rejected state instead of flipping.
+        """
+        app = _tool_msg_app("execute", {"command": "rm -rf /"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_rejected()
+            assert app.msg._status == "rejected"
+            app.msg.set_success("done")
+            await pilot.pause()
+            assert app.msg._status == "rejected"
+            assert app.msg.is_success is False
+
+    async def test_set_error_noop_on_rejected_row(self) -> None:
+        """A resumed synthetic error ToolMessage keeps a rejected row rejected."""
+        app = _tool_msg_app("execute", {"command": "rm -rf /"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_rejected()
+            app.msg.set_error("boom")
+            await pilot.pause()
+            assert app.msg._status == "rejected"
+
+    async def test_set_success_noop_on_skipped_row(self) -> None:
+        """A skipped row (sibling rejection) stays skipped, not flipped to success.
+
+        The guard names both `rejected` and `skipped`; a tool skipped because a
+        sibling was rejected can still receive a synthetic success ToolMessage on
+        the resumed turn, which must be ignored.
+        """
+        app = _tool_msg_app("execute", {"command": "ls"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_skipped()
+            assert app.msg._status == "skipped"
+            app.msg.set_success("done")
+            await pilot.pause()
+            assert app.msg._status == "skipped"
+            assert app.msg.is_success is False
+
+    async def test_set_error_noop_on_skipped_row(self) -> None:
+        """A skipped row keeps its terminal state instead of flipping to error."""
+        app = _tool_msg_app("execute", {"command": "ls"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_skipped()
+            app.msg.set_error("boom")
+            await pilot.pause()
+            assert app.msg._status == "skipped"
+
+
+class TestToolCallMessageArgs:
+    """The public `args` accessor must not expose internal widget state."""
+
+    def test_args_returns_shallow_copy(self) -> None:
+        """Rebinding top-level keys of the returned dict must not affect `_args`.
+
+        Hook payloads are built directly from `tool_msg.args`, so the copy is a
+        load-bearing safety contract: a consumer that reassigns its payload's
+        top-level keys must not corrupt the widget's stored arguments by
+        reference. The copy is shallow — nested mutable values are shared (see
+        `test_args_nested_values_are_shared`) — which is sufficient because the
+        only consumer serializes the payload rather than deep-mutating it.
+        """
+        msg = ToolCallMessage("write_file", {"file_path": "a.py", "content": "x"})
+        returned = msg.args
+        returned["file_path"] = "hacked.py"
+        returned["injected"] = True
+        assert msg.args == {"file_path": "a.py", "content": "x"}
+        assert msg._args == {"file_path": "a.py", "content": "x"}
+
+    def test_args_nested_values_are_shared(self) -> None:
+        """The copy is shallow: nested mutables are shared, not deep-copied.
+
+        Pins the documented boundary of the `args` accessor so a future reader
+        does not mistake the shallow copy for a deep one.
+        """
+        msg = ToolCallMessage("edit_file", {"edits": [{"old": "a"}]})
+        returned = msg.args
+        returned["edits"][0]["old"] = "mutated"
+        assert msg._args["edits"][0]["old"] == "mutated"
+
+
 class TestToolCallMessageTodos:
     """Tests for `write_todos` output formatting."""
 

@@ -45,7 +45,7 @@ def test_import_fleet_zip_materializes_agent_files_and_mcp_config(tmp_path: Path
     assert (target / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8") == (
         "---\nname: review\n---\nReview things."
     )
-    assert (tmp_path / "agent-home" / "agents" / "researcher" / "AGENTS.md").is_file()
+    assert (target / "agents" / "researcher" / "AGENTS.md").is_file()
     assert not (target / "subagents").exists()
     assert not (target / "tools.json").exists()
     assert not (target / "config.json").exists()
@@ -140,6 +140,38 @@ def test_import_fleet_cli_resolves_target_assistant(
         assert not (tmp_path / "home" / unexpected_id / "agent" / "AGENTS.md").exists()
 
 
+def test_import_fleet_cli_explicit_target_keeps_subagents_under_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "fleet.zip"
+    _write_zip(
+        source,
+        {
+            "AGENTS.md": "root prompt",
+            "subagents/researcher/AGENTS.md": "Research carefully.",
+        },
+    )
+    sibling_agents = tmp_path / "agents"
+    sibling_agents.mkdir()
+    (sibling_agents / "keep.txt").write_text("keep", encoding="utf-8")
+    target = tmp_path / "imported-agent"
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["deepagents-talon", "import-fleet", str(source), "--target-dir", str(target)],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
+    assert (target / "agents" / "researcher" / "AGENTS.md").is_file()
+    assert (sibling_agents / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
 def test_import_fleet_zip_rejects_missing_root_prompt(tmp_path: Path) -> None:
     source = tmp_path / "fleet.zip"
     _write_zip(source, {"subagents/researcher/AGENTS.md": "prompt"})
@@ -195,6 +227,27 @@ def test_import_fleet_zip_rejects_unsafe_subagent_names(tmp_path: Path) -> None:
     _write_zip(source, {"AGENTS.md": "root prompt", "subagents/bad name/AGENTS.md": "bad"})
 
     with pytest.raises(FleetImportError, match="unsafe subagent name"):
+        import_fleet_zip(source, target_dir=tmp_path / "agent")
+
+
+def test_import_fleet_zip_rejects_high_compression_ratio(tmp_path: Path) -> None:
+    source = tmp_path / "fleet.zip"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AGENTS.md", "root prompt")
+        archive.writestr("skills/bomb/SKILL.md", "0" * 1_000_000)
+
+    with pytest.raises(FleetImportError, match="compression ratio exceeds limit"):
+        import_fleet_zip(source, target_dir=tmp_path / "agent")
+
+
+def test_import_fleet_zip_rejects_too_many_entries(tmp_path: Path) -> None:
+    source = tmp_path / "fleet.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("AGENTS.md", "root prompt")
+        for index in range(10_000):
+            archive.writestr(f"skills/skill-{index}/SKILL.md", "skill")
+
+    with pytest.raises(FleetImportError, match="too many zip entries"):
         import_fleet_zip(source, target_dir=tmp_path / "agent")
 
 
@@ -313,8 +366,8 @@ def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Pat
         "second skill"
     )
     assert not (target / "subagents").exists()
-    assert not (tmp_path / "agent-home" / "agents" / "researcher").exists()
-    assert (tmp_path / "agent-home" / "agents" / "writer" / "AGENTS.md").read_text(
+    assert not (target / "agents" / "researcher").exists()
+    assert (target / "agents" / "writer" / "AGENTS.md").read_text(
         encoding="utf-8"
     ) == "second subagent"
 

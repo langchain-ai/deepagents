@@ -149,6 +149,7 @@ def _add_mcp_parsers(
 
 def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> int:
     target_dir = args.target_dir
+    assistant_home = None
     if target_dir is None:
         target_config = config
         if args.assistant_id:
@@ -160,9 +161,14 @@ def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> 
                 base_home=config.home.parent,
             )
         target_dir = target_config.manifest_dir
+        assistant_home = target_config.home
 
     try:
-        result = import_fleet_zip(args.fleet_export, target_dir=target_dir)
+        result = import_fleet_zip(
+            args.fleet_export,
+            target_dir=target_dir,
+            assistant_home=assistant_home,
+        )
     except FleetImportError as exc:
         print(f"import-fleet: {exc}", file=sys.stderr)  # noqa: T201
         return 1

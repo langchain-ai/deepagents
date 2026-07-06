@@ -23,6 +23,10 @@ _SETUP_FILENAME = ".mcp.json.setup"
 _ZIP_FILE_TYPE_MASK = 0o170000
 _ZIP_SYMLINK_TYPE = 0o120000
 _SUBAGENT_FILE_PARTS = 3
+_MAX_ZIP_ENTRY_COUNT = 10_000
+_MAX_ZIP_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_ZIP_COMPRESSION_RATIO = 100
+_COPY_CHUNK_SIZE = 1024 * 1024
 _SECRET_PATH_PATTERN = re.compile(
     r"(?:"
     r"bearer[-_a-z0-9]*|"
@@ -110,12 +114,20 @@ class _ServerSummary:
             self.interrupt_tools.add(tool.name)
 
 
-def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
+def import_fleet_zip(
+    zip_path: Path,
+    *,
+    target_dir: Path,
+    assistant_home: Path | None = None,
+) -> FleetImportResult:
     """Materialize a Fleet zip export into a Talon local agent directory.
 
     Args:
         zip_path: Fleet export zip file to import.
         target_dir: Talon assistant directory to refresh with materialized files.
+        assistant_home: Assistant state directory that should receive local
+            subagents. Defaults to `target_dir`, keeping all writes under the
+            explicit target.
 
     Returns:
         Summary of the materialized files and generated MCP configuration.
@@ -126,6 +138,7 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
     """
     source = zip_path.expanduser()
     target = target_dir.expanduser()
+    home = assistant_home.expanduser() if assistant_home is not None else target
     try:
         with zipfile.ZipFile(source) as archive:
             entries = _validated_entries(archive)
@@ -139,7 +152,7 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
                 notes = _format_setup_notes(source.name, summaries)
                 mcp_config = _format_mcp_config(summaries)
                 config_ignored = (staging / "config.json").is_file()
-                _refresh_target(staging, target, notes, mcp_config)
+                _refresh_target(staging, target, home, notes, mcp_config)
     except zipfile.BadZipFile as exc:
         msg = f"{source}: invalid zip file"
         raise FleetImportError(msg) from exc
@@ -150,7 +163,7 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
     return FleetImportResult(
         target_dir=target,
         root_prompt_count=1,
-        subagent_prompt_count=len(_subagent_prompt_paths(target)),
+        subagent_prompt_count=len(_subagent_prompt_paths(home)),
         config_ignored=config_ignored,
         mcp_notes=notes,
         interrupt_tools=tuple(
@@ -193,6 +206,7 @@ def format_import_stdout(result: FleetImportResult) -> str:
 
 def _validated_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     entries: dict[str, zipfile.ZipInfo] = {}
+    total_size = 0
     for info in archive.infolist():
         name = _normalized_zip_name(info.filename)
         if name is None:
@@ -203,8 +217,17 @@ def _validated_entries(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
         if _is_symlink(info):
             msg = f"{name}: symlink entries are not supported"
             raise FleetImportError(msg)
-        if not info.is_dir():
-            entries[name] = info
+        if info.is_dir():
+            continue
+        _validate_zip_entry_size(name, info)
+        if len(entries) >= _MAX_ZIP_ENTRY_COUNT:
+            msg = f"{archive.filename}: too many zip entries"
+            raise FleetImportError(msg)
+        total_size += info.file_size
+        if total_size > _MAX_ZIP_UNCOMPRESSED_BYTES:
+            msg = f"{archive.filename}: zip uncompressed size exceeds limit"
+            raise FleetImportError(msg)
+        entries[name] = info
     return entries
 
 
@@ -231,6 +254,17 @@ def _is_symlink(info: zipfile.ZipInfo) -> bool:
     return file_type == _ZIP_SYMLINK_TYPE
 
 
+def _validate_zip_entry_size(name: str, info: zipfile.ZipInfo) -> None:
+    if info.file_size > _MAX_ZIP_UNCOMPRESSED_BYTES:
+        msg = f"{name}: zip entry uncompressed size exceeds limit"
+        raise FleetImportError(msg)
+    if info.compress_size == 0:
+        return
+    if info.file_size > info.compress_size * _MAX_ZIP_COMPRESSION_RATIO:
+        msg = f"{name}: zip entry compression ratio exceeds limit"
+        raise FleetImportError(msg)
+
+
 def _materialize_staging(
     archive: zipfile.ZipFile,
     entries: Mapping[str, zipfile.ZipInfo],
@@ -255,8 +289,14 @@ def _materialize_staging(
 
 def _copy_zip_file(archive: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path) -> None:
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    copied = 0
     with archive.open(info) as src, target.open("wb") as dst:
-        shutil.copyfileobj(src, dst)
+        while chunk := src.read(_COPY_CHUNK_SIZE):
+            copied += len(chunk)
+            if copied > info.file_size or copied > _MAX_ZIP_UNCOMPRESSED_BYTES:
+                msg = f"{info.filename}: zip entry expanded beyond declared size"
+                raise FleetImportError(msg)
+            dst.write(chunk)
     target.chmod(0o600)
 
 
@@ -487,16 +527,20 @@ def _server_id(summary: _ServerSummary) -> str:
 def _refresh_target(
     staging: Path,
     target: Path,
+    assistant_home: Path,
     notes: str | None,
     mcp_config: str | None,
 ) -> None:
-    agent_home = target.parent
+    assistant_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    assistant_home.chmod(0o700)
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     target.chmod(0o700)
     _replace_file(staging / "AGENTS.md", target / "AGENTS.md")
 
     _replace_tree(staging / "skills", target / "skills")
-    _replace_tree(staging / "agents", agent_home / "agents")
+    _replace_tree(staging / "agents", assistant_home / "agents")
+    if assistant_home != target:
+        _remove_path(target / "agents")
     _remove_path(target / "subagents")
 
     setup_path = target / _SETUP_FILENAME
@@ -541,8 +585,8 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
-def _subagent_prompt_paths(target: Path) -> list[Path]:
-    agents = target.parent / "agents"
+def _subagent_prompt_paths(assistant_home: Path) -> list[Path]:
+    agents = assistant_home / "agents"
     if not agents.is_dir():
         return []
     return sorted(path for path in agents.glob("*/AGENTS.md") if path.is_file())

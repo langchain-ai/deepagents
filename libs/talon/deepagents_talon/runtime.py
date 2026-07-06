@@ -900,8 +900,8 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
 
 
 def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
-    agents_dir = assistant_dir.parent / "agents"
-    if not agents_dir.is_dir():
+    agents_dir = _local_subagents_dir(assistant_dir)
+    if agents_dir is None:
         return []
     subagents: list[SubAgent] = []
     for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
@@ -932,6 +932,16 @@ def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
             subagent["model"] = model
         subagents.append(subagent)
     return subagents
+
+
+def _local_subagents_dir(assistant_dir: Path) -> Path | None:
+    local = assistant_dir / "agents"
+    if local.is_dir():
+        return local
+    sibling = assistant_dir.parent / "agents"
+    if sibling.is_dir():
+        return sibling
+    return None
 
 
 def _valid_local_subagent_name(name: str) -> bool:

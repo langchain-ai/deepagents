@@ -146,10 +146,11 @@ uv run --directory libs/talon deepagents-talon import-fleet ./fleet-export.zip \
 ```
 
 By default, `import-fleet` writes into the selected assistant manifest directory:
-`~/.deepagents/<assistant_id>/agent/`. The selected assistant id comes from
+`~/.deepagents/<assistant_id>/agent/`, with subagent prompts in
+`~/.deepagents/<assistant_id>/agents/`. The selected assistant id comes from
 `DEEPAGENTS_TALON_ASSISTANT_ID`, `AGENT_ASSISTANT_ID`, or `default`; pass
 `--assistant-id <id>` to select a different assistant for the import, or
-`--target-dir <dir>` to write to an explicit directory.
+`--target-dir <dir>` to write all imported files under an explicit directory.
 
 The importer writes Fleet prompts, skills, and subagent prompts. Fleet
 `tools.json` is read only as import input and is not copied into the Talon agent

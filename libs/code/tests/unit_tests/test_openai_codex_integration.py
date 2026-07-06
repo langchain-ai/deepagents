@@ -12,6 +12,7 @@ import json
 import os
 import secrets
 import threading
+import warnings
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -66,6 +67,18 @@ def _override_default_store(path: Path) -> Iterator[None]:
     finally:
         setattr(openai_codex, "default_store_path", original)  # noqa: B010  # restore original
         clear_caches()
+
+
+@contextmanager
+def _ignore_codex_experimental_warning() -> Iterator[None]:
+    """Suppress the dependency's expected experimental class warning."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="`_ChatOpenAICodex` is experimental",
+            category=UserWarning,
+        )
+        yield
 
 
 class TestGetStatus:
@@ -181,7 +194,12 @@ class TestBuildChatModel:
     def test_returns_chat_model_when_token_present(self, tmp_path: Path) -> None:
         path = tmp_path / "auth.json"
         _write_token(path)
-        model = openai_codex.build_chat_model("gpt-5.2-codex", store_path=path)
+        with _ignore_codex_experimental_warning():
+            model = openai_codex.build_chat_model(
+                "gpt-5.2-codex",
+                store_path=path,
+                http_socket_options=[],
+            )
         from langchain_openai.chat_models.codex import (
             _ChatOpenAICodex,
         )
@@ -198,7 +216,12 @@ class TestBuildChatModel:
         """
         path = tmp_path / "auth.json"
         _write_token(path)
-        model = openai_codex.build_chat_model("dsjhfbshjdf", store_path=path)
+        with _ignore_codex_experimental_warning():
+            model = openai_codex.build_chat_model(
+                "dsjhfbshjdf",
+                store_path=path,
+                http_socket_options=[],
+            )
         from langchain_openai.chat_models.codex import (
             _ChatOpenAICodex,
         )

@@ -27,6 +27,8 @@ from tests.benchmarks._common import (
 )
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from pytest_benchmark.fixture import BenchmarkFixture
 
 
@@ -61,15 +63,15 @@ class TestQuickJSMemoryBenchmarks:
         self,
         *,
         turn_count: int,
-        snapshot_between_turns: bool,
+        mode: Literal["thread", "turn"],
     ) -> None:
         values = run_counter_turns(
             turn_count=turn_count,
-            snapshot_between_turns=snapshot_between_turns,
+            mode=mode,
         )
         assert_counter_turn_values(
             values=values,
-            snapshot_between_turns=snapshot_between_turns,
+            mode=mode,
         )
 
     @pytest.mark.parametrize(
@@ -106,15 +108,15 @@ class TestQuickJSMemoryBenchmarks:
 
     @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
     @pytest.mark.parametrize(
-        "snapshot_between_turns",
-        [False, True],
-        ids=["snapshot_disabled", "snapshot_enabled"],
+        "mode",
+        ["turn", "thread"],
+        ids=["mode_turn", "mode_thread"],
     )
     def test_multiturn_snapshot_memory_peak(
         self,
         benchmark: BenchmarkFixture,
         turn_count: int,
-        snapshot_between_turns: bool,
+        mode: Literal["thread", "turn"],
     ) -> None:
         """Measure memory cost of multi-turn execution with optional snapshots."""
 
@@ -122,10 +124,10 @@ class TestQuickJSMemoryBenchmarks:
         def _() -> None:
             self._run_multiturn_memory_workload(
                 turn_count=turn_count,
-                snapshot_between_turns=snapshot_between_turns,
+                mode=mode,
             )
 
         benchmark.extra_info["scenario"] = "multi_turn_snapshot_restore"
         benchmark.extra_info["thread_count"] = 1
         benchmark.extra_info["turn_count"] = turn_count
-        benchmark.extra_info["snapshot_between_turns"] = snapshot_between_turns
+        benchmark.extra_info["mode"] = mode

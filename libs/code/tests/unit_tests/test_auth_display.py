@@ -56,7 +56,7 @@ _AUTH_STATUS_CASES = [
             env_var="ANTHROPIC_API_KEY",
         ),
         "[missing]",
-        f"{get_glyphs().warning} missing ANTHROPIC_API_KEY",
+        f"{get_glyphs().warning} missing credentials",
     ),
     (
         ProviderAuthStatus(

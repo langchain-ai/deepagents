@@ -1,6 +1,8 @@
-"""Lightweight session statistics and token formatting utilities.
+"""Lightweight session statistics, token formatting, and usage-table rendering.
 
-This module is intentionally kept free of heavy dependencies (no pydantic, no
+Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter, and
+`print_usage_table` (which imports `rich.table` lazily). The module is
+intentionally kept free of heavy top-level dependencies (no pydantic, no
 config, no widget imports) so that `app.py` can import `SessionStats` and
 `format_token_count` at module level without pulling in the full
 `textual_adapter` dependency tree.
@@ -9,9 +11,22 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-SpinnerStatus = Literal["Thinking", "Offloading", "Loading thread"] | None
+from deepagents_code.formatting import format_duration
+
+if TYPE_CHECKING:
+    from rich.console import Console
+
+SpinnerStatus = (
+    Literal[
+        "Thinking",
+        "Offloading",
+        "Loading thread",
+        "Drafting acceptance criteria",
+    ]
+    | None
+)
 """Valid spinner display states, or `None` to hide."""
 
 
@@ -142,3 +157,79 @@ def format_token_count(count: int) -> str:
     if count >= 1000:  # noqa: PLR2004
         return f"{count / 1000:.1f}K"
     return str(count)
+
+
+def print_usage_table(
+    stats: SessionStats,
+    wall_time: float,
+    console: Console,
+) -> None:
+    """Print a model-usage stats table to a Rich console.
+
+    Each row shows the serving provider alongside the model name. When the
+    session spans multiple models each gets its own row with a totals row
+    appended; single-model sessions show one row.
+
+    Args:
+        stats: Cumulative session stats.
+        wall_time: Total wall-clock time in seconds.
+        console: Rich console for output.
+    """
+    from rich.table import Table
+
+    has_time = wall_time >= 0.1  # noqa: PLR2004
+    if not (stats.request_count or stats.input_tokens or has_time):
+        return
+
+    if stats.per_model:
+        multi_model = len(stats.per_model) > 1
+
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=None,
+            padding=(0, 2, 0, 0),
+            show_edge=False,
+        )
+        table.add_column("Provider", style="dim")
+        table.add_column("Model", style="dim")
+        table.add_column("Reqs", justify="right", style="dim")
+        table.add_column("InputTok", justify="right", style="dim")
+        table.add_column("OutputTok", justify="right", style="dim")
+
+        if multi_model:
+            for ms in stats.per_model.values():
+                table.add_row(
+                    ms.provider,
+                    ms.model_name,
+                    str(ms.request_count),
+                    format_token_count(ms.input_tokens),
+                    format_token_count(ms.output_tokens),
+                )
+            table.add_row(
+                "",
+                "Total",
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
+            )
+        else:
+            ms = next(iter(stats.per_model.values()))
+            table.add_row(
+                ms.provider,
+                ms.model_name,
+                str(stats.request_count),
+                format_token_count(stats.input_tokens),
+                format_token_count(stats.output_tokens),
+            )
+
+        console.print()
+        console.print("[bold]Usage Stats[/bold]")
+        console.print(table)
+    if has_time:
+        console.print()
+        console.print(
+            f"Agent active  {format_duration(wall_time)}",
+            style="dim",
+            highlight=False,
+        )

@@ -1,4 +1,4 @@
-"""Built-in GLM-5.2 harness profile for Fireworks.
+"""Built-in GLM-5.2 harness profile.
 
 GLM-5.2 is used in the eval harness as a text-oriented model. The filesystem
 tooling may encounter media files even for terminal-oriented tasks, so this

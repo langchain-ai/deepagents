@@ -296,7 +296,7 @@ def _make_app() -> MagicMock:
 
 def _app_message_texts(app: MagicMock) -> list[str]:
     """Extract plain text from AppMessage widgets mounted by the mock app."""
-    from deepagents_code.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.messages import AppMessage
 
     return [str(m.content) for m in app._mounted_messages if isinstance(m, AppMessage)]
 
@@ -449,7 +449,7 @@ class TestHandleSkillCommand:
         app._send_to_agent.assert_not_awaited()
 
     async def test_happy_path_sends_prompt(self) -> None:
-        from deepagents_code.widgets.messages import SkillMessage
+        from deepagents_code.tui.widgets.messages import SkillMessage
 
         app = _make_app()
         skill = _fake_skill()
@@ -473,7 +473,7 @@ class TestHandleSkillCommand:
         assert skill_msgs[0]._skill_name == "test-skill"
 
     async def test_happy_path_with_args(self) -> None:
-        from deepagents_code.widgets.messages import SkillMessage
+        from deepagents_code.tui.widgets.messages import SkillMessage
 
         app = _make_app()
         skill = _fake_skill()

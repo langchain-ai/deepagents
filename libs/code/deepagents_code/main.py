@@ -1146,9 +1146,9 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
-    from deepagents_code.auth_commands import setup_auth_parser
-    from deepagents_code.config_commands import setup_config_parser
-    from deepagents_code.mcp_commands import setup_mcp_parsers
+    from deepagents_code.client.commands.auth import setup_auth_parser
+    from deepagents_code.client.commands.config import setup_config_parser
+    from deepagents_code.client.commands.mcp import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -1980,7 +1980,7 @@ async def run_textual_cli_async(
     # Never pass auto_approve to the server — the interactive server must
     # always configure full HITL interrupts so that Shift+Tab can toggle
     # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in textual_adapter.py.
+    # session_state.auto_approve in `tui.textual_adapter`.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2334,7 +2334,7 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code.textual_adapter import SessionStats, print_usage_table
+    from deepagents_code._session_stats import SessionStats, print_usage_table
 
     if not isinstance(stats, SessionStats):
         return
@@ -2600,12 +2600,12 @@ def cli_main() -> None:
         # and should fall through to the later handlers instead of raising here.
         command = getattr(args, "command", None)
         if command == "config":
-            from deepagents_code.config_commands import run_config_command
+            from deepagents_code.client.commands.config import run_config_command
 
             sys.exit(run_config_command(args))
 
         if command == "auth" and getattr(args, "auth_command", None) == "path":
-            from deepagents_code.auth_commands import run_auth_command
+            from deepagents_code.client.commands.auth import run_auth_command
 
             sys.exit(run_auth_command(args))
 
@@ -2615,7 +2615,7 @@ def cli_main() -> None:
             sys.exit(run_doctor_command(args))
 
         if command == "tools":
-            from deepagents_code.tools_commands import run_tools_command
+            from deepagents_code.client.commands.tools import run_tools_command
 
             sys.exit(run_tools_command(args))
 
@@ -2641,7 +2641,7 @@ def cli_main() -> None:
         from deepagents_code.config import console, settings
 
         if command == "auth":
-            from deepagents_code.auth_commands import run_auth_command
+            from deepagents_code.client.commands.auth import run_auth_command
 
             sys.exit(run_auth_command(args))
 
@@ -3383,7 +3383,10 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command == "mcp":
-            from deepagents_code.mcp_commands import run_mcp_config, run_mcp_login
+            from deepagents_code.client.commands.mcp import (
+                run_mcp_config,
+                run_mcp_login,
+            )
             from deepagents_code.ui import show_mcp_help
 
             if args.mcp_command == "login":
@@ -3510,7 +3513,7 @@ def cli_main() -> None:
                 _verify_interpreter_or_exit()
 
             # Non-interactive mode - execute single task and exit
-            from deepagents_code.non_interactive import run_non_interactive
+            from deepagents_code.client.non_interactive import run_non_interactive
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)

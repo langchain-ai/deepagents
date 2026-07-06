@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
-    from deepagents_code.widgets.messages import ToolCallMessage
+    from deepagents_code.tui.widgets.messages import ToolCallMessage
 
 import pytest
 from textual import events
@@ -58,14 +58,14 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
-from deepagents_code.widgets.ask_user import AskUserTextArea
-from deepagents_code.widgets.chat_input import ChatInput
-from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
-from deepagents_code.widgets.launch_init import (
+from deepagents_code.tui.widgets.ask_user import AskUserTextArea
+from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
 )
-from deepagents_code.widgets.messages import (
+from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
@@ -254,7 +254,7 @@ class TestInitialPromptOnMount:
 
     async def test_on_mount_infers_status_bar_default_effort(self) -> None:
         """Initial status sync should show default effort before server ready."""
-        from deepagents_code.widgets.status import StatusBar
+        from deepagents_code.tui.widgets.status import StatusBar
 
         app = DeepAgentsApp(thread_id="thread-123")
         chat = MagicMock()
@@ -296,7 +296,7 @@ class TestInitialPromptOnMount:
         `spec=StatusBar` makes the test fail if `set_model`'s keyword-only
         signature drifts.
         """
-        from deepagents_code.widgets.status import StatusBar
+        from deepagents_code.tui.widgets.status import StatusBar
 
         app = DeepAgentsApp(thread_id="thread-123")
         app._connecting = True
@@ -356,7 +356,7 @@ class TestInitialPromptOnMount:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Missing model identity at ServerReady should warn, not silently blank."""
-        from deepagents_code.widgets.status import StatusBar
+        from deepagents_code.tui.widgets.status import StatusBar
 
         app = DeepAgentsApp(thread_id="thread-123")
         app._connecting = True
@@ -1187,7 +1187,7 @@ class TestStartupSequence:
         `LaunchNameScreen()` with no continue screen, onboarding would fall back
         to the double-modal flow.
         """
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
@@ -1228,7 +1228,7 @@ class TestStartupSequence:
         the selector.
         """
         from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
         app = DeepAgentsApp(launch_init=True)
@@ -1274,7 +1274,7 @@ class TestStartupSequence:
         unresolved in both cases.
         """
         from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp(launch_init=True)
 
@@ -1292,7 +1292,7 @@ class TestStartupSequence:
 
     async def test_launch_init_finishes_when_first_screen_switch_fails(self) -> None:
         """A failed name-to-selector switch should skip the rest of setup."""
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
@@ -1364,7 +1364,7 @@ class TestStartupSequence:
 
     async def test_prompt_launch_tavily_uses_auth_prompt_and_applies_key(self) -> None:
         """Onboarding should reuse the `/auth` prompt for Tavily credentials."""
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         pushed: list[AuthPromptScreen] = []
@@ -1402,7 +1402,7 @@ class TestStartupSequence:
         widget layer (`test_optional_empty_submit_cancels_without_error` and
         `test_escape_cancels` in `test_auth_widgets.py`).
         """
-        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.tui.widgets.auth import AuthResult
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
@@ -1436,7 +1436,7 @@ class TestStartupSequence:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A clean save that lands the key in the env shows no toast."""
-        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.tui.widgets.auth import AuthResult
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
@@ -1468,7 +1468,7 @@ class TestStartupSequence:
         corrupt store, which is invisible inside Textual. Onboarding must tell
         the user their accepted key didn't take effect this session.
         """
-        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.tui.widgets.auth import AuthResult
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
@@ -1777,7 +1777,7 @@ class TestStartupSequence:
 
     def test_curated_model_selector_uses_onboarding_copy(self) -> None:
         """Onboarding model selector should use dedicated title and description."""
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
 
@@ -1850,7 +1850,7 @@ class TestThreadCachePrewarm:
                     return_value=cached_threads,
                 ),
                 patch(
-                    "deepagents_code.widgets.thread_selector.ThreadSelectorScreen"
+                    "deepagents_code.tui.widgets.thread_selector.ThreadSelectorScreen"
                 ) as mock_screen_cls,
                 patch.object(app, "push_screen") as push_screen,
             ):
@@ -2516,7 +2516,7 @@ class TestModalScreenCtrlDHandling:
 
     async def test_ctrl_d_deletes_in_thread_selector_instead_of_quitting(self) -> None:
         """App-level quit binding should delegate to thread delete in the modal."""
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         mock_threads: list[ThreadInfo] = [
             {
@@ -2556,7 +2556,7 @@ class TestModalScreenCtrlDHandling:
         self,
     ) -> None:
         """Escape should close thread delete confirmation before dismissing modal."""
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         mock_threads: list[ThreadInfo] = [
             {
@@ -2598,7 +2598,7 @@ class TestModalScreenCtrlDHandling:
 
     async def test_ctrl_d_twice_quits_from_delete_confirmation(self) -> None:
         """Ctrl+D should use a double-press quit flow inside delete confirmation."""
-        from deepagents_code.widgets.thread_selector import (
+        from deepagents_code.tui.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
         )
@@ -2654,7 +2654,7 @@ class TestModalScreenCtrlDHandling:
 
     async def test_ctrl_c_still_works_from_delete_confirmation(self) -> None:
         """Ctrl+C should preserve the normal double-press quit flow in confirmation."""
-        from deepagents_code.widgets.thread_selector import (
+        from deepagents_code.tui.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
         )
@@ -2710,7 +2710,7 @@ class TestModalScreenCtrlDHandling:
         self,
     ) -> None:
         """Ctrl+D should not be swallowed or ignored in the model selector."""
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -2735,7 +2735,7 @@ class TestModalScreenCtrlDHandling:
     async def test_ctrl_d_quits_from_mcp_viewer(self) -> None:
         """Ctrl+D should still quit while the MCP viewer modal is open."""
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -2769,7 +2769,7 @@ class TestModalScreenCtrlDHandling:
     ) -> None:
         """Ctrl+D in the auth prompt should open the confirm modal, not quit."""
         from deepagents_code import auth_store
-        from deepagents_code.widgets.auth import (
+        from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
         )
@@ -2803,7 +2803,7 @@ class TestModalScreenCtrlDHandling:
         two inputs now, so the toggle handler must delegate backward navigation
         instead of swallowing the key.
         """
-        from deepagents_code.widgets.auth import AuthPromptScreen
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -2836,7 +2836,7 @@ class TestModalScreenCtrlDHandling:
     ) -> None:
         """Ctrl+D inside the auth confirm modal arms the double-press quit."""
         from deepagents_code import auth_store
-        from deepagents_code.widgets.auth import AuthPromptScreen
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -2870,7 +2870,7 @@ class TestModalScreenShiftTabHandling:
         """Shift+Tab should move backward in the thread selector controls."""
         from textual.widgets import Select
 
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -2930,7 +2930,7 @@ class TestModalScreenShiftTabHandling:
         """Shift+Tab should move the manager option-list cursor up, not toggle."""
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -2967,7 +2967,7 @@ class TestModalScreenCtrlCHandling:
         self,
     ) -> None:
         """Ctrl+C should reach the app even when the thread filter has focus."""
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -3015,7 +3015,7 @@ class TestModalScreenCtrlCHandling:
         self,
     ) -> None:
         """Ctrl+C should not be swallowed by the model filter input."""
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -3053,7 +3053,7 @@ class TestModalScreenCtrlCHandling:
     async def test_ctrl_c_quits_from_mcp_viewer(self) -> None:
         """Ctrl+C should still trigger app quit flow while the MCP modal is open."""
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -3600,7 +3600,7 @@ class TestAskUserLifecycle:
 
     def test_ctrl_o_falls_back_to_tool_with_expandable_args(self) -> None:
         """When no ask_user is pending, Ctrl+O still expands an ask_user-like row."""
-        from deepagents_code.widgets.messages import ToolCallMessage
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
@@ -3624,7 +3624,7 @@ class TestAskUserLifecycle:
         which used to swallow the toggle and leave the collapsible code block
         stuck. The action must fall through to args in that case.
         """
-        from deepagents_code.widgets.messages import ToolCallMessage
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
@@ -3648,7 +3648,7 @@ class TestAskUserLifecycle:
         Matches the region-aware click routing and the "click or Ctrl+O to show
         command/code" hint: the output stays reachable by clicking its own row.
         """
-        from deepagents_code.widgets.messages import ToolCallMessage
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
@@ -3668,7 +3668,7 @@ class TestAskUserLifecycle:
 
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
-        from deepagents_code.widgets.messages import ToolCallMessage
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
@@ -3697,7 +3697,7 @@ class TestAskUserLifecycle:
         existed, leaving newer collapsible content (here a skill body)
         unreachable.
         """
-        from deepagents_code.widgets.messages import SkillMessage, ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import SkillMessage, ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
@@ -3715,7 +3715,7 @@ class TestAskUserLifecycle:
 
     def test_ctrl_o_toggles_group_and_skips_its_folded_rows(self) -> None:
         """Toggling a group skips its folded rows and leaves older content alone."""
-        from deepagents_code.widgets.messages import (
+        from deepagents_code.tui.widgets.messages import (
             SkillMessage,
             ToolCallMessage,
             ToolGroupSummary,
@@ -3919,7 +3919,7 @@ class TestLoadingSpinnerLifecycle:
         never needs repositioning and exactly one spinner exists — the stability
         that replaced the per-tool hide/show flicker.
         """
-        from deepagents_code.widgets.loading import LoadingWidget
+        from deepagents_code.tui.widgets.loading import LoadingWidget
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -4395,7 +4395,7 @@ class TestTraceCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """'/auth' should push the AuthManagerScreen modal."""
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -4412,7 +4412,7 @@ class TestTraceCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """'/connect' should push the AuthManagerScreen modal."""
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -4467,7 +4467,7 @@ class TestCopyCommand:
 
     async def test_copy_latest_assistant_message_to_clipboard(self) -> None:
         """`/copy` copies the latest stored assistant markdown exactly."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         markdown = "# Result\n\n- keep **markdown** source"
@@ -4493,7 +4493,7 @@ class TestCopyCommand:
 
     async def test_copy_skips_ineligible_newer_messages(self) -> None:
         """`/copy` reverse-scans for the newest completed assistant text."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         expected = "older completed assistant"
@@ -4520,7 +4520,7 @@ class TestCopyCommand:
 
     async def test_copy_falls_back_when_only_streaming_assistant_present(self) -> None:
         """`/copy` skips an in-flight stream and copies the prior completed reply."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         completed = "completed reply"
@@ -4550,7 +4550,7 @@ class TestCopyCommand:
         self,
     ) -> None:
         """`/copy` distinguishes in-flight streams from a truly empty history."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._message_store.append(MessageData(type=MessageType.USER, content="hi"))
@@ -4578,7 +4578,7 @@ class TestCopyCommand:
 
     async def test_copy_reports_empty_state_without_clipboard_call(self) -> None:
         """`/copy` reports empty state when no assistant text is eligible."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._message_store.append(MessageData(type=MessageType.USER, content="hello"))
@@ -4601,7 +4601,7 @@ class TestCopyCommand:
 
     async def test_copy_reports_clipboard_failure_with_reason(self) -> None:
         """`/copy` surfaces the backend error so users can self-diagnose."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._message_store.append(
@@ -4626,7 +4626,7 @@ class TestCopyCommand:
 
     async def test_copy_reports_clipboard_failure_without_reason(self) -> None:
         """`/copy` falls back to a generic message when no error string is given."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._message_store.append(
@@ -4660,7 +4660,7 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -4681,7 +4681,7 @@ class TestRunAgentTaskMediaTracker:
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ):
@@ -4718,7 +4718,7 @@ class TestRunAgentTaskMediaTracker:
                 {"error": "ToolException", "message": "An internal error occurred"}
             )
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=exc,
             ):
@@ -4750,7 +4750,7 @@ class TestRunAgentTaskMediaTracker:
                 {"error": "PermissionDeniedError", "message": "An internal error"}
             )
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=exc,
             ):
@@ -4781,7 +4781,7 @@ class TestRunAgentTaskMediaTracker:
                     lambda _provider: "OPENAI_API_KEY",
                 ),
                 patch(
-                    "deepagents_code.textual_adapter.execute_task_textual",
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
                     new_callable=AsyncMock,
                     side_effect=exc,
                 ),
@@ -5430,7 +5430,7 @@ class TestGoalCommand:
         self,
     ) -> None:
         """Fresh remote sessions should register the thread before state writes."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -6368,7 +6368,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -6399,7 +6399,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("I added the provider credentials")
@@ -6439,7 +6439,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6477,7 +6477,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("keep going")
@@ -6513,7 +6513,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6544,7 +6544,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6579,7 +6579,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._send_to_agent("/skill:foo envelope prompt")
@@ -6618,7 +6618,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
@@ -6650,7 +6650,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -6756,7 +6756,7 @@ class TestRubricCommand:
 
             with (
                 patch(
-                    "deepagents_code.textual_adapter.execute_task_textual",
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
                     new_callable=AsyncMock,
                 ),
                 patch.object(
@@ -6807,7 +6807,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ):
                 await app._run_agent_task("hello")
@@ -7641,7 +7641,7 @@ class TestAppFocusRestoresChatInput:
             await pilot.pause()
 
             # Push a modal screen
-            from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+            from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
             screen = ThreadSelectorScreen(current_thread=None)
             app.push_screen(screen)
@@ -7701,7 +7701,7 @@ class TestAppFocusRestoresChatInput:
             assert app._chat_input is not None
             assert app._chat_input._text_area is not None
 
-            from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+            from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
             app.push_screen(ThreadSelectorScreen(current_thread=None))
             await pilot.pause()
@@ -7879,7 +7879,7 @@ class TestMessageTimestampFooters:
         asserted in both directions: a footer built with `visible=False` must
         not carry the visible class, and one built with `visible=True` must.
         """
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         previous_tz = os.environ.get("TZ")
         monkeypatch.setenv("TZ", "UTC")
@@ -8008,7 +8008,7 @@ class TestMessageTimestampFooters:
     ) -> None:
         """Restoring an old thread builds visible footers for its messages."""
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         config = tmp_path / "config.toml"
         config.write_text("[ui]\nshow_message_timestamps = true\n")
@@ -8060,7 +8060,7 @@ class TestMessageTimestampFooters:
         "Could not load history" note instead of the conversation.
         """
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
@@ -8107,7 +8107,7 @@ class TestMessageTimestampFooters:
         Only exercised when a skip removes an entry, shifting the survivors.
         """
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
@@ -8145,7 +8145,7 @@ class TestMessageTimestampFooters:
         raising `DuplicateIds` on the bulk mount.
         """
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
@@ -8186,7 +8186,7 @@ class TestMessageTimestampFooters:
         `bulk_load` keeps every ID represented exactly once.
         """
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
@@ -8229,7 +8229,7 @@ class TestMessageTimestampFooters:
         re-entrant reload case (same payload over surviving widgets).
         """
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
@@ -8262,7 +8262,7 @@ class TestMessageTimestampFooters:
     ) -> None:
         """Scroll-up hydration of older messages builds visible footers."""
         from deepagents_code.app import _ThreadHistoryPayload
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         config = tmp_path / "config.toml"
         config.write_text("[ui]\nshow_message_timestamps = true\n")
@@ -9257,7 +9257,7 @@ class TestShellCommandInterrupt:
 
     async def test_incognito_timeout_feedback_is_not_model_visible(self) -> None:
         """Incognito timeout feedback should stay out of user/assistant records."""
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
         mock_proc = AsyncMock()
@@ -9419,7 +9419,7 @@ class TestShellCommandInterrupt:
 
     async def test_incognito_shell_output_is_app_message(self) -> None:
         """Incognito shell output should avoid assistant transcript records."""
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
         mock_proc = AsyncMock()
@@ -9461,7 +9461,7 @@ class TestShellCommandInterrupt:
 
     async def test_incognito_nonzero_exit_keeps_stderr_out_of_model(self) -> None:
         """A failing incognito command must not leak stderr to model records."""
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
         mock_proc = AsyncMock()
@@ -9630,7 +9630,7 @@ class TestShellCommandInterrupt:
 
     async def test_pending_shell_flush_ensures_remote_thread_first(self) -> None:
         """Server mode must register a fresh thread before flushing shell output."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         calls: list[str] = []
         remote = MagicMock(spec=RemoteAgent)
@@ -9883,7 +9883,7 @@ class TestShellCommandInterrupt:
         Regression guard for the privacy invariant: a typo or stale mode
         literal must never silently fall through to `_handle_user_message`.
         """
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         app = DeepAgentsApp()
         user_handler = AsyncMock()
@@ -10174,7 +10174,7 @@ class TestRequestApprovalBranching:
 
     async def test_placeholder_mount_failure_falls_back_to_menu(self) -> None:
         """If placeholder mount fails, the ApprovalMenu is shown directly."""
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = time.monotonic()
@@ -10217,7 +10217,7 @@ class TestRequestApprovalBranching:
 
     async def test_menu_mounted_directly_when_not_typing(self) -> None:
         """If the user is NOT typing, the ApprovalMenu is mounted directly."""
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
@@ -10255,7 +10255,7 @@ class TestDeferredShowApproval:
 
     async def test_swaps_placeholder_for_menu_after_idle(self) -> None:
         """Once typing stops, placeholder is removed and menu is mounted."""
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = time.monotonic()
@@ -10299,7 +10299,7 @@ class TestDeferredShowApproval:
 
     async def test_bails_if_placeholder_detached_and_cancels_future(self) -> None:
         """If placeholder is detached, worker cancels the future and exits."""
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp(agent=MagicMock())
         app._last_typed_at = None
@@ -10332,7 +10332,7 @@ class TestDeferredShowApproval:
 
     async def test_timeout_shows_approval_after_deadline(self) -> None:
         """If the user types continuously past the deadline, menu is shown anyway."""
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp(agent=MagicMock())
         # Simulate user typing *forever* by keeping _last_typed_at fresh
@@ -10553,7 +10553,7 @@ class TestFetchThreadHistoryData:
 
     async def test_dict_messages_converted_to_message_objects(self) -> None:
         """Dict-based messages from server mode are deserialized before conversion."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         state = MagicMock()
         state.values = {
@@ -10586,8 +10586,8 @@ class TestFetchThreadHistoryData:
         """Server-mode history reads should fetch state through the remote server."""
         from langchain_core.messages import AIMessage, HumanMessage
 
-        from deepagents_code.remote_client import RemoteAgent
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         state = MagicMock()
         state.values = {
@@ -10617,8 +10617,8 @@ class TestFetchThreadHistoryData:
         """Server-mode history reads should preserve `_context_tokens` from state."""
         from langchain_core.messages import HumanMessage
 
-        from deepagents_code.remote_client import RemoteAgent
-        from deepagents_code.widgets.message_store import MessageType
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.tui.widgets.message_store import MessageType
 
         state = MagicMock()
         state.values = {
@@ -10645,7 +10645,7 @@ class TestRemoteAgent:
     """Tests for DeepAgentsApp._remote_agent()."""
 
     def test_returns_instance_with_remote_agent(self) -> None:
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         agent = RemoteAgent("http://test:0")
@@ -11648,7 +11648,7 @@ class TestInstallExtraModelSwitch:
     ) -> None:
         """Freshly installed providers should use the normal auth prompt flow."""
         from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=True)  # ty: ignore
@@ -11703,7 +11703,7 @@ class TestInstallExtraModelSwitch:
     ) -> None:
         """Cancelling the post-install auth prompt leaves the model unchanged."""
         from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
-        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.tui.widgets.auth import AuthResult
 
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=True)  # ty: ignore
@@ -12519,7 +12519,7 @@ class TestDeferredActions:
         """
         import logging
 
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         # Strip any installed debug handler so the helper reports "no log file"
         # deterministically — a developer may run the suite with
@@ -12571,7 +12571,7 @@ class TestDeferredActions:
 
         from deepagents_code._debug import configure_debug_logging
         from deepagents_code._env_vars import DEBUG, DEBUG_FILE
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         package_logger = logging.getLogger("deepagents_code")
         log_path = tmp_path / "custom_debug.log"
@@ -12607,7 +12607,7 @@ class TestDeferredActions:
 
     async def test_server_failure_short_headline_omits_truncation_note(self) -> None:
         """A headline within the limit renders no truncation note."""
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12632,7 +12632,7 @@ class TestDeferredActions:
         Locks the branch against a refactor that hoists the truncation check.
         """
         from deepagents_code.mcp_tools import MCPConfigError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12655,7 +12655,7 @@ class TestDeferredActions:
         yields 301 (note) — pinning the `>` vs `>=` boundary against off-by-one.
         """
         from deepagents_code.app import _STARTUP_ERROR_HEADLINE_LIMIT
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         prefix_len = len("RuntimeError: ")
         at_limit = "a" * (_STARTUP_ERROR_HEADLINE_LIMIT - prefix_len)
@@ -12696,7 +12696,7 @@ class TestDeferredActions:
 
         from deepagents_code._debug import configure_debug_logging
         from deepagents_code._env_vars import DEBUG, DEBUG_FILE, DEFAULT_DEBUG_FILE
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         package_logger = logging.getLogger("deepagents_code")
         pre_existing = list(package_logger.handlers)
@@ -12764,7 +12764,7 @@ class TestDeferredActions:
         are swapped.
         """
         from deepagents_code.model_config import MissingProviderPackageError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12804,7 +12804,7 @@ class TestDeferredActions:
     ) -> None:
         """Startup hint should resolve extras from missing packages."""
         from deepagents_code.model_config import MissingProviderPackageError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -12846,7 +12846,7 @@ class TestDeferredActions:
         fallback (see the sibling unreadable-receipt test).
         """
         from deepagents_code.model_config import MissingProviderPackageError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         tmp_path.joinpath("uv-receipt.toml").write_text(
             '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
@@ -12902,7 +12902,7 @@ class TestDeferredActions:
         while building the recovery message.
         """
         from deepagents_code.model_config import MissingProviderPackageError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         # tmp_path intentionally has no uv-receipt.toml, so the receipt read
         # raises ToolRequirementIntrospectionError.
@@ -12953,7 +12953,7 @@ class TestDeferredActions:
         """
         from deepagents_code.extras_info import ExtrasIntrospectionError
         from deepagents_code.model_config import MissingProviderPackageError
-        from deepagents_code.widgets.messages import ErrorMessage
+        from deepagents_code.tui.widgets.messages import ErrorMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -13078,7 +13078,7 @@ class TestDeferredActions:
 
     async def test_auth_saved_event_resumes_startup_immediately(self) -> None:
         """Saving a key in `/auth` retries without waiting for the manager to close."""
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -13956,7 +13956,7 @@ class TestRestartServerForAgentSwap:
         self,
     ) -> None:
         """Successful restart stages env, calls restart, and rewires client."""
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app, server_proc = self._make_app()
         # Seed an assistant message so the previous thread looks like it
@@ -14064,7 +14064,7 @@ class TestRestartServerForAgentSwap:
         never call the server, so no checkpoint exists. A `USER`-only store
         must not trigger the resume hint.
         """
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app, _server_proc = self._make_app()
         app._message_store.append(MessageData(type=MessageType.USER, content="/update"))
@@ -14129,7 +14129,7 @@ class TestRestartServerForAgentSwap:
                 notify. Otherwise the toast hovers next to a green
                 success line, making the causality unreadable.
         """
-        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app, _server_proc = self._make_app()
         app._message_store.append(
@@ -14845,7 +14845,7 @@ class TestNotificationCenterIntegration:
 
     async def test_ctrl_n_with_pending_opens_modal(self) -> None:
         """ctrl+n pushes the NotificationCenterScreen when entries exist."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
@@ -14959,7 +14959,7 @@ class TestNotificationCenterIntegration:
     async def test_enter_api_key_saved_removes_entry_and_notifies(self) -> None:
         """Saving a service key clears the notice and confirms the restart."""
         from deepagents_code.notifications import ActionId
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _missing_dep_entry("tavily", url="https://tavily.com")
@@ -15011,7 +15011,7 @@ class TestNotificationCenterIntegration:
 
     async def test_suppress_message_reloads_center_in_place(self) -> None:
         """Posting NotificationSuppressRequested refreshes the open center."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
             NotificationSuppressRequested,
             _NotificationRow,
@@ -15046,7 +15046,7 @@ class TestNotificationCenterIntegration:
 
     async def test_suppress_failure_while_center_open_keeps_rows_intact(self) -> None:
         """suppress_warning=False with center open leaves all rows visible."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
             NotificationSuppressRequested,
             _NotificationRow,
@@ -15080,7 +15080,7 @@ class TestNotificationCenterIntegration:
 
     async def test_suppress_last_entry_closes_center(self) -> None:
         """Suppressing the only remaining entry dismisses the center."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
             NotificationSuppressRequested,
         )
@@ -15315,11 +15315,11 @@ class TestNotificationCenterIntegration:
         and toast are suppressed while the warning stays visible.
         """
         from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
         from deepagents_code.update_check import (
             ShadowedDcode,
             format_shadowed_dcode_fix_command,
         )
-        from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
         shadow = ShadowedDcode(
             shadowing_bin=Path("/opt/stale/bin/dcode"),
@@ -15396,8 +15396,8 @@ class TestNotificationCenterIntegration:
         from textual.screen import ModalScreen
 
         from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
         from deepagents_code.update_check import ShadowedDcode
-        from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
         shadow = ShadowedDcode(
             shadowing_bin=Path("/opt/stale/bin/dcode"),
@@ -15457,7 +15457,7 @@ class TestNotificationCenterIntegration:
         """Debug update modal can exercise Install now without changing packages."""
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.notifications import ActionId
-        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -15525,7 +15525,7 @@ class TestNotificationCenterIntegration:
         """Immediate install failures still render the completed modal state."""
         from deepagents_code.config import get_glyphs
         from deepagents_code.notifications import ActionId
-        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+        from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -15683,7 +15683,7 @@ class TestNotificationCenterIntegration:
 
     async def test_open_notification_center_after_notify_actionable(self) -> None:
         """_open_notification_center surfaces entries posted via _notify_actionable."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
@@ -15929,7 +15929,7 @@ class TestNotificationCenterIntegration:
 
     async def test_update_check_auto_opens_dedicated_modal(self) -> None:
         """A detected update auto-opens the dedicated update modal after first paint."""
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 
@@ -15979,7 +15979,7 @@ class TestNotificationCenterIntegration:
     async def test_update_check_preserves_prerelease_channel_in_command(self) -> None:
         """Prerelease users get a prerelease-capable update command in notices."""
         from deepagents_code.notifications import UpdateAvailablePayload
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
 
@@ -16088,7 +16088,7 @@ class TestNotificationCenterIntegration:
 
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
@@ -16130,7 +16130,7 @@ class TestNotificationCenterIntegration:
     async def test_update_modal_install_dispatches_action(self) -> None:
         """Picking 'Install now' in the dedicated modal routes to the dispatcher."""
         from deepagents_code.notifications import ActionId
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry(latest="3.1.4")
@@ -16150,7 +16150,7 @@ class TestNotificationCenterIntegration:
 
     async def test_update_modal_shift_tab_moves_to_changelog(self) -> None:
         """App-level shift+tab priority binding routes to the modal's move_up."""
-        from deepagents_code.widgets.update_available import (
+        from deepagents_code.tui.widgets.update_available import (
             UpdateAvailableScreen,
             _ChangelogOption,
         )
@@ -16171,7 +16171,7 @@ class TestNotificationCenterIntegration:
 
     async def test_notification_center_shift_tab_moves_cursor_up(self) -> None:
         """App-level shift+tab routes to NotificationCenterScreen.move_up."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
@@ -16192,7 +16192,9 @@ class TestNotificationCenterIntegration:
 
     async def test_notification_detail_shift_tab_moves_cursor_up(self) -> None:
         """App-level shift+tab routes to NotificationDetailScreen.move_up."""
-        from deepagents_code.widgets.notification_detail import NotificationDetailScreen
+        from deepagents_code.tui.widgets.notification_detail import (
+            NotificationDetailScreen,
+        )
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _missing_dep_entry("ripgrep")
@@ -16535,7 +16537,7 @@ class TestNotificationCenterIntegration:
         """
         from textual.widgets._toast import Toast as _Toast
 
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
@@ -16677,7 +16679,7 @@ class TestPrewarmDeferredImports:
         # module file that is momentarily gone during an in-place file swap.
         monkeypatch.setitem(
             sys.modules,
-            "deepagents_code.widgets.approval",
+            "deepagents_code.tui.widgets.approval",
             None,
         )
 
@@ -16711,7 +16713,7 @@ class TestPrewarmDeferredImports:
 
         monkeypatch.setitem(
             sys.modules,
-            "deepagents_code.widgets.approval",
+            "deepagents_code.tui.widgets.approval",
             None,
         )
 
@@ -18099,7 +18101,7 @@ class TestMCPLoginCommand:
     def test_optimistic_mcp_login_pending_state_relabels_only_target(self) -> None:
         """Deferred OAuth login updates the target without touching siblings."""
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         ok = MCPServerInfo(
             name="filesystem",
@@ -18206,7 +18208,7 @@ class TestMCPLoginCommand:
         as the LangGraph server reloads tools.
         """
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         waiting = MCPServerInfo(
             name="github",
@@ -18324,7 +18326,7 @@ class TestMCPLoginCommand:
         the connecting placeholder forever.
         """
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
 
         ready_info = [
             MCPServerInfo(
@@ -18791,7 +18793,7 @@ class TestMCPLoginCommand:
     ) -> None:
         """Choosing `reconnect` clears stale login/reconnect splash counters."""
         from deepagents_code.mcp_tools import MCPServerInfo
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(
             agent=MagicMock(),
@@ -18917,7 +18919,9 @@ class TestMCPLoginCommand:
 
     async def test_mcp_reconnect_force_confirm_restarts(self) -> None:
         """`/mcp reconnect force` restarts after the confirm modal accepts."""
-        from deepagents_code.widgets.mcp_reconnect import MCPReconnectForceConfirmScreen
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPReconnectForceConfirmScreen,
+        )
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -18942,7 +18946,9 @@ class TestMCPLoginCommand:
 
     async def test_mcp_reconnect_force_cancel_skips_restart(self) -> None:
         """`/mcp reconnect force` does nothing when the confirm modal is cancelled."""
-        from deepagents_code.widgets.mcp_reconnect import MCPReconnectForceConfirmScreen
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPReconnectForceConfirmScreen,
+        )
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -20139,7 +20145,7 @@ class TestWelcomeBannerLiveUpdates:
     async def test_sync_status_model_updates_banner(self) -> None:
         """`_sync_status_model` pushes the active model into the welcome banner."""
         from deepagents_code._env_vars import SPLASH_SHOW_MODEL
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
             app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -20155,7 +20161,7 @@ class TestWelcomeBannerLiveUpdates:
     async def test_apply_cwd_updates_banner(self) -> None:
         """`_apply_cwd_to_ui` pushes the working directory into the welcome banner."""
         from deepagents_code._env_vars import SPLASH_SHOW_CWD
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         with patch.dict(os.environ, {SPLASH_SHOW_CWD: "1"}):
             app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -20328,7 +20334,7 @@ class TestStatusBarConnectionMirroring:
 
     async def test_app_banner_does_not_duplicate_connecting_state(self) -> None:
         """The status bar, not the welcome footer, owns app connection progress."""
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._connecting = True
@@ -20344,7 +20350,7 @@ class TestStatusBarConnectionMirroring:
 
     async def test_queued_input_does_not_reveal_banner_connection_footer(self) -> None:
         """Queued input should update the bar without adding a second spinner."""
-        from deepagents_code.widgets.welcome import WelcomeBanner
+        from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._connecting = True
@@ -20928,7 +20934,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -20977,7 +20983,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch(
@@ -21024,7 +21030,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=boom,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -21097,7 +21103,7 @@ class TestResumeThreadCwdSwitch:
 
             with (
                 patch(
-                    "deepagents_code.server_manager.start_server_and_get_agent",
+                    "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                     side_effect=boom,
                 ),
                 patch("deepagents_code.model_config.clear_caches"),
@@ -21142,7 +21148,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fatal,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -21185,7 +21191,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch(
@@ -21608,7 +21614,7 @@ class TestEnsureManagedRipgrep:
         with (
             patch.object(app, "_ensure_managed_ripgrep", side_effect=record_ensure),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=record_start,
             ),
             patch.object(app, "post_message"),
@@ -22199,7 +22205,7 @@ class TestToolGroupCollapse:
         Each spec is `(id, tool_name, args, status)` where status is
         `"success"` or `"error"`.
         """
-        from deepagents_code.widgets.messages import ToolCallMessage
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         tools: list[ToolCallMessage] = []
         for tid, name, args, _status in specs:
@@ -22218,7 +22224,7 @@ class TestToolGroupCollapse:
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""
-        from deepagents_code.widgets.messages import ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-group")
         app._load_thread_history = AsyncMock()  # ty: ignore
@@ -22253,8 +22259,8 @@ class TestToolGroupCollapse:
         summaries. `_mount_tools` mounts tools with no footers, so this shape is
         otherwise never exercised.
         """
-        from deepagents_code.widgets.message_store import MessageData, MessageType
-        from deepagents_code.widgets.messages import (
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import (
             ToolCallMessage,
             ToolGroupSummary,
         )
@@ -22303,7 +22309,7 @@ class TestToolGroupCollapse:
 
     async def test_regroup_is_idempotent(self) -> None:
         """Re-running regroup does not create duplicate summaries."""
-        from deepagents_code.widgets.messages import ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-idem")
         app._load_thread_history = AsyncMock()  # ty: ignore
@@ -22324,7 +22330,7 @@ class TestToolGroupCollapse:
 
     async def test_errored_tool_stays_visible(self) -> None:
         """An errored tool stays visible; only the successful prefix collapses."""
-        from deepagents_code.widgets.messages import ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-err")
         app._load_thread_history = AsyncMock()  # ty: ignore
@@ -22351,7 +22357,7 @@ class TestToolGroupCollapse:
 
     async def test_assistant_message_boundary_triggers_collapse(self) -> None:
         """Mounting a non-tool message folds the preceding tool run."""
-        from deepagents_code.widgets.messages import ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-boundary")
         app._load_thread_history = AsyncMock()  # ty: ignore
@@ -22372,7 +22378,7 @@ class TestToolGroupCollapse:
 
     async def test_separate_steps_get_separate_summaries(self) -> None:
         """Tools split by an assistant message form two independent groups."""
-        from deepagents_code.widgets.messages import ToolGroupSummary
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-steps")
         app._load_thread_history = AsyncMock()  # ty: ignore
@@ -22394,7 +22400,7 @@ class TestToolGroupCollapse:
 
     async def test_mount_tool_creates_collapsed_live_group(self) -> None:
         """Mounting a tool via _mount_message folds it immediately, no flash."""
-        from deepagents_code.widgets.messages import (
+        from deepagents_code.tui.widgets.messages import (
             ToolCallMessage,
             ToolGroupSummary,
         )
@@ -22434,7 +22440,7 @@ class TestToolGroupCollapse:
         Textual's MessagePump internals, or the widget is silently pruned on the
         next idle tick (looked like the group "disappearing" when tools finish).
         """
-        from deepagents_code.widgets.messages import (
+        from deepagents_code.tui.widgets.messages import (
             ToolCallMessage,
             ToolGroupSummary,
         )

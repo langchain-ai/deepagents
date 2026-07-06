@@ -94,7 +94,7 @@ def test_headless_installs_ripgrep_when_warning_is_suppressed() -> None:
         ),
         patch("deepagents_code.managed_tools.prepend_managed_bin_to_path", prepend),
         patch(
-            "deepagents_code.non_interactive.run_non_interactive",
+            "deepagents_code.client.non_interactive.run_non_interactive",
             new_callable=AsyncMock,
             return_value=0,
         ),
@@ -419,7 +419,7 @@ class TestSkillFlagValidation:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -524,7 +524,7 @@ class TestMaxTurnsArgument:
             # and the real code path already tolerates that failure.
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -551,7 +551,7 @@ class TestMaxTurnsArgument:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -575,7 +575,7 @@ class TestMaxTurnsArgument:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -687,7 +687,7 @@ class TestTimeoutArgument:
             ),
             patch("os.open", side_effect=OSError("No tty in test sandbox")),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -717,7 +717,7 @@ class TestTimeoutArgument:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -770,7 +770,7 @@ class TestTimeoutArgument:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -845,7 +845,7 @@ class TestMaxRetriesForwarding:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ) as mock_run,
@@ -2440,7 +2440,7 @@ class TestWarnInterpreterToolsWithoutInterpreter:
                 return_value=False,
             ),
             patch(
-                "deepagents_code.non_interactive.run_non_interactive",
+                "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -2531,7 +2531,9 @@ class TestWarnInterpreterDisabledBySandbox:
                 return_value=False,
             ),
             patch.object(settings, "enable_interpreter", True),
-            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive", run_mock
+            ),
             pytest.raises(SystemExit) as exc_info,
         ):
             cli_main()
@@ -2563,7 +2565,9 @@ class TestWarnInterpreterDisabledBySandbox:
                 "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
             ),
             patch.object(settings, "enable_interpreter", True),
-            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive", run_mock
+            ),
             pytest.raises(SystemExit) as exc_info,
         ):
             cli_main()
@@ -2605,7 +2609,9 @@ class TestWarnInterpreterDisabledBySandbox:
                 "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
             ),
             patch.object(settings, "enable_interpreter", True),
-            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive", run_mock
+            ),
             pytest.raises(SystemExit) as exc_info,
         ):
             cli_main()

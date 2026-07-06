@@ -305,6 +305,13 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
+    @staticmethod
+    def _coerce_glob_result(raw: GlobResult | list[FileInfo]) -> GlobResult:
+        """Normalize legacy `list[FileInfo]` returns to `GlobResult`."""
+        if isinstance(raw, GlobResult):
+            return raw
+        return GlobResult(matches=raw)
+
     def grep(
         self,
         pattern: str,
@@ -419,9 +426,12 @@ class CompositeBackend(BackendProtocol):
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Find files matching a glob pattern, routing by path prefix."""
-        results: list[FileInfo] = []
+        """Find files matching a glob pattern, routing by path prefix.
 
+        Routes to backends based on path: a specific route searches one backend,
+        `"/"` or `None` searches all backends, otherwise searches the
+        default backend.
+        """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
                 default=self.default,
@@ -438,34 +448,40 @@ class CompositeBackend(BackendProtocol):
                     truncated=_glob_truncated(glob_result),
                 )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
-        truncated = False
-        default_result = self.default.glob(pattern, path)
-        # A backend error must not be swallowed as a partial success (mirrors the
-        # grep merge path); surface it instead of returning default-only matches.
-        if isinstance(default_result, GlobResult) and default_result.error:
-            return default_result
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
-        truncated = truncated or _glob_truncated(default_result)
+        # If path is None or "/", search default and all routed backends and merge.
+        # Otherwise, search only the default backend.
+        if path is None or path == "/":
+            results: list[FileInfo] = []
+            truncated = False
+            default_result = self.default.glob(pattern, path)
+            # A backend error must not be swallowed as a partial success (mirrors the
+            # grep merge path); surface it instead of returning default-only matches.
+            if isinstance(default_result, GlobResult) and default_result.error:
+                return default_result
+            default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+            results.extend(default_matches or [])
+            truncated = truncated or _glob_truncated(default_result)
 
-        for route_prefix, backend in self.routes.items():
-            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = backend.glob(route_pattern, "/")
-            if isinstance(sub_result, GlobResult) and sub_result.error:
-                return sub_result
-            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
-            truncated = truncated or _glob_truncated(sub_result)
+            for route_prefix, backend in self.routes.items():
+                route_pattern = _strip_route_from_pattern(pattern, route_prefix)
+                sub_result = backend.glob(route_pattern, "/")
+                if isinstance(sub_result, GlobResult) and sub_result.error:
+                    return sub_result
+                sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
+                results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+                truncated = truncated or _glob_truncated(sub_result)
 
-        # Deterministic ordering
-        results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results, truncated=truncated)
+            # Deterministic ordering
+            results.sort(key=lambda x: x.get("path", ""))
+            return GlobResult(matches=results, truncated=truncated)
+
+        return self._coerce_glob_result(self.default.glob(pattern, path))
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Async version of glob."""
-        results: list[FileInfo] = []
+        """Async version of glob.
 
+        See `glob()` for detailed documentation on routing behavior and parameters.
+        """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
                 default=self.default,
@@ -482,29 +498,34 @@ class CompositeBackend(BackendProtocol):
                     truncated=_glob_truncated(glob_result),
                 )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
-        truncated = False
-        default_result = await self.default.aglob(pattern, path)
-        # A backend error must not be swallowed as a partial success (mirrors the
-        # grep merge path); surface it instead of returning default-only matches.
-        if isinstance(default_result, GlobResult) and default_result.error:
-            return default_result
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
-        truncated = truncated or _glob_truncated(default_result)
+        # If path is None or "/", search default and all routed backends and merge.
+        # Otherwise, search only the default backend.
+        if path is None or path == "/":
+            results: list[FileInfo] = []
+            truncated = False
+            default_result = await self.default.aglob(pattern, path)
+            # A backend error must not be swallowed as a partial success (mirrors the
+            # grep merge path); surface it instead of returning default-only matches.
+            if isinstance(default_result, GlobResult) and default_result.error:
+                return default_result
+            default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+            results.extend(default_matches or [])
+            truncated = truncated or _glob_truncated(default_result)
 
-        for route_prefix, backend in self.routes.items():
-            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob(route_pattern, "/")
-            if isinstance(sub_result, GlobResult) and sub_result.error:
-                return sub_result
-            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
-            truncated = truncated or _glob_truncated(sub_result)
+            for route_prefix, backend in self.routes.items():
+                route_pattern = _strip_route_from_pattern(pattern, route_prefix)
+                sub_result = await backend.aglob(route_pattern, "/")
+                if isinstance(sub_result, GlobResult) and sub_result.error:
+                    return sub_result
+                sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
+                results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+                truncated = truncated or _glob_truncated(sub_result)
 
-        # Deterministic ordering
-        results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results, truncated=truncated)
+            # Deterministic ordering
+            results.sort(key=lambda x: x.get("path", ""))
+            return GlobResult(matches=results, truncated=truncated)
+
+        return self._coerce_glob_result(await self.default.aglob(pattern, path))
 
     def write(
         self,

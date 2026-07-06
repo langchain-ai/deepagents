@@ -262,6 +262,29 @@ def test_composite_backend_grep_path_isolation():
     assert not any("/memories/" in p for p in match_paths), f"grep path=/tools should not return /memories results, but got: {match_paths}"
 
 
+def test_composite_backend_glob_path_isolation():
+    """Test that glob with path=/tools doesn't return results from /memories."""
+    mem_store = InMemoryStore()
+
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/tools/hammer.md", "tool for nailing")
+    comp.write("/notes/other.md", "unrelated note")
+    comp.write("/memories/secret.md", "private memory")
+
+    result = comp.glob("*.md", path="/tools")
+    matches = result.matches
+    match_paths = [m["path"] for m in matches] if matches is not None else []
+
+    # Only /tools files: excludes routed backend (/memories) and other default dirs (/notes)
+    assert match_paths == ["/tools/hammer.md"]
+    assert "/memories/secret.md" not in match_paths
+    assert "/notes/other.md" not in match_paths
+
+
 def test_composite_grep_and_glob_propagate_truncated(monkeypatch: pytest.MonkeyPatch):
     """A truncated result from a routed/default backend must surface through the composite."""
     mem_store = InMemoryStore()

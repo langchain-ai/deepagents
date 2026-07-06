@@ -10,6 +10,10 @@
 # Override uv's pre-release strategy when resolving the latest version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
 #
+# Options:
+#   --help, -h     Show this help message and exit
+#   --version, -v  Print installer version and exit
+#
 # By default, the installer uses uv's `allow` pre-release strategy so stable
 # deepagents-code releases that pin a pre-release dependency can resolve.
 # DEEPAGENTS_CODE_VERSION and an explicit DEEPAGENTS_CODE_PRERELEASE are mutually
@@ -45,7 +49,7 @@
 #         all-providers
 #       Sandbox providers: agentcore, daytona, modal, runloop, vercel,
 #         all-sandboxes
-#       Standalone integrations: quickjs
+#       Standalone integrations: media, quickjs
 #   DEEPAGENTS_CODE_VERSION — exact version to install, e.g. "0.1.0rc1"
 #     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
 #   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
@@ -79,6 +83,80 @@
 #   PATH setup adapted from Amp (https://ampcode.com/install.sh).
 
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# CLI flags — --help / --version short-circuit before any install work
+# ---------------------------------------------------------------------------
+INSTALLER_VERSION="deepagents-code installer 1.0"
+
+print_help() {
+  cat <<'HELP'
+Install deepagents-code.
+
+Usage:
+  curl -LsSf https://langch.in/dcode | bash
+  curl -LsSf https://langch.in/dcode | bash -s -- [options]
+
+Options:
+  --help, -h        Show this help message and exit
+  --version, -v     Print installer version and exit
+
+Environment variables:
+  DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
+    "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
+    authoritative list):
+      Model providers: anthropic, baseten, bedrock, cohere, deepseek,
+        fireworks, google-genai, groq, huggingface, ibm, litellm, mistralai,
+        nvidia, ollama, openai, openrouter, perplexity, together, vertex, xai,
+        all-providers
+      Sandbox providers: agentcore, daytona, modal, runloop, vercel,
+        all-sandboxes
+      Standalone integrations: media, quickjs
+  DEEPAGENTS_CODE_VERSION — exact version to install, e.g. "0.1.0rc1"
+    (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
+  DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
+    resolving the latest version: disallow, allow, if-necessary, explicit,
+    or if-necessary-or-explicit (default: allow; explicitly setting it is
+    mutually exclusive with DEEPAGENTS_CODE_VERSION)
+  DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+  DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
+    prompting (assume "yes")
+  DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+  DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
+    "managed" (default) eagerly installs the pinned, SHA-256-verified binary
+    into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+    keeps the interactive package-manager install (brew/apt/cargo/...). Set
+    DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
+  DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
+    Command Line Tools preflight check
+  DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr and additional
+    status lines
+  UV_BIN — path to uv binary (auto-detected if unset)
+
+For full documentation: https://docs.langchain.com/deepagents-code
+HELP
+}
+
+for _arg in "$@"; do
+  case "$_arg" in
+    --help|-h)
+      print_help
+      exit 0
+      ;;
+    --version|-v)
+      printf '%s\n' "$INSTALLER_VERSION"
+      exit 0
+      ;;
+    *)
+      # Reject unknown flags instead of silently ignoring them, so a typo
+      # (e.g. --verison) surfaces as an error rather than a silent full install.
+      # log_* helpers aren't defined yet at this point, so write plainly.
+      printf 'Unrecognized argument: %s\n' "$_arg" >&2
+      printf 'Run with --help to see available options.\n' >&2
+      exit 2
+      ;;
+  esac
+done
 
 # Registry of temp files to clean up on exit or interrupt. Functions that
 # create tempfiles append their paths here; cleanup_on_signal removes them all.
@@ -493,35 +571,76 @@ install_uv() {
   # The upstream uv installer is chatty (download progress, install paths,
   # PATH-setup hints). Capture it and surface the output only when debugging
   # or when the install fails — by default it's noise the user doesn't need.
+  # This same tempfile also captures the downloader's stderr, so a failed
+  # download surfaces curl/wget's own error (DNS, TLS, HTTP status) instead of
+  # a generic message; the installer's stdout/stderr overwrites it afterward.
   local uv_install_out uv_install_rc=0
   uv_install_out=$(mktemp 2>/dev/null) || {
     log_error "mktemp is required to create a secure temp file."
     exit 1
   }
   register_temp "$uv_install_out"
-  # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
-  # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
-  # `-fsSL` includes `-S`, so a failed download still prints curl's error
-  # directly (above the "uv installation failed" line) even though the captured
-  # file is then empty. Don't assume curl's stderr is in the capture.
+
+  # Download the installer to a tempfile first instead of piping curl straight
+  # to sh, so we can verify the first line is a shell shebang before executing.
+  # A transparent proxy or captive portal returning 200 with HTML would
+  # otherwise pipe straight into sh with unpredictable results. curl's `-f`
+  # catches HTTP errors, but a 200-with-HTML response passes that check.
+  local uv_script
+  uv_script=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  register_temp "$uv_script"
+
+  # Capture the downloader's stderr (2>"$uv_install_out") rather than discarding
+  # it: on failure it holds the actionable cause (curl: (6) Could not resolve
+  # host, SSL errors, HTTP status), which the failure branch below surfaces.
+  # curl -sS and wget -nv stay quiet on success, so this adds no noise then.
   if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
-    curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
+    curl -fsSL https://astral.sh/uv/install.sh -o "$uv_script" 2>"$uv_install_out" || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
+    wget -nv -O "$uv_script" https://astral.sh/uv/install.sh 2>"$uv_install_out" || uv_install_rc=$?
   elif is_snap_curl; then
-    rm -f "$uv_install_out"
+    rm -f "$uv_install_out" "$uv_script"
     log_error "curl is installed as a snap and cannot download files due to sandbox permissions."
     log_error "Please install wget, or reinstall curl with a different package manager (e.g. apt)."
     exit 1
   else
-    rm -f "$uv_install_out"
+    rm -f "$uv_install_out" "$uv_script"
     log_error "curl or wget is required to install uv."
     exit 1
   fi
+
+  if [ "$uv_install_rc" -ne 0 ]; then
+    # Surface the downloader's own error (captured above) before the generic
+    # line, so the user sees the real cause and the downloader's exit code.
+    cat "$uv_install_out" >&2
+    rm -f "$uv_install_out" "$uv_script"
+    log_error "Failed to download uv installer (exit ${uv_install_rc}) from https://astral.sh/uv/install.sh"
+    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+  fi
+
+  # Verify the downloaded script starts with a shell shebang before executing
+  # it. This catches a non-shell response — an HTML error page or JSON from a
+  # proxy or captive portal that returned 200 — that would otherwise fail
+  # unpredictably when run by sh. It only inspects the first line, so it is a
+  # sanity check on the response type, not an integrity guarantee: it won't
+  # detect a truncated or tampered body.
+  if ! head -1 "$uv_script" | grep -qE '^#!.*(sh|bash)'; then
+    rm -f "$uv_install_out" "$uv_script"
+    log_error "uv installer download does not start with a shell shebang."
+    log_error "  The URL may have returned an error page (proxy, captive portal, or outage)."
+    log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+  fi
+
+  sh "$uv_script" >"$uv_install_out" 2>&1 || uv_install_rc=$?
   if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
     cat "$uv_install_out" >&2
   fi
-  rm -f "$uv_install_out"
+  rm -f "$uv_install_out" "$uv_script"
   if [ "$uv_install_rc" -ne 0 ]; then
     log_error "uv installation failed. See errors above."
     exit 1

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
+from deepagents_code.project_utils import ProjectContext
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import load_mcp_tools
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
@@ -21,83 +22,59 @@ class DummyTool:
 FakeCodeLoaderResult: TypeAlias = tuple[list[DummyTool], None, list[CodeMCPServerInfo]]
 
 
-def _fake_code_loader(path: str) -> FakeCodeLoaderResult:
-    data = json.loads(Path(path).read_text())
-    tools = [
-        DummyTool("files_read"),
-        DummyTool("files_write"),
-        DummyTool("search"),
-    ]
-    infos = [
-        CodeMCPServerInfo(
-            name=name,
-            transport=str(server.get("type") or server.get("transport") or "stdio"),
-            tools=tuple(MCPToolInfo(name=tool.name, description="") for tool in tools),
-        )
-        for name, server in data["mcpServers"].items()
-        if isinstance(server, dict)
-    ]
-    return tools, None, infos
-
-
-async def test_load_mcp_tools_reads_manifest_config(
+async def test_load_mcp_tools_delegates_to_deepagents_code_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[Path] = []
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    calls: list[dict[str, object]] = []
+    tools = [DummyTool("files_read")]
+    infos = [
+        CodeMCPServerInfo(
+            name="remote",
+            transport="streamable_http",
+            tools=(MCPToolInfo(name="files_read", description=""),),
+        )
+    ]
 
-    async def fake_loader(path: str) -> FakeCodeLoaderResult:
-        seen.append(Path(path))
-        return _fake_code_loader(path)
+    async def fake_resolver(**kwargs: object) -> FakeCodeLoaderResult:
+        calls.append(kwargs)
+        return tools, None, infos
 
-    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
-    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
-    config.ensure_home()
-    tools_path = config.manifest_dir / "tools.json"
-    tools_path.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "remote": {
-                        "transport": "sse",
-                        "url": "https://tools.example/sse",
-                        "headers": {"Authorization": "Bearer ${TOKEN}"},
-                    },
-                },
-            },
-        ),
+    monkeypatch.setattr("deepagents_talon.mcp.resolve_and_load_mcp_tools", fake_resolver)
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "test",
+            "DEEPAGENTS_TALON_WORKSPACE": str(workspace),
+        },
+        base_home=tmp_path,
     )
 
     result = await load_mcp_tools(config)
 
-    assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert seen == [tools_path]
+    assert result.tools == tuple(tools)
+    assert result.servers == tuple(infos)
+    assert len(calls) == 1
+    assert calls[0]["explicit_config_path"] is None
+    assert calls[0]["trust_project_mcp"] is None
+    project_context = calls[0]["project_context"]
+    assert isinstance(project_context, ProjectContext)
+    assert project_context.user_cwd == workspace.resolve()
 
 
-async def test_load_mcp_tools_prefers_env_config_path(
+async def test_load_mcp_tools_layers_env_config_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[Path] = []
+    calls: list[dict[str, object]] = []
 
-    async def fake_loader(path: str) -> FakeCodeLoaderResult:
-        seen.append(Path(path))
-        return _fake_code_loader(path)
+    async def fake_resolver(**kwargs: object) -> FakeCodeLoaderResult:
+        calls.append(kwargs)
+        return [], None, []
 
-    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
-    env_path = tmp_path / "custom-tools.json"
-    env_path.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "custom": {
-                        "type": "stdio",
-                        "command": "server",
-                    },
-                },
-            },
-        ),
-    )
+    monkeypatch.setattr("deepagents_talon.mcp.resolve_and_load_mcp_tools", fake_resolver)
+    env_path = tmp_path / "custom.mcp.json"
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "test",
@@ -105,20 +82,7 @@ async def test_load_mcp_tools_prefers_env_config_path(
         },
         base_home=tmp_path,
     )
-    config.ensure_home()
-    (config.manifest_dir / "tools.json").write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "manifest": {
-                        "type": "stdio",
-                        "command": "server",
-                    },
-                },
-            },
-        ),
-    )
 
     await load_mcp_tools(config)
 
-    assert seen == [env_path]
+    assert calls[0]["explicit_config_path"] == str(env_path)

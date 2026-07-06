@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
-from deepagents_code.remote_client import (
+from deepagents_code.client.remote_client import (
     RemoteAgent,
     _convert_ai_message,
     _convert_human_message,
@@ -734,7 +734,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
             update_side_effect=[_conflict_error(), None],
         )
 
-        with patch("deepagents_code.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01):
+        with patch(
+            "deepagents_code.client.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01
+        ):
             await agent.aupdate_state(_config(), {"messages": []})
 
         assert mock_graph.aupdate_state.await_count == 2
@@ -871,7 +873,7 @@ class TestRemoteAgentStore:
         agent._graph = graph
 
         with (
-            caplog.at_level("DEBUG", logger="deepagents_code.remote_client"),
+            caplog.at_level("DEBUG", logger="deepagents_code.client.remote_client"),
             pytest.raises(RuntimeError, match="boom"),
         ):
             await agent.aput_store_item(("ns",), "key", {"auto_approve": True})

@@ -168,6 +168,7 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
         ["config", "show"],
         ["auth", "list"],
         ["tools", "install"],
+        ["tools", "list"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:

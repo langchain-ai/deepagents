@@ -12,7 +12,7 @@ import argparse
 import pytest
 
 from deepagents_code import _env_vars
-from deepagents_code.config_commands import (
+from deepagents_code.client.commands.config import (
     _display_value,
     _missing_extra_hint,
     _resolve,
@@ -183,7 +183,7 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
         install_extra="missing-provider",
     )
     monkeypatch.setattr(
-        "deepagents_code.config_commands.importlib.util.find_spec",
+        "deepagents_code.client.commands.config.importlib.util.find_spec",
         lambda name: None if name == "langchain_missing_provider" else object(),
     )
     assert _missing_extra_hint(option) is True
@@ -853,6 +853,32 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={})[0] is False
 
 
+def test_collapse_pastes_default_enabled() -> None:
+    """Paste collapsing is enabled by default when unset."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    assert opt.kind is OptionKind.BOOL
+    assert resolve_scalar(opt, toml_data={}) == (True, "default")
+
+
+def test_collapse_pastes_env_disables(monkeypatch) -> None:
+    """A falsy env var disables paste collapsing."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    monkeypatch.setenv(opt.env_var, "0")
+    assert resolve_scalar(opt, toml_data={})[0] is False
+
+
+def test_collapse_pastes_toml_disables() -> None:
+    """A `[ui].collapse_pastes = false` entry disables paste collapsing."""
+    opt = get_option("display.collapse_pastes")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"ui": {"collapse_pastes": False}}) == (
+        False,
+        "config.toml",
+    )
+
+
 def test_thread_relative_time_default_matches_runtime_loader() -> None:
     """Fresh thread config shows relative timestamps by default."""
     opt = get_option("threads.relative_time")
@@ -1497,7 +1523,7 @@ def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -
     from pathlib import Path
 
     from deepagents_code import model_config
-    from deepagents_code.config_commands import _config_paths
+    from deepagents_code.client.commands.config import _config_paths
 
     target = model_config.DEFAULT_CONFIG_PATH
     real_stat = Path.stat

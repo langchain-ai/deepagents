@@ -3289,8 +3289,8 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     return has_key or _has_langsmith_profile_credentials(env)
 
 
-def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
-    """Return whether replica trace ingestion targets are configured.
+def _langsmith_runs_endpoint_urls_from(env: dict[str, str]) -> tuple[str, ...]:
+    """Return the replica trace ingestion URLs configured via runs-endpoints.
 
     Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
     JSON list of `{"api_url": "...", "api_key": "..."}` objects, or a JSON
@@ -3301,7 +3301,7 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
         env: Environment mapping to read.
 
     Returns:
-        `True` when a valid runs-endpoints configuration is present.
+        The configured replica ingestion URLs, in configuration order.
     """
     raw = next(
         (
@@ -3312,23 +3312,40 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
         None,
     )
     if raw is None:
-        return False
+        return ()
 
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
-        return False
+        return ()
 
     if isinstance(parsed, list):
-        return any(
-            isinstance(item, dict)
+        return tuple(
+            item["api_url"]
+            for item in parsed
+            if isinstance(item, dict)
             and isinstance(item.get("api_url"), str)
             and isinstance(item.get("api_key"), str)
-            for item in parsed
         )
     if isinstance(parsed, dict):
-        return any(isinstance(value, str) for value in parsed.values())
-    return False
+        return tuple(
+            url
+            for url, api_key in parsed.items()
+            if isinstance(url, str) and isinstance(api_key, str)
+        )
+    return ()
+
+
+def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+    """Return whether replica trace ingestion targets are configured.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        `True` when a valid runs-endpoints configuration is present.
+    """
+    return bool(_langsmith_runs_endpoint_urls_from(env))
 
 
 def _tracing_can_upload_from(env: dict[str, str]) -> bool:
@@ -3441,6 +3458,9 @@ class TracingStatus:
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
 
+    runs_endpoints: tuple[str, ...] = ()
+    """Replica ingestion URLs from `LANGSMITH_RUNS_ENDPOINTS`, if any."""
+
     def __post_init__(self) -> None:
         """Reject the contradictory enabled/explicitly-disabled pair.
 
@@ -3483,6 +3503,7 @@ def get_tracing_status() -> TracingStatus:
         replica_project=_get_first_langsmith_replica_project(
             _get_langsmith_replica_projects_from(env)
         ),
+        runs_endpoints=_langsmith_runs_endpoint_urls_from(env),
     )
 
 

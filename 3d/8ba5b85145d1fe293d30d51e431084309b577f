@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_status.py
+  s_87118a6f01498f::t_5cd3692fa7b691 117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d8ba5b85145d1fe293d30d51e431084309b577f",
+  "prompts": {},
+  "sessions": {
+    "s_87118a6f01498f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af4d26176712ee254",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

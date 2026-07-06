@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,6 +29,25 @@ class ChannelMessage:
     text: str
     sender_id: str | None = None
     message_id: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelReaction:
+    """Inbound reaction delivered by a channel adapter.
+
+    Args:
+        conversation_id: Stable channel-specific conversation identifier.
+        message_id: Channel-specific message identifier that received the reaction.
+        emoji: Provider reaction value.
+        sender_id: Channel-specific sender identifier.
+        metadata: Extra channel values that later adapters may need.
+    """
+
+    conversation_id: str
+    message_id: str
+    emoji: str
+    sender_id: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -58,8 +77,25 @@ class ChannelMedia:
     """
 
     path: Path
-    media_type: Literal["image", "video"]
+    media_type: Literal["image", "video", "document", "audio", "voice"]
     caption: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    """Result of a channel send operation.
+
+    Args:
+        success: Whether the send completed without error.
+        message_id: Channel-specific message identifier when available.
+        error: Human-readable error description on failure.
+        retryable: Whether a transient failure may succeed on retry.
+    """
+
+    success: bool
+    message_id: str | None = None
+    error: str | None = None
+    retryable: bool = False
 
 
 ToolApprovalDecision = Literal["approve", "reject"]
@@ -121,6 +157,7 @@ class AgentResult:
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]
+ReactionHandler = Callable[[ChannelReaction], Awaitable[None]]
 
 
 class ChannelAdapter(Protocol):
@@ -139,33 +176,61 @@ class ChannelAdapter(Protocol):
             handler: Coroutine callback invoked for each inbound channel message.
         """
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send a message to a conversation.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             text: Message content to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
 
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send media to a conversation.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             media: Media payload to deliver.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously sent channel message.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             message_id: Channel-specific message identifier.
             text: Replacement message content.
+
+        Returns:
+            Result indicating whether the edit succeeded.
+        """
+
+    async def send_typing(self, conversation_id: str) -> None:
+        """Send a typing indicator to a conversation.
+
+        Args:
+            conversation_id: Channel-specific conversation identifier.
         """
 
     async def status(self) -> ChannelStatus:
         """Report the channel connection status."""
+
+
+@runtime_checkable
+class ReactionChannelAdapter(Protocol):
+    """Optional channel surface for inbound reaction events."""
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for each inbound channel reaction.
+        """
 
 
 class CronScheduler(Protocol):

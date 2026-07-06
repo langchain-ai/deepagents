@@ -8,16 +8,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code._git import (
+    RepositoryMetadata,
     _abbreviate_git_ref,
     _git_dir_cache,
     _normalize_lookup_path,
     _parse_git_dir_pointer,
     find_git_dir,
     find_git_root,
+    parse_repository_metadata,
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
+    read_git_commit_sha_from_filesystem,
+    read_git_commit_sha_via_subprocess,
+    read_git_remote_url_from_filesystem,
+    read_git_remote_url_via_subprocess,
     resolve_git_branch,
+    resolve_git_commit_sha,
+    resolve_git_remote_url,
 )
+
+_FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+"""A valid 40-char SHA-1 used across the commit-resolution tests."""
 
 
 @pytest.fixture(autouse=True)
@@ -262,3 +273,317 @@ class TestResolveGitBranch:
         mock_sub.return_value = "fallback-branch"
         assert resolve_git_branch("/some/path") == "fallback-branch"
         mock_sub.assert_called_once()
+
+
+class TestReadGitCommitShaFromFilesystem:
+    def test_loose_ref(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(f"{_FULL_SHA}\n")
+        assert read_git_commit_sha_from_filesystem(tmp_path) == _FULL_SHA
+
+    def test_detached_head(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text(f"{_FULL_SHA}\n")
+        assert read_git_commit_sha_from_filesystem(tmp_path) == _FULL_SHA
+
+    def test_packed_ref(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "packed-refs").write_text(
+            "# pack-refs with: peeled fully-peeled sorted\n"
+            f"{_FULL_SHA} refs/heads/main\n"
+        )
+        assert read_git_commit_sha_from_filesystem(tmp_path) == _FULL_SHA
+
+    def test_packed_ref_skips_peeled_tag_line(self, tmp_path: Path) -> None:
+        # A `^`-peeled line (the tag's target commit) precedes the wanted ref;
+        # it must be skipped so the ref's own SHA is returned, not the peel.
+        peeled = "0000000000000000000000000000000000000000"
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "packed-refs").write_text(
+            "# pack-refs with: peeled fully-peeled sorted\n"
+            "1111111111111111111111111111111111111111 refs/tags/v1\n"
+            f"^{peeled}\n"
+            f"{_FULL_SHA} refs/heads/main\n"
+        )
+        assert read_git_commit_sha_from_filesystem(tmp_path) == _FULL_SHA
+
+    def test_not_in_repo_returns_empty(self, tmp_path: Path) -> None:
+        # Empty string (not None) is the not-in-repo signal so resolve() can
+        # short-circuit the subprocess fallback.
+        assert read_git_commit_sha_from_filesystem(tmp_path) == ""
+
+    def test_unresolvable_ref_returns_none(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/missing\n")
+        assert read_git_commit_sha_from_filesystem(tmp_path) is None
+
+
+class TestResolveGitCommitSha:
+    @patch("deepagents_code._git.read_git_commit_sha_via_subprocess")
+    @patch("deepagents_code._git.read_git_commit_sha_from_filesystem")
+    def test_filesystem_wins(self, mock_fs: MagicMock, mock_sub: MagicMock) -> None:
+        mock_fs.return_value = _FULL_SHA
+        assert resolve_git_commit_sha("/some/path") == _FULL_SHA
+        mock_sub.assert_not_called()
+
+    @patch("deepagents_code._git.read_git_commit_sha_via_subprocess")
+    @patch("deepagents_code._git.read_git_commit_sha_from_filesystem")
+    def test_empty_string_skips_subprocess(
+        self, mock_fs: MagicMock, mock_sub: MagicMock
+    ) -> None:
+        mock_fs.return_value = ""
+        assert resolve_git_commit_sha("/some/path") == ""
+        mock_sub.assert_not_called()
+
+    @patch("deepagents_code._git.read_git_commit_sha_via_subprocess")
+    @patch("deepagents_code._git.read_git_commit_sha_from_filesystem")
+    def test_fallback_on_none(self, mock_fs: MagicMock, mock_sub: MagicMock) -> None:
+        mock_fs.return_value = None
+        mock_sub.return_value = _FULL_SHA
+        assert resolve_git_commit_sha("/some/path") == _FULL_SHA
+        mock_sub.assert_called_once()
+
+
+class TestReadGitCommitShaViaSubprocess:
+    @patch("subprocess.run")
+    def test_read_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = f"{_FULL_SHA}\n"
+        assert read_git_commit_sha_via_subprocess("/some/path") == _FULL_SHA
+
+    @patch("subprocess.run")
+    def test_read_timeout(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=2)
+        assert read_git_commit_sha_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_file_not_found(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = FileNotFoundError()
+        assert read_git_commit_sha_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_os_error(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = OSError("error")
+        assert read_git_commit_sha_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_failure_code(self, mock_run: MagicMock) -> None:
+        mock_run.return_value.returncode = 128
+        assert read_git_commit_sha_via_subprocess("/some/path") == ""
+
+
+class TestReadGitRemoteUrlFromFilesystem:
+    def _write_config(self, tmp_path: Path, body: str) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir(exist_ok=True)
+        (git_dir / "config").write_text(body)
+
+    def test_reads_origin_url(self, tmp_path: Path) -> None:
+        self._write_config(
+            tmp_path,
+            '[remote "origin"]\n'
+            "\turl = https://github.com/langchain-ai/deepagents.git\n"
+            "\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        )
+        assert (
+            read_git_remote_url_from_filesystem(tmp_path)
+            == "https://github.com/langchain-ai/deepagents.git"
+        )
+
+    def test_ignores_other_remotes(self, tmp_path: Path) -> None:
+        self._write_config(
+            tmp_path,
+            '[remote "upstream"]\n\turl = https://github.com/other/fork.git\n'
+            '[remote "origin"]\n\turl = git@github.com:langchain-ai/deepagents.git\n',
+        )
+        assert (
+            read_git_remote_url_from_filesystem(tmp_path)
+            == "git@github.com:langchain-ai/deepagents.git"
+        )
+
+    def test_no_origin_returns_none(self, tmp_path: Path) -> None:
+        self._write_config(tmp_path, "[core]\n\tbare = false\n")
+        assert read_git_remote_url_from_filesystem(tmp_path) is None
+
+    def test_not_in_repo_returns_empty(self, tmp_path: Path) -> None:
+        assert read_git_remote_url_from_filesystem(tmp_path) == ""
+
+    def test_section_header_matched_case_insensitively(self, tmp_path: Path) -> None:
+        # git treats section names case-insensitively; the reader mirrors that.
+        self._write_config(
+            tmp_path,
+            '[REMOTE "ORIGIN"]\n\turl = https://github.com/org/repo.git\n',
+        )
+        assert (
+            read_git_remote_url_from_filesystem(tmp_path)
+            == "https://github.com/org/repo.git"
+        )
+
+    def test_section_header_extra_whitespace(self, tmp_path: Path) -> None:
+        # Internal spacing inside the header is normalized before matching.
+        self._write_config(
+            tmp_path,
+            '[remote   "origin"]\n\turl = https://github.com/org/repo.git\n',
+        )
+        assert (
+            read_git_remote_url_from_filesystem(tmp_path)
+            == "https://github.com/org/repo.git"
+        )
+
+
+class TestResolveGitRemoteUrl:
+    @patch("deepagents_code._git.read_git_remote_url_via_subprocess")
+    @patch("deepagents_code._git.read_git_remote_url_from_filesystem")
+    def test_empty_string_skips_subprocess(
+        self, mock_fs: MagicMock, mock_sub: MagicMock
+    ) -> None:
+        mock_fs.return_value = ""
+        assert resolve_git_remote_url("/some/path") == ""
+        mock_sub.assert_not_called()
+
+    @patch("deepagents_code._git.read_git_remote_url_via_subprocess")
+    @patch("deepagents_code._git.read_git_remote_url_from_filesystem")
+    def test_fallback_on_none(self, mock_fs: MagicMock, mock_sub: MagicMock) -> None:
+        mock_fs.return_value = None
+        mock_sub.return_value = "https://github.com/org/repo.git"
+        assert resolve_git_remote_url("/p") == "https://github.com/org/repo.git"
+        mock_sub.assert_called_once()
+
+
+class TestReadGitRemoteUrlViaSubprocess:
+    @patch("subprocess.run")
+    def test_read_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "https://github.com/org/repo.git\n"
+        assert (
+            read_git_remote_url_via_subprocess("/some/path")
+            == "https://github.com/org/repo.git"
+        )
+
+    @patch("subprocess.run")
+    def test_read_timeout(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=2)
+        assert read_git_remote_url_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_file_not_found(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = FileNotFoundError()
+        assert read_git_remote_url_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_os_error(self, mock_run: MagicMock) -> None:
+        mock_run.side_effect = OSError("error")
+        assert read_git_remote_url_via_subprocess("/some/path") == ""
+
+    @patch("subprocess.run")
+    def test_read_failure_code(self, mock_run: MagicMock) -> None:
+        mock_run.return_value.returncode = 128
+        assert read_git_remote_url_via_subprocess("/some/path") == ""
+
+
+class TestParseRepositoryMetadata:
+    def test_https_github(self) -> None:
+        assert parse_repository_metadata(
+            "https://github.com/langchain-ai/deepagents.git"
+        ) == (
+            "https://github.com/langchain-ai/deepagents",
+            "github",
+            "langchain-ai/deepagents",
+        )
+
+    def test_scp_style_ssh(self) -> None:
+        assert parse_repository_metadata(
+            "git@github.com:langchain-ai/deepagents.git"
+        ) == (
+            "https://github.com/langchain-ai/deepagents",
+            "github",
+            "langchain-ai/deepagents",
+        )
+
+    def test_https_trailing_slash_after_git_suffix(self) -> None:
+        assert parse_repository_metadata("https://github.com/org/repo.git/") == (
+            "https://github.com/org/repo",
+            "github",
+            "org/repo",
+        )
+
+    def test_scp_style_ssh_trailing_slash_after_git_suffix(self) -> None:
+        assert parse_repository_metadata("git@github.com:org/repo.git/") == (
+            "https://github.com/org/repo",
+            "github",
+            "org/repo",
+        )
+
+    def test_strips_embedded_credentials(self) -> None:
+        result = parse_repository_metadata(
+            "https://user:token@gitlab.com/group/project.git"
+        )
+        assert result is not None
+        url, provider, name = result
+        assert url == "https://gitlab.com/group/project"
+        assert provider == "gitlab"
+        assert name == "group/project"
+
+    def test_bitbucket_provider(self) -> None:
+        result = parse_repository_metadata("https://bitbucket.org/team/repo.git")
+        assert result is not None
+        assert result[1] == "bitbucket"
+
+    def test_unknown_host_is_other(self) -> None:
+        result = parse_repository_metadata("git@git.example.com:internal/tool.git")
+        assert result is not None
+        _, provider, name = result
+        assert provider == "other"
+        assert name == "internal/tool"
+
+    def test_nested_group_path(self) -> None:
+        result = parse_repository_metadata(
+            "https://gitlab.com/group/subgroup/project.git"
+        )
+        assert result is not None
+        assert result[2] == "group/subgroup/project"
+
+    def test_ssh_scheme_url(self) -> None:
+        # `ssh://` has a scheme, so it routes through the urlparse branch (not
+        # the scp-style branch) — distinct code path worth pinning.
+        assert parse_repository_metadata(
+            "ssh://git@github.com/langchain-ai/deepagents.git"
+        ) == (
+            "https://github.com/langchain-ai/deepagents",
+            "github",
+            "langchain-ai/deepagents",
+        )
+
+    def test_ssh_scheme_url_with_port(self) -> None:
+        # The port in the authority must not leak into the normalized host/url.
+        assert parse_repository_metadata(
+            "ssh://git@github.com:22/langchain-ai/deepagents.git"
+        ) == (
+            "https://github.com/langchain-ai/deepagents",
+            "github",
+            "langchain-ai/deepagents",
+        )
+
+    def test_returns_named_tuple_fields(self) -> None:
+        # The result exposes named fields, not just positional slots.
+        result = parse_repository_metadata("https://github.com/org/repo.git")
+        assert result is not None
+        assert isinstance(result, RepositoryMetadata)
+        assert result.url == "https://github.com/org/repo"
+        assert result.provider == "github"
+        assert result.name == "org/repo"
+
+    def test_empty_returns_none(self) -> None:
+        assert parse_repository_metadata("") is None
+        assert parse_repository_metadata("   ") is None
+
+    def test_malformed_returns_none(self) -> None:
+        assert parse_repository_metadata("not-a-url") is None

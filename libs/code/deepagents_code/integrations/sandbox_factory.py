@@ -187,15 +187,6 @@ def _get_registry() -> SandboxRegistry:
     return SandboxRegistry.load()
 
 
-def _get_available_sandbox_types() -> list[str]:
-    """Get list of available sandbox provider types (internal).
-
-    Returns:
-        List of available sandbox provider type names
-    """
-    return _get_registry().available_providers()
-
-
 def get_default_working_dir(provider: str) -> str:
     """Get the default working directory for a given sandbox provider.
 

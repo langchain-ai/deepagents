@@ -1,4 +1,4 @@
-"""StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
+"""`StoreBackend`: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
 import base64
 import re
@@ -8,12 +8,13 @@ from typing import TYPE_CHECKING, Any, Generic, cast
 
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
-from langgraph.store.base import BaseStore, Item
+from langgraph.store.base import BaseStore, Item, PutOp
 from langgraph.typing import ContextT, StateT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -27,7 +28,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    _get_backend_read_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
@@ -186,7 +187,7 @@ class StoreBackend(BackendProtocol):
         namespace: NamespaceFactory | None = None,
         file_format: FileFormat = "v2",
     ) -> None:
-        r"""Initialize StoreBackend.
+        r"""Initialize `StoreBackend`.
 
         Args:
             runtime: Deprecated - accepted for backward compatibility but
@@ -210,7 +211,7 @@ class StoreBackend(BackendProtocol):
                 with an `encoding` field.
 
         Example:
-                    namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
+            `namespace=lambda rt: (rt.server_info.user.identity, "filesystem")`
         """
         if runtime is not None:
             warn_deprecated(
@@ -274,6 +275,7 @@ class StoreBackend(BackendProtocol):
         `("filesystem",)`.
 
         !!! deprecated
+
             Pass `namespace` to `StoreBackend` instead of relying on legacy detection.
         """
         warn_deprecated(
@@ -303,14 +305,15 @@ class StoreBackend(BackendProtocol):
         return (namespace,)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
-        """Convert a store Item to FileData format.
+        """Convert a store `Item` to `FileData` format.
 
         Args:
-            store_item: The store Item containing file data.
+            store_item: The store `Item` containing file data.
 
         Returns:
-            FileData dict with content and encoding. Includes created_at and
-            modified_at when present in the store item.
+            `FileData` dict with content and encoding.
+
+                Includes `created_at` and `modified_at` when present in the store item.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
@@ -347,17 +350,19 @@ class StoreBackend(BackendProtocol):
         return result
 
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
-        """Convert FileData to a dict suitable for store.put().
+        """Convert `FileData` to a dict suitable for `store.put()`.
 
         When `file_format="v1"`, returns the legacy format with `content`
         as `list[str]` and no `encoding` key.
 
         Args:
-            file_data: The FileData to convert.
+            file_data: The `FileData` to convert.
 
         Returns:
-            Dictionary with content and encoding. Includes created_at and
-            modified_at when present in the FileData.
+            Dictionary with content and encoding.
+
+                Includes `created_at` and `modified_at` when present in
+                the `FileData`.
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
@@ -387,7 +392,7 @@ class StoreBackend(BackendProtocol):
             namespace: Hierarchical path prefix to search within.
             query: Optional query for natural language search.
             filter: Key-value pairs to filter results.
-            page_size: Number of items to fetch per page (default: 100).
+            page_size: Number of items to fetch per page.
 
         Returns:
             List of all items matching the search criteria.
@@ -418,6 +423,35 @@ class StoreBackend(BackendProtocol):
 
         return all_items
 
+    async def _asearch_store_paginated(
+        self,
+        store: BaseStore,
+        namespace: tuple[str, ...],
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,  # noqa: A002  # Matches LangGraph BaseStore.asearch() API
+        page_size: int = 100,
+    ) -> list[Item]:
+        """Async version of `_search_store_paginated`."""
+        all_items: list[Item] = []
+        offset = 0
+        while True:
+            page_items = await store.asearch(
+                namespace,
+                query=query,
+                filter=filter,
+                limit=page_size,
+                offset=offset,
+            )
+            if not page_items:
+                break
+            all_items.extend(page_items)
+            if len(page_items) < page_size:
+                break
+            offset += page_size
+
+        return all_items
+
     def ls(self, path: str) -> LsResult:
         """List files and directories in the specified directory (non-recursive).
 
@@ -425,8 +459,10 @@ class StoreBackend(BackendProtocol):
             path: Absolute path to directory.
 
         Returns:
-            List of FileInfo-like dicts for files and directories directly in the directory.
-            Directories have a trailing / in their path and is_dir=True.
+            List of `FileInfo`-like dicts for files and directories directly
+                in the directory.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -492,8 +528,9 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested
-            window. Line-number formatting is applied by the middleware.
+            `ReadResult` with raw (unformatted) content for the requested window.
+
+                Line-number formatting is applied by the middleware.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -507,7 +544,7 @@ class StoreBackend(BackendProtocol):
         except ValueError as e:
             return ReadResult(error=str(e))
 
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)
@@ -531,7 +568,7 @@ class StoreBackend(BackendProtocol):
     ) -> ReadResult:
         """Async version of read using native store async methods.
 
-        This avoids sync calls in async context by using store.aget directly.
+        This avoids sync calls in async context by using `store.aget` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -545,7 +582,7 @@ class StoreBackend(BackendProtocol):
         except ValueError as e:
             return ReadResult(error=str(e))
 
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)
@@ -566,20 +603,19 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
-        Returns WriteResult on success or error.
+        Returns `WriteResult` on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
 
-        # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        # Create new file
-        file_data = create_file_data(content)
+            existing_file_data = self._convert_store_item_to_file_data(existing)
+            file_data = update_file_data(existing_file_data, content)
+        else:
+            file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -591,18 +627,17 @@ class StoreBackend(BackendProtocol):
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        This avoids sync calls in async context by using `store.aget`/`aput` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
 
-        # Check if file exists using async method
         existing = await store.aget(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        # Create new file using async method
-        file_data = create_file_data(content)
+            existing_file_data = self._convert_store_item_to_file_data(existing)
+            file_data = update_file_data(existing_file_data, content)
+        else:
+            file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -616,7 +651,7 @@ class StoreBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        Returns EditResult on success or error.
+        Returns `EditResult` on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -654,7 +689,7 @@ class StoreBackend(BackendProtocol):
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        This avoids sync calls in async context by using `store.aget`/`aput` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -682,6 +717,49 @@ class StoreBackend(BackendProtocol):
         store_value = self._convert_file_data_to_store_value(new_file_data)
         await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the store.
+
+        Deleting a path removes the exact key `file_path` plus every key nested
+        under it (the prefix `file_path` + "/"), so a directory is removed
+        recursively. Wildcards (e.g. `*`) in `file_path` are treated literally.
+
+        Args:
+            file_path: Path of the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if no key is
+                stored at or under it.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = self._search_store_paginated(store, namespace)
+        # A recursive delete removes the exact key plus everything nested under it.
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
+        if not to_delete:
+            return DeleteResult(error=f"Error: File '{file_path}' not found")
+
+        store.batch([PutOp(namespace, key, None) for key in to_delete])
+        return DeleteResult(path=file_path)
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of `delete` using native store async methods."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = await self._asearch_store_paginated(store, namespace)
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
+        if not to_delete:
+            return DeleteResult(error=f"Error: File '{file_path}' not found")
+
+        await store.abatch([PutOp(namespace, key, None) for key in to_delete])
+        return DeleteResult(path=file_path)
 
     # Removed legacy grep() convenience to keep lean surface
 
@@ -744,11 +822,12 @@ class StoreBackend(BackendProtocol):
         Text files are stored as utf-8 strings.
 
         Args:
-            files: List of (path, content) tuples where content is bytes.
+            files: List of `(path, content)` tuples where content is bytes.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of `FileUploadResponse` objects, one per input file.
+
+                Response order matches input order.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -777,8 +856,9 @@ class StoreBackend(BackendProtocol):
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order.
+            List of `FileDownloadResponse` objects, one per input path.
+
+                Response order matches input order.
         """
         store = self._get_store()
         namespace = self._get_namespace()

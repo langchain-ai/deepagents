@@ -64,7 +64,7 @@ class _ActionOption(Static):
 
     @property
     def action(self) -> NotificationAction:
-        """Return the underlying action."""
+        """Underlying action."""
         return self._action
 
     def set_selected(self, selected: bool) -> None:

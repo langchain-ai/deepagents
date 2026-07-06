@@ -111,8 +111,13 @@ class MessageData:
     `tool_args` instead.
     """
 
-    id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex[:8]}")
-    """Unique identifier used to match the dataclass to its DOM widget."""
+    id: str = field(default_factory=lambda: f"msg-{uuid.uuid4().hex}")
+    """Unique identifier used to match the dataclass to its DOM widget.
+
+    Uses the full 128-bit `uuid4` hex (not a truncated prefix) so IDs stay
+    unique across large histories and long sessions; a widget-ID collision
+    raises `DuplicateIds` when the widget is mounted.
+    """
 
     timestamp: float = field(default_factory=time)
     """Unix epoch timestamp of when the message was created."""
@@ -298,7 +303,7 @@ class MessageData:
             UserMessage,
         )
 
-        widget_id = widget.id or f"msg-{uuid.uuid4().hex[:8]}"
+        widget_id = widget.id or f"msg-{uuid.uuid4().hex}"
 
         if isinstance(widget, SkillMessage):
             return cls(
@@ -514,19 +519,6 @@ class MessageStore:
             The message data, or None if not found.
         """
         return self._index.get(message_id)
-
-    def get_message_at_index(self, index: int) -> MessageData | None:
-        """Get a message by its index.
-
-        Args:
-            index: The index of the message.
-
-        Returns:
-            The message data, or None if index is out of bounds.
-        """
-        if 0 <= index < len(self._messages):
-            return self._messages[index]
-        return None
 
     def update_message(self, message_id: str, **updates: Any) -> bool:
         """Update a message's data.

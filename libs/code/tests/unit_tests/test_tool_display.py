@@ -181,19 +181,25 @@ class TestFormatToolDisplay:
 
     # --- file tools ---
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_file_path(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"file_path": "/tmp/test.py"})
         assert result.startswith(_PREFIX)
         assert tool_name in result
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_path_key(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"path": "/tmp/test.py"})
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_missing_path_falls_back_to_generic(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {})
         assert _PREFIX in result
@@ -290,6 +296,27 @@ class TestFormatToolDisplay:
     def test_execute_omits_timeout_when_invalid_string(self) -> None:
         result = format_tool_display("execute", {"command": "ls", "timeout": "abc"})
         assert "timeout" not in result
+
+    # --- js_eval ---
+
+    def test_js_eval_single_line_shows_full_snippet(self) -> None:
+        result = format_tool_display("js_eval", {"code": "1 + 1"})
+        assert result == f'{_PREFIX} js_eval("1 + 1")'
+
+    def test_js_eval_multiline_shows_first_line_with_ellipsis(self) -> None:
+        result = format_tool_display(
+            "js_eval", {"code": "const x = 1;\nconst y = 2;\nx + y"}
+        )
+        # First non-blank line only, with an ellipsis marking the elision.
+        assert result == f'{_PREFIX} js_eval("const x = 1;{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_skips_leading_blank_lines(self) -> None:
+        result = format_tool_display("js_eval", {"code": "\n\nreal();\nmore();"})
+        assert result == f'{_PREFIX} js_eval("real();{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_empty_code(self) -> None:
+        result = format_tool_display("js_eval", {"code": "   "})
+        assert result == f"{_PREFIX} js_eval()"
 
     # --- ls ---
 

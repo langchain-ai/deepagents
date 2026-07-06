@@ -88,6 +88,10 @@ def test_headless_installs_ripgrep_when_warning_is_suppressed() -> None:
             return_value=True,
         ),
         patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+        patch(
+            "deepagents_code.managed_tools.managed_rg_path",
+            return_value=Path("/managed/rg"),
+        ),
         patch("deepagents_code.managed_tools.prepend_managed_bin_to_path", prepend),
         patch(
             "deepagents_code.non_interactive.run_non_interactive",
@@ -593,6 +597,15 @@ class TestMaxTurnsArgument:
         assert exc_info.value.code == 2
 
 
+async def _raise_timeout_and_close(awaitable: object, **_kwargs: object) -> None:
+    """Close the mocked awaitable before simulating a timeout."""
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+    await asyncio.sleep(0)
+    raise TimeoutError
+
+
 def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
     """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
 
@@ -732,7 +745,7 @@ class TestTimeoutArgument:
             ),
             patch(
                 "asyncio.wait_for",
-                side_effect=asyncio.TimeoutError,
+                side_effect=_raise_timeout_and_close,
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -1425,23 +1438,47 @@ class TestUpdateSubcommand:
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
         log_path: str = "/tmp/deepagents-update.log",
+        prerelease: bool = False,
+        flag_style: bool = False,
+        prerelease_before_command: bool = False,
+        install_method: str = "uv",
+        release_requires_prereleases: bool = False,
     ) -> tuple[int, MagicMock, MagicMock]:
-        """Invoke `cli_main()` with `update` subcommand; return exit code + mocks."""
+        """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
+        if prerelease_before_command:
+            argv = ["deepagents", "--prerelease", "update"]
+        elif flag_style:
+            argv = ["deepagents", "--update"]
+        else:
+            argv = ["deepagents", "update"]
+        if prerelease:
+            argv.append("--prerelease")
         with (
             patch.dict(os.environ, {DEBUG_UPDATE: "1" if debug else ""}),
-            patch.object(sys, "argv", ["deepagents", "update"]),
+            patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.config._is_editable_install", return_value=editable),
+            # `--prerelease` is only honored on uv installs; pin the detected
+            # method so the precheck's outcome is driven by the test rather than
+            # the test runner's own environment.
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value=install_method,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=release_requires_prereleases,
+            ),
             patch(
                 "deepagents_code.update_check.create_update_log_path",
                 return_value=log_path,
@@ -1510,12 +1547,178 @@ class TestUpdateSubcommand:
 
     def test_update_available_runs_upgrade(self) -> None:
         """`(True, "x.y.z")` triggers `perform_upgrade` and exits 0 on success."""
-        code, _, perform_upgrade_mock = self._run_update(
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
             editable=False,
             is_update_available_return=(True, "99.0.0"),
         )
         assert code == 0
-        perform_upgrade_mock.assert_awaited_once()
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
+
+    def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
+        self,
+    ) -> None:
+        """Stable releases with pre-release deps let `perform_upgrade` pin the app."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            release_requires_prereleases=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
+
+    def test_prerelease_update_includes_prereleases(self) -> None:
+        """`dcode update --prerelease` opts into alpha/beta/rc releases."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+            target_version="99.0.0rc1",
+        )
+
+    def test_prerelease_update_flag_includes_prereleases(self) -> None:
+        """`dcode --update --prerelease` uses the same prerelease path."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            flag_style=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+            target_version="99.0.0rc1",
+        )
+
+    def test_prerelease_before_update_includes_prereleases(self) -> None:
+        """`dcode --prerelease update` preserves the top-level prerelease flag."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease_before_command=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=True,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=True,
+            target_version="99.0.0rc1",
+        )
+
+    def test_prerelease_unsupported_install_refuses_before_pypi(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` on a non-uv install refuses before hitting PyPI.
+
+        A regression that dropped the guard would let a brew/other install fall
+        through to a stable update (or an unsupported upgrade attempt), so the
+        refusal must short-circuit before `is_update_available`/`perform_upgrade`.
+        """
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0rc1"),
+            prerelease=True,
+            install_method="brew",
+        )
+
+        assert code == 1
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_called()
+        captured = capsys.readouterr()
+        assert "aren't supported for this install" in (captured.out + captured.err)
+
+    def test_unexpected_error_manual_command_keeps_prerelease(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An unexpected crash during `--prerelease` keeps the pre-release hint.
+
+        The last-resort handler prints a manual upgrade command. A regression
+        that hardcoded the stable command would nudge a user who requested a
+        pre-release onto the stable channel — the exact silent downgrade this
+        flag guards against, via an error side-door.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "update", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            # Crash after the pre-release support check passes but before the
+            # upgrade completes, exercising the catch-all fallback path.
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "--prerelease allow" in (captured.out + captured.err)
+
+    def test_prerelease_without_update_exits_usage_error(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--prerelease` only applies to the update command."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--prerelease"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--prerelease requires --update or the update subcommand" in (
+            capsys.readouterr().err
+        )
 
 
 class TestInstallExtraSubcommand:
@@ -1546,7 +1749,10 @@ class TestInstallExtraSubcommand:
         # the handler's `isatty()` refusal check.
         mock_stdin.read.return_value = ""
         command_mock = MagicMock(
-            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+            return_value=(
+                "curl -LsSf https://langch.in/dcode | "
+                f"DEEPAGENTS_CODE_EXTRAS={extra} bash"
+            ),
         )
         if command_side_effect is not None:
             command_mock.side_effect = command_side_effect
@@ -1572,6 +1778,10 @@ class TestInstallExtraSubcommand:
             ),
             patch(
                 "deepagents_code.update_check.install_extra_command",
+                command_mock,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
                 command_mock,
             ),
             patch(
@@ -1631,9 +1841,18 @@ class TestInstallExtraSubcommand:
         perform_return: tuple[bool, str] = (True, ""),
         perform_side_effect: BaseException | None = None,
         command_side_effect: BaseException | None = None,
+        command_return: str | None = None,
+        recovery_side_effect: BaseException | None = None,
+        recovery_return: str | None = None,
         input_reply: str = "n",
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `--install` and capture console output.
+
+        `install_extra_command` and `install_extra_recovery_command` share one
+        mock by default (the realistic "both resolve identically" case). Pass
+        `recovery_return` or `recovery_side_effect` to drive the recovery
+        command independently — e.g. to exercise the path where the initial
+        command resolves but the recovery command raises.
 
         Returns:
             `(exit_code, perform_mock, console_mock)` — *console_mock* is a
@@ -1657,11 +1876,22 @@ class TestInstallExtraSubcommand:
             perform_mock.side_effect = perform_side_effect
         else:
             perform_mock.return_value = perform_return
-        command_mock = MagicMock(
-            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+        default_script_cmd = (
+            f"curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS={extra} bash"
         )
+        command_mock = MagicMock(return_value=command_return or default_script_cmd)
         if command_side_effect is not None:
             command_mock.side_effect = command_side_effect
+        # Default: recovery resolves to the same command. Only split into its
+        # own mock when a test drives the recovery command independently.
+        if recovery_return is not None or recovery_side_effect is not None:
+            recovery_mock = MagicMock(
+                return_value=recovery_return or default_script_cmd
+            )
+            if recovery_side_effect is not None:
+                recovery_mock.side_effect = recovery_side_effect
+        else:
+            recovery_mock = command_mock
         with (
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
@@ -1678,6 +1908,10 @@ class TestInstallExtraSubcommand:
             patch(
                 "deepagents_code.update_check.install_extra_command",
                 command_mock,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                recovery_mock,
             ),
             patch(
                 "deepagents_code.update_check.perform_install_extra",
@@ -1705,7 +1939,7 @@ class TestInstallExtraSubcommand:
         assert "Installed extra 'quickjs'" in text
 
     def test_failure_renders_log_path_and_manual_command(self) -> None:
-        """A failed install surfaces both the log path and the manual uv command."""
+        """A failed install surfaces both the log path and manual script command."""
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
             perform_return=(False, "resolver: conflict"),
@@ -1715,8 +1949,40 @@ class TestInstallExtraSubcommand:
         assert "Install failed" in text
         assert "resolver: conflict" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
         assert "quickjs" in text
+
+    def test_failure_escapes_uv_recovery_command_markup(self) -> None:
+        """Failed uv recovery commands preserve extras rendered by Rich."""
+        command = "uv tool install -U 'deepagents-code[quickjs]'"
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_return=(False, "resolver: conflict"),
+            command_return=command,
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "deepagents-code\\[quickjs]" in text
+
+    def test_failure_recovery_command_error_keeps_prior_command(self) -> None:
+        """A recovery-command error on a failed install keeps the prior command.
+
+        The command resolved before the failure is shown instead of crashing.
+        """
+        resolved = "uv tool install -U 'deepagents-code[quickjs]'"
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_return=(False, "resolver: conflict"),
+            command_return=resolved,
+            recovery_side_effect=ValueError("bad receipt"),
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "Install failed" in text
+        # Falls back to the install_extra_command value resolved before the
+        # failure, with its bracket escaped for Rich.
+        assert "deepagents-code\\[quickjs]" in text
 
     def test_keyboard_interrupt_exits_130(self) -> None:
         """Ctrl-C during install exits 130 with an Aborted message."""
@@ -1738,7 +2004,8 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "disk full" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
         assert "quickjs" in text
 
     def test_command_generation_exception_uses_literal_fallback(self) -> None:
@@ -1753,7 +2020,8 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "metadata broken" in text
         assert "Run manually: " in text
-        assert "uv tool install -U 'deepagents-code\\[quickjs]'" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
 
     def test_interactive_decline_aborts(self) -> None:
         """Interactive TTY + reply 'n' to unknown extra aborts with exit 1."""
@@ -1964,3 +2232,384 @@ class TestParseInterpreterToolsFlag:
         with pytest.raises(SystemExit) as exc_info:
             _parse_interpreter_tools_flag("   ")
         assert exc_info.value.code == 2
+
+
+class TestInterpreterFlagParsing:
+    """`--interpreter` is a tri-state `BooleanOptionalAction` (default `None`)."""
+
+    def test_default_is_none(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        assert args.interpreter is None
+
+    def test_explicit_flag_is_true(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--interpreter"):
+            args = parse_args()
+        assert args.interpreter is True
+
+    def test_no_flag_is_false(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        assert args.interpreter is False
+
+
+class TestResolveInterpreterEnabled:
+    """Tests for `_resolve_interpreter_enabled`."""
+
+    def test_local_mode_uses_config_default(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            assert _resolve_interpreter_enabled(args) is False
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
+    def test_sandbox_defaults_disabled(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+    def test_explicit_flag_overrides_sandbox_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
+            args = parse_args()
+        assert _resolve_interpreter_enabled(args) is True
+
+    def test_explicit_no_flag_overrides_local_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+    def test_empty_sandbox_treated_as_local(self) -> None:
+        """An empty-string sandbox is falsy and must resolve as local mode.
+
+        Parity with the `_resolve_enable_interpreter` edge case (the CLI resolver
+        delegates to it); a regression in the falsy-sandbox guard must fail here
+        too, not only at the server-config layer.
+        """
+        import argparse
+
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        args = argparse.Namespace(interpreter=None, sandbox="")
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
+
+class TestRunTextualCliAsyncInterpreterDefault:
+    """Tests for TUI helper interpreter tri-state forwarding."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, None),
+            (True, True),
+            (False, False),
+        ],
+    )
+    async def test_forwards_interpreter_tri_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        value: bool | None,
+        expected: bool | None,
+    ) -> None:
+        from deepagents_code.app import AppResult
+        from deepagents_code.main import run_textual_cli_async
+
+        run_textual_app = AsyncMock(
+            return_value=AppResult(return_code=0, thread_id="thread")
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._get_default_model_spec",
+            lambda: "test-model",
+        )
+        monkeypatch.setattr("deepagents_code.config.detect_provider", lambda _: "")
+        monkeypatch.setattr(
+            "deepagents_code.onboarding.should_run_onboarding",
+            lambda: False,
+        )
+        monkeypatch.setattr("deepagents_code.app.run_textual_app", run_textual_app)
+
+        if value is not None:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+                enable_interpreter=value,
+            )
+        else:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+            )
+
+        server_kwargs = run_textual_app.call_args.kwargs["server_kwargs"]
+        assert server_kwargs["enable_interpreter"] is expected
+
+
+class TestWarnInterpreterToolsWithoutInterpreter:
+    """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
+
+    def test_warns_when_interpreter_disabled(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter-tools with --no-interpreter warns and does not exit."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--no-interpreter", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=False)
+        assert (
+            "--interpreter-tools has no effect when the interpreter is disabled"
+            in capsys.readouterr().err
+        )
+
+    def test_no_warning_with_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
+        assert capsys.readouterr().err == ""
+
+    def test_no_warning_without_flag(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Absent --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_emits_warning_on_non_interactive_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --no-interpreter --interpreter-tools` warns.
+
+        Guards the wiring (not just the helper): a dropped or misplaced call
+        site, or an earlier `sys.exit` swallowing the warning, fails here.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--no-interpreter",
+                    "--interpreter-tools",
+                    "safe",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            "--interpreter-tools has no effect when the interpreter is disabled"
+            in capsys.readouterr().err
+        )
+
+
+class TestWarnInterpreterDisabledBySandbox:
+    """Tests for `_warn_if_interpreter_disabled_by_sandbox` (stderr advisory)."""
+
+    def test_warns_when_sandbox_suppresses_default(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A `--sandbox` run with the default-on interpreter warns on stderr."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_silent_in_local_mode(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Local mode keeps the interpreter, so there is nothing to warn about."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_on_explicit_opt_out_under_sandbox(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An explicit `--no-interpreter` is the user's choice, not a drop."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_when_config_default_off(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A user who disabled the interpreter in config is not nagged."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_forwards_enabled_interpreter_in_local_mode(self) -> None:
+        """End-to-end: bare `-n task` resolves the interpreter on and forwards it.
+
+        Guards the `cli_main` -> `run_non_interactive` wiring: a dropped or
+        reverted assignment (e.g. back to a hard-coded `False`) fails here.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is True
+
+    def test_cli_main_warns_and_disables_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox` forwards the disabled interpreter and warns."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--sandbox", "daytona"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_cli_main_silent_on_explicit_opt_out_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox --no-interpreter` disables without an advisory."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--sandbox",
+                    "daytona",
+                    "--no-interpreter",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" not in capsys.readouterr().err

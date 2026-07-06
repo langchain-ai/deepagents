@@ -38,11 +38,13 @@ class AsyncSubAgent(TypedDict):
     LangGraph SDK. They run as background tasks that the main agent can
     monitor and update.
 
-    Compatible with LangGraph Platform (managed) and self-hosted servers.
-    Authentication for LangGraph Platform is handled automatically by the SDK
-    via environment variables (`LANGGRAPH_API_KEY`, `LANGSMITH_API_KEY`, or
-    `LANGCHAIN_API_KEY`). For self-hosted servers, pass custom auth via
-    `headers`.
+    Compatible with LangGraph Platform / LangSmith Deployment (managed) and
+    self-hosted servers.
+
+    Authentication for LangGraph Platform / LangSmith Deployment is handled
+    automatically by the SDK via environment variables (`LANGGRAPH_API_KEY`,
+    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`). For self-hosted servers,
+    pass custom auth via `headers`.
     """
 
     name: str
@@ -449,10 +451,10 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         if isinstance(task, str):
             return task
 
-        client = clients.get_sync(task["agent_name"])
         try:
+            client = clients.get_sync(task["agent_name"])
             run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -618,10 +620,10 @@ def _build_cancel_tool(
         if isinstance(tracked, str):
             return tracked
 
-        client = clients.get_sync(tracked["agent_name"])
         try:
+            client = clients.get_sync(tracked["agent_name"])
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
             return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncTask(
@@ -847,7 +849,7 @@ def _build_async_subagent_tools(
         agents: List of async subagent specifications.
 
     Returns:
-        List of StructuredTools for launch, check, update, cancel, and list operations.
+        List of `StructuredTools` for launch, check, update, cancel, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)

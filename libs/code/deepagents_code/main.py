@@ -1897,7 +1897,8 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
@@ -2056,7 +2057,8 @@ async def _run_acp_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
     Returns:
         Exit code for ACP mode.
@@ -2351,12 +2353,20 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt.
 
+    Servers already resolved by the user's `enabled_project_servers` /
+    `disabled_project_servers` lists are shown for transparency but not
+    prompted for (enabled ones load regardless; disabled ones never load).
+    `None` is returned when that leaves nothing to decide. If the user's own
+    allow/deny policy cannot be read, returns `False` (fail closed) rather than
+    prompting under an unknown deny list.
+
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project servers, `False` to deny, or `None`
-            when no project servers exist.
+        `True` to allow project servers, `False` to deny (including when the
+            user's trust policy could not be read), or `None` when there are no
+            project servers whose fate this prompt decides.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2421,20 +2431,85 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
         return True
 
-    # Interactive prompt
+    # Partition by the user's own allow/deny lists (read only from home config,
+    # never the repo — the same boundary the loader enforces). Enabled servers
+    # load regardless of the answer here and disabled ones never load, so the
+    # prompt must not *ask* about them. It still *shows* them, though, so the
+    # user sees what their config decided — notably a repo redefining an
+    # allowlisted name, which binds by name rather than by fingerprint.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
     from rich.console import Console as _Console
+    from rich.markup import escape
+
+    prompt_console = _Console(stderr=True)
+    prompt_servers: list[tuple[str, str, str]] = []
+    preapproved: list[tuple[str, str, str]] = []
+    blocked: list[tuple[str, str, str]] = []
+    for name, kind, summary in all_servers:
+        # Disabled first: reject precedence (a name in both lists is disabled).
+        if name in trust_lists.disabled:
+            blocked.append((name, kind, summary))
+        elif name in trust_lists.enabled:
+            preapproved.append((name, kind, summary))
+        else:
+            prompt_servers.append((name, kind, summary))
+
+    def _print_auto_resolved() -> None:
+        """List servers the config already decided, without asking about them."""
+        if not preapproved and not blocked:
+            return
+        prompt_console.print()
+        prompt_console.print(
+            "[dim]Resolved by your config (not prompted):[/dim]", highlight=False
+        )
+        for name, kind, summary in preapproved:
+            prompt_console.print(
+                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
+                f"(enabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+        for name, kind, summary in blocked:
+            prompt_console.print(
+                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
+                f"(disabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+
+    if trust_lists.read_error is not None:
+        # The user's allow/deny policy could not be read. Fail closed here too
+        # (matching the loader, which forces the config untrusted) instead of
+        # prompting and possibly persisting fingerprint trust under an unknown
+        # deny list. Any env-enabled names still load — the loader re-applies the
+        # lists downstream — but nothing is approved via this prompt.
+        prompt_console.print(
+            f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
+            "project MCP servers as untrusted.[/yellow]",
+            highlight=False,
+        )
+        _print_auto_resolved()
+        return False
+
+    if not prompt_servers:
+        # Nothing left to decide interactively, but surface what the lists
+        # resolved so a load driven purely by config is never fully silent.
+        _print_auto_resolved()
+        return None
 
     docs_url = (
         "https://docs.langchain.com/oss/python/deepagents/code/"
         "mcp-tools#project-level-trust"
     )
-    prompt_console = _Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, kind, summary in all_servers:
-        prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
+    for name, kind, summary in prompt_servers:
+        prompt_console.print(
+            f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+    _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
         f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",

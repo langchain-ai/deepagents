@@ -114,7 +114,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_with_feature_branch(self) -> None:
         """Feature branch names with slashes should display correctly."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "feat/new-feature"
             await pilot.pause()

@@ -449,6 +449,19 @@ class TestFormatRelativeTimestamp:
         result = sessions.format_relative_timestamp(ts)
         assert result.endswith("s ago")
 
+    def test_boundary_360_to_364_days_shows_months(self) -> None:
+        """360-364 days old should show months, never the bogus '0y ago'."""
+        for days in (360, 362, 364):
+            ts = (datetime.now(tz=UTC) - timedelta(days=days, hours=1)).isoformat()
+            result = sessions.format_relative_timestamp(ts)
+            assert result == "12mo ago"
+
+    def test_boundary_365_days_shows_years(self) -> None:
+        """At exactly 365 days, the year bucket takes over with '1y ago'."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=365, hours=1)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result == "1y ago"
+
 
 class TestFormatPath:
     """Tests for format_path helper."""
@@ -506,6 +519,75 @@ class TestTextualSessionState:
         assert new_id != old_id
         assert uuid.UUID(new_id).version == 7
         assert state.thread_id == new_id
+
+    def test_reset_thread_clears_approval_mode_key(self):
+        """A new thread must not inherit the prior thread's live approval key.
+
+        The key is hashed per thread; leaving a stale key would point the
+        interrupt predicate at the previous thread's mode.
+        """
+        state = TextualSessionState(thread_id="original")
+        state.approval_mode_key = "stale"
+        state.reset_thread()
+        assert state.approval_mode_key is None
+
+    def test_advance_turn_increments_and_generates_id(self):
+        """advance_turn bumps a 1-based turn_number and yields a fresh turn_id."""
+        state = TextualSessionState(thread_id="t")
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id_1, turn_number_1 = state.advance_turn()
+        assert turn_number_1 == 1
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id_1
+        assert uuid.UUID(turn_id_1)  # valid uuid
+
+        turn_id_2, turn_number_2 = state.advance_turn()
+        assert turn_number_2 == 2
+        assert turn_id_2 != turn_id_1
+
+    def test_reset_thread_resets_turn_markers(self):
+        """reset_thread restarts the per-thread turn sequence."""
+        state = TextualSessionState(thread_id="t")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.reset_thread()
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+    def test_thread_switch_resets_turn_markers(self):
+        """Assigning a different thread_id must not carry the prior turn count.
+
+        `/threads` switches and resume injection set `thread_id` directly
+        (not via `reset_thread`); the per-thread turn sequence has to restart so
+        the switched-to thread's traces aren't ordered under the previous
+        thread's turn_number/turn_id.
+        """
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.thread_id = "thread-b"
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id, turn_number = state.advance_turn()
+        assert turn_number == 1
+        assert state.turn_id == turn_id
+
+    def test_thread_id_reassigned_same_value_keeps_turn_markers(self):
+        """Re-assigning the identical thread_id is a no-op for the turn markers."""
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        turn_id = state.turn_id
+
+        state.thread_id = "thread-a"
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id
 
 
 class TestFindSimilarThreads:
@@ -2789,3 +2871,94 @@ class TestInitialPromptFromMessages:
             [{"role": "assistant", "content": "ack"}]
         )
         assert result is None
+
+    def test_skips_system_prefixed_human_message(self) -> None:
+        """Synthetic `[SYSTEM]` interrupt notices are not used as the prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(
+                    content="[SYSTEM] Task interrupted by user. "
+                    "Previous operation was cancelled."
+                ),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_skips_system_prefixed_dict_message(self) -> None:
+        """`[SYSTEM]`-prefixed OpenAI-shape dicts are skipped too."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_returns_none_when_only_system_message(self) -> None:
+        """A lone `[SYSTEM]` message yields no displayable prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [HumanMessage(content="[SYSTEM] Task interrupted by user.")]
+        )
+        assert result is None
+
+    def test_skips_system_message_across_mixed_shapes(self) -> None:
+        """Skipping advances across object/dict shapes, not just within one.
+
+        The first write to `messages` is a raw dict; later writes are serialized
+        `BaseMessage` instances, so a real thread mixes the two shapes. The skip
+        must carry over from a `[SYSTEM]` dict to a real `HumanMessage` object
+        and vice versa.
+        """
+        from langchain_core.messages import HumanMessage
+
+        dict_then_object = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert dict_then_object == "real prompt"
+
+        object_then_dict = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] Task interrupted by user."),
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert object_then_dict == "real prompt"
+
+    def test_skips_consecutive_system_messages(self) -> None:
+        """A run of several `[SYSTEM]` messages is skipped, not just the first."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] first notice"),
+                HumanMessage(content="[SYSTEM] second notice"),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_empty_first_content_returns_without_falling_through(self) -> None:
+        """Empty (non-`[SYSTEM]`) first content returns as-is, not skipped.
+
+        Only `[SYSTEM]`-prefixed content is skipped; an empty-string first human
+        message is returned verbatim (`""`) rather than falling through to a
+        later message. This pins the `prompt is not None` guard so a future
+        "skip empties" change cannot silently alter behavior.
+        """
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content=""),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == ""

@@ -1,19 +1,21 @@
 """langchain-quickjs: persistent JS REPL middleware for agents."""
 
 from langchain_quickjs._ptc import PTCOption
-from langchain_quickjs._swarm_task import (
-    SwarmSubAgent,
-    SwarmTaskMode,
-    VariantCache,
-    create_swarm_task_tool,
+from langchain_quickjs._subagent import (
+    SUBAGENT_STREAM_EVENT_TYPE,
+    SubagentCompleteEvent,
+    SubagentErrorEvent,
+    SubagentStartEvent,
+    SubagentStreamEvent,
 )
 from langchain_quickjs.middleware import CodeInterpreterMiddleware
 
 __all__ = [
+    "SUBAGENT_STREAM_EVENT_TYPE",
     "CodeInterpreterMiddleware",
     "PTCOption",
-    "SwarmSubAgent",
-    "SwarmTaskMode",
-    "VariantCache",
-    "create_swarm_task_tool",
+    "SubagentCompleteEvent",
+    "SubagentErrorEvent",
+    "SubagentStartEvent",
+    "SubagentStreamEvent",
 ]

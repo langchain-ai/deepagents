@@ -2,12 +2,14 @@
 
 import uuid
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
+from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
 from deepagents_code.remote_client import (
     RemoteAgent,
     _convert_ai_message,
@@ -252,6 +254,72 @@ def _config() -> dict[str, Any]:
     return {"configurable": {"thread_id": _TEST_THREAD_ID}}
 
 
+def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
+    """RemoteAgent whose mock graph records the kwargs passed to `astream`."""
+    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    captured: dict[str, Any] = {}
+    mock_graph = MagicMock()
+
+    async def fake_astream(  # noqa: RUF029
+        input: Any,  # noqa: A002, ANN401, ARG001
+        **kwargs: Any,
+    ) -> Any:  # noqa: ANN401
+        captured.update(kwargs)
+        for ev in ():  # async generator that yields nothing
+            yield ev
+
+    mock_graph.astream = fake_astream
+    agent._graph = mock_graph
+    return agent, captured
+
+
+class TestRemoteAgentReplicaForwarding:
+    """`astream` forwards the LangSmith replica project to the server SDK.
+
+    The server mirrors a run to an extra project only via the SDK's
+    `langsmith_tracing` field, so these lock the exact kwarg name and payload
+    shape `RemoteGraph.astream` (and thus `client.runs.stream`) expects.
+
+    `test_forwards_replica_project` / `test_no_kwarg_when_unset` assert the
+    payload against a mock graph that swallows any kwarg, so they verify only
+    the `RemoteAgent` side of the contract. `test_sdk_accepts_langsmith_tracing`
+    pins the *other* side — that the real SDK still accepts the kwarg and shape —
+    so a future SDK rename surfaces here rather than silently dropping replicas.
+    """
+
+    async def test_forwards_replica_project(self, monkeypatch) -> None:
+        """A configured replica is passed through as `langsmith_tracing`."""
+        monkeypatch.setenv(LANGSMITH_REPLICA_PROJECTS, "mason-dual-trace")
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert captured["langsmith_tracing"] == {"project_name": "mason-dual-trace"}
+
+    async def test_no_kwarg_when_unset(self, monkeypatch) -> None:
+        """Without a replica, `langsmith_tracing` is not passed at all."""
+        monkeypatch.delenv(LANGSMITH_REPLICA_PROJECTS, raising=False)
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert "langsmith_tracing" not in captured
+
+    def test_sdk_accepts_langsmith_tracing(self) -> None:
+        """The real SDK still accepts the kwarg name and `project_name` shape.
+
+        `RemoteGraph.astream` forwards unknown kwargs to `client.runs.stream`, so
+        a silent drop would happen if either the parameter or the payload key
+        were renamed upstream. This guards both.
+        """
+        import inspect
+
+        from langgraph_sdk.client import RunsClient
+        from langgraph_sdk.schema import LangSmithTracing
+
+        params = inspect.signature(RunsClient.stream).parameters
+        assert "langsmith_tracing" in params
+        assert "project_name" in LangSmithTracing.__annotations__
+
+
 # ---------------------------------------------------------------------------
 # RemoteAgent — astream delegation
 # ---------------------------------------------------------------------------
@@ -489,6 +557,19 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
+    async def test_forwards_as_node(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"}, as_node="model")
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        update_args = mock_graph.aupdate_state.await_args
+        assert update_args is not None
+        assert update_args.kwargs["as_node"] == "model"
+
     async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         with pytest.raises(ValueError, match="thread_id"):
@@ -514,6 +595,42 @@ class TestRemoteAgentUpdateState:
         )
         call_config = mock_graph.aupdate_state.call_args[0][0]
         uuid.UUID(call_config["configurable"]["thread_id"])
+
+
+class TestRemoteAgentCancelActiveRuns:
+    """`acancel_active_runs` exposes best-effort remote run cancellation."""
+
+    async def test_cancels_running_and_pending_runs(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}],
+                [{"run_id": "run-2"}],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+
+        await agent.acancel_active_runs(_config())
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 2
+        assert {call.args[1] for call in runs_cancel.await_args_list} == {
+            "run-1",
+            "run-2",
+        }
+
+    async def test_raises_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.acancel_active_runs({"configurable": {}})
 
 
 def _conflict_error() -> Exception:
@@ -722,6 +839,44 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert mock_graph.aupdate_state.await_count == 1
         runs_list.assert_not_called()
         runs_cancel.assert_not_called()
+
+
+class TestRemoteAgentStore:
+    async def test_aput_store_item_uses_unindexed_put(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock())
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        store.put_item.assert_awaited_once_with(
+            ("ns",),
+            "key",
+            {"auto_approve": True},
+            index=False,
+        )
+
+    async def test_aput_store_item_logs_and_reraises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock(side_effect=RuntimeError("boom")))
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        with (
+            caplog.at_level("DEBUG", logger="deepagents_code.remote_client"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        assert "Failed to write store item ns/key" in caplog.text
 
 
 class TestRemoteAgentEnsureThread:

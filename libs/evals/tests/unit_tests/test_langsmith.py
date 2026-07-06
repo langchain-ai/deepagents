@@ -117,11 +117,14 @@ class TestHeaders:
 class TestDownloadDataset:
     """Tests for Harbor registry client compatibility helpers."""
 
-    def test_dataset_ref_appends_version_to_unversioned_name(self) -> None:
-        assert _dataset_ref("terminal-bench", "2.0") == "terminal-bench@2.0"
+    def test_dataset_ref_preserves_harbor_dataset_ref(self) -> None:
+        assert (
+            _dataset_ref("terminal-bench/terminal-bench-2", "2.0")
+            == "terminal-bench/terminal-bench-2"
+        )
 
-    def test_dataset_ref_preserves_explicit_version(self) -> None:
-        assert _dataset_ref("terminal-bench@2.0", "head") == "terminal-bench@2.0"
+    def test_dataset_ref_ignores_deprecated_version_argument(self) -> None:
+        assert _dataset_ref("terminal-bench", "2.0") == "terminal-bench"
 
     def test_download_dataset_uses_factory_client(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -134,14 +137,13 @@ class TestDownloadDataset:
         )
 
         result = _download_dataset(
-            "terminal-bench",
-            version="2.0",
+            "terminal-bench/terminal-bench-2",
             overwrite=True,
             output_dir=tmp_path,
         )
 
         assert result == []
-        assert fake.calls == [("terminal-bench@2.0", True, tmp_path)]
+        assert fake.calls == [("terminal-bench/terminal-bench-2", True, tmp_path)]
 
     def test_download_dataset_unwraps_async_result(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -157,8 +159,7 @@ class TestDownloadDataset:
         )
 
         result = _download_dataset(
-            "terminal-bench",
-            version="2.0",
+            "terminal-bench/terminal-bench-2",
             overwrite=False,
             output_dir=tmp_path,
         )

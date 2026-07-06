@@ -22,7 +22,7 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     """Format an auth manager badge for a provider.
 
     Used by the `/auth` manager, where each provider renders a bracketed,
-    styled badge (e.g. `[stored]`, `[env: ANTHROPIC_API_KEY]`, `[missing]`).
+    styled badge (e.g. `[stored]`, `[env set: ANTHROPIC_API_KEY]`, `[missing]`).
 
     Args:
         status: Provider auth/readiness status.
@@ -75,8 +75,6 @@ def format_auth_indicator(status: ProviderAuthStatus, glyphs: Glyphs) -> str:
         case ProviderAuthState.CONFIGURED:
             return ""
         case ProviderAuthState.MISSING:
-            if status.env_var:
-                return f"{glyphs.warning} missing {status.env_var}"
             return f"{glyphs.warning} missing credentials"
         case ProviderAuthState.NOT_REQUIRED:
             return status.detail or "no API key required"
@@ -160,7 +158,7 @@ def _format_configured_badge(status: ProviderAuthStatus) -> Content:
         status: A `CONFIGURED` provider auth status.
 
     Returns:
-        A styled badge naming the credential source (`[stored]` or `[env: …]`).
+        A styled badge naming the credential source (`[stored]` or `[env set: …]`).
 
     Raises:
         ValueError: If the status carries no source. `ProviderAuthStatus`
@@ -173,7 +171,7 @@ def _format_configured_badge(status: ProviderAuthStatus) -> Content:
         case ProviderAuthSource.ENV:
             if status.env_var:
                 return Content.assemble(
-                    ("[env: ", "$text-muted"),
+                    ("[env set: ", "$text-muted"),
                     Content.styled(
                         resolved_env_var_name(status.env_var), "$text-muted"
                     ),

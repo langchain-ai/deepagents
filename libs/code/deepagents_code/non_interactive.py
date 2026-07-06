@@ -13,12 +13,14 @@ Shell commands are gated by an optional allow-list (`--shell-allow-list`):
     against the list; non-shell tools approved unconditionally.
 - `all` → shell enabled, any command allowed, all tools auto-approved.
 
-An optional quiet mode (`--quiet` / `-q`) redirects all console output to
-stderr, leaving stdout exclusively for the agent's response text.
+An optional quiet mode (`--quiet` / `-q`) suppresses stream-time diagnostics
+(the tool-call and file-operation notifications) so stdout carries only the
+agent's response text.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import threading
@@ -37,6 +39,19 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._cli_context import CLIContext
+from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+    ToolCallBufferKey,
+    ToolStatus,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -47,10 +62,15 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.hooks import dispatch_hook, dispatch_hook_fire_and_forget
+from deepagents_code.hooks import (
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+    drain_pending_hooks,
+)
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.textual_adapter import SessionStats, print_usage_table
+from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
@@ -108,6 +128,36 @@ def _write_newline() -> None:
     sys.stdout.flush()
 
 
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a non-interactive run.
+
+    Legacy Windows consoles default to a locale code page (e.g. cp1252) that
+    cannot encode glyphs like "✓"; the first `console.print()` containing one
+    then crashes the whole run. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, TypeError):
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the run.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
+            continue
+
+
 class _ConsoleSpinner:
     """Animated spinner for non-interactive verbose output.
 
@@ -159,7 +209,6 @@ async def _terminate_startup_process(proc: Process) -> None:
     Args:
         proc: Process returned by `asyncio.create_subprocess_shell`.
     """
-    import asyncio
     import sys
 
     if proc.returncode is not None:
@@ -228,14 +277,32 @@ async def _terminate_startup_process(proc: Process) -> None:
         )
 
 
+@dataclass(frozen=True)
+class InFlightToolCall:
+    """A tool call whose `tool.use` has fired but whose result has not arrived.
+
+    Bundling the name and args into one record keeps them structurally in
+    lock-step: a single `dict[str, InFlightToolCall]` cannot represent an id with
+    args but no name (or vice versa), which two parallel dicts could. That
+    removes the desync failure mode where an orphaned drain would emit a
+    `tool.error` with an empty `tool_name`.
+    """
+
+    name: str
+    """The tool name, carried so an orphaned call can be closed with a name."""
+
+    args: dict[str, Any]
+    """The parsed tool-call arguments, for correlating the matching result."""
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
 
     quiet: bool = False
-    """When `True`, diagnostic formatting that would otherwise go to stdout
-    (e.g. separator newlines before tool notifications) is suppressed so that
-    stdout contains only agent response text."""
+    """When `True`, stream-time diagnostics (the tool-call and file-operation
+    notifications, plus the stdout separator newline preceding a tool call) are
+    suppressed, so stdout carries only agent response text."""
 
     stream: bool = True
     """When `True` (default), text chunks are written to stdout as they arrive.
@@ -247,11 +314,30 @@ class StreamState:
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
-    tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = field(
         default_factory=dict
     )
-    """Maps a tool-call index or ID to its name/ID metadata for in-progress
-    tool calls."""
+    """Maps a tool-call index or ID to its in-progress buffer: name, ID,
+    accumulated argument fragments, and the display latch."""
+
+    in_flight_tool_calls: dict[str, InFlightToolCall] = field(default_factory=dict)
+    """Maps in-flight tool-call IDs (those whose `tool.use` has fired) to their
+    name and parsed arguments, so the matching `tool.result` can be correlated.
+    Entries are removed when the result arrives; any still present when the
+    stream aborts are closed by `_dispatch_orphaned_tool_result_hooks`. One
+    record per id keeps name and args structurally in lock-step (see
+    `InFlightToolCall`)."""
+
+    displayed_tool_call_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs whose non-interactive call line has already been printed."""
+
+    emitted_tool_use_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs for which a `tool.use` has been dispatched.
+
+    Monotonic: never cleared within a run, so `tool.use` fires at most once per
+    id even if a call's arg chunks are redelivered after its result (mirrors the
+    TUI's `displayed_tool_ids`). Result correlation and the orphan drain use the
+    separate `in_flight_tool_calls`, which *is* cleared per result."""
 
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
     """Maps interrupt IDs to their validated HITL requests that are awaiting
@@ -275,6 +361,9 @@ class StreamState:
 
     spinner: _ConsoleSpinner | None = None
     """Optional animated spinner shown during agent work in verbose mode."""
+
+    show_rubric_iterations: bool = False
+    """Whether rubric lifecycle messages should include iteration numbers."""
 
 
 @dataclass
@@ -380,10 +469,13 @@ def _process_ai_message(
         output_toks = usage.get("output_tokens", 0)
         total_toks = usage.get("total_tokens", 0)
         active_model = settings.model_name or ""
+        active_provider = settings.model_provider or ""
         if input_toks or output_toks:
-            state.stats.record_request(active_model, input_toks, output_toks)
+            state.stats.record_request(
+                active_model, input_toks, output_toks, active_provider
+            )
         elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0)
+            state.stats.record_request(active_model, total_toks, 0, active_provider)
 
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
@@ -404,26 +496,77 @@ def _process_ai_message(
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
+            chunk_args = block.get("args")
 
-            if chunk_index is not None:
-                buffer_key: int | str = chunk_index
-            elif chunk_id is not None:
-                buffer_key = chunk_id
-            else:
-                buffer_key = f"unknown-{len(state.tool_call_buffers)}"
+            buffer_key = tool_call_buffer_key(
+                chunk_index, chunk_id, len(state.tool_call_buffers)
+            )
+            buffer = state.tool_call_buffers.setdefault(buffer_key, ToolCallBuffer())
+            buffer.ingest(name=chunk_name, tool_id=chunk_id, args=chunk_args)
 
-            if buffer_key not in state.tool_call_buffers:
-                state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
-            if chunk_name:
-                state.tool_call_buffers[buffer_key]["name"] = chunk_name
+            buffer_name = buffer.name
+            buffer_id = buffer.tool_id
+            already_displayed = (
+                isinstance(buffer_id, str)
+                and buffer_id in state.displayed_tool_call_ids
+            )
+            if (
+                isinstance(buffer_name, str)
+                and not buffer.displayed
+                and not already_displayed
+            ):
                 if state.spinner:
                     state.spinner.stop()
-                if state.full_response and not state.quiet:
-                    _write_newline()
-                console.print(
-                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
-                    highlight=False,
+                if not state.quiet:
+                    if state.full_response:
+                        _write_newline()
+                    console.print(
+                        f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
+                        highlight=False,
+                    )
+                buffer.displayed = True
+                if isinstance(buffer_id, str):
+                    state.displayed_tool_call_ids.add(buffer_id)
+            elif isinstance(buffer_id, str) and buffer.displayed:
+                state.displayed_tool_call_ids.add(buffer_id)
+
+            # Gate tool.use on a resolved tool id so this surface matches the
+            # interactive one, which dispatches at widget-mount time in
+            # `textual_adapter.execute_task_textual`. Both gate on a resolved
+            # tool-call id and fire at most once per id via a monotonic id set
+            # (`emitted_tool_use_ids` here, `displayed_tool_ids` there) that is
+            # never cleared within the run — see the "fire-once-per-id" clause of
+            # the parity contract in `_tool_stream`. Gating on the monotonic set
+            # rather than `in_flight_tool_calls` (which is cleared per result)
+            # means a redelivery of a completed call's arg chunks does not
+            # re-fire `tool.use` and spawn a spurious orphan.
+            parsed_args = buffer.parse_args()
+            if (
+                isinstance(buffer_name, str)
+                and buffer_id is not None
+                and parsed_args is not None
+                and buffer_id not in state.emitted_tool_use_ids
+            ):
+                dispatch_hook_fire_and_forget(
+                    "tool.use",
+                    build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
+                state.emitted_tool_use_ids.add(buffer_id)
+                state.in_flight_tool_calls[buffer_id] = InFlightToolCall(
+                    buffer_name, parsed_args
+                )
+            if (
+                isinstance(buffer_id, str)
+                and parsed_args is not None
+                and buffer_id in state.emitted_tool_use_ids
+            ):
+                # Drop the buffer so a later turn that reuses this streaming
+                # index (indices restart per message, per LangChain streaming
+                # semantics) starts fresh rather than reusing this call's state.
+                # This also clears a redelivered completed call's recreated
+                # buffer, whose `tool.use` is already suppressed by the
+                # monotonic `emitted_tool_use_ids`.
+                state.tool_call_buffers.pop(buffer_key, None)
 
 
 def _process_message_chunk(
@@ -461,16 +604,168 @@ def _process_message_chunk(
     if isinstance(message_obj, AIMessage):
         _process_ai_message(message_obj, state, console)
     elif isinstance(message_obj, ToolMessage):
+        tool_id = getattr(message_obj, "tool_call_id", None)
+        correlated_tool_name = ""
+        # Args come from the matching tool.use. They default to {} when the call
+        # had no id to correlate on, or no tool.use fired (e.g. its args never
+        # parsed). The seam is intentional — without a correlated id we cannot
+        # pair them — but log the correlation miss so a lost pairing is not
+        # completely silent.
+        if isinstance(tool_id, str):
+            in_flight = state.in_flight_tool_calls.pop(tool_id, None)
+            tool_args = in_flight.args if in_flight is not None else None
+            correlated_tool_name = in_flight.name if in_flight is not None else ""
+            state.displayed_tool_call_ids.discard(tool_id)
+            if tool_args is None:
+                # Warning, not info/debug: a real-id result with no matching
+                # tool.use means a hook consumer sees a `tool.result` with empty
+                # args for a tool that actually executed (its args never parsed) —
+                # degraded audit fidelity worth surfacing at default log levels,
+                # consistent with the rest of this feature's severity philosophy.
+                logger.warning(
+                    "tool.result for %s has no correlated tool.use args; "
+                    "sending empty tool_args",
+                    tool_id,
+                )
+                tool_args = {}
+        else:
+            tool_args = {}
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
             if state.spinner:
                 state.spinner.stop()
-            console.print(
-                f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
-                highlight=False,
+            if not state.quiet:
+                console.print(
+                    f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                    highlight=False,
+                )
+        tool_name = getattr(message_obj, "name", "")
+        if not tool_name:
+            tool_name = correlated_tool_name
+        # Normalize to the two-value hook domain, fail-closed: an unexpected
+        # provider status is logged and treated as an error (see
+        # `normalize_tool_status`) rather than silently reported as success.
+        tool_status: ToolStatus = normalize_tool_status(
+            getattr(message_obj, "status", "success"), tool_name
+        )
+        # Format the content the same way the interactive surface does so
+        # `tool_output` is identical across surfaces for list/structured content
+        # (e.g. multimodal or MCP tools returning content blocks) rather than a
+        # raw Python list repr here vs. extracted text there. Truncation to
+        # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
+        # Guard formatting so a formatter error can't skip the tool.result
+        # dispatch below; on failure use a sentinel (see the except) rather than
+        # re-touching the offending content, so the dispatch stays unconditional.
+        try:
+            tool_content = format_tool_message_content(message_obj.content)
+            tool_output = str(tool_content) if tool_content else ""
+        except Exception:
+            # Guard formatting *and* the str() coercion together: a pathological
+            # __str__ must not re-raise past the fallback and skip the
+            # tool.result dispatch below. Use a sentinel rather than re-touching
+            # the offending content, so the dispatch stays unconditional.
+            logger.exception("Failed to format tool output")
+            tool_output = UNRENDERABLE_TOOL_OUTPUT
+        # Headless always dispatches tool.result for every ToolMessage — there
+        # are no widgets to skip. The TUI handles ToolMessages in three branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path and
+        # an `else` for unmounted tools both dispatch (mirroring this
+        # always-dispatch behavior), while the `completed_tool_result_ids` branch
+        # suppresses a duplicate rather than dispatching. See the parity contract
+        # in `_tool_stream` for the full guarantee.
+        if tool_status == "error":
+            dispatch_hook_fire_and_forget(
+                "tool.error",
+                build_tool_error_payload(tool_name),
             )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                tool_name, tool_id, tool_args, tool_status, tool_output
+            ),
+        )
         if state.spinner:
             state.spinner.start()
+
+
+def _process_rubric_event(
+    data: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Render a `RubricMiddleware` lifecycle event from the custom stream.
+
+    `RubricMiddleware` emits `rubric_evaluation_start` / `rubric_evaluation_end`
+    dicts via `runtime.stream_writer`. Non-rubric custom payloads are ignored.
+
+    Args:
+        data: The custom-stream payload dict.
+        state: Shared stream state (used to pause the spinner).
+        console: Rich console for status output (stderr in `--quiet` mode).
+    """
+    event_type = data.get("type")
+    if event_type not in {"rubric_evaluation_start", "rubric_evaluation_end"}:
+        return
+
+    if state.spinner:
+        state.spinner.stop()
+
+    if event_type == "rubric_evaluation_start":
+        # `iteration` is untrusted streamed payload; only render the 1-based
+        # number when it is actually an int and the user explicitly requested an
+        # iteration cap. A non-int previously raised `TypeError` here and aborted
+        # the whole non-interactive run.
+        iteration = data.get("iteration", 0)
+        label = (
+            f" (iteration {iteration + 1})"
+            if state.show_rubric_iterations and isinstance(iteration, int)
+            else ""
+        )
+        console.print(
+            f"[dim]⏳ Checking acceptance criteria{label}…[/dim]",
+            highlight=False,
+        )
+        if state.spinner:
+            state.spinner.start()
+        return
+
+    result = data.get("result")
+    explanation = (data.get("explanation") or "").strip()
+    if result == "satisfied":
+        console.print("[green]✓ Acceptance criteria satisfied[/green]", highlight=False)
+    elif result == "needs_revision":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]↻ Changes need revision{suffix}[/yellow]", highlight=False
+        )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
+    elif result == "max_iterations_reached":
+        console.print(
+            "[yellow]⚠ Acceptance criteria not satisfied "
+            "(iteration limit reached)[/yellow]",
+            highlight=False,
+        )
+    elif result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+    elif result is not None:
+        # A `rubric_evaluation_end` with an unrecognized result is still a
+        # terminal grading event; surface it rather than letting the run go
+        # quiet mid-task (e.g. if the SDK adds a new verdict). Mirrors the
+        # interactive fallback in `textual_adapter._format_rubric_event`.
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+        )
+
+    if state.spinner:
+        state.spinner.start()
 
 
 def _process_stream_chunk(
@@ -507,6 +802,8 @@ def _process_stream_chunk(
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
+    elif stream_mode == "custom" and isinstance(data, dict):
+        _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
@@ -649,6 +946,7 @@ async def _stream_agent(
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,
+    context: CLIContext,
 ) -> None:
     """Consume the full agent stream and update *state* with results.
 
@@ -660,21 +958,62 @@ async def _stream_agent(
         state: Shared stream state.
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
+        context: Runtime context for model-call middleware.
     """
     if state.spinner:
         state.spinner.start()
     try:
         async for chunk in agent.astream(
             stream_input,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
             config=config,
+            context=context,
             durability="exit",
         ):
             _process_stream_chunk(chunk, state, console, file_op_tracker)
     finally:
         if state.spinner:
             state.spinner.stop()
+
+
+def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
+    """Close out `tool.use` events that never received a `ToolMessage`.
+
+    On a normally-completing run every `tool.use` is followed by a `ToolMessage`
+    that drains `in_flight_tool_calls`, so this is a no-op. When the stream is
+    aborted mid-flight (e.g. a provider error between the tool call and its
+    result), any id still present had its `tool.use` dispatched with no terminal
+    event; emit `tool.error` + a `tool_status="error"` `tool.result` for each so
+    the headless surface upholds the same "every `tool.use` is closed" guarantee
+    as the TUI's `_dispatch_terminal_tool_result_hooks`.
+
+    Args:
+        state: The stream state whose in-flight tool maps are drained.
+        tool_output: Terminal output recorded on each synthesized `tool.result`.
+    """
+    if state.in_flight_tool_calls:
+        # A non-empty in-flight map here means real tool results were lost to a
+        # mid-stream abort (a clean run drains every id via its result). Surface
+        # it at warning — matching the TUI's backstop for the same class — so an
+        # operator can tell a clean run from one that synthesized error closes,
+        # rather than the drain being silent (degraded audit fidelity).
+        logger.warning(
+            "Stream ended with %d in-flight tool call(s) that never received a "
+            "result; closing each with a synthetic tool.error/tool.result",
+            len(state.in_flight_tool_calls),
+        )
+    for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
+        dispatch_hook_fire_and_forget(
+            "tool.error", build_tool_error_payload(in_flight.name)
+        )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                in_flight.name, tool_id, in_flight.args, "error", tool_output
+            ),
+        )
+    state.in_flight_tool_calls.clear()
 
 
 async def _run_agent_loop(
@@ -689,6 +1028,8 @@ async def _run_agent_loop(
     message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
+    rubric: str | None = None,
+    show_rubric_iterations: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -715,54 +1056,118 @@ async def _run_agent_loop(
             HITL resumes).
 
             When `None`, falls back to `_MAX_HITL_ITERATIONS`.
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via the
+            graph's `rubric` state field.
+
+            `None` leaves it unset (no grading).
+        show_rubric_iterations: Whether rubric lifecycle messages should include
+            iteration numbers.
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
-    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
+    state = StreamState(
+        quiet=quiet,
+        stream=stream,
+        spinner=spinner,
+        show_rubric_iterations=show_rubric_iterations,
+    )
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
     stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    if rubric is not None:
+        stream_input["rubric"] = rubric
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
+    # An empty or missing thread ID carries no session identity, so leave it
+    # unset in context rather than passing a blank string to model middleware.
+    context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
+    context = CLIContext(thread_id=context_thread_id)
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
     start_time = time.monotonic()
 
-    # Initial stream
-    await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
-
-    # The internal default applies when --max-turns is omitted, guarding
-    # against unbounded runaway loops in scripts that forgot to set one.
-    effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
-
-    # The initial stream above counts as turn 1; each HITL resume is a further
-    # turn. Raise before starting a resume that would exceed the budget so the
-    # user-facing count matches the flag's semantics.
-    turns = 1
-    while state.interrupt_occurred:
-        if turns >= effective_limit:
-            limit_source = (
-                f"--max-turns {max_turns}"
-                if max_turns is not None
-                else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
-            )
-            msg = (
-                f"Exceeded {effective_limit} agentic turns ({limit_source}). "
-                "The agent may be stuck retrying rejected commands. "
-                "Increase --max-turns or break the task into smaller steps."
-            )
-            raise HITLIterationLimitError(msg)
-        turns += 1
-        state.interrupt_occurred = False
-        state.hitl_response.clear()
-        _process_hitl_interrupts(state, console)
-        stream_input = Command(resume=state.hitl_response)
+    try:
+        # Initial stream
         await _stream_agent(
-            agent, stream_input, config, state, console, file_op_tracker
+            agent, stream_input, config, state, console, file_op_tracker, context
         )
+
+        # The internal default applies when --max-turns is omitted, guarding
+        # against unbounded runaway loops in scripts that forgot to set one.
+        effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
+
+        # The initial stream above counts as turn 1; each HITL resume is a
+        # further turn. Raise before starting a resume that would exceed the
+        # budget so the user-facing count matches the flag's semantics.
+        turns = 1
+        while state.interrupt_occurred:
+            if turns >= effective_limit:
+                limit_source = (
+                    f"--max-turns {max_turns}"
+                    if max_turns is not None
+                    else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
+                )
+                msg = (
+                    f"Exceeded {effective_limit} agentic turns ({limit_source}). "
+                    "The agent may be stuck retrying rejected commands. "
+                    "Increase --max-turns or break the task into smaller steps."
+                )
+                raise HITLIterationLimitError(msg)
+            turns += 1
+            state.interrupt_occurred = False
+            state.hitl_response.clear()
+            _process_hitl_interrupts(state, console)
+            stream_input = Command(resume=state.hitl_response)
+            await _stream_agent(
+                agent, stream_input, config, state, console, file_op_tracker, context
+            )
+    finally:
+        # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
+        # aborted by a provider error mid-tool. On a clean run every id was
+        # already drained by its result, so this is a no-op. Guarded so a
+        # dispatch problem can never mask the exception propagating from the
+        # stream (this runs on the error path too).
+        try:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+        except Exception:
+            logger.warning(
+                "Orphaned tool.result drain failed unexpectedly", exc_info=True
+            )
+        # Surface any buffered tool call whose args never parsed: it never
+        # entered `in_flight_tool_calls` (so the orphan drain above skips it) and
+        # would otherwise be dropped with `state` at scope exit with no trace.
+        # Info, not warning — some of these may still have executed (their
+        # `tool.result` fired with `{}` args and logged a correlation miss); this
+        # only asserts the args never parsed. Guarded so a logging failure can
+        # never mask an exception propagating from the stream.
+        try:
+            # Two distinct reasons a buffered call never fired tool.use — args
+            # that never parsed, and args that parsed but carried no id (so
+            # tool.use was gated out). The classification is shared with the TUI
+            # via `count_unemitted_tool_calls`; each surface logs its own lines.
+            unemitted = count_unemitted_tool_calls(state.tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed but "
+                    "carried no tool-call id; no tool.use was emitted for them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
 
     wall_time = time.monotonic() - start_time
 
@@ -796,6 +1201,7 @@ def _build_non_interactive_header(
     thread_id: str,
     *,
     include_thread_link: bool = False,
+    rubric_active: bool = False,
 ) -> Text:
     """Build the non-interactive mode header with model, agent, and thread info.
 
@@ -807,6 +1213,8 @@ def _build_non_interactive_header(
         thread_id: Thread identifier.
         include_thread_link: Whether to resolve and render a LangSmith link for
             the thread ID.
+        rubric_active: Whether a rubric is active for this run; when `True`,
+            appends a `Rubric: active` marker so the behavior change is visible.
 
     Returns:
         Rich Text object with the formatted header line.
@@ -833,6 +1241,9 @@ def _build_non_interactive_header(
         )
     else:
         parts.append((f"Thread: {thread_id}", "dim"))
+
+    if rubric_active:
+        parts.extend([(" | ", "dim"), ("Rubric: active", "dim")])
 
     return Text.assemble(*parts)
 
@@ -862,7 +1273,6 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
-    import asyncio
     import sys
 
     if not quiet:
@@ -929,10 +1339,13 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
+    rubric: str | None = None,
+    rubric_model: str | None = None,
+    rubric_max_iterations: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -989,19 +1402,28 @@ async def run_non_interactive(
             servers. When `False` (default), project stdio servers are
             silently skipped.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
-            on the main agent. Local-mode only.
+            on the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
+        rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
+            agent self-evaluates against it and loops until satisfied.
+
+            `None` disables rubric grading.
+        rubric_model: Grader model spec; `None` reuses the main model.
+        rubric_max_iterations: Grader iterations per rubric attempt; `None`
+            uses the middleware default.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
             budget was exceeded (matching GNU `timeout`), 130 for keyboard
             interrupt.
     """
+    _make_stdio_encoding_safe()
+
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
@@ -1098,22 +1520,32 @@ async def run_non_interactive(
         return 1
 
     result.apply_to_settings()
+
     thread_id = generate_thread_id()
+
+    # One user turn per process: fresh turn id, turn_number 1.
+    from uuid import uuid4
 
     from deepagents_code.config import build_stream_config
 
     config: RunnableConfig = build_stream_config(
-        thread_id, assistant_id, sandbox_type=sandbox_type
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=str(uuid4()),
+        turn_number=1,
     )
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
-        header = _build_non_interactive_header(assistant_id, thread_id)
+        header = _build_non_interactive_header(
+            assistant_id,
+            thread_id,
+            rubric_active=rubric is not None,
+        )
         console.print(header)
-
-    import asyncio
 
     from deepagents_code.server_manager import server_session
 
@@ -1170,6 +1602,8 @@ async def run_non_interactive(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            rubric_model=rubric_model,
+            rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
@@ -1205,6 +1639,8 @@ async def run_non_interactive(
                 message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
+                rubric=rubric,
+                show_rubric_iterations=rubric_max_iterations is not None,
             )
 
     except KeyboardInterrupt:
@@ -1233,3 +1669,15 @@ async def run_non_interactive(
         return 1
     else:
         return 0
+    finally:
+        # Fire-and-forget hooks (tool.use/tool.result) run as background tasks;
+        # await them here so the final tool.result is not cancelled when
+        # asyncio.run tears the loop down. Never return from this block — that
+        # would swallow the exit code determined above. drain_pending_hooks is
+        # documented never to raise, but guard it anyway (mirroring app.py's
+        # shutdown drain) so a future contract break can't replace the exit code
+        # with an exception escaping the finally.
+        try:
+            await drain_pending_hooks()
+        except Exception:
+            logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)

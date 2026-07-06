@@ -1,6 +1,23 @@
+"""Snapshot smoke tests for the quickjs system prompt.
+
+These tests render the system prompt that `CodeInterpreterMiddleware` injects
+into a `create_deep_agent` agent and compare it against committed snapshots in
+`snapshots/`. Their purpose is to catch *drift in the deepagents SDK* that
+silently changes the prompt the quickjs middleware composes — wording the
+middleware does not own but depends on (e.g. the built-in `write_todos`
+prompt, tool-listing format, or harness scaffolding).
+
+Because the quickjs partner can be untouched while the SDK changes, CI runs
+this file as a dedicated `test-quickjs-sdk-smoke` job (see `ci.yml`) whenever
+the SDK changes but quickjs does not — the full quickjs suite would otherwise
+not run and the drift would land unnoticed.
+
+Run `pytest ... --update-snapshots` to regenerate the snapshots after an
+intentional prompt change.
+"""
+
 from __future__ import annotations
 
-import re
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
@@ -114,18 +131,6 @@ def _system_message_as_text(message: SystemMessage) -> str:
     )
 
 
-# Insert a blank line after a `##` heading when the next line is non-blank.
-# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
-# blank line; the fix is on `langchain` `main` and will land in the next
-# release. Drop this normalization once we pin a `langchain` version that
-# includes it.
-_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
-
-
-def _normalize_heading_blanks(text: str) -> str:
-    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
-
-
 def _assert_snapshot(
     snapshot_path: Path, actual: str, *, update_snapshots: bool
 ) -> None:
@@ -137,7 +142,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
+    assert actual == expected
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:

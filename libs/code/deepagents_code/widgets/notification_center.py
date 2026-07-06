@@ -106,12 +106,12 @@ class _NotificationRow(Static):
 
     @property
     def notification(self) -> PendingNotification:
-        """Return the underlying notification."""
+        """Underlying notification."""
         return self._notification
 
     @property
     def index(self) -> int:
-        """Return the row index in the parent list."""
+        """Row index in the parent list."""
         return self._index
 
     def set_selected(self, selected: bool) -> None:
@@ -163,7 +163,6 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     CSS = """
     NotificationCenterScreen {
         align: center middle;
-        background: transparent;
     }
 
     NotificationCenterScreen > Vertical {

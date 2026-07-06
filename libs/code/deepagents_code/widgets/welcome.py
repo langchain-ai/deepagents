@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import random
-from typing import TYPE_CHECKING, Any
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Final
 
 from textual.color import Color as TColor
 from textual.content import Content
@@ -17,12 +17,13 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code._env_vars import (
-    DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
+    DEBUG,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
-    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
     SHOW_LANGSMITH_REPLICA_TRACING,
+    SPLASH_SHOW_CWD,
+    SPLASH_SHOW_MODEL,
     is_env_truthy,
 )
 from deepagents_code._version import __version__
@@ -30,14 +31,17 @@ from deepagents_code.config import (
     _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
-    get_banner,
     get_glyphs,
     get_langsmith_project_name,
     get_langsmith_replica_project,
 )
 from deepagents_code.widgets._links import open_style_link
 
-_LANGSMITH_UTM_SOURCE = "deepagents-code"
+logger = logging.getLogger(__name__)
+
+_ANSI_THEMES: Final[frozenset[str]] = frozenset({"ansi-dark", "ansi-light"})
+"""Theme names whose color palette is determined by the terminal emulator
+rather than by the app, so link styles use bold instead of a parsed color."""
 
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
@@ -55,7 +59,6 @@ _TIPS: dict[str, int] = {
     "Type /update to check for and install updates": 1,
     "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
     "Use /theme to customize the TUI's colors": 1,
-    "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /auto-update to toggle automatic updates": 1,
@@ -67,22 +70,10 @@ _TIPS: dict[str, int] = {
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
-"""Rotating tips shown in the welcome footer, with relative selection weights.
+"""Rotating tips shown in the welcome footer, with relative selection weights."""
 
-One is picked per session. Higher weights are picked more often.
-"""
-
-
-def _pick_tip() -> str:
-    """Pick a tip from `_TIPS` weighted by its associated weight.
-
-    Returns:
-        A single tip string, selected with probability proportional to its
-        weight in `_TIPS`.
-    """
-    tips = list(_TIPS.keys())
-    weights = list(_TIPS.values())
-    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
+_LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
+"""UTM source tag appended to LangSmith project URLs in the welcome banner."""
 
 
 def _langsmith_project_link(project_url: str) -> str:
@@ -119,8 +110,40 @@ def _langsmith_project_link_style(
     return TStyle(foreground=TColor.parse(colors.primary), link=link)
 
 
+def _home_prefixed(cwd: str) -> str:
+    """Format a directory path, using `~` for the home directory when possible.
+
+    Args:
+        cwd: Working directory path.
+
+    Returns:
+        The path with the home prefix collapsed to `~` when applicable.
+    """
+    path = Path(cwd)
+    try:
+        home = Path.home()
+        if path == home:
+            return "~"
+        if path.is_relative_to(home):
+            return "~/" + path.relative_to(home).as_posix()
+    # `Path.home()` raises `RuntimeError` when the home dir can't be resolved
+    # (no HOME/passwd entry); `ValueError` guards odd paths (e.g. embedded NUL).
+    # Either way, fall back to the accurate absolute path.
+    except (ValueError, RuntimeError):
+        pass
+    return str(path)
+
+
 class WelcomeBanner(Static):
-    """Welcome banner displayed at startup."""
+    """Compact welcome banner shown at startup.
+
+    Renders a bordered box with the product title and version, followed by rows
+    that appear only when their data (and any env gate) is present. In render
+    order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
+    (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
+    clickable once its URL resolves), thread ID (debug mode only), and the MCP
+    tool count. MCP server warnings and the editable-install path follow.
+    """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
     # calls .copy() for linked styles, generating a fresh random _link_id on
@@ -131,7 +154,8 @@ class WelcomeBanner(Static):
     DEFAULT_CSS = """
     WelcomeBanner {
         height: auto;
-        padding: 1;
+        border: round $primary;
+        padding: 0 2;
         margin-bottom: 1;
     }
     """
@@ -141,6 +165,9 @@ class WelcomeBanner(Static):
         thread_id: str | None = None,
         mcp_tool_count: int = 0,
         *,
+        model_provider: str = "",
+        model_name: str = "",
+        cwd: str | None = None,
         mcp_unauthenticated: int = 0,
         mcp_errored: int = 0,
         mcp_awaiting_reconnect: int = 0,
@@ -149,24 +176,37 @@ class WelcomeBanner(Static):
         """Initialize the welcome banner.
 
         Args:
-            thread_id: Optional thread ID to display in the banner.
+            thread_id: Displayed only when debug mode is enabled.
             mcp_tool_count: Number of MCP tools loaded at startup.
+            model_provider: Active model provider (e.g. `anthropic`). Displayed
+                only when `SPLASH_SHOW_MODEL` is enabled.
+            model_name: Active model name. Displayed only when `SPLASH_SHOW_MODEL` is
+                enabled.
+            cwd: Working directory. Defaults to the process cwd. Displayed only
+                when `SPLASH_SHOW_CWD` is enabled.
             mcp_unauthenticated: Number of MCP servers awaiting login.
             mcp_errored: Number of MCP servers that failed to load.
-            mcp_awaiting_reconnect: Number of MCP servers that completed OAuth
-                login but are waiting for `/mcp reconnect` before their tools
-                can load.
+            mcp_awaiting_reconnect: Number of MCP servers awaiting reconnect.
             **kwargs: Additional arguments passed to parent.
         """
+        self._model_provider = model_provider
+        self._model_name = model_name
+        self._cwd = cwd if cwd is not None else str(Path.cwd())
+        self._show_model = is_env_truthy(SPLASH_SHOW_MODEL)
+        # `_show_cwd` and `_hide_cwd` are deliberately orthogonal: `_show_cwd`
+        # gates the working-directory row (opt-in), while `_hide_cwd` gates the
+        # editable-install path below. They govern different surfaces, so both
+        # can be set without contradiction.
+        self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
+        self._hide_cwd = is_env_truthy(HIDE_CWD)
+        self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
         # Avoid collision with Widget._thread_id (Textual internal int)
-        self._cli_thread_id: str | None = thread_id
+        self._cli_thread_id = thread_id
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
-        self._idle = False
         self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
-        self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
@@ -174,19 +214,17 @@ class WelcomeBanner(Static):
             SHOW_LANGSMITH_REPLICA_TRACING,
             default=True,
         )
-        replica_project = (
+        self._replica_project: str | None = (
             get_langsmith_replica_project()
             if self._project_name and show_replica_tracing
             else None
         )
-        self._replica_projects: list[str] = [replica_project] if replica_project else []
         self._project_urls: dict[str, str] = {}
-        self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
-
+        self._show_thread_id = is_env_truthy(DEBUG)
         super().__init__(self._build_banner(), **kwargs)
 
     def on_mount(self) -> None:
-        """Kick off background fetch for LangSmith project URL."""
+        """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
@@ -199,9 +237,11 @@ class WelcomeBanner(Static):
         """Fetch the LangSmith URL in a thread and update the banner."""
         if not self._project_name:
             return
-        primary = self._project_name
-        project_urls: dict[str, str] = {}
-        projects = dict.fromkeys([primary, *self._replica_projects])
+        projects = dict.fromkeys(
+            project
+            for project in (self._project_name, self._replica_project)
+            if project
+        )
         for project in projects:
             try:
                 project_url = await asyncio.wait_for(
@@ -209,20 +249,58 @@ class WelcomeBanner(Static):
                     timeout=2.0,
                 )
             except (TimeoutError, OSError):
+                logger.debug(
+                    "LangSmith project URL fetch failed for %r", project, exc_info=True
+                )
                 project_url = None
             if project_url:
-                project_urls[project] = project_url
-                self._project_urls = dict(project_urls)
+                self._project_urls[project] = project_url
                 self.update(self._build_banner())
 
-    def update_thread_id(self, thread_id: str) -> None:
-        """Update the displayed thread ID and re-render the banner.
+    def _project_url(self, project: str | None) -> str | None:
+        """Return the resolved LangSmith URL for a project.
 
         Args:
-            thread_id: The new thread ID to display.
+            project: Project name to look up.
+
+        Returns:
+            Resolved project URL, or `None` when missing or not yet fetched.
+        """
+        if project is None:
+            return None
+        return self._project_urls.get(project)
+
+    def update_model(self, *, provider: str, model: str) -> None:
+        """Track a new model and re-render when it is displayed.
+
+        Args:
+            provider: Active model provider.
+            model: Active model name.
+        """
+        self._model_provider = provider
+        self._model_name = model
+        if self._show_model:
+            self.update(self._build_banner())
+
+    def update_cwd(self, cwd: str) -> None:
+        """Track a new working directory and re-render when it is displayed.
+
+        Args:
+            cwd: New working directory path.
+        """
+        self._cwd = cwd
+        if self._show_cwd:
+            self.update(self._build_banner())
+
+    def update_thread_id(self, thread_id: str) -> None:
+        """Track a new thread ID and re-render when debug mode is active.
+
+        Args:
+            thread_id: The new thread ID.
         """
         self._cli_thread_id = thread_id
-        self.update(self._build_banner())
+        if self._show_thread_id:
+            self.update(self._build_banner())
 
     def set_connected(
         self,
@@ -232,45 +310,18 @@ class WelcomeBanner(Static):
         mcp_errored: int = 0,
         mcp_awaiting_reconnect: int = 0,
     ) -> None:
-        """Render the ready banner footer after a successful connect.
-
-        The status bar owns visible connection progress; this just refreshes
-        the banner's tool counts and ready footer once the server is reachable.
+        """Update MCP tool counts and re-render the banner.
 
         Args:
             mcp_tool_count: Number of MCP tools loaded during connection.
             mcp_unauthenticated: Number of MCP servers awaiting login.
             mcp_errored: Number of MCP servers that failed to load.
-            mcp_awaiting_reconnect: Number of MCP servers that completed OAuth
-                login but are waiting for `/mcp reconnect` before their tools
-                can load.
+            mcp_awaiting_reconnect: Number of MCP servers awaiting reconnect.
         """
-        self._idle = False
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
-        self.update(self._build_banner())
-
-    def set_connecting(self) -> None:
-        """Render the regular banner footer during a reconnect.
-
-        The status bar owns visible connection progress. This method only
-        ensures the banner is no longer in the idle failure state.
-        """
-        self._idle = False
-        self.update(self._build_banner())
-
-    def set_idle(self) -> None:
-        """Transition to a neutral state with no footer.
-
-        Used after a fatal startup failure so the banner stops claiming
-        progress (the failure is communicated via the chat surface). The
-        banner keeps its identity rows (title, version, install path,
-        LangSmith project, thread ID) but appends no footer line, leaving
-        the chat error as the sole source of failure context.
-        """
-        self._idle = True
         self.update(self._build_banner())
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -278,247 +329,166 @@ class WelcomeBanner(Static):
         open_style_link(event)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a hand pointer over link spans and reset it elsewhere.
-
-        `auto_links` is disabled to avoid a hover-refresh flicker, so the
-        pointer shape is updated manually from the style under the cursor.
-        """
+        """Show a hand pointer over link spans and reset it elsewhere."""
         self.styles.pointer = "pointer" if event.style.link else "default"
 
     def on_leave(self) -> None:
         """Reset the pointer shape when the mouse leaves the banner."""
         self.styles.pointer = "default"
 
-    def _primary_project_url(
-        self,
-        project_urls: dict[str, str] | None = None,
-    ) -> str | None:
-        """Get the resolved LangSmith URL for the primary tracing project.
-
-        Args:
-            project_urls: Optional project URL mapping to use instead of cached
-                widget state.
-
-        Returns:
-            Primary project URL when resolved, otherwise `None`.
-        """
-        if not self._project_name:
-            return None
-        urls = self._project_urls if project_urls is None else project_urls
-        return urls.get(self._project_name)
-
-    def _build_banner(
-        self,
-        project_urls: dict[str, str] | None = None,
-    ) -> Content:
+    def _build_banner(self) -> Content:
         """Build the banner content.
 
-        When the primary project URL is resolved and a thread ID is set, the
-        thread ID is rendered as a clickable hyperlink to the LangSmith thread
-        view.
-
-        Args:
-            project_urls: LangSmith project URLs keyed by project name. Project
-                names with resolved URLs are rendered as links. When `None`,
-                cached widget state is used.
-
         Returns:
-            Content object containing the formatted banner.
+            Content with the title and version, followed by any applicable rows
+            in order: model (when `SPLASH_SHOW_MODEL`), directory (when
+            `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
+            resolves), thread ID (debug only), MCP tool count, MCP server
+            warnings, and the editable-install path.
         """
-        parts: list[str | tuple[str, str | TStyle] | Content] = []
-        project_urls = self._project_urls if project_urls is None else project_urls
-        project_url = self._primary_project_url(project_urls)
         colors = theme.get_theme_colors(self)
-        ansi = self.app.theme in {"ansi-dark", "ansi-light"}
-
-        banner = get_banner()
-        primary_style: str | TStyle = (
+        ansi = self.app.theme in _ANSI_THEMES
+        accent: str | TStyle = "bold" if ansi else colors.primary
+        title_style: str | TStyle = (
             "bold"
             if ansi
             else TStyle(foreground=TColor.parse(colors.primary), bold=True)
         )
+        warn_color: str = "bold yellow" if ansi else colors.warning
 
-        hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
-        if not hide_version and not ansi and _is_editable_install():
-            # Highlight local-install version tag with tool accent; art stays primary.
-            dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
-            version_tag = f"v{__version__} (local)"
-            idx = banner.rfind(version_tag)
-            if idx >= 0:
-                parts.extend(
-                    [
-                        (banner[:idx], primary_style),
-                        (version_tag, dev_style),
-                        (banner[idx + len(version_tag) :] + "\n", primary_style),
-                    ]
-                )
-            else:
-                parts.append((banner + "\n", primary_style))
-        else:
-            parts.append((banner + "\n", primary_style))
-
-        # For ANSI theme, use "bold" (terminal foreground) instead of hex
-        accent: str | TStyle = "bold" if ansi else colors.primary
-        success_color: str = "bold green" if ansi else colors.success
-
-        hide_editable_path = hide_version or is_env_truthy(HIDE_CWD)
-        editable_path = None if hide_editable_path else _get_editable_install_path()
-        if editable_path:
-            parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
-
-        if self._project_name:
-            parts.extend(
-                [
-                    (f"{get_glyphs().checkmark} ", success_color),
-                    "LangSmith tracing: ",
-                ]
-            )
-            if project_url:
+        parts: list[str | tuple[str, str | TStyle]] = [
+            (f"{get_glyphs().cursor} ", title_style),
+            ("dcode", "bold"),
+        ]
+        if not self._hide_version:
+            parts.append((f"  v{__version__}", "dim"))
+            if not ansi and _is_editable_install():
                 parts.append(
                     (
-                        f"'{self._project_name}'",
-                        _langsmith_project_link_style(
-                            project_url,
-                            ansi=ansi,
-                            colors=colors,
-                        ),
+                        " (local)",
+                        TStyle(foreground=TColor.parse(colors.tool), bold=True),
                     )
                 )
-            else:
-                parts.append((f"'{self._project_name}'", accent))
-            parts.append("\n")
-            if self._replica_projects:
-                # `_replica_projects` holds at most one entry today (the server
-                # mirrors to a single extra project), but the loop renders any
-                # number so the splash stays correct if that limit is lifted.
-                parts.append(("  Also tracing to: ", "dim"))
-                for idx, name in enumerate(self._replica_projects):
-                    if idx:
-                        parts.append((", ", "dim"))
-                    parts.append(("'", "dim"))
-                    replica_url = project_urls.get(name)
-                    if replica_url:
-                        parts.append(
-                            (
-                                name,
-                                _langsmith_project_link_style(
-                                    replica_url,
-                                    ansi=ansi,
-                                    colors=colors,
-                                ),
-                            )
-                        )
-                    else:
-                        parts.append((name, "dim"))
-                    parts.append(("'", "dim"))
-                parts.append("\n")
 
-        if self._cli_thread_id and not self._hide_langsmith_tracing:
+        # Row labels share a common column width so values stay aligned; the
+        # longest label ("directory:") needs 11 columns including its space.
+        rows: list[list[tuple[str, str | TStyle]]] = []
+        if self._show_model and self._model_name:
+            model_value = (
+                f"{self._model_provider}:{self._model_name}"
+                if self._model_provider
+                else self._model_name
+            )
+            rows.append([("model:     ", "dim"), (model_value, accent)])
+        if self._show_cwd and self._cwd:
+            rows.append([("directory: ", "dim"), (_home_prefixed(self._cwd), accent)])
+        if self._project_name:
+            project_url = self._project_url(self._project_name)
             if project_url:
-                thread_url = (
-                    f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
-                    "?utm_source=deepagents-code"
-                )
-                parts.extend(
+                rows.append(
                     [
-                        ("  Thread: ", "dim"),
-                        (self._cli_thread_id, TStyle(dim=True, link=thread_url)),
-                        ("\n", "dim"),
+                        ("tracing:   ", "dim"),
+                        (
+                            f"'{self._project_name}'",
+                            _langsmith_project_link_style(
+                                project_url,
+                                ansi=ansi,
+                                colors=colors,
+                            ),
+                        ),
                     ]
                 )
             else:
-                parts.append((f"  Thread: {self._cli_thread_id}\n", "dim"))
-
+                rows.append(
+                    [("tracing:   ", "dim"), (f"'{self._project_name}'", accent)]
+                )
+        if self._replica_project:
+            replica_url = self._project_url(self._replica_project)
+            if replica_url:
+                rows.append(
+                    [
+                        ("replica:   ", "dim"),
+                        (
+                            f"'{self._replica_project}'",
+                            _langsmith_project_link_style(
+                                replica_url,
+                                ansi=ansi,
+                                colors=colors,
+                            ),
+                        ),
+                    ]
+                )
+            else:
+                rows.append(
+                    [("replica:   ", "dim"), (f"'{self._replica_project}'", accent)]
+                )
+        if self._show_thread_id and self._cli_thread_id:
+            rows.append([("thread:    ", "dim"), (self._cli_thread_id, "dim")])
         if self._mcp_tool_count > 0:
-            parts.append((f"{get_glyphs().checkmark} ", success_color))
-            label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
-            parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
+            label = "tool" if self._mcp_tool_count == 1 else "tools"
+            rows.append(
+                [("mcp:       ", "dim"), (f"{self._mcp_tool_count} {label}", accent)]
+            )
 
-        warn_color: str = "bold yellow" if ansi else colors.warning
+        for index, row in enumerate(rows):
+            parts.append("\n\n" if index == 0 else "\n")
+            parts.extend(row)
+
+        # MCP server warnings — actionable alerts not shown elsewhere in the banner.
+        warning_lines: list[list[tuple[str, str | TStyle]]] = []
         if self._mcp_unauthenticated > 0:
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
             verb = "needs" if self._mcp_unauthenticated == 1 else "need"
-            unauth_text = (
-                f"{self._mcp_unauthenticated} MCP {server_label} {verb} login "
-                "— open /mcp\n"
-            )
-            parts.extend(
+            warning_lines.append(
                 [
                     (f"{get_glyphs().warning} ", warn_color),
-                    (unauth_text, "dim"),
+                    (
+                        (
+                            f"{self._mcp_unauthenticated} MCP {server_label} {verb}"
+                            " login — open /mcp"
+                        ),
+                        "dim",
+                    ),
                 ]
             )
         if self._mcp_errored > 0:
             server_label = "server" if self._mcp_errored == 1 else "servers"
-            errored_text = (
-                f"{self._mcp_errored} MCP {server_label} failed to load "
-                "— open /mcp for details\n"
-            )
-            parts.extend(
+            warning_lines.append(
                 [
                     (f"{get_glyphs().warning} ", warn_color),
-                    (errored_text, "dim"),
+                    (
+                        (
+                            f"{self._mcp_errored} MCP {server_label} failed to load"
+                            " — open /mcp for details"
+                        ),
+                        "dim",
+                    ),
                 ]
             )
         if self._mcp_awaiting_reconnect > 0:
             server_label = "server" if self._mcp_awaiting_reconnect == 1 else "servers"
-            awaiting_text = (
-                f"{self._mcp_awaiting_reconnect} MCP {server_label} ready to load "
-                "— run `/mcp reconnect`\n"
-            )
-            parts.extend(
+            warning_lines.append(
                 [
                     (f"{get_glyphs().warning} ", warn_color),
-                    (awaiting_text, "dim"),
+                    (
+                        (
+                            f"{self._mcp_awaiting_reconnect} MCP {server_label}"
+                            " ready to load — run `/mcp reconnect`"
+                        ),
+                        "dim",
+                    ),
                 ]
             )
 
-        if not self._idle:
-            ready_color = "bold" if ansi else colors.primary
-            parts.append(
-                build_welcome_footer(
-                    primary_color=ready_color,
-                    tip=self._tip,
-                    show_tip=not self._hide_splash_tips,
-                )
-            )
-        # `_idle` means no footer; chat-surface owns the failure message.
+        for line in warning_lines:
+            parts.append("\n")
+            parts.extend(line)
+
+        # Editable-install path for local development visibility.
+        if not self._hide_version and not self._hide_cwd:
+            editable_path = _get_editable_install_path()
+            if editable_path:
+                parts.append("\n")
+                parts.extend([("installed: ", "dim"), (editable_path, "dim")])
+
         return Content.assemble(*parts)
-
-
-def build_welcome_footer(
-    *,
-    primary_color: str = theme.PRIMARY,
-    tip: str | None = None,
-    show_tip: bool | None = None,
-) -> Content:
-    """Build the footer shown at the bottom of the welcome banner.
-
-    Includes a tip to help users discover features unless tips are disabled.
-
-    Args:
-        primary_color: Color string for the ready prompt.
-
-            Defaults to the module-level ANSI `PRIMARY` constant; widget callers
-            should pass the active theme's hex value.
-        tip: Tip text to display. When `None`, a random tip is selected.
-
-            Pass an explicit value to keep the tip stable across re-renders.
-        show_tip: Whether to show the tip. When `None`, the startup splash tips
-            env var controls visibility.
-
-    Returns:
-        Content with the ready prompt and, when enabled, a tip.
-    """
-    if show_tip is None:
-        show_tip = not is_env_truthy(HIDE_SPLASH_TIPS)
-    if show_tip and tip is None:
-        tip = _pick_tip()
-    subheader = (
-        os.environ.get(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER)
-        or "Ready to code! What would you like to build?"
-    )
-    parts: list[tuple[str, str]] = [(f"\n{subheader}", primary_color)]
-    if show_tip and tip is not None:
-        parts.append((f"\nTip: {tip}", "dim italic"))
-    return Content.assemble(*parts)

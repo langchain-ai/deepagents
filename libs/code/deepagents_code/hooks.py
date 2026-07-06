@@ -15,6 +15,56 @@ If `events` is omitted or empty the hook receives **all** events.
 
 Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
 after the user submits a non-empty preferred name.
+
+`tool.use` fires before a tool call once its streamed arguments parse into a
+complete value *and* its tool-call id is known; a call whose arguments never
+parse, or that carries no id, is skipped. `tool.result` fires after every tool
+call reaches a terminal state — successful execution, failure, or HITL
+rejection/cancellation. The three blocks below show the payload *shapes*, not a
+single sequence of events:
+
+```jsonc
+{"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
+ "tool_args": {"file_path": "src/foo.py", "content": "..."}}
+
+{"event": "tool.result", "tool_name": "write_file", "tool_id": "toolu_abc123",
+ "tool_args": {"file_path": "src/foo.py", "content": "..."},
+ "tool_status": "success", "tool_output": "Updated file src/foo.py"}
+
+{"event": "tool.error", "tool_names": ["write_file"]}
+```
+
+`tool_args` is the parsed tool-call arguments; a non-object value (rare) is
+wrapped as `{"value": ...}`. `tool_output` is the tool's returned content,
+capped to `HOOK_TOOL_OUTPUT_LIMIT` characters (`tool_args` is not truncated); a
+capped value ends with `…[output truncated]` so a consumer can tell a truncated
+result from a short one.
+`tool_status` is `"success"` or `"error"`; `"error"` covers both a tool that
+raised and a call the user rejected or cancelled. Whenever a `tool.result` has
+`tool_status: "error"`, `tool.error` (payload `{"tool_names": [<name>]}`) fires
+alongside it, so existing `tool.error` hooks are unaffected.
+
+`tool_args` is `{}` whenever a `tool.result` cannot be correlated back to a
+`tool.use` — either because the call carried no id (then `tool_id` is `null`) or
+because no `tool.use` fired for it (e.g. its args never parsed), in which case
+`tool_id` may still be the real string id.
+
+Ordering: the tool events (`tool.use`, `tool.result`, `tool.error`) are
+dispatched fire-and-forget (see `dispatch_hook_fire_and_forget`) and every
+matching hook command runs in its own subprocess. A `tool.use` is *dispatched*
+before its `tool.result`, but the two run concurrently, so a hook subscribed to
+both may observe them out of order, and events from parallel tool calls
+interleave freely. Correlate by `tool_id` rather than relying on arrival order —
+there is no cross-event delivery-ordering guarantee for the tool events. Most
+non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
+`context.offload`, `context.compact`, `permission.request`) fire in program order.
+They are dispatched with an awaited `dispatch_hook`, except `session.end` on the
+interactive TUI, which is dispatched synchronously via `_dispatch_hook_sync` at
+shutdown (the event loop is already tearing down); that path is still blocking and
+in-order, so the program-order guarantee holds. `input.required` and
+`user.name.set` are the exceptions with no program-order guarantee:
+`user.name.set` is always dispatched fire-and-forget, and `input.required` is
+fire-and-forget on the headless surface (awaited only in the interactive TUI).
 """
 
 from __future__ import annotations
@@ -24,9 +74,35 @@ import json
 import logging
 import subprocess  # noqa: S404
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
+
+HOOK_TOOL_OUTPUT_LIMIT = 2000
+"""Max characters of `tool_output` included in `tool.result` hook payloads.
+
+Bounds payload size (data-amplification guard) while keeping enough of the
+tool's output to be useful to audit/notification hooks. Applied in the single
+shared builder `_tool_stream.build_tool_result_payload`, which both the
+interactive and headless dispatch paths call, so the cap never drifts between
+them. Only `tool_output` is capped; `tool_args` is passed through in full so hooks
+that act on the arguments (e.g. a linter reading a `write_file` `content`) see
+the exact value the tool received.
+"""
+
+HOOK_SUBPROCESS_TIMEOUT = 5
+"""Seconds a single hook subprocess may run before it is killed.
+
+Bounds how long one misbehaving hook can block the dispatch thread. Consumed in
+code by the `subprocess.run` timeout and its timeout log message here, so those
+two never drift. `app.py`'s graceful-exit comment names this symbol (rather than
+a bare literal) so its prose can't go stale; note the drain itself is bounded
+separately by `_GRACEFUL_EXIT_WAIT_SECONDS`, not by this value — a hook can run
+up to this long while the aggregate drain gives up sooner.
+"""
 
 _hooks_config: list[dict[str, Any]] | None = None
 """Cached config — loaded lazily on first dispatch."""
@@ -84,8 +160,12 @@ def _load_hooks() -> list[dict[str, Any]]:
 def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> None:
     """Execute a single hook command, writing the JSON payload to its stdin.
 
-    Uses `subprocess.run` which automatically kills the child process on
-    timeout, preventing zombie/orphan process leaks.
+    On timeout `subprocess.run` kills and reaps only the direct hook process
+    (its `Popen.kill()` targets that one PID, never the process group), so any
+    grandchildren it spawned are left as orphans regardless — the timeout bounds
+    the hook process, not its whole descendant tree. `start_new_session=True`
+    does not change that; it only isolates the hook (and its descendants) into
+    their own session so a signal to our group doesn't reach them.
 
     Args:
         command: The command and arguments to run.
@@ -99,16 +179,26 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            timeout=5,
+            timeout=HOOK_SUBPROCESS_TIMEOUT,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("Hook command timed out (>5s) for event %s: %s", event, command)
+        logger.warning(
+            "Hook command timed out (>%ss) for event %s: %s",
+            HOOK_SUBPROCESS_TIMEOUT,
+            event,
+            command,
+        )
     except (FileNotFoundError, PermissionError) as exc:
         logger.warning("Hook command failed for event %s: %s — %s", event, command, exc)
     except Exception:
-        logger.debug(
-            "Hook dispatch failed for event %s: %s",
+        # Unexpected failure (e.g. ENOEXEC for a non-executable hook file, an
+        # embedded null byte, or fd/memory exhaustion). These are the failures
+        # we understand least, so surface them at warning — the expected
+        # timeout / not-found / permission cases above are also warnings, and a
+        # silent debug here would hide a hook that never fires.
+        logger.warning(
+            "Hook dispatch failed unexpectedly for event %s: %s",
             event,
             command,
             exc_info=True,
@@ -122,8 +212,8 @@ def _dispatch_hook_sync(
 
     Iterates over all configured hooks, skipping those whose event filter
     does not match or whose `command` is missing/invalid. Matching hooks are
-    executed concurrently with a 5-second timeout per command. Errors are caught
-    per-hook and logged without propagating.
+    executed concurrently, each bounded by `HOOK_SUBPROCESS_TIMEOUT` per command.
+    Errors are caught per-hook and logged without propagating.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
@@ -134,6 +224,15 @@ def _dispatch_hook_sync(
     for hook in hooks:
         command = hook.get("command")
         if not isinstance(command, list) or not command:
+            # A misconfigured `command` (missing, a bare string instead of an
+            # argv list, or empty) means this hook can never fire. Warn rather
+            # than silently skip so the config mistake is greppable instead of
+            # looking like the hook simply never matched.
+            logger.warning(
+                "Skipping hook with invalid `command` for event %s: %r",
+                event,
+                command,
+            )
             continue
 
         events = hook.get("events")
@@ -158,26 +257,30 @@ def _dispatch_hook_sync(
             future.result()
 
 
-async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
+async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
     """Fire matching hook commands with `payload` serialized as JSON on stdin.
 
     The `event` name is automatically injected into the payload under the
     `"event"` key so callers don't need to duplicate it.
 
     The blocking subprocess work is offloaded to a thread so the caller's
-    event loop is never stalled. Matching hooks run concurrently, each with
-    a 5-second timeout. Errors are logged and never propagated.
+    event loop is never stalled. Matching hooks run concurrently, each bounded
+    by `HOOK_SUBPROCESS_TIMEOUT`. Errors are logged and never propagated.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
-        payload: Arbitrary JSON-serializable dict sent on the command's stdin.
+        payload: Arbitrary JSON-serializable mapping sent on the command's stdin.
     """
     try:
         hooks = _load_hooks()
         if not hooks:
             return
 
-        payload_bytes = json.dumps({"event": event, **payload}).encode()
+        # `default=str` degrades a non-JSON-serializable value (e.g. a
+        # provider-delivered whole-value arg object) to its string form rather
+        # than raising and dropping the entire hook event — the invocation stays
+        # auditable even if one field isn't natively serializable.
+        payload_bytes = json.dumps({"event": event, **payload}, default=str).encode()
         await asyncio.to_thread(_dispatch_hook_sync, event, payload_bytes, hooks)
     except Exception:
         logger.warning(
@@ -187,7 +290,7 @@ async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
         )
 
 
-def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
+def dispatch_hook_fire_and_forget(event: str, payload: Mapping[str, Any]) -> None:
     """Schedule `dispatch_hook` as a background task with a strong reference.
 
     Use this instead of bare `create_task(dispatch_hook(...))` to prevent the
@@ -197,13 +300,49 @@ def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
-        payload: Arbitrary JSON-serializable dict sent on the command's stdin.
+        payload: Arbitrary JSON-serializable mapping sent on the command's stdin.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.debug("No running event loop; skipping hook for %s", event)
+        # A dropped hook is an audit/notification gap, so surface it at warning
+        # rather than debug. In the streaming paths a loop is always running, so
+        # this fires only from an unexpected sync call site.
+        logger.warning("No running event loop; skipping hook for %s", event)
         return
     task = loop.create_task(dispatch_hook(event, payload))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def has_pending_hooks() -> bool:
+    """Return whether fire-and-forget hook tasks are still in flight."""
+    return any(not task.done() for task in _background_tasks)
+
+
+async def drain_pending_hooks() -> None:
+    """Await all in-flight fire-and-forget hook tasks.
+
+    Call this before the event loop tears down (e.g. at the end of a headless
+    run driven by `asyncio.run`) so background dispatches — most importantly the
+    final `tool.result` — are not cancelled mid-flight and silently dropped.
+    Each task's exceptions are already swallowed inside `dispatch_hook`, and any
+    stragglers are collected with `return_exceptions=True`, so this never
+    raises.
+
+    Precondition: this snapshots the in-flight set once and awaits it, so any
+    hook scheduled *after* the snapshot (during the await) is not drained. Call
+    it only once no further dispatches are possible. The headless caller invokes
+    it after `_run_agent_loop` has fully returned. The `app.py` graceful-exit
+    caller cancels the agent worker first, whose cancel handler
+    (`_handle_interrupt_cleanup`) schedules its terminal `tool.result` hooks
+    *synchronously* before this snapshot runs — see the ordering comment there —
+    so they are captured; a hook scheduled after a slow async write would not
+    be.
+    """
+    # Snapshot: tasks remove themselves from the set via their done-callback as
+    # they finish, so iterating the live set while gathering would mutate it.
+    pending = list(_background_tasks)
+    if not pending:
+        return
+    await asyncio.gather(*pending, return_exceptions=True)

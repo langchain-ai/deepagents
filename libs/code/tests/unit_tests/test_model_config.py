@@ -1507,6 +1507,7 @@ api_key_env = "OPENAI_API_KEY"
         config_path.write_text("""
 [models.providers.my_gateway]
 display_name = "My Gateway"
+short_name = "Gateway"
 api_key_url = "https://gateway.example/keys"
 models = ["my-model"]
 api_key_env = "MY_GATEWAY_API_KEY"
@@ -1514,11 +1515,13 @@ api_key_env = "MY_GATEWAY_API_KEY"
         config = ModelConfig.load(config_path)
 
         assert config.get_provider_display_name("my_gateway") == "My Gateway"
+        assert config.get_provider_short_name("my_gateway") == "Gateway"
         assert (
             config.get_provider_api_key_url("my_gateway")
             == "https://gateway.example/keys"
         )
         assert config.get_provider_display_name("missing") is None
+        assert config.get_provider_short_name("missing") is None
         assert config.get_provider_api_key_url("missing") is None
 
     def test_ignores_non_string_provider_api_key_url(self, tmp_path):
@@ -1547,8 +1550,21 @@ api_key_env = "MY_GATEWAY_API_KEY"
 
         assert config.get_provider_display_name("my_gateway") is None
 
+    def test_ignores_non_string_provider_short_name(self, tmp_path):
+        """Non-string provider short names fall back to the display name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+short_name = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_short_name("my_gateway") is None
+
     def test_warns_on_non_string_provider_metadata(self, tmp_path, caplog):
-        """Malformed `display_name`/`api_key_url` warn at load, matching siblings.
+        """Malformed `display_name`/`short_name`/`api_key_url` warn at load.
 
         Surfaces the misconfiguration as a diagnostic instead of silently
         dropping it, consistent with the `enabled`/`class_path` validation.
@@ -1557,6 +1573,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
         config_path.write_text("""
 [models.providers.my_gateway]
 display_name = 123
+short_name = 456
 api_key_url = ["not", "a", "string"]
 models = ["my-model"]
 api_key_env = "MY_GATEWAY_API_KEY"
@@ -1566,6 +1583,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
 
         messages = [r.getMessage() for r in caplog.records]
         assert any("non-string 'display_name'" in m for m in messages)
+        assert any("non-string 'short_name'" in m for m in messages)
         assert any("non-string 'api_key_url'" in m for m in messages)
 
     def test_loads_custom_base_url(self, tmp_path):

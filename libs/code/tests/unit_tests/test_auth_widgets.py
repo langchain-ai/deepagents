@@ -21,7 +21,8 @@ from deepagents_code.widgets.auth import (
     AuthPromptScreen,
     AuthResult,
     _is_safe_acquisition_url,
-    _provider_display_name,
+    provider_display_name,
+    provider_short_name,
 )
 from deepagents_code.widgets.codex_auth import CodexAuthScreen
 
@@ -203,23 +204,46 @@ class TestAuthPromptScreen:
 
     def test_display_name_falls_back_to_title_cased_key(self) -> None:
         """Unmapped provider keys degrade to a readable title-cased label."""
-        assert _provider_display_name("acme_gateway") == "Acme Gateway"
+        assert provider_display_name("acme_gateway") == "Acme Gateway"
 
     def test_config_display_name_overrides_builtin_map(self) -> None:
         """A configured `display_name` wins over the built-in label.
 
         Pins the resolution order (config > built-in map) so reordering the
-        `or` chain in `_provider_display_name` would fail a test instead of
+        `or` chain in `provider_display_name` would fail a test instead of
         silently shadowing user config.
         """
         config = model_config.ModelConfig(
             providers={"openai": {"display_name": "Custom OpenAI"}}
         )
-        assert _provider_display_name("openai", config) == "Custom OpenAI"
+        assert provider_display_name("openai", config) == "Custom OpenAI"
         # Without the override, resolution falls through to the built-in map.
         empty = model_config.ModelConfig()
         builtin_label = PROVIDER_DISPLAY_NAMES["openai"]
-        assert _provider_display_name("openai", empty) == builtin_label
+        assert provider_display_name("openai", empty) == builtin_label
+
+    def test_short_name_uses_builtin_brand_map(self) -> None:
+        """A provider with a verbose display name gets its compact brand."""
+        empty = model_config.ModelConfig()
+        assert provider_short_name("openai_codex", empty) == "OpenAI Codex"
+
+    def test_short_name_falls_back_to_display_name(self) -> None:
+        """Providers without a brand override reuse the display name."""
+        empty = model_config.ModelConfig()
+        assert provider_short_name("openai", empty) == PROVIDER_DISPLAY_NAMES["openai"]
+        # Unmapped keys degrade through display-name resolution to title case.
+        assert provider_short_name("acme_gateway", empty) == "Acme Gateway"
+
+    def test_config_short_name_overrides_builtin_map(self) -> None:
+        """A configured `short_name` wins over the built-in brand map.
+
+        Pins the resolution order (config > built-in map > display name) so
+        reordering the `or` chain in `provider_short_name` fails a test.
+        """
+        config = model_config.ModelConfig(
+            providers={"openai_codex": {"short_name": "Codex"}}
+        )
+        assert provider_short_name("openai_codex", config) == "Codex"
 
     def test_is_safe_acquisition_url_rejects_non_http_schemes(self) -> None:
         """Only http/https URLs are eligible to render as clickable links."""

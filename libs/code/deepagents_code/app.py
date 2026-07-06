@@ -330,6 +330,8 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import MouseUp, Paste
+    from textual.geometry import Size
+    from textual.layout import DockArrangeResult
     from textual.scrollbar import ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
@@ -1800,6 +1802,82 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    # The deferred-anchor logic below drives the base class through its private
+    # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
+    # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
+    # rename or reflow change could break it silently, so `TestChatScrollAnchoring`
+    # is the safety net for Textual upgrades.
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the chat scroll container.
+
+        Sets `_follow_bottom_when_scrollable`, the bottom-follow intent flag that
+        `arrange()` only honors once content overflows the viewport (see
+        `anchor()`).
+        """
+        super().__init__(*args, **kwargs)
+        self._follow_bottom_when_scrollable = False
+
+    def anchor(self, anchor: bool = True) -> None:
+        """Anchor only once the transcript is tall enough to scroll.
+
+        Textual's default bottom anchor also bottom-aligns content that is
+        shorter than the viewport, which makes the welcome banner snap down as
+        soon as the first message arrives. Deferring the real anchor preserves
+        the top-aligned banner while still following the bottom after overflow.
+
+        Args:
+            anchor: When `True`, arm bottom-follow so the view sticks to the
+                bottom once content overflows (engaging immediately if it
+                already does). When `False`, disarm bottom-follow entirely and
+                delegate to the base class.
+        """
+        self._follow_bottom_when_scrollable = anchor
+        if not anchor:
+            super().anchor(False)
+            return
+        self._anchor_released = False
+        if self._is_scrollable():
+            super().anchor(True)
+            return
+        super().anchor(False)
+        self.scroll_y = 0
+        self.scroll_target_y = 0
+
+    def release_anchor(self) -> None:
+        """Release bottom-follow intent when the user scrolls manually."""
+        self._follow_bottom_when_scrollable = False
+        super().release_anchor()
+
+    def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
+        """Arrange children and enable bottom-follow only after overflow.
+
+        Args:
+            size: Size of the chat scroll container.
+            optimal: Whether fr units should avoid expanding widgets.
+
+        Returns:
+            Widget placement information for the arranged children.
+        """
+        result = super().arrange(size, optimal=optimal)
+        if not self._follow_bottom_when_scrollable or self._anchor_released:
+            return result
+
+        viewport_height = self.container_size.height - self.scrollbar_size_horizontal
+        if result.spatial_map.total_region.bottom > viewport_height:
+            self._anchored = True
+        else:
+            self._anchored = False
+            # Reset the scroll offset without firing `watch_scroll_y`, matching
+            # how the compositor mutates scroll state mid-arrange (avoids a
+            # redundant refresh cycle from within the layout pass itself).
+            self.set_reactive(VerticalScroll.scroll_y, 0.0)
+            self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
+        return result
+
+    def _is_scrollable(self) -> bool:
+        """Return whether current chat content overflows the viewport."""
+        return self.max_scroll_y > 0
+
 
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
@@ -2799,6 +2877,7 @@ class DeepAgentsApp(App):
             UI components for the main chat area and status bar.
         """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
+        from deepagents_code.config import settings
 
         if is_env_truthy(SHOW_HEADER) or self._installation_stale:
             yield _StaticHeader(id="app-header")
@@ -2807,6 +2886,9 @@ class DeepAgentsApp(App):
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
         with _ChatScroll(id="chat"):
             yield WelcomeBanner(
+                model_provider=settings.model_provider or "",
+                model_name=settings.model_name or "",
+                cwd=self._cwd,
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
@@ -2844,7 +2926,13 @@ class DeepAgentsApp(App):
         gc.freeze()
 
         chat = self.query_one("#chat", VerticalScroll)
-        chat.anchor()
+        # Don't establish bottom-follow intent at startup. `_ChatScroll.anchor()`
+        # defers the real anchor until content overflows, but not calling it at
+        # all keeps the welcome banner pinned to the top of an empty chat (like
+        # Claude Code). Content-producing paths (streaming, shell output,
+        # commands, model switches) call `anchor()` to opt into bottom-follow as
+        # content arrives; thread resume instead scrolls to the bottom once via
+        # `scroll_end()`.
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -3878,6 +3966,10 @@ class DeepAgentsApp(App):
             )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+        except ScreenStackError:
+            logger.debug(
+                "Screen stack empty during server ready transition", exc_info=True
+            )
         self._sync_status_connection()
 
         # Refresh the status bar model so a successful retry after a failed
@@ -3973,12 +4065,8 @@ class DeepAgentsApp(App):
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
 
-        # Drop the banner's connecting spinner — chat surface owns the error.
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_idle()
-        except NoMatches:
-            logger.warning("Welcome banner not found during server failure transition")
+        # The banner has no failure state — the status bar owns connection
+        # progress and the chat surface owns the error message below.
         self._sync_status_connection()
 
         # Keep any queued messages and widgets in place — `/model` retry can
@@ -9293,7 +9381,13 @@ class DeepAgentsApp(App):
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
                 except NoMatches:
-                    pass
+                    # The banner is composed once and never removed, so a miss
+                    # here means it has silently vanished — surface it.
+                    logger.warning("Welcome banner not found during thread reset")
+                except ScreenStackError:
+                    logger.debug(
+                        "Screen stack empty during thread reset", exc_info=True
+                    )
                 thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
                 await self._mount_message(thread_msg_widget)
                 self._schedule_thread_message_link(
@@ -10091,17 +10185,27 @@ class DeepAgentsApp(App):
         return settings.model_provider or None
 
     def _sync_status_model(self) -> None:
-        """Update the status bar with the active model and reasoning effort."""
+        """Update model displays with the active model and reasoning effort."""
         from deepagents_code.config import settings
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
         )
 
-        if self._status_bar is None:
-            return
         provider = settings.model_provider or ""
         model = settings.model_name or ""
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.update_model(provider=provider, model=model)
+        except NoMatches:
+            # The banner is composed once and never removed, so a miss here in
+            # steady state means the live model row has silently stopped
+            # updating — surface it rather than swallow at debug.
+            logger.warning("Welcome banner not found during model sync")
+        except ScreenStackError:
+            logger.debug("Screen stack empty during model sync", exc_info=True)
+        if self._status_bar is None:
+            return
         if not provider or not model:
             logger.warning(
                 "Settings missing model identity at status sync "
@@ -11930,7 +12034,12 @@ class DeepAgentsApp(App):
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
-        from deepagents_code.hooks import _dispatch_hook_sync, _load_hooks
+        from deepagents_code.hooks import (
+            _dispatch_hook_sync,
+            _load_hooks,
+            drain_pending_hooks,
+            has_pending_hooks,
+        )
 
         hooks = _load_hooks()
         if hooks:
@@ -11961,38 +12070,71 @@ class DeepAgentsApp(App):
         # finish persisting the in-flight run's trace instead of being
         # SIGTERM'd mid-request.
         agent_worker = self._agent_worker if self._agent_running else None
+        should_wait_for_agent = (
+            agent_worker is not None and not agent_worker.is_finished
+        )
+        should_drain_hooks = has_pending_hooks()
 
-        if agent_worker is not None and not agent_worker.is_finished:
+        if should_wait_for_agent or should_drain_hooks:
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
-                    await asyncio.wait_for(
-                        asyncio.shield(agent_worker.wait()),
-                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
-                    )
-                except (asyncio.CancelledError, WorkerCancelled):
-                    # Expected: exit() cancelled the worker above, so its
-                    # cancellation handler ran to completion. Nothing to flag.
-                    logger.debug(
-                        "Agent worker cancelled cleanly before app exit",
-                        exc_info=True,
-                    )
-                except (TimeoutError, WorkerFailed):
-                    # The worker did not finish within the window, so the
-                    # in-flight run's server-side trace may be incomplete.
-                    # Surface above debug so the loss isn't silent.
-                    logger.warning(
-                        "Agent worker did not finish persisting before app "
-                        "exit; the in-flight run's trace may be incomplete",
-                        exc_info=True,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Agent worker wait raised unexpectedly before app exit",
-                        exc_info=True,
-                    )
+                    worker = agent_worker
+                    if should_wait_for_agent and worker is not None:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(worker.wait()),
+                                timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                            )
+                        except (asyncio.CancelledError, WorkerCancelled):
+                            # Expected: exit() cancelled the worker above, so
+                            # its cancellation handler ran to completion.
+                            logger.debug(
+                                "Agent worker cancelled cleanly before app exit",
+                                exc_info=True,
+                            )
+                        except (TimeoutError, WorkerFailed):
+                            # The worker did not finish within the window, so
+                            # the in-flight run's server-side trace may be
+                            # incomplete. Surface above debug so the loss isn't
+                            # silent.
+                            logger.warning(
+                                "Agent worker did not finish persisting before app "
+                                "exit; the in-flight run's trace may be incomplete",
+                                exc_info=True,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Agent worker wait raised unexpectedly before app exit",
+                                exc_info=True,
+                            )
+                    try:
+                        # Bound the drain so a hung hook subprocess can't stall
+                        # an interactive quit indefinitely. Each hook is already
+                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
+                        # thread, but a slow/many-hook config could still exceed
+                        # the graceful-exit budget; a dropped final tool.result is
+                        # announced rather than letting the UI feel frozen. The
+                        # headless surface leaves its drain unbounded on purpose —
+                        # a script exit favors a complete audit trail over shutdown
+                        # latency.
+                        await asyncio.wait_for(
+                            drain_pending_hooks(),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook drain did not finish within %ss before app "
+                            "exit; a final tool.result hook may be dropped",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Hook drain raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
                 finally:
                     # This is the only call that stops the event loop, so it
                     # must run on every path the try/except can take, including
@@ -13039,11 +13181,6 @@ class DeepAgentsApp(App):
                 self._connecting = True
                 self._reconnecting = True
                 self._agent = None
-                try:
-                    banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.set_connecting()
-                except NoMatches:
-                    pass
                 self._sync_status_connection()
 
                 if self._chat_input:
@@ -13118,7 +13255,16 @@ class DeepAgentsApp(App):
                         mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                     )
                 except NoMatches:
-                    pass
+                    # The banner is composed once and never removed, so a miss
+                    # here means it has silently vanished — surface it.
+                    logger.warning(
+                        "Welcome banner not found during agent-swap rollback"
+                    )
+                except ScreenStackError:
+                    logger.debug(
+                        "Screen stack empty during agent-swap rollback",
+                        exc_info=True,
+                    )
                 self._sync_status_connection()
                 self.notify(
                     f"Could not prepare to switch to {agent_name!r}. "
@@ -13179,7 +13325,16 @@ class DeepAgentsApp(App):
                 banner = self.query_one("#welcome-banner", WelcomeBanner)
                 banner.set_connected(self._mcp_tool_count)
             except NoMatches:
-                pass
+                # The banner is composed once and never removed, so a miss here
+                # means it has silently vanished — surface it.
+                logger.warning(
+                    "Welcome banner not found during agent-swap confirmation"
+                )
+            except ScreenStackError:
+                logger.debug(
+                    "Screen stack empty during agent-swap confirmation",
+                    exc_info=True,
+                )
             self._sync_status_connection()
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
@@ -13967,10 +14122,15 @@ class DeepAgentsApp(App):
         )
 
     def _refresh_welcome_banner_mcp_counts(self) -> None:
-        """Push current MCP counts into the welcome banner when it is mounted."""
+        """Push current MCP counts into the welcome banner when it is mounted.
+
+        Best-effort: this can run during MCP initialization before the banner is
+        composed, so a miss is benign and stays at debug (unlike the post-startup
+        banner-update paths, where a miss signals a real regression).
+        """
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             logger.debug("Welcome banner not mounted during MCP count refresh")
             return
         banner.set_connected(
@@ -15078,11 +15238,6 @@ class DeepAgentsApp(App):
             self._connecting = True
             self._reconnecting = True
             self._agent = None
-            try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.set_connecting()
-            except NoMatches:
-                pass
             self._sync_status_connection()
 
             try:
@@ -15213,6 +15368,8 @@ class DeepAgentsApp(App):
                 logger.warning(missing_message, thread_id)
             else:
                 logger.debug(missing_message, thread_id)
+        except ScreenStackError:
+            logger.debug("Screen stack empty during thread-id sync", exc_info=True)
 
     def _apply_cwd_to_ui(self, cwd: Path) -> None:
         """Update cwd-dependent UI state after changing process cwd."""
@@ -15222,6 +15379,14 @@ class DeepAgentsApp(App):
             self._chat_input.set_cwd(cwd)
         if self._status_bar is not None:
             self._status_bar.cwd = cwd_text
+        try:
+            self.query_one("#welcome-banner", WelcomeBanner).update_cwd(cwd_text)
+        except NoMatches:
+            # Persistent banner: a steady-state miss means the live directory
+            # row has silently stopped updating — surface it.
+            logger.warning("Welcome banner not found during cwd sync")
+        except ScreenStackError:
+            logger.debug("Screen stack empty during cwd sync", exc_info=True)
 
     @staticmethod
     def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:
@@ -15433,11 +15598,6 @@ class DeepAgentsApp(App):
             self._connecting = True
             self._reconnecting = True
             self._agent = None
-            try:
-                banner = self.query_one("#welcome-banner", WelcomeBanner)
-                banner.set_connecting()
-            except NoMatches:
-                pass
             self._sync_status_connection()
             self._preserve_launch_relative_server_paths(previous_cwd)
             self._switch_process_cwd(cwd)
@@ -15532,7 +15692,14 @@ class DeepAgentsApp(App):
                     mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 )
             except NoMatches:
-                pass
+                # The banner is composed once and never removed, so a miss here
+                # means it has silently vanished — surface it.
+                logger.warning("Welcome banner not found during cwd-switch rollback")
+            except ScreenStackError:
+                logger.debug(
+                    "Screen stack empty during cwd-switch rollback",
+                    exc_info=True,
+                )
             self._sync_status_connection()
             if not isinstance(exc, Exception):
                 # Cancellation / SystemExit: state is restored; let it propagate.
@@ -16165,11 +16332,6 @@ class DeepAgentsApp(App):
         self._server_startup_deferred = False
         self._connecting = True
         self._reconnecting = True
-        try:
-            banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connecting()
-        except (NoMatches, ScreenStackError):
-            logger.debug("Welcome banner not found during startup retry", exc_info=True)
         self._sync_status_connection()
 
         if self._retry_status_widget is not None:

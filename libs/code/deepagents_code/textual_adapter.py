@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import time
 import uuid
@@ -56,10 +55,25 @@ from deepagents_code._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
+from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+    ToolCallBufferKey,
+    ToolStatus,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
-from deepagents_code.hooks import dispatch_hook
+from deepagents_code.hooks import (
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+)
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
@@ -77,6 +91,81 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+
+def _dispatch_tool_use_hook(
+    tool_name: str, tool_id: str, tool_args: dict[str, Any]
+) -> None:
+    """Dispatch a `tool.use` hook with the payload documented in `hooks`."""
+    dispatch_hook_fire_and_forget(
+        "tool.use", build_tool_use_payload(tool_name, tool_id, tool_args)
+    )
+
+
+def _dispatch_tool_error_hook(tool_name: str) -> None:
+    """Dispatch a `tool.error` hook with the payload documented in `hooks`."""
+    dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
+
+
+def _dispatch_tool_result_hook(
+    tool_name: str,
+    tool_id: str | None,
+    tool_args: dict[str, Any],
+    tool_status: ToolStatus,
+    tool_output: str,
+) -> None:
+    """Dispatch a `tool.result` hook with the payload documented in `hooks`.
+
+    `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` inside the shared
+    payload builder.
+    """
+    dispatch_hook_fire_and_forget(
+        "tool.result",
+        build_tool_result_payload(
+            tool_name, tool_id, tool_args, tool_status, tool_output
+        ),
+    )
+
+
+def _dispatch_terminal_tool_result_hooks(
+    tool_messages: dict[str, ToolCallMessage],
+    tool_output: str,
+) -> list[str]:
+    """Emit terminal `tool.error`/`tool.result` for still-pending tool widgets.
+
+    Every widget in `tool_messages` already had its `tool.use` dispatched (that
+    is when the widget is mounted), so any tool that reaches a terminal outcome
+    *without* a streamed `ToolMessage` — a HITL rejection, a cancelled turn, or
+    an aborted stream — would otherwise leave its `tool.use` unterminated. This
+    closes each one with a `tool_status="error"` result carrying the widget's
+    real `tool_name`/`args`, so the "every `tool.use` is closed by a matching
+    terminal event" guarantee holds on those paths too.
+
+    TUI-only: the headless surface reaches the equivalent state through
+    `_run_agent_loop`'s orphan drain rather than widgets.
+
+    Args:
+        tool_messages: Map of tool-call id to its widget for the pending tools.
+        tool_output: Terminal output string recorded on each `tool.result`.
+
+    Returns:
+        The tool-call ids that received terminal hooks. Callers track these
+            (via `completed_tool_result_ids`) so a later synthetic `ToolMessage`
+            — when the turn still resumes, e.g. alongside an answered `ask_user`
+            — does not double-dispatch.
+    """
+    dispatched: list[str] = []
+    for tool_id, tool_msg in list(tool_messages.items()):
+        _dispatch_tool_error_hook(tool_msg.tool_name)
+        _dispatch_tool_result_hook(
+            tool_msg.tool_name,
+            tool_id,
+            tool_msg.args,
+            "error",
+            tool_output,
+        )
+        dispatched.append(tool_id)
+    return dispatched
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -370,6 +459,11 @@ class TextualUIAdapter:
         Args:
             error: Error text to display in each pending tool widget.
         """
+        # Each pending widget already had its `tool.use` dispatched at mount, so
+        # emit terminal hooks before dropping them — otherwise an aborted stream
+        # leaves those `tool.use` events unterminated for audit consumers. Runs
+        # before the widget updates so a `set_error` failure can't skip it.
+        _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
         self._current_tool_messages.clear()
@@ -620,7 +714,12 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
-    tool_call_buffers: dict[str | int, dict] = {}
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
+    # Tool-call ids that already received terminal hooks before a resumed
+    # `ToolMessage` can stream. When the turn still resumes, middleware
+    # synthetic messages would otherwise re-dispatch `tool.result`; this set
+    # suppresses those duplicates.
+    completed_tool_result_ids: set[str] = set()
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -779,23 +878,55 @@ async def execute_task_textual(
                                         if tool_id not in displayed_tool_ids:
                                             if adapter._set_spinner:
                                                 await adapter._set_spinner(None)
+                                            tool_args = {
+                                                "questions": validated_ask_user[
+                                                    "questions"
+                                                ]
+                                            }
                                             tool_msg = ToolCallMessage(
                                                 "ask_user",
-                                                {
-                                                    "questions": validated_ask_user[
-                                                        "questions"
-                                                    ]
-                                                },
+                                                tool_args,
                                             )
                                             try:
                                                 await adapter._mount_message(tool_msg)
                                             except Exception:
+                                                # Mount failed (e.g. a torn-down
+                                                # DOM during shutdown). tool.use
+                                                # is dispatched only on mount
+                                                # success (below), so a failed
+                                                # mount leaves no unterminated
+                                                # tool.use to orphan if the turn
+                                                # is then cancelled before the
+                                                # ask_user resolution loop runs.
+                                                # The id is left unlatched so a
+                                                # re-observed interrupt can retry
+                                                # the mount; the question is still
+                                                # asked and closed by the
+                                                # resolution loop, which
+                                                # dispatches the terminal
+                                                # tool.result independently of
+                                                # this widget.
                                                 logger.exception(
                                                     "Failed to mount ask_user "
                                                     "tool row for %s",
                                                     tool_id,
                                                 )
                                             else:
+                                                # Fire tool.use and latch the id
+                                                # together, only once the widget
+                                                # is mounted, so the "every
+                                                # tool.use is closed" guarantee
+                                                # holds with no widget-less orphan
+                                                # on the mount-failure path.
+                                                # Gating on mount success also
+                                                # keeps tool.use fire-once: a
+                                                # failed mount never fires it, and
+                                                # a successful mount latches the
+                                                # id so a re-observed interrupt is
+                                                # skipped.
+                                                _dispatch_tool_use_hook(
+                                                    "ask_user", tool_id, tool_args
+                                                )
                                                 displayed_tool_ids.add(tool_id)
                                                 adapter._current_tool_messages[
                                                     tool_id
@@ -900,31 +1031,96 @@ async def execute_task_textual(
 
                     if isinstance(message, ToolMessage):
                         tool_name = getattr(message, "name", "")
-                        tool_status = getattr(message, "status", "success")
-                        tool_content = format_tool_message_content(message.content)
+                        # Normalize to the two-value hook domain, fail-closed: an
+                        # unexpected provider status is logged and treated as an
+                        # error (see `normalize_tool_status`) rather than silently
+                        # reported as success.
+                        tool_status: ToolStatus = normalize_tool_status(
+                            getattr(message, "status", "success"), tool_name
+                        )
+                        # Guard formatting *and* the str() coercion so a
+                        # pathological __str__ on the content can't re-raise and
+                        # skip the tool.result dispatch below. On failure use a
+                        # sentinel rather than re-touching the offending content,
+                        # so the terminal dispatch is genuinely unconditional.
+                        try:
+                            tool_content = format_tool_message_content(message.content)
+                            output_str = str(tool_content) if tool_content else ""
+                        except Exception:
+                            logger.exception("Failed to format tool output")
+                            output_str = UNRENDERABLE_TOOL_OUTPUT
                         record = file_op_tracker.complete_with_message(message)
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
                         if tool_id and tool_id in adapter._current_tool_messages:
-                            # Pop before widget calls so the dict drains even
+                            # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
                             tool_msg = adapter._current_tool_messages.pop(tool_id)
-                            output_str = str(tool_content) if tool_content else ""
-                            if tool_status == "success":
-                                tool_msg.set_success(output_str)
-                            else:
-                                tool_msg.set_error(output_str or "Error")
-                                await dispatch_hook(
-                                    "tool.error",
-                                    {"tool_names": [tool_msg._tool_name]},
-                                )
-                        elif tool_id:
-                            logger.debug(
-                                "ToolMessage tool_call_id=%s not in "
-                                "_current_tool_messages; spinner gating "
-                                "may be stale",
+                            # Dispatch the terminal hooks *before* touching the
+                            # widget: a render failure must never drop this tool's
+                            # tool.result/tool.error (which would leave its
+                            # tool.use unterminated). The headless path likewise
+                            # dispatches without depending on any widget.
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_msg.tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_msg.tool_name,
                                 tool_id,
+                                tool_msg.args,
+                                tool_status,
+                                output_str,
+                            )
+                            # Update the widget last, guarded: a set_success/
+                            # set_error failure must not abort the turn and drop
+                            # the remaining tools' hooks.
+                            try:
+                                if tool_status == "success":
+                                    tool_msg.set_success(output_str)
+                                else:
+                                    tool_msg.set_error(output_str or "Error")
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update tool row for %s", tool_id
+                                )
+                        elif tool_id and tool_id in completed_tool_result_ids:
+                            # This is a middleware synthetic ToolMessage for a
+                            # tool whose terminal hooks already fired while the
+                            # turn was resolving interrupts. Its widget was
+                            # cleared, so it lands here — consume the id and skip
+                            # re-dispatch to avoid a duplicate tool.result (with
+                            # mismatched `{}` args).
+                            completed_tool_result_ids.discard(tool_id)
+                        else:
+                            # The tool call was never mounted — either it has no
+                            # tool_call_id, or its streamed args never parsed so
+                            # no tool.use fired and no widget exists. Still emit
+                            # tool.result (with {} args, since without a widget
+                            # we lack the parsed args) so audit hooks observe
+                            # every executed tool, matching the headless path.
+                            # tool_id may be None here, mirroring headless.
+                            # Reciprocal: headless always dispatches tool.result
+                            # from `_process_message_chunk` since it has no
+                            # widget concept; see `non_interactive.py`. The
+                            # parity contract is documented in `_tool_stream`.
+                            if tool_id:
+                                # Warning, not info/debug: a real-id result with
+                                # no mounted widget (its args never parsed, so no
+                                # tool.use fired) means a hook consumer sees a
+                                # `tool.result` with empty args for a tool that
+                                # actually executed — degraded audit fidelity worth
+                                # surfacing at default log levels, matching the
+                                # headless path.
+                                logger.warning(
+                                    "ToolMessage tool_call_id=%s not in "
+                                    "_current_tool_messages; no correlated "
+                                    "tool.use, sending empty tool_args",
+                                    tool_id,
+                                )
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_name, tool_id, {}, tool_status, output_str
                             )
 
                         # Show file operation results - always show diffs in chat
@@ -1061,84 +1257,33 @@ async def execute_task_textual(
                             chunk_id = block.get("id")
                             chunk_index = block.get("index")
 
-                            buffer_key: str | int
-                            if chunk_index is not None:
-                                buffer_key = chunk_index
-                            elif chunk_id is not None:
-                                buffer_key = chunk_id
-                            else:
-                                buffer_key = f"unknown-{len(tool_call_buffers)}"
-
+                            buffer_key = tool_call_buffer_key(
+                                chunk_index, chunk_id, len(tool_call_buffers)
+                            )
                             buffer = tool_call_buffers.setdefault(
-                                buffer_key,
-                                {
-                                    "name": None,
-                                    "id": None,
-                                    "args": None,
-                                    "args_parts": [],
-                                },
+                                buffer_key, ToolCallBuffer()
+                            )
+                            buffer.ingest(
+                                name=chunk_name, tool_id=chunk_id, args=chunk_args
                             )
 
-                            if chunk_name:
-                                buffer["name"] = chunk_name
-                            if chunk_id:
-                                buffer["id"] = chunk_id
-
-                            if isinstance(chunk_args, dict):
-                                buffer["args"] = chunk_args
-                                buffer["args_parts"] = []
-                            elif isinstance(chunk_args, str):
-                                if chunk_args:
-                                    parts: list[str] = buffer.setdefault(
-                                        "args_parts", []
-                                    )
-                                    if not parts or chunk_args != parts[-1]:
-                                        parts.append(chunk_args)
-                            elif chunk_args is not None:
-                                buffer["args"] = chunk_args
-
-                            buffer_name = buffer.get("name")
-                            buffer_id = buffer.get("id")
+                            buffer_name = buffer.name
+                            buffer_id = buffer.tool_id
                             if buffer_name is None:
                                 continue
 
-                            # Resolve the tool arguments. String fragments are
-                            # accumulated in `args_parts` and joined + parsed
-                            # once the buffer holds a complete JSON value. Re-
-                            # joining and re-parsing the whole prefix on every
-                            # fragment is O(n^2) and ran on the UI event loop for
-                            # large `edit_file` blobs. Each `continue` below
-                            # leaves the buffer in `tool_call_buffers` so the next
+                            # `parse_args` reassembles streamed JSON string
+                            # fragments, deferring the parse until the value
+                            # looks complete — which avoids re-parsing the whole
+                            # prefix on every fragment (costly on the UI event
+                            # loop for large `edit_file` blobs) — and returns
+                            # None while still incomplete. Each `continue` leaves
+                            # the buffer in `tool_call_buffers` so the next
                             # fragment keeps accumulating; it is popped only after
-                            # a successful parse + mount.
-                            direct_args = buffer.get("args")
-                            if isinstance(direct_args, dict):
-                                parsed_args = direct_args
-                            elif direct_args is not None:
-                                parsed_args = {"value": direct_args}
-                            else:
-                                parts = buffer.get("args_parts") or []
-                                if not parts:
-                                    continue
-                                joined = "".join(parts)
-                                stripped = joined.strip()
-                                if not stripped:
-                                    continue
-                                # Objects/arrays can be large (e.g. `edit_file`
-                                # blobs), so defer parsing until the closing
-                                # bracket arrives. Scalars are always small and
-                                # never end in `}`/`]`, so parse them eagerly
-                                # rather than leaving them stuck unparsed.
-                                if stripped[0] in "{[" and not stripped.endswith(
-                                    ("}", "]")
-                                ):
-                                    continue
-                                try:
-                                    parsed_args = json.loads(joined)
-                                except json.JSONDecodeError:
-                                    continue
-                                if not isinstance(parsed_args, dict):
-                                    parsed_args = {"value": parsed_args}
+                            # a successful parse + mount below.
+                            parsed_args = buffer.parse_args()
+                            if parsed_args is None:
+                                continue
 
                             # Flush pending text before tool call
                             pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -1183,16 +1328,43 @@ async def execute_task_textual(
                                     buffer_name,
                                     repr(parsed_args)[:200],
                                 )
+                                # Dispatch tool.use once the streamed call has a
+                                # resolved id and parsed args. The headless
+                                # surface dispatches from the stream loop
+                                # instead; see the "Gate tool.use" comment in
+                                # `non_interactive._process_ai_message`. Both
+                                # gate on a resolved tool-call id and fire at
+                                # most once per id — the parity contract is
+                                # documented in `_tool_stream`.
+                                _dispatch_tool_use_hook(
+                                    buffer_name, buffer_id, parsed_args
+                                )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
-                                await adapter._mount_message(tool_msg)
+                                try:
+                                    await adapter._mount_message(tool_msg)
+                                except Exception:
+                                    # tool.use already fired. If the mount raises
+                                    # (e.g. mounting into a torn-down DOM during
+                                    # shutdown), still track the pending call so
+                                    # the later real ToolMessage remains
+                                    # authoritative for tool.result status/output.
+                                    # If the stream ends first, the terminal
+                                    # drains close this tool.use from the same
+                                    # pending map.
+                                    logger.exception(
+                                        "Failed to mount tool widget for %s",
+                                        buffer_id,
+                                    )
+                                else:
+                                    # Mark running so the group row reflects live
+                                    # progress; the row itself is hidden inside
+                                    # the group, so this drives state, not a
+                                    # visible per-tool spinner.
+                                    tool_msg.set_running()
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                # Mark running so the group row reflects live
-                                # progress; the row itself is hidden inside the
-                                # group, so this drives state, not a visible
-                                # per-tool spinner.
-                                tool_msg.set_running()
 
-                            tool_call_buffers.pop(buffer_key, None)
+                            if buffer_id is not None:
+                                tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
                         pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -1253,6 +1425,7 @@ async def execute_task_textual(
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
                     questions = ask_req["questions"]
+                    tool_args = {"questions": questions}
 
                     if adapter._request_ask_user:
                         if adapter._set_spinner:
@@ -1306,11 +1479,22 @@ async def execute_task_textual(
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
+                                output = "User answered"
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
+                                _dispatch_tool_result_hook(
+                                    "ask_user", tool_id, tool_args, "success", output
+                                )
+                                completed_tool_result_ids.add(tool_id)
                                 if tool_msg is not None:
-                                    tool_msg.set_success("User answered")
+                                    try:
+                                        tool_msg.set_success(output)
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to update ask_user row for %s",
+                                            tool_id,
+                                        )
                                 else:
                                     logger.warning(
                                         "ask_user tool_id %s missing from "
@@ -1329,13 +1513,23 @@ async def execute_task_textual(
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
+                                output = "invalid ask_user answers payload"
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
+                                _dispatch_tool_error_hook("ask_user")
+                                _dispatch_tool_result_hook(
+                                    "ask_user", tool_id, tool_args, "error", output
+                                )
+                                completed_tool_result_ids.add(tool_id)
                                 if tool_msg is not None:
-                                    tool_msg.set_error(
-                                        "invalid ask_user answers payload"
-                                    )
+                                    try:
+                                        tool_msg.set_error(output)
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to update ask_user row for %s",
+                                            tool_id,
+                                        )
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
@@ -1346,8 +1540,20 @@ async def execute_task_textual(
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            output = "Question cancelled"
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
+                                "ask_user", tool_id, tool_args, "error", output
+                            )
+                            completed_tool_result_ids.add(tool_id)
                             if tool_msg is not None:
-                                tool_msg.set_rejected()
+                                try:
+                                    tool_msg.set_rejected()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
                             else:
                                 logger.warning(
                                     "ask_user tool_id %s missing from "
@@ -1365,8 +1571,19 @@ async def execute_task_textual(
                             }
                             any_rejected = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
+                                "ask_user", tool_id, tool_args, "error", error_text
+                            )
+                            completed_tool_result_ids.add(tool_id)
                             if tool_msg is not None:
-                                tool_msg.set_error(error_text)
+                                try:
+                                    tool_msg.set_error(error_text)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1379,8 +1596,22 @@ async def execute_task_textual(
                         }
                         tool_id = ask_req["tool_call_id"]
                         tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                        _dispatch_tool_error_hook("ask_user")
+                        _dispatch_tool_result_hook(
+                            "ask_user",
+                            tool_id,
+                            tool_args,
+                            "error",
+                            _ASK_USER_UNSUPPORTED_ERROR,
+                        )
+                        completed_tool_result_ids.add(tool_id)
                         if tool_msg is not None:
-                            tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                            try:
+                                tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update ask_user row for %s", tool_id
+                                )
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
@@ -1517,7 +1748,6 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
-                                adapter._current_tool_messages.clear()
                                 # Bare reject aborts the turn and shows the
                                 # canned "Command rejected" banner so the user
                                 # can redirect. When a reason is supplied, the
@@ -1525,6 +1755,13 @@ async def execute_task_textual(
                                 # agent: keep `any_rejected=False` so the
                                 # stream resumes and the banner is suppressed.
                                 if reject_message is None:
+                                    completed_tool_result_ids.update(
+                                        _dispatch_terminal_tool_result_hooks(
+                                            adapter._current_tool_messages,
+                                            "Tool approval rejected",
+                                        )
+                                    )
+                                    adapter._current_tool_messages.clear()
                                     any_rejected = True
                             else:
                                 logger.warning(
@@ -1539,6 +1776,12 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
+                                completed_tool_result_ids.update(
+                                    _dispatch_terminal_tool_result_hooks(
+                                        adapter._current_tool_messages,
+                                        "Tool approval rejected",
+                                    )
+                                )
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                         else:
@@ -1553,6 +1796,12 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
+                            completed_tool_result_ids.update(
+                                _dispatch_terminal_tool_result_hooks(
+                                    adapter._current_tool_messages,
+                                    "Tool approval rejected",
+                                )
+                            )
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 
@@ -1586,6 +1835,32 @@ async def execute_task_textual(
 
                 stream_input = Command(resume=resume_payload)
             else:
+                # Clean stream end. Any tool still in `_current_tool_messages`
+                # had its `tool.use` dispatched at mount but never received a
+                # `ToolMessage` (e.g. a custom/remote graph that ends the turn
+                # after emitting an unexecuted tool call). Close each one with a
+                # terminal hook so the "every `tool.use` is terminated" guarantee
+                # does not depend on the graph raising. This mirrors the headless
+                # `_dispatch_orphaned_tool_result_hooks`, which likewise closes
+                # orphans hooks-only (no widget mutation) on every loop exit —
+                # the widget keeps its rendered state; only the audit stream and
+                # the cross-turn `_current_tool_messages` tracking are settled.
+                if adapter._current_tool_messages:
+                    logger.info(
+                        "Stream ended with %d un-resulted tool call(s); "
+                        "closing with terminal hooks",
+                        len(adapter._current_tool_messages),
+                    )
+                    _dispatch_terminal_tool_result_hooks(
+                        adapter._current_tool_messages,
+                        "Stream ended before tool result",
+                    )
+                    adapter._current_tool_messages.clear()
+                # The end-of-stream diagnostic for buffered tool calls that never
+                # fired a `tool.use` runs in the `finally` below, not here, so it
+                # fires on cancel and mid-stream error too (not only this clean
+                # end) — mirroring the headless surface, whose identical
+                # diagnostic lives in `_run_agent_loop`'s `finally`.
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
@@ -1614,6 +1889,67 @@ async def execute_task_textual(
             await _stop_assistant_streams(adapter, assistant_message_by_namespace)
         except Exception:  # drain must not mask the original error
             logger.exception("Failed to drain assistant streams on exit")
+
+        # Self-contained backstop for the "every `tool.use` is terminated" hook
+        # guarantee. The clean-end branch, HITL-reject branches, and interrupt
+        # cleanup each already drained `_current_tool_messages` and cleared it, so
+        # this is a no-op on those paths. The one path it covers is a non-cancel
+        # mid-stream error propagating to the caller: without it, the tools that
+        # fired `tool.use` would be terminated only by the caller's
+        # `finalize_pending_tools_with_error`, leaving the hook guarantee dependent
+        # on the caller rather than owned here (a future second caller, or a
+        # missing adapter, would leak an unterminated `tool.use`). Runs before the
+        # exception reaches the caller, whose `finalize_pending_tools_with_error`
+        # then finds an empty dict and no-ops, so no `tool.result` is dispatched
+        # twice. Fail-loud and guarded so a dispatch problem can never mask the
+        # error propagating from the stream.
+        if adapter._current_tool_messages:
+            logger.warning(
+                "Turn exited with %d un-terminated tool call(s); closing with "
+                "terminal hooks as a backstop",
+                len(adapter._current_tool_messages),
+            )
+            try:
+                adapter.finalize_pending_tools_with_error(
+                    "Agent error before tool result"
+                )
+            except Exception:
+                logger.warning(
+                    "Backstop terminal tool close failed unexpectedly",
+                    exc_info=True,
+                )
+
+        # Surface any buffered tool call that never mounted and never fired a
+        # `tool.use`, so it would otherwise vanish with `tool_call_buffers` at turn
+        # end with no trace. Two distinct cases (args that never parsed, and args
+        # that parsed but carried no tool-call id) are classified by the shared
+        # `count_unemitted_tool_calls`. In the `finally` so it fires on every exit
+        # path — clean end, cancel, and mid-stream error — matching the headless
+        # surface. Info, not warning: nothing executed for these and the
+        # precondition (exiting mid-tool-call) is unusual; it only needs to be
+        # greppable. Guarded so a logging failure can never mask a propagating
+        # exception (`parse_args`, re-run inside the count, can raise on the
+        # invariant-violating both-fields-set buffer).
+        try:
+            unemitted = count_unemitted_tool_calls(tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed "
+                    "but carried no tool-call id; no tool.use was emitted for "
+                    "them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
 
     # Update token count and return stats. Persistence is handled inside the
     # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.
@@ -1722,6 +2058,35 @@ async def _handle_interrupt_cleanup(
         adapter._current_tool_messages,
     )
 
+    # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
+    # arrived because the turn was cancelled: emit terminal hooks before the
+    # widgets are dropped, so a cancel path leaves no unterminated `tool.use`
+    # (mirroring the HITL-reject branches). The turn does not resume from here,
+    # so the returned ids need not be tracked for dedup.
+    #
+    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # `set_rejected` loop after them): those writes await a possibly-slow remote
+    # checkpointer, and on an interactive quit the graceful-exit drain in
+    # `app.py` snapshots the in-flight hook tasks right after cancelling this
+    # worker. Scheduling the fire-and-forget hooks here — synchronously, as soon
+    # as cancellation is observed — guarantees they are in that snapshot and get
+    # drained, rather than being scheduled after a slow write and cancelled at
+    # loop teardown (a silent audit gap). It reads `tool_msg.args`/`tool_name`,
+    # both available regardless of the widget's rejected state.
+    #
+    # Guarded because this now sits *before* the recovery-state write below: the
+    # dispatch never raises by construction today (pure payload builders, and
+    # `dispatch_hook_fire_and_forget` swallows serialization inside its task), but
+    # this function's whole contract is best-effort-must-not-propagate, so a
+    # future change here must never skip the `aupdate_state` save or escape the
+    # cancel handler.
+    try:
+        _dispatch_terminal_tool_result_hooks(
+            adapter._current_tool_messages, "Turn cancelled"
+        )
+    except Exception:
+        logger.warning("Terminal tool.result dispatch failed on cancel", exc_info=True)
+
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
     from langsmith import tracing_context
@@ -1766,9 +2131,20 @@ async def _handle_interrupt_cleanup(
                 )
             )
 
-    # Mark tools as rejected AFTER saving state
+    # Mark tools as rejected AFTER saving state. Terminal hooks for these were
+    # already dispatched before the state writes above (see the comment there).
+    # Guard each `set_rejected` — it does DOM work that can raise during
+    # app-exit teardown — so a failure can't skip the `clear()` below. If it
+    # did, `_current_tool_messages` would stay populated and the caller's
+    # `finally` backstop would re-dispatch a duplicate terminal hook for every
+    # id already closed at the top of this function.
     for tool_msg in list(adapter._current_tool_messages.values()):
-        tool_msg.set_rejected()
+        try:
+            tool_msg.set_rejected()
+        except Exception:
+            logger.exception(
+                "Failed to mark tool row rejected during interrupt cleanup"
+            )
     adapter._current_tool_messages.clear()
 
     # Keep the token count marked stale whenever interrupted state was captured,

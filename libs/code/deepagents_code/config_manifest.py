@@ -1104,6 +1104,44 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
     ),
+    # --- MCP ------------------------------------------------------------
+    # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
+    # which reads them only from the user-level config.toml (never a project file),
+    # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
+    # env overrides are named in the summaries instead of `env_var` because the
+    # scalar resolver rejects env-backed STRUCTURED options by design.
+    ConfigOption(
+        key="mcp.enabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to pre-approve by name from an untrusted "
+            ".mcp.json; command/URL changes under the same name still match "
+            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_servers"),
+    ),
+    ConfigOption(
+        key="mcp.disabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to always reject; reject wins over approval "
+            "and trust (env: DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_project_servers"),
+    ),
+    # Unlike the two trust lists above, this one is managed by `mcp_disabled`
+    # (the server viewer's disable toggle), not `load_mcp_server_trust_lists`;
+    # it plays no part in the project-trust security boundary. It is STRUCTURED
+    # here purely for discovery.
+    ConfigOption(
+        key="mcp.disabled_servers",
+        group="MCP",
+        summary="MCP server names disabled by the user from the server viewer.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_servers"),
+    ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
         key="update.auto_update",
@@ -1203,6 +1241,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
+        # Env equivalents of the STRUCTURED `[mcp]` lists. They are read by the
+        # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
+        # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
+        # resolver, so they intentionally have no scalar `env_var` ConfigOption.
+        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DISABLED_PROJECT_MCP_SERVERS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

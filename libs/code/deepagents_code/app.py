@@ -279,6 +279,11 @@ def _create_model_with_deepagents_import_lock(
         )
 
 
+def _resolve_parent_dir(path: str | Path) -> str:
+    """Return the resolved parent directory for a path."""
+    return str(Path(path).resolve().parent)
+
+
 def _extra_is_ready(extra: str) -> bool | None:
     """Return whether all dependencies for `extra` are installed.
 
@@ -2784,6 +2789,13 @@ class DeepAgentsApp(App):
         `load_skill_content`.
 
         Built alongside `_discovered_skills`.
+        """
+
+        self._skill_trust_denied: set[str] = set()
+        """Resolved skill directories the user declined to trust this session.
+
+        Prevents re-prompting for the same untrusted location after a deny
+        within a single run.
         """
 
         # Media
@@ -9630,6 +9642,28 @@ class DeepAgentsApp(App):
                 theme_reload_ok = False
                 logger.warning("Failed to reload user themes", exc_info=True)
 
+            # Re-resolve and apply the theme preference so a per-terminal or
+            # global default saved by another session is picked up. This
+            # re-syncs to on-disk config using the same resolution as startup
+            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
+            # default), which intentionally overrides an unsaved in-session
+            # `/theme` choice. Guarded on the registry reload succeeding since
+            # the target theme must be registered before it can be applied.
+            theme_switched_to: str | None = None
+            if theme_reload_ok:
+                try:
+                    new_theme = _load_theme_preference()
+                    if new_theme != self.theme and new_theme in theme.get_registry():
+                        self.theme = new_theme
+                        self.sync_terminal_background()
+                        self.refresh_css(animate=False)
+                        theme_switched_to = new_theme
+                except Exception:
+                    logger.warning(
+                        "Failed to re-apply theme preference on reload",
+                        exc_info=True,
+                    )
+
             # Re-discover skills so autocomplete reflects any new/removed
             # skills. Run via the same exclusive-group worker used at
             # startup so any in-flight startup discovery is cancelled
@@ -9655,6 +9689,10 @@ class DeepAgentsApp(App):
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
+                if theme_switched_to is not None:
+                    entry = theme.get_registry().get(theme_switched_to)
+                    label = entry.label if entry is not None else theme_switched_to
+                    report += f"\nSwitched theme to {label}."
             else:
                 report += (
                     "\nTheme registry reload failed. Check config.toml for errors."
@@ -9791,8 +9829,15 @@ class DeepAgentsApp(App):
                 normalized_name,
                 exc_info=True,
             )
-            await _mount_error(str(exc))
-            return
+            content = await self._prompt_skill_trust_and_retry(
+                normalized_name,
+                skill_path,
+                allowed_roots,
+                fallback_error=str(exc),
+                mount_error=_mount_error,
+            )
+            if content is None:
+                return
         except OSError as exc:
             logger.warning(
                 "Filesystem error loading skill %r",
@@ -9841,6 +9886,139 @@ class DeepAgentsApp(App):
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
         )
+
+    async def _prompt_skill_trust_and_retry(
+        self,
+        skill_name: str,
+        skill_path: str | Path,
+        allowed_roots: list[Path],
+        *,
+        fallback_error: str,
+        mount_error: Callable[[str], Awaitable[None]],
+    ) -> str | None:
+        """Prompt to trust an out-of-bounds skill directory, then reload it.
+
+        Mirrors the MCP project-trust flow: when containment fails, the user is
+        asked once to allow the resolved target directory. Allowing persists the
+        decision, extends the in-session containment allowlist, and retries the
+        read. Denying (or a prior deny this session) shows the original error.
+
+        Args:
+            skill_name: Normalized skill name, for messaging.
+            skill_path: Path to the skill's `SKILL.md`.
+            allowed_roots: Containment roots to extend on approval.
+            fallback_error: Original `PermissionError` message to show on deny.
+            mount_error: Callback to surface an error in the chat log.
+
+        Returns:
+            The skill content on approval and successful reload, or `None` when
+                the user declined or the retry failed (an error was mounted).
+        """
+        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.trust import trust_skill_dir
+        from deepagents_code.widgets.skill_trust import SkillTrustScreen
+
+        try:
+            target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
+        except (OSError, RuntimeError):
+            # Resolving the skill path can fail (e.g. a symlink loop introduced
+            # in the window after the first containment check raised). Fail
+            # closed with the original error rather than letting the worker
+            # exception escape unhandled — this mirrors the retry block below,
+            # which already guards its own resolve.
+            logger.warning(
+                "Could not resolve skill path %r for the trust prompt; refusing",
+                skill_path,
+                exc_info=True,
+            )
+            await mount_error(fallback_error)
+            return None
+
+        if target_dir in self._skill_trust_denied:
+            await mount_error(fallback_error)
+            return None
+
+        try:
+            allowed = await self._push_screen_wait(
+                SkillTrustScreen(skill_name, target_dir)
+            )
+        except Exception:
+            # This runs inside `_invoke_skill`'s `except PermissionError` block,
+            # so an error escaping the modal push would not be caught by that
+            # method's sibling handlers and would surface as an unhandled worker
+            # crash. Fail closed: treat a modal failure as a deny.
+            logger.warning(
+                "Skill trust prompt failed to display for %s; refusing",
+                target_dir,
+                exc_info=True,
+            )
+            self._skill_trust_denied.add(target_dir)
+            await mount_error(fallback_error)
+            return None
+        if not allowed:
+            self._skill_trust_denied.add(target_dir)
+            await mount_error(fallback_error)
+            return None
+
+        if not await asyncio.to_thread(trust_skill_dir, target_dir):
+            # The modal told the user this location would be remembered for
+            # future sessions. Persisting failed (read-only/full `.state`), so
+            # surface that: we honor the approval this session, but they will be
+            # asked again next launch. Logging alone would silently break that
+            # promise.
+            logger.warning("Could not persist skill trust for %s", target_dir)
+            self.notify(
+                "Approved for this session, but the decision could not be "
+                "saved — you may be asked again next time.",
+                severity="warning",
+                markup=False,
+            )
+
+        target_path = Path(target_dir)
+        for roots in (allowed_roots, self._skill_allowed_roots):
+            if target_path not in roots:
+                roots.append(target_path)
+
+        def _retry() -> str | None:
+            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
+
+        try:
+            content = await asyncio.to_thread(_retry)
+        except PermissionError:
+            # Containment failed *after* the target dir was allowlisted, so the
+            # skill path must now resolve somewhere else — a symlink swap during
+            # the prompt window. Refuse and flag it distinctly from a plain read
+            # error. (PermissionError is an OSError subclass, so this must come
+            # first.)
+            logger.warning(
+                "Skill %r resolved outside the approved directory on retry "
+                "(target may have changed since approval); refusing",
+                skill_name,
+                exc_info=True,
+            )
+            await mount_error(
+                f"Could not load skill: {skill_name}. Its location changed "
+                "after you approved it, so it was not read.",
+            )
+            return None
+        except OSError:
+            logger.warning(
+                "Retry load failed for skill %r after trust",
+                skill_name,
+                exc_info=True,
+            )
+            await mount_error(
+                f"Could not load skill: {skill_name} after granting trust.",
+            )
+            return None
+
+        if content is None:
+            await mount_error(
+                f"Could not read content for skill: {skill_name}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8.",
+            )
+        return content
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.

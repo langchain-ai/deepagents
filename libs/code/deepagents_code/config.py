@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from deepagents_code._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
+from deepagents_code._env_vars import (
+    DISABLED_PROJECT_MCP_SERVERS,
+    ENABLED_PROJECT_MCP_SERVERS,
+    HIDE_SPLASH_VERSION,
+    is_env_truthy,
+)
 from deepagents_code._git import resolve_git_branch
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
@@ -155,6 +160,32 @@ lowercase `bash_env` injected into the environment is inert. Any future entry
 that some consumer reads case-insensitively would need a different check.
 """
 
+_PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
+    {
+        ENABLED_PROJECT_MCP_SERVERS,
+        DISABLED_PROJECT_MCP_SERVERS,
+    }
+)
+"""Env keys a *project* `.env` must not inject, even though they are otherwise
+safe process-env inputs.
+
+These two vars are the env form of the user-level project-MCP allow/deny lists
+(`model_config.load_mcp_server_trust_lists`). Their whole purpose is to be a
+*user-level* decision: naming a project MCP server here pre-approves it from an
+untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
+`${VAR}` header exfiltration during the discovery preflight). A project `.env`
+travels with a cloned repo, so honoring it would let an attacker commit
+`.mcp.json` + `.env` and self-approve their own servers — exactly the trust
+boundary the feature exists to hold.
+
+Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
+`.env` loading into code execution), these are denied only from the *project*
+`.env`: the user's own global `~/.deepagents/.env` and their shell exports are
+legitimate, trusted sources and continue to set them. The loader reads plain
+`os.environ`, so blocking injection here — before the value ever reaches
+`os.environ` — is what keeps that read trustworthy.
+"""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -201,7 +232,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         if env.get(key) == value:
             env.pop(key)
 
-    def apply_dotenv(dotenv_path: Path | None) -> None:
+    def apply_dotenv(dotenv_path: Path | None, *, is_project: bool) -> None:
         if dotenv_path is None:
             return
         try:
@@ -221,6 +252,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
+            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+                # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
+                # user-level MCP trust decision (the global `.env`/shell can).
+                logger.debug(
+                    "Ignoring project-denied env key %r from %s", key, dotenv_path
+                )
+                continue
             env[key] = value
 
     project_dotenv: Path | None = None
@@ -237,7 +275,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             start_path or "cwd",
             exc_info=True,
         )
-    apply_dotenv(project_dotenv)
+    apply_dotenv(project_dotenv, is_project=True)
 
     try:
         global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
@@ -249,7 +287,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             exc_info=True,
         )
         global_dotenv = None
-    apply_dotenv(global_dotenv)
+    apply_dotenv(global_dotenv, is_project=False)
 
     return env
 
@@ -312,7 +350,7 @@ def _load_dotenv(
                 os.environ.pop(key)
         _dotenv_loaded_values.clear()
 
-    def apply_dotenv(dotenv_path: Path) -> bool:
+    def apply_dotenv(dotenv_path: Path, *, is_project: bool) -> bool:
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
@@ -321,6 +359,13 @@ def _load_dotenv(
             if key in _DOTENV_DENIED_ENV_KEYS:
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                continue
+            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+                # A committed project `.env` must not set a user-level MCP trust
+                # decision; the global `.env` and shell may (is_project=False).
+                logger.debug(
+                    "Ignoring project-denied env key %r from %s", key, dotenv_path
+                )
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
@@ -335,11 +380,11 @@ def _load_dotenv(
             found = dotenv.find_dotenv(usecwd=True)
             if found:
                 dotenv_path = found
-                loaded = apply_dotenv(Path(found)) or loaded
+                loaded = apply_dotenv(Path(found), is_project=True) or loaded
         else:
             dotenv_path = _find_dotenv_from_start_path(start_path)
             if dotenv_path is not None:
-                loaded = apply_dotenv(dotenv_path) or loaded
+                loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
     except (OSError, ValueError):
         logger.warning(
             "Could not read project dotenv at %s; project env vars will not be loaded",
@@ -352,7 +397,9 @@ def _load_dotenv(
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(_GLOBAL_DOTENV_PATH):
+        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(
+            _GLOBAL_DOTENV_PATH, is_project=False
+        ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
     except (OSError, ValueError):

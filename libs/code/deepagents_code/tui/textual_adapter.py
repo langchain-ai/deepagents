@@ -1,5 +1,4 @@
 """Textual UI adapter for agent execution."""
-# This module has complex streaming logic ported from execution.py
 
 from __future__ import annotations
 
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.types import Command, Interrupt
     from pydantic import TypeAdapter
-    from rich.console import Console
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 
@@ -54,6 +52,7 @@ from deepagents_code._session_stats import (
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
+    print_usage_table as print_usage_table,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -69,7 +68,6 @@ from deepagents_code._tool_stream import (
 )
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -186,82 +184,6 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
 
         _hitl_adapter_cache = TypeAdapter(hitl_request_type)
     return _hitl_adapter_cache
-
-
-def print_usage_table(
-    stats: SessionStats,
-    wall_time: float,
-    console: Console,
-) -> None:
-    """Print a model-usage stats table to a Rich console.
-
-    Each row shows the serving provider alongside the model name. When the
-    session spans multiple models each gets its own row with a totals row
-    appended; single-model sessions show one row.
-
-    Args:
-        stats: Cumulative session stats.
-        wall_time: Total wall-clock time in seconds.
-        console: Rich console for output.
-    """
-    from rich.table import Table
-
-    has_time = wall_time >= 0.1  # noqa: PLR2004
-    if not (stats.request_count or stats.input_tokens or has_time):
-        return
-
-    if stats.per_model:
-        multi_model = len(stats.per_model) > 1
-
-        table = Table(
-            show_header=True,
-            header_style="bold",
-            box=None,
-            padding=(0, 2, 0, 0),
-            show_edge=False,
-        )
-        table.add_column("Provider", style="dim")
-        table.add_column("Model", style="dim")
-        table.add_column("Reqs", justify="right", style="dim")
-        table.add_column("InputTok", justify="right", style="dim")
-        table.add_column("OutputTok", justify="right", style="dim")
-
-        if multi_model:
-            for ms in stats.per_model.values():
-                table.add_row(
-                    ms.provider,
-                    ms.model_name,
-                    str(ms.request_count),
-                    format_token_count(ms.input_tokens),
-                    format_token_count(ms.output_tokens),
-                )
-            table.add_row(
-                "",
-                "Total",
-                str(stats.request_count),
-                format_token_count(stats.input_tokens),
-                format_token_count(stats.output_tokens),
-            )
-        else:
-            ms = next(iter(stats.per_model.values()))
-            table.add_row(
-                ms.provider,
-                ms.model_name,
-                str(stats.request_count),
-                format_token_count(stats.input_tokens),
-                format_token_count(stats.output_tokens),
-            )
-
-        console.print()
-        console.print("[bold]Usage Stats[/bold]")
-        console.print(table)
-    if has_time:
-        console.print()
-        console.print(
-            f"Agent active  {format_duration(wall_time)}",
-            style="dim",
-            highlight=False,
-        )
 
 
 _ask_user_adapter_cache: TypeAdapter | None = None

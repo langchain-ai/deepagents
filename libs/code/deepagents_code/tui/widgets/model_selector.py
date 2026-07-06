@@ -1401,7 +1401,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             Styled `Content` for the 4-line footer.
         """
-        from deepagents_code.textual_adapter import format_token_count
+        from deepagents_code._session_stats import format_token_count
 
         if profile_entry is None or not profile_entry["profile"]:
             return Content.styled("Model profile not available :(\n\n\n", "dim")

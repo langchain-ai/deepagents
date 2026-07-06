@@ -4660,7 +4660,7 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -4681,7 +4681,7 @@ class TestRunAgentTaskMediaTracker:
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ):
@@ -4718,7 +4718,7 @@ class TestRunAgentTaskMediaTracker:
                 {"error": "ToolException", "message": "An internal error occurred"}
             )
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=exc,
             ):
@@ -4750,7 +4750,7 @@ class TestRunAgentTaskMediaTracker:
                 {"error": "PermissionDeniedError", "message": "An internal error"}
             )
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
                 side_effect=exc,
             ):
@@ -4781,7 +4781,7 @@ class TestRunAgentTaskMediaTracker:
                     lambda _provider: "OPENAI_API_KEY",
                 ),
                 patch(
-                    "deepagents_code.textual_adapter.execute_task_textual",
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
                     new_callable=AsyncMock,
                     side_effect=exc,
                 ),
@@ -6368,7 +6368,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -6399,7 +6399,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("I added the provider credentials")
@@ -6439,7 +6439,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6477,7 +6477,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("keep going")
@@ -6513,7 +6513,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6544,7 +6544,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ):
                 await app._handle_user_message("Credentials are configured now")
@@ -6579,7 +6579,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._send_to_agent("/skill:foo envelope prompt")
@@ -6618,7 +6618,7 @@ class TestRubricCommand:
                 return SessionStats()
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new=AsyncMock(side_effect=execute_stub),
             ) as mock_execute:
                 await app._handle_user_message("Credentials are configured now")
@@ -6650,7 +6650,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ) as mock_execute:
                 await app._run_agent_task("hello")
@@ -6756,7 +6756,7 @@ class TestRubricCommand:
 
             with (
                 patch(
-                    "deepagents_code.textual_adapter.execute_task_textual",
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
                     new_callable=AsyncMock,
                 ),
                 patch.object(
@@ -6807,7 +6807,7 @@ class TestRubricCommand:
             )
 
             with patch(
-                "deepagents_code.textual_adapter.execute_task_textual",
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
                 new_callable=AsyncMock,
             ):
                 await app._run_agent_task("hello")

@@ -50,6 +50,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _ChatScroll,
     _display_model_label,
     _extra_is_ready,
     _parse_rubric_max_iterations,
@@ -3641,6 +3642,30 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_prefers_command_when_both_expandable(self) -> None:
+        """Ctrl+O toggles the command/code block even when output can also expand.
+
+        Matches the region-aware click routing and the "click or Ctrl+O to show
+        command/code" hint: the output stays reachable by clicking its own row.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_args = True  # long command, expandable
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
         from deepagents_code.widgets.messages import ToolCallMessage
@@ -4057,8 +4082,8 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert "LANGSMITH_API_KEY" in rendered
             assert "/auth" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.
@@ -8027,6 +8052,211 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_load_thread_history_skips_duplicate_ids(self) -> None:
+        """History reusing an already-mounted widget ID is skipped, not fatal.
+
+        Regression: mounting a widget whose ID already exists raises
+        `DuplicateIds`, which previously aborted the whole load and surfaced a
+        "Could not load history" note instead of the conversation.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Pre-mount a widget occupying the ID the history will reuse.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-dup", preloaded_payload=payload)
+            await pilot.pause()
+
+            # The load completed without the fatal "Could not load history" note.
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # The colliding message was skipped; the original widget survives
+            # (exactly one, no duplicate mounted) and keeps its own content --
+            # the history entry did not overwrite or replace it.
+            survivors = app.query("#dup-id")
+            assert len(survivors) == 1
+            survivor = survivors.first()
+            assert isinstance(survivor, AppMessage)
+            assert "stale" in str(survivor._content)
+            # The non-colliding message mounted normally.
+            assert app.query_one("#fresh-id", UserMessage)
+            # The load ran to completion (past the mount block to step 9).
+            assert any("Resumed thread: t-dup" in note for note in notes)
+
+    async def test_load_thread_history_preserves_assistant_content_after_skip(
+        self,
+    ) -> None:
+        """A skipped duplicate keeps the surviving assistant content aligned.
+
+        Regression guard for the `mounted` pairing: `set_content` must render
+        each surviving `AssistantMessage`'s own content, never a neighbor's.
+        Only exercised when a skip removes an entry, shifting the survivors.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Occupy the first assistant message's ID so it is skipped.
+            await app._mount_message(AssistantMessage("stale", id="asst-dup"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.ASSISTANT, content="A", id="asst-dup"),
+                    MessageData(
+                        type=MessageType.ASSISTANT, content="B", id="asst-fresh"
+                    ),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-asst", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            # The surviving fresh assistant renders its own content ("B"),
+            # not the skipped duplicate's ("A").
+            fresh = app.query_one("#asst-fresh", AssistantMessage)
+            assert "B" in str(fresh._content)
+            assert "A" not in str(fresh._content)
+
+    async def test_load_thread_history_dedupes_within_payload(self) -> None:
+        """Two payload entries sharing an ID mount exactly one widget.
+
+        The intra-batch `seen` guard prevents a same-payload collision from
+        raising `DuplicateIds` on the bulk mount.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="first", id="same-id"),
+                    MessageData(type=MessageType.USER, content="second", id="same-id"),
+                    MessageData(type=MessageType.USER, content="other", id="other-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-intra", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # Exactly one widget for the repeated ID; the first entry wins.
+            assert len(app.query("#same-id")) == 1
+            same = app.query_one("#same-id", UserMessage)
+            assert "first" in str(same._content)
+            assert app.query_one("#other-id", UserMessage)
+
+    async def test_load_thread_history_keeps_store_window_in_sync_after_skip(
+        self,
+    ) -> None:
+        """A re-entrant load must not create duplicate store entries.
+
+        Regression: `bulk_load` blindly appends, so re-loading a message whose
+        ID is already in the store used to add a second `_messages` entry for
+        the same ID -- desyncing the visible window from the DOM and tripping
+        up later pruning/hydration. Deduplicating against the store before
+        `bulk_load` keeps every ID represented exactly once.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_mount_message` records the widget in the store, so `dup-id` is
+            # present in both the store and the DOM before the load.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-sync", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            store = app._message_store
+            # Every stored ID is represented exactly once (no phantom double
+            # entry for the re-loaded `dup-id`).
+            all_ids = [msg.id for msg in store.get_all_messages()]
+            assert len(all_ids) == len(set(all_ids))
+            assert store.get_message("dup-id") is not None
+            assert store.get_message("fresh-id") is not None
+            # The visible window is internally consistent with its range.
+            start, end = store.get_visible_range()
+            assert store.visible_count == end - start
+
+    async def test_load_thread_history_all_duplicates_completes_cleanly(self) -> None:
+        """A payload whose every ID is already mounted still finishes the load.
+
+        With nothing left to mount after dedup, the load must skip the mount
+        block and still reach completion without an error note -- the benign
+        re-entrant reload case (same payload over surviving widgets).
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("kept", id="a-id"))
+            await app._mount_message(UserMessage("kept", id="b-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="a", id="a-id"),
+                    MessageData(type=MessageType.USER, content="b", id="b-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-all", preloaded_payload=payload)
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            assert any("Resumed thread: t-all" in note for note in notes)
+            # No duplicates were mounted; the originals survive.
+            assert len(app.query("#a-id")) == 1
+            assert len(app.query("#b-id")) == 1
+
     async def test_footers_render_for_hydrated_messages_above(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -10611,6 +10841,20 @@ class TestTerminalBackgroundSync:
 class TestExitGracefulWorkerHandoff:
     """Verify `exit()` defers teardown for an in-flight agent worker."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_background_hooks(self) -> Iterator[None]:
+        """Isolate the module-global hook task set across tests.
+
+        These tests read the real `has_pending_hooks()`; a stray undone task
+        left in `_background_tasks` by an earlier test would otherwise push
+        `test_synchronous_when_worker_finished` onto the graceful path and flake.
+        """
+        import deepagents_code.hooks as hooks_mod
+
+        hooks_mod._background_tasks.clear()
+        yield
+        hooks_mod._background_tasks.clear()
+
     async def test_defers_when_agent_worker_unfinished(self) -> None:
         """A running, unfinished worker arms a deferred graceful exit."""
         app = DeepAgentsApp()
@@ -10768,6 +11012,131 @@ class TestExitGracefulWorkerHandoff:
                 super_exit.assert_called_once()
             assert app._graceful_exit_task is None
             worker.wait.assert_not_awaited()
+
+    async def test_drains_pending_hooks_before_exit_without_worker(self) -> None:
+        """Pending fire-and-forget hooks defer teardown until they drain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+
+                await app._graceful_exit_task
+
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_after_waiting_for_agent(self) -> None:
+        """Both the agent-worker wait and the hook drain run before teardown.
+
+        Covers the combined path: an in-flight agent worker AND pending hooks
+        must each be awaited inside the single graceful-exit task before the
+        event loop tears down.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_when_worker_wait_fails(self) -> None:
+        """The hook drain still runs when the agent-worker wait errors.
+
+        The drain sits in its own try/except after the worker-wait block, so a
+        worker that fails to persist must not skip draining pending hooks — the
+        final tool.result would otherwise be dropped whenever shutdown coincides
+        with a worker error.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=RuntimeError("boom"))
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_hook_drain_timeout_is_bounded_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung hook drain is bounded by the graceful-exit budget and logged.
+
+        A slow/hanging hook subprocess must not stall an interactive quit; the
+        drain is wrapped in `asyncio.wait_for`, so teardown proceeds after the
+        timeout and the possibly-dropped final tool.result is announced rather
+        than the UI silently hanging.
+        """
+
+        async def hang() -> None:
+            await asyncio.Event().wait()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=hang),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "Hook drain did not finish" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
@@ -14017,11 +14386,17 @@ class TestResolveResumeThread:
             assert app._should_adopt_resumed_model is False
 
     async def test_no_previous_thread_leaves_adoption_flag_unset(self) -> None:
-        """Falling back to a fresh thread must not arm model adoption."""
+        """Falling back to a fresh thread must not arm model adoption.
+
+        Also verifies the status bar stops showing "Resuming" when no
+        prior thread was found to resume.
+        """
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
+            app._resuming = True
             app._resume_thread_intent = "__MOST_RECENT__"
             with patch(
                 "deepagents_code.sessions.get_most_recent",
@@ -14030,6 +14405,9 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
     async def test_most_recent_resume_arms_adoption_flag(self) -> None:
         """`-r` (most recent) resolving to a thread also arms model adoption.
@@ -14055,6 +14433,244 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is True
+
+    async def test_abort_starts_new_thread(self) -> None:
+        """Choosing abort in the cwd prompt starts a fresh thread.
+
+        Also verifies the status bar drops the "Resuming" label in favor of
+        "Connecting" so the footer doesn't lie while the server boots.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._assistant_id == "agent"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_abort_most_recent_starts_new_thread(self) -> None:
+        """Aborting a bare `-r` cwd prompt also starts a fresh thread.
+
+        Mirrors `test_abort_starts_new_thread` for the `__MOST_RECENT__` branch
+        and asserts the status bar flips from "Resuming" to "Connecting".
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "__MOST_RECENT__"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "recent-thread"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_resume_offers_abort_option_at_launch(self) -> None:
+        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            offer = AsyncMock(return_value="continue")
+            app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert offer.await_args is not None
+            assert offer.await_args.kwargs["allow_abort"] is True
+            assert app._lc_thread_id == "some-thread"
+
+    async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
+        """Aborting points session state at the fresh id, not the declined thread.
+
+        Guards the race where `_init_session_state` captures the candidate
+        thread into `session_state.thread_id` while the cwd prompt is open: the
+        finally-block sync must overwrite it with the fresh id on abort.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured the candidate mid-prompt.
+            app._session_state.thread_id = "some-thread"
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
+
+    async def test_thread_not_found_clears_resuming_status(self) -> None:
+        """A non-existent thread id falls back to fresh and drops "Resuming".
+
+        Covers the `elif await thread_exists(resume)` → `else` branch where
+        the thread id is never adopted.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "ghost-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch(
+                    "deepagents_code.sessions.find_similar_threads",
+                    AsyncMock(return_value=[]),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "ghost-thread"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_resolve_exception_clears_resuming_status(self) -> None:
+        """An unhandled error in resume resolution drops "Resuming".
+
+        Guards the `except Exception` handler path.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "some-thread"
+            with patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(side_effect=RuntimeError("db offline")),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_offer_failure_still_resumes_and_adopts(self) -> None:
+        """A raising cwd-switch offer must not abandon the resolved thread.
+
+        Locks the central invariant of the resolve refactor: the candidate is
+        committed to `_lc_thread_id` *before* the offer, and a failure in the
+        offer is isolated to `"continue"` so agent + model adoption still run.
+        The failure must not fall through to the outer handler (which would
+        discard the thread and start a fresh session).
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                side_effect=RuntimeError("cwd probe failed")
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id == "some-thread"
+            assert app._assistant_id == "coder"
+            assert app._should_adopt_resumed_model is True
+
+    async def test_fallback_syncs_session_state_to_fresh_thread(self) -> None:
+        """A non-abort fallback early return still syncs session state.
+
+        Mirrors `test_abort_syncs_session_state_to_fresh_thread` for the
+        "no previous threads" fallback: the `finally`-block sync is the only
+        thing that stops `session_state.thread_id` from being left pointing at
+        a stale id after the early return.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured a stale id before resolve.
+            app._session_state.thread_id = "stale-thread"
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "stale-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
 
 
 def _missing_dep_entry(
@@ -16596,6 +17212,121 @@ class TestSandboxSubTitle:
         """An unrecognized provider falls back to `.title()` casing."""
         app = DeepAgentsApp(server_kwargs={"sandbox_type": "kubernetes"})
         assert app.sub_title == "Sandbox: Kubernetes"
+
+
+class TestStaleInstallBanner:
+    """The persistent header banner surfaces stale installations."""
+
+    _MESSAGE_21 = (
+        "Update available \u2014 installed version is 21 days old (run /update)"
+    )
+
+    async def test_header_mounted_when_stale_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale install shows the header even without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is True
+            assert app.sub_title == self._MESSAGE_21
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert len(app.query(Header)) == 1
+
+    async def test_header_absent_when_not_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh install keeps the header hidden without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
+
+    async def test_stale_overrides_sandbox_sub_title(self) -> None:
+        """The stale-install advisory takes precedence over the sandbox label."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp(server_kwargs={"sandbox_type": "modal"})
+            assert app.sub_title == self._MESSAGE_21
+
+    async def test_explicit_sub_title_suppresses_stale_banner(self) -> None:
+        """An explicitly passed sub_title is never overwritten by the advisory."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=True,
+        ):
+            app = DeepAgentsApp(sub_title="custom")
+            assert app._installation_stale is False
+            assert app.sub_title == "custom"
+
+    async def test_singular_day_wording(self) -> None:
+        """The day count is pluralized correctly."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=1,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app.sub_title == (
+                "Update available \u2014 installed version is 1 day old (run /update)"
+            )
+
+    async def test_none_days_drops_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `None` age (cache race) drops the banner, never `"None days old"`."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=None,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            assert "None" not in (app.sub_title or "")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
 
 
 class TestHandleExternalSignal:
@@ -19182,6 +19913,320 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:
+    """Return a `query_one` stand-in that raises for the welcome banner only.
+
+    Non-banner selectors delegate to the app's real `query_one`, so unrelated
+    lookups in the code under test keep working while the banner lookup fails.
+
+    Args:
+        app: App whose `query_one` is being replaced.
+        exc: Exception to raise when the welcome banner is queried.
+
+    Returns:
+        A callable suitable for `patch.object(app, "query_one", side_effect=...)`.
+    """
+    real_query_one = app.query_one
+
+    def _query_one(selector: str, *args: object, **kwargs: object) -> Widget:
+        if selector == "#welcome-banner":
+            raise exc
+        return real_query_one(selector, *args, **kwargs)
+
+    return _query_one
+
+
+class _ChatScrollTestApp(App[None]):
+    """Small app for exercising chat scroll anchoring."""
+
+    CSS = """
+    #chat {
+        height: 5;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        """Compose a short transcript in the chat scroll."""
+        with _ChatScroll(id="chat"):
+            yield Static("welcome", id="welcome")
+            yield Static("message", id="message")
+
+
+class TestChatScrollAnchoring:
+    """Regression coverage for welcome banner positioning."""
+
+    async def test_anchor_keeps_short_content_top_aligned(self) -> None:
+        """Bottom-follow should not bottom-align content shorter than the viewport."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+            chat.release_anchor()
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_anchor_engages_after_content_overflows(self) -> None:
+        """Deferred bottom-follow should engage once chat content overflows."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_engages_immediately_when_already_scrollable(self) -> None:
+        """Resuming into an overflowing transcript anchors to the bottom at once."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            # Content already overflows before we opt into bottom-follow (the
+            # thread-resume case), so anchor() must engage without deferral.
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            assert chat.max_scroll_y > 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_resets_to_top_when_content_shrinks(self) -> None:
+        """Content shrinking below the viewport releases the bottom anchor."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            tall = Static("\n".join(f"line {i}" for i in range(20)))
+            await chat.mount(tall)
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            # Removing the overflow (e.g. /clear) must not leave the banner
+            # bottom-pinned in a near-empty chat.
+            await tall.remove()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not chat.is_anchored
+            assert chat.scroll_y == 0
+
+    async def test_release_anchor_stops_following_bottom(self) -> None:
+        """After release_anchor, streamed content must not snap to the bottom."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+            # The user scrolls up: release bottom-follow and move off the end
+            # (Textual re-anchors automatically while parked at the bottom).
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+
+            # More content streams in. Textual keeps `_anchored` set as standing
+            # intent after a release, so the behavioral signal is the scroll
+            # position: it must stay where the user left it, not snap to the new
+            # bottom.
+            await chat.mount(Static("\n".join(f"tail {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == 0
+
+    async def test_anchor_reengages_after_release_when_scrollable(self) -> None:
+        """A fresh anchor() after a manual scroll re-arms bottom-follow.
+
+        The app calls anchor() on every content-producing turn, so releasing
+        (user scrolls up) then re-anchoring must reset `_anchor_released` and
+        re-engage because content already overflows.
+        """
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+            assert chat.scroll_y == 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_false_disables_bottom_follow(self) -> None:
+        """anchor(False) disarms bottom-follow and delegates to the base class."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.anchor(False)
+            await pilot.pause()
+
+            assert not chat._follow_bottom_when_scrollable
+            assert not chat.is_anchored
+
+
+class TestWelcomeBannerLiveUpdates:
+    """The banner starts top-aligned and mirrors live model/cwd changes.
+
+    These bind the PR's user-visible behaviors at the app<->widget seam: the
+    empty chat must not bottom-anchor at startup, and `/model` / cwd switches
+    must reach the banner (not just the status bar).
+    """
+
+    async def test_startup_leaves_chat_top_aligned(self) -> None:
+        """An empty chat keeps the welcome banner pinned to the top (unanchored)."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one("#chat", _ChatScroll)
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_sync_status_model_updates_banner(self) -> None:
+        """`_sync_status_model` pushes the active model into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_MODEL
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                with patch("deepagents_code.config.settings") as mock_settings:
+                    mock_settings.model_provider = "openai"
+                    mock_settings.model_name = "gpt-5.5"
+                    app._sync_status_model()
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "openai:gpt-5.5" in banner._build_banner().plain
+
+    async def test_apply_cwd_updates_banner(self) -> None:
+        """`_apply_cwd_to_ui` pushes the working directory into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_CWD
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_CWD: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                app._apply_cwd_to_ui(Path("/work/proj"))
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "/work/proj" in banner._build_banner().plain
+
+    async def test_sync_status_model_swallows_screen_stack_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `ScreenStackError` during banner lookup is absorbed at debug level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, ScreenStackError("empty")),
+                ),
+                caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                # Must not propagate — the guard exists precisely for this.
+                app._sync_status_model()
+        assert "Screen stack empty during model sync" in caplog.text
+
+    async def test_sync_status_model_warns_when_banner_missing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `NoMatches` on the persistent banner is surfaced at warning level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                app._sync_status_model()
+        assert "Welcome banner not found during model sync" in caplog.text
+
+    async def test_apply_cwd_survives_missing_banner(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`_apply_cwd_to_ui` still updates cwd state when the banner lookup fails."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                # Must not propagate; cwd state is set before the banner update.
+                app._apply_cwd_to_ui(Path("/work/proj"))
+            assert app._cwd == "/work/proj"
+        assert "Welcome banner not found during cwd sync" in caplog.text
 
 
 class TestStatusBarConnectionMirroring:

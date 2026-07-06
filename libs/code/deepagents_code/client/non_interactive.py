@@ -1552,7 +1552,7 @@ async def run_non_interactive(
         )
         console.print(header)
 
-    from deepagents_code.server_manager import server_session
+    from deepagents_code.client.launch.server_manager import server_session
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None

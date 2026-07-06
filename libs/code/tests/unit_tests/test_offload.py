@@ -911,7 +911,7 @@ class TestOffloadRemoteFallback:
 
     async def test_resumed_remote_thread_uses_server_state(self) -> None:
         """Should offload using state returned by the remote server."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -972,7 +972,7 @@ class TestOffloadRemoteStateNormalization:
         self,
     ) -> None:
         """Serialized `messages` from remote state are normalized in the UI path."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1019,7 +1019,7 @@ class TestOffloadRemoteStateNormalization:
         self,
     ) -> None:
         """Serialized `summary_message` is normalized in the UI path."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

@@ -5430,7 +5430,7 @@ class TestGoalCommand:
         self,
     ) -> None:
         """Fresh remote sessions should register the thread before state writes."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -9630,7 +9630,7 @@ class TestShellCommandInterrupt:
 
     async def test_pending_shell_flush_ensures_remote_thread_first(self) -> None:
         """Server mode must register a fresh thread before flushing shell output."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         calls: list[str] = []
         remote = MagicMock(spec=RemoteAgent)
@@ -10586,7 +10586,7 @@ class TestFetchThreadHistoryData:
         """Server-mode history reads should fetch state through the remote server."""
         from langchain_core.messages import AIMessage, HumanMessage
 
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.widgets.message_store import MessageType
 
         state = MagicMock()
@@ -10617,7 +10617,7 @@ class TestFetchThreadHistoryData:
         """Server-mode history reads should preserve `_context_tokens` from state."""
         from langchain_core.messages import HumanMessage
 
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.widgets.message_store import MessageType
 
         state = MagicMock()
@@ -10645,7 +10645,7 @@ class TestRemoteAgent:
     """Tests for DeepAgentsApp._remote_agent()."""
 
     def test_returns_instance_with_remote_agent(self) -> None:
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         agent = RemoteAgent("http://test:0")
@@ -20928,7 +20928,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -20977,7 +20977,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch(
@@ -21024,7 +21024,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=boom,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -21097,7 +21097,7 @@ class TestResumeThreadCwdSwitch:
 
             with (
                 patch(
-                    "deepagents_code.server_manager.start_server_and_get_agent",
+                    "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                     side_effect=boom,
                 ),
                 patch("deepagents_code.model_config.clear_caches"),
@@ -21142,7 +21142,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fatal,
             ),
             patch("deepagents_code.model_config.clear_caches"),
@@ -21185,7 +21185,7 @@ class TestResumeThreadCwdSwitch:
 
         with (
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=fake_start,
             ),
             patch(
@@ -21608,7 +21608,7 @@ class TestEnsureManagedRipgrep:
         with (
             patch.object(app, "_ensure_managed_ripgrep", side_effect=record_ensure),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 side_effect=record_start,
             ),
             patch.object(app, "post_message"),

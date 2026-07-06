@@ -145,7 +145,7 @@ def _extract_startup_error_marker(output: str) -> str | None:
 def generate_langgraph_json(
     output_dir: str | Path,
     *,
-    graph_ref: str = "./server_graph.py:make_graph",
+    graph_ref: str = "deepagents_code.server_graph:make_graph",
     env_file: str | None = None,
     checkpointer_path: str | None = None,
 ) -> Path:

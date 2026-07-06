@@ -202,13 +202,18 @@ class StatusBar(Horizontal):
         width: auto;
         text-align: right;
         color: $text-muted;
+        /* Right padding only, so the cwd/branch gap collapses with the cwd
+           when it hides (a left pad on the branch would ghost in its place). */
+        padding: 0 1 0 0;
     }
 
     StatusBar .status-branch {
         width: 1fr;
         min-width: 0;
         color: $text-muted;
-        padding: 0 1;
+        /* No left pad: the separating gap is owned by the cwd's right pad (or
+           the message's) so nothing lingers where the cwd was once it hides. */
+        padding: 0 1 0 0;
         overflow-x: hidden;
         text-wrap: nowrap;
         text-overflow: ellipsis;

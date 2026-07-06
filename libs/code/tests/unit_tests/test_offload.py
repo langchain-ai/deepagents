@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import BaseMessage
 
+from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.config import settings
@@ -18,7 +19,6 @@ from deepagents_code.offload import (
     format_offload_limit,
     offload_messages_to_backend,
 )
-from deepagents_code.textual_adapter import format_token_count
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 # Patch target for perform_offload (business logic)

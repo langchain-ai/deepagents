@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any, cast
 from langchain_core.messages import get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 
+from deepagents_code._session_stats import format_token_count
 from deepagents_code.config import create_model
-from deepagents_code.textual_adapter import format_token_count
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol

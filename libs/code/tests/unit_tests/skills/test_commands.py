@@ -1358,8 +1358,11 @@ class TestSkillsTrustCommand:
         output, capture_print = self._capture()
         with (
             patch(
-                "deepagents_code.skills.trust.list_trusted_skill_dirs",
-                return_value=["/shared/a", "/shared/b"],
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[
+                    ("/shared/a", "2026-01-01T00:00:00+00:00"),
+                    ("/shared/b", ""),
+                ],
             ),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1369,6 +1372,8 @@ class TestSkillsTrustCommand:
         joined = "\n".join(output)
         assert "/shared/a" in joined
         assert "/shared/b" in joined
+        # The `trusted_at` timestamp is surfaced when present.
+        assert "2026-01-01T00:00:00+00:00" in joined
 
     def test_list_empty(self) -> None:
         """`list` on an empty store reports that nothing is trusted."""
@@ -1378,7 +1383,7 @@ class TestSkillsTrustCommand:
         output, capture_print = self._capture()
         with (
             patch(
-                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
                 return_value=[],
             ),
             patch("deepagents_code.config.console") as mock_console,
@@ -1396,8 +1401,8 @@ class TestSkillsTrustCommand:
         output, capture_print = self._capture()
         with (
             patch(
-                "deepagents_code.skills.trust.list_trusted_skill_dirs",
-                return_value=["/shared/a"],
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[("/shared/a", "")],
             ),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1417,8 +1422,8 @@ class TestSkillsTrustCommand:
         buf = StringIO()
         with (
             patch(
-                "deepagents_code.skills.trust.list_trusted_skill_dirs",
-                return_value=["/shared/a"],
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[("/shared/a", "2026-01-01T00:00:00+00:00")],
             ),
             patch("sys.stdout", buf),
         ):
@@ -1426,7 +1431,9 @@ class TestSkillsTrustCommand:
 
         result = json.loads(buf.getvalue())
         assert result["command"] == "skills trust list"
-        assert result["data"] == ["/shared/a"]
+        assert result["data"] == [
+            {"dir": "/shared/a", "trusted_at": "2026-01-01T00:00:00+00:00"}
+        ]
 
     def test_list_unreadable_store_errors_and_exits(self) -> None:
         """An unreadable store surfaces an error and exits non-zero.
@@ -1440,7 +1447,7 @@ class TestSkillsTrustCommand:
         output, capture_print = self._capture()
         with (
             patch(
-                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
                 side_effect=OSError("permission denied"),
             ),
             patch("deepagents_code.config.console") as mock_console,

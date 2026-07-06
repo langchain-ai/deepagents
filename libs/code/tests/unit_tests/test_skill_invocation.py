@@ -785,6 +785,26 @@ class TestPromptSkillTrustAndRetry:
         app._push_screen_wait.assert_not_awaited()
         app._send_to_agent.assert_not_awaited()
 
+    async def test_modal_push_failure_fails_closed(self) -> None:
+        """If the trust modal itself fails to display, treat it as a deny.
+
+        The prompt runs inside `_invoke_skill`'s `except PermissionError` block,
+        so an error escaping the push would not be caught by that method's own
+        handlers and would surface as an unhandled worker crash. It must fail
+        closed: mount the original error, remember the deny, and not proceed.
+        """
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(side_effect=RuntimeError("screen stack"))
+        with patch(
+            "deepagents_code.skills.load.load_skill_content",
+            side_effect=self._CONTAINMENT_ERROR,
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("resolves outside" in t for t in _app_message_texts(app))
+        assert self._target_dir() in app._skill_trust_denied
+        app._send_to_agent.assert_not_awaited()
+
     async def test_allowlisted_dir_not_reprompted_same_session(self) -> None:
         """Once approved, a later invocation loads without a second prompt.
 
@@ -833,27 +853,44 @@ class TestDiscoverSkillsAndRoots:
         settings.get_extra_skills_dirs.return_value = extra
         return settings
 
-    def test_persisted_trust_and_extra_dirs_join_roots(self, tmp_path: Path) -> None:
-        """Trusted dirs and `extra_allowed_dirs` both reach the containment roots."""
+    def test_persisted_trust_added_as_is_while_extra_dirs_resolved(
+        self, tmp_path: Path
+    ) -> None:
+        """Trusted dirs join roots verbatim; `extra_allowed_dirs` are resolved.
+
+        A symlinked entry makes the two code paths distinguishable: re-resolving
+        the trusted entry (the regression this guards) would follow the symlink
+        to a directory the user never approved, so it must be added as-is. The
+        declarative `extra_allowed_dirs` allowlist is intentionally resolved. A
+        real (non-symlink) dir could not tell these apart because `resolve()`
+        would be idempotent.
+        """
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
-        trusted = tmp_path / "trusted"
-        trusted.mkdir()
-        extra = tmp_path / "extra"
-        extra.mkdir()
+        real_trusted = tmp_path / "real_trusted"
+        real_trusted.mkdir()
+        link_trusted = tmp_path / "link_trusted"
+        link_trusted.symlink_to(real_trusted, target_is_directory=True)
+        real_extra = tmp_path / "real_extra"
+        real_extra.mkdir()
+        link_extra = tmp_path / "link_extra"
+        link_extra.symlink_to(real_extra, target_is_directory=True)
 
         with (
             patch(
                 "deepagents_code.config.settings",
-                self._settings_with_no_builtin_roots([extra]),
+                self._settings_with_no_builtin_roots([link_extra]),
             ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch(
                 "deepagents_code.skills.trust.load_trusted_skill_dirs",
-                return_value=[trusted.resolve()],
+                return_value=[link_trusted],
             ),
         ):
             _skills, roots = discover_skills_and_roots("agent")
 
-        assert trusted.resolve() in roots
-        assert extra.resolve() in roots
+        # Trusted entry added verbatim — not followed to its symlink target.
+        assert link_trusted in roots
+        assert real_trusted.resolve() not in roots
+        # `extra_allowed_dirs` is the declarative allowlist and is resolved.
+        assert real_extra.resolve() in roots

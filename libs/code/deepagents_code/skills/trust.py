@@ -7,12 +7,23 @@ directory from reading arbitrary files. The static escape hatch is the
 config allowlist.
 
 This module adds an in-the-moment, persistent approval path (mirroring
-`mcp_trust.py`): when a skill resolves outside the trusted roots, the user is
-asked once to allow the resolved target directory, and the decision is
-remembered. Trust is keyed by the approved target directory — the canonical
+`deepagents_code.mcp_trust`): when a skill resolves outside the trusted roots,
+the user is asked once to allow the resolved target directory, and the decision
+is remembered. Trust is keyed by the approved target directory — the canonical
 path resolved and shown to the user at approval time, stored as-is and never
-re-resolved. Re-pointing a symlink at a new directory therefore fails the
-`resolve()`-to-self re-verification in `load_trusted_skill_dirs` and re-prompts.
+re-resolved.
+
+Two distinct post-approval swaps are caught by two distinct layers, so neither
+grants access the user never approved:
+
+* Re-pointing the *discovery* symlink (the `SKILL.md` path) at a new target is
+  caught by containment enforcement in `load_skill_content`: the new target is
+  not on the allowlist, so the read is refused and the user is re-prompted. The
+  stored trust entry — the original resolved target — is untouched.
+* Replacing the *stored* directory itself (or one of its parents) with a symlink
+  is caught by the `resolve()`-to-self re-verification in
+  `load_trusted_skill_dirs`, which drops the stale entry rather than following
+  the injected symlink to a directory the user never approved.
 
 Trust entries are app-managed bookkeeping (a set of approved directories), not
 user-facing configuration, so they live alongside the other state files under
@@ -76,7 +87,7 @@ def _default_store_path() -> Path:
 
     Resolved at call time (not import time) so tests can redirect storage by
     monkeypatching `deepagents_code.model_config.DEFAULT_STATE_DIR` — the same
-    pattern `mcp_trust._default_store_path` uses.
+    pattern `deepagents_code.mcp_trust._default_store_path` uses.
     """
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 
@@ -109,15 +120,19 @@ def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
     Returns:
         Parsed JSON data, or an empty dict when the file is missing, or (only
         when `strict` is `False`) when it is unreadable or corrupt. A corrupt
-        store degrades to "nothing trusted" so a bad file can't crash startup —
-        the next write rewrites it cleanly.
+        store degrades to "nothing trusted" so a bad file can't crash startup.
+        It is *not* self-healed on the next approval: ordinary writes read with
+        `strict=True` and refuse rather than clobber a store they can't parse,
+        so recovery from a corrupt file requires `skills trust clear` (or
+        `clear_trusted_skill_dirs`, the only writer that overwrites blindly).
 
     Raises:
         OSError: When `strict` and an existing store cannot be read.
         json.JSONDecodeError: When `strict` and an existing store is not valid
             JSON.
         ValueError: When `strict` and the store's top-level value is not a JSON
-            object, or its `version` is newer than this build understands.
+            object, or its `version` is unrecognized (non-integer, or newer than
+            this build understands).
     """
     # A missing store is a normal first-run state, never an error — return
     # empty even under `strict` so callers don't have to special-case it.
@@ -155,18 +170,27 @@ def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
     # A store written by a newer build may carry an incompatible schema. Reading
     # its `dirs` regardless could misinterpret entries, so refuse: fail-closed
     # (treat as nothing trusted) for enforcement, and surface the error for the
-    # audit path. This makes the `_STORAGE_VERSION` "bump on incompatible
-    # changes" contract enforceable rather than aspirational.
+    # audit path. A present-but-non-integer `version` is unrecognized in the same
+    # way (only tampering or a corrupt write produces it, since every writer
+    # stamps an int), so it is refused too rather than falling through and
+    # trusting `dirs`. A missing `version` stays tolerated: an empty `{}` file
+    # has no `dirs` to trust anyway. Together this makes the `_STORAGE_VERSION`
+    # "bump on incompatible changes" contract enforceable rather than
+    # aspirational.
     version = data.get("version")
-    if isinstance(version, int) and version > _STORAGE_VERSION:
+    if version is not None and (
+        not isinstance(version, int) or version > _STORAGE_VERSION
+    ):
         if strict:
             msg = (
-                f"Skill trust store {store_path} was written by a newer version "
-                f"(schema {version} > {_STORAGE_VERSION}); refusing to read it"
+                f"Skill trust store {store_path} has an unrecognized schema "
+                f"version {version!r} (this build understands <= {_STORAGE_VERSION}); "
+                f"refusing to read it"
             )
             raise ValueError(msg)
         logger.warning(
-            "Skill trust store %s uses a newer schema (%s > %s); treating as empty",
+            "Skill trust store %s has an unrecognized schema version %r "
+            "(this build understands <= %s); treating as empty",
             store_path,
             version,
             _STORAGE_VERSION,
@@ -232,6 +256,13 @@ def is_skill_dir_trusted(
         this only for informational "is this exact resolved dir on record?"
         checks.
 
+        The lookup resolves `target_dir` (via `_normalize`), but `trust_skill_dir`
+        stores the expanduser-only `_approved_key`. In the live flow the two
+        coincide because callers approve an already-resolved path, so the keys
+        are identical. A caller that trusted a *non-canonical* path would see a
+        false negative here (the only failure direction, and the safe one). Pass
+        an already-resolved directory to keep the check meaningful.
+
     Args:
         target_dir: Directory to check; resolved before lookup.
         store_path: Path to the trust store file. Defaults to
@@ -278,15 +309,34 @@ def trust_skill_dir(
             store_path,
         )
         return False
+    # The key is stored expanduser-only and never re-resolved (that is the
+    # anti-symlink-swap property). That only holds the invariant "the stored key
+    # is the canonical dir the user approved" if the caller already passed a
+    # canonical path. If it did not, `load_trusted_skill_dirs` will later drop
+    # the entry at its resolve()-to-self check and the approval silently never
+    # persists (re-prompt every session). Warn at the write boundary so that
+    # caller bug surfaces here instead of as a mysterious never-remembered trust.
+    key = _approved_key(target_dir)
+    try:
+        is_canonical = key == _normalize(target_dir)
+    except OSError:
+        # Resolving for the diagnostic failed; skip the warning rather than
+        # abort the write. The read-time resolve()-to-self check is the actual
+        # safety net, not this best-effort boundary hint.
+        is_canonical = True
+    if not is_canonical:
+        logger.warning(
+            "trust_skill_dir called with a non-canonical path %r; the stored "
+            "entry will be dropped at read time. Pass an already-resolved "
+            "directory.",
+            target_dir,
+        )
+
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
         dirs = {}
-    dirs[_approved_key(target_dir)] = _TrustEntry(
-        trusted_at=datetime.now(UTC).isoformat()
-    )
-    data["version"] = _STORAGE_VERSION
-    data["dirs"] = dirs
-    return _save_store(data, store_path)
+    dirs[key] = _TrustEntry(trusted_at=datetime.now(UTC).isoformat())
+    return _save_store(_TrustStore(version=_STORAGE_VERSION, dirs=dirs), store_path)
 
 
 def revoke_skill_dir_trust(
@@ -386,6 +436,37 @@ def list_trusted_skill_dirs(
     return sorted(_read_dirs(store_path, strict=strict))
 
 
+def list_trusted_skill_dir_entries(
+    *,
+    store_path: Path | None = None,
+    strict: bool = False,
+) -> list[tuple[str, str]]:
+    """Return trusted directories paired with their approval timestamps.
+
+    The audit surface for the `trusted_at` metadata that `trust_skill_dir`
+    records: `list_trusted_skill_dirs` returns only paths (all enforcement
+    needs), so this is the one reader of the timestamp, used by `skills trust
+    list` to show *when* each directory was approved.
+
+    Args:
+        store_path: Path to the trust store file. Defaults to
+            `~/.deepagents/.state/skill_trust.json`.
+        strict: Propagated to `_load_store`; see `list_trusted_skill_dirs`.
+
+    Returns:
+        `(path, trusted_at)` tuples sorted by path. `trusted_at` is the stored
+        ISO-8601 string, or `""` when a hand-edited entry omitted or malformed
+        it (the path is still listed so it remains visible and revocable).
+    """
+    if store_path is None:
+        store_path = _default_store_path()
+    entries: list[tuple[str, str]] = []
+    for path, entry in _read_dirs(store_path, strict=strict).items():
+        trusted_at = entry.get("trusted_at", "") if isinstance(entry, dict) else ""
+        entries.append((path, trusted_at if isinstance(trusted_at, str) else ""))
+    return sorted(entries)
+
+
 def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
     """Return verified trusted skill directories as canonical `Path` objects.
 
@@ -412,10 +493,13 @@ def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
         stored = Path(entry)
         try:
             resolves_to_self = stored.resolve() == stored
-        except OSError:
+        except (OSError, RuntimeError):
             # A single unresolvable entry (e.g. a symlink cycle introduced under
             # the stored path) must not abort discovery of every other skill.
-            # Drop it like the swap case below.
+            # Drop it like the swap case below. `RuntimeError` is caught
+            # alongside `OSError` to match the resolve guard in
+            # `app._prompt_skill_trust_and_retry` (some Python builds surface a
+            # symlink loop as `RuntimeError`).
             logger.warning(
                 "Trusted skill directory %s could not be resolved; "
                 "ignoring the trust entry.",

@@ -9,6 +9,7 @@ from deepagents_code.skills.trust import (
     RevokeResult,
     clear_trusted_skill_dirs,
     is_skill_dir_trusted,
+    list_trusted_skill_dir_entries,
     list_trusted_skill_dirs,
     load_trusted_skill_dirs,
     revoke_skill_dir_trust,
@@ -282,7 +283,7 @@ class TestSkillTrustStoreRobustness:
             encoding="utf-8",
         )
         assert list_trusted_skill_dirs(store_path=store) == []
-        with pytest.raises(ValueError, match="newer version"):
+        with pytest.raises(ValueError, match="unrecognized schema version"):
             list_trusted_skill_dirs(store_path=store, strict=True)
 
     def test_load_survives_unresolvable_entry(
@@ -317,3 +318,154 @@ class TestSkillTrustStoreRobustness:
 
         monkeypatch.setattr(Path, "resolve", flaky_resolve)
         assert load_trusted_skill_dirs(store_path=store) == [good]
+
+    def test_load_survives_entry_that_raises_runtime_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `RuntimeError` from `resolve()` drops one entry, not all discovery.
+
+        Some Python builds surface a symlink loop as `RuntimeError` rather than
+        `OSError`; the per-entry guard must catch it so one bad stored entry
+        can't abort discovery of every other skill.
+        """
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        good = tmp_path / "good"
+        good.mkdir()
+        boom = tmp_path / "boom"
+        store.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "dirs": {
+                        str(good): {"trusted_at": "t"},
+                        str(boom): {"trusted_at": "t"},
+                    },
+                }
+            )
+        )
+
+        real_resolve = Path.resolve
+
+        def flaky_resolve(self: Path, strict: bool = False) -> Path:
+            if self == boom:
+                msg = "symlink loop"
+                raise RuntimeError(msg)
+            return real_resolve(self, strict)
+
+        monkeypatch.setattr(Path, "resolve", flaky_resolve)
+        assert load_trusted_skill_dirs(store_path=store) == [good]
+
+    def test_revoke_does_not_clobber_on_unreadable_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A transient read error aborts the revoke instead of erasing entries.
+
+        Mirrors `test_trust_does_not_clobber_on_unreadable_store` for the revoke
+        path: a strict-read failure must map to `ERROR` and leave the store
+        byte-for-byte unchanged, never rebuild it from `{}` and drop siblings.
+        """
+        import deepagents_code.skills.trust as trust_mod
+
+        store = tmp_path / "skill_trust.json"
+        a = tmp_path / "a"
+        a.mkdir()
+        b = tmp_path / "b"
+        b.mkdir()
+        trust_skill_dir(a, store_path=store)
+        trust_skill_dir(b, store_path=store)
+        before = store.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(
+            trust_mod, "_load_store", MagicMock(side_effect=OSError("transient"))
+        )
+        assert revoke_skill_dir_trust(a, store_path=store) is RevokeResult.ERROR
+        # Both approvals survive: the store was not rebuilt from an empty dict.
+        assert store.read_text(encoding="utf-8") == before
+
+    def test_revoke_save_failure_maps_to_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed write returns `ERROR`, not a false `REMOVED`."""
+        import deepagents_code.skills.trust as trust_mod
+
+        store = tmp_path / "skill_trust.json"
+        a = tmp_path / "a"
+        a.mkdir()
+        trust_skill_dir(a, store_path=store)
+
+        monkeypatch.setattr(trust_mod, "_save_store", MagicMock(return_value=False))
+        assert revoke_skill_dir_trust(a, store_path=store) is RevokeResult.ERROR
+
+    def test_top_level_not_a_dict(self, tmp_path: Path) -> None:
+        """A store whose top-level JSON is not an object is refused/degraded.
+
+        The prior coverage only exercised a non-dict *nested* `dirs`; this pins
+        the top-level branch: enforcement degrades to empty, audit surfaces it.
+        """
+        store = tmp_path / "skill_trust.json"
+        store.write_text("[]", encoding="utf-8")
+        # Enforcement/default path stays fail-closed (empty).
+        assert list_trusted_skill_dirs(store_path=store) == []
+        # Audit path opts into surfacing the error.
+        with pytest.raises(ValueError, match="not a JSON object"):
+            list_trusted_skill_dirs(store_path=store, strict=True)
+
+    def test_non_integer_schema_version_is_refused(self, tmp_path: Path) -> None:
+        """A present-but-non-int `version` is unrecognized, not silently trusted.
+
+        Only tampering or a corrupt write produces a non-int version (every
+        writer stamps an int), so it must fail closed like a too-new version
+        rather than falling through and reading `dirs`.
+        """
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        store.write_text(
+            json.dumps({"version": "1", "dirs": {"/shared/a": {}}}),
+            encoding="utf-8",
+        )
+        assert list_trusted_skill_dirs(store_path=store) == []
+        with pytest.raises(ValueError, match="unrecognized schema version"):
+            list_trusted_skill_dirs(store_path=store, strict=True)
+
+    def test_trust_warns_on_non_canonical_path(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Trusting a non-canonical path warns at the write boundary.
+
+        Such a key is dropped later by `load_trusted_skill_dirs`' resolve-to-self
+        check, so the warning surfaces the caller bug here rather than as a
+        silently never-remembered trust.
+        """
+        import logging
+
+        store = tmp_path / "skill_trust.json"
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.skills.trust"):
+            # `link` expanduser()s to itself but resolve()s to `real`, so it is
+            # non-canonical and should trip the boundary warning.
+            assert trust_skill_dir(link, store_path=store)
+        assert any("non-canonical" in r.message for r in caplog.records)
+
+    def test_list_entries_surfaces_trusted_at(self, tmp_path: Path) -> None:
+        """`list_trusted_skill_dir_entries` pairs each path with its timestamp."""
+        store = tmp_path / "skill_trust.json"
+        target = tmp_path / "shared"
+        target.mkdir()
+        trust_skill_dir(target, store_path=store)
+
+        entries = list_trusted_skill_dir_entries(store_path=store)
+        assert len(entries) == 1
+        path, trusted_at = entries[0]
+        assert path == str(target.resolve())
+        # A real ISO-8601 timestamp was recorded, not an empty placeholder.
+        assert trusted_at
+        from datetime import datetime
+
+        datetime.fromisoformat(trusted_at)  # parses without raising

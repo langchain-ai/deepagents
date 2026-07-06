@@ -869,7 +869,7 @@ def _trust(args: argparse.Namespace) -> None:
     from deepagents_code.skills.trust import (
         RevokeResult,
         clear_trusted_skill_dirs,
-        list_trusted_skill_dirs,
+        list_trusted_skill_dir_entries,
         revoke_skill_dir_trust,
     )
 
@@ -882,7 +882,7 @@ def _trust(args: argparse.Namespace) -> None:
         # falsely reporting "No trusted skill directories" — the whole point of
         # the audit command is to show what is trusted so it can be revoked.
         try:
-            dirs = list_trusted_skill_dirs(strict=True)
+            entries = list_trusted_skill_dir_entries(strict=True)
         except (OSError, ValueError) as exc:
             console.print(
                 f"[bold red]Error:[/bold red] Could not read the skill trust "
@@ -892,9 +892,15 @@ def _trust(args: argparse.Namespace) -> None:
         if output_format == "json":
             from deepagents_code.output import write_json
 
-            write_json("skills trust list", dirs)
+            write_json(
+                "skills trust list",
+                [
+                    {"dir": path, "trusted_at": trusted_at}
+                    for path, trusted_at in entries
+                ],
+            )
             return
-        if not dirs:
+        if not entries:
             console.print()
             console.print("[yellow]No trusted skill directories.[/yellow]")
             console.print(
@@ -907,8 +913,12 @@ def _trust(args: argparse.Namespace) -> None:
         console.print(
             "\n[bold]Trusted skill directories:[/bold]\n", style=theme.PRIMARY
         )
-        for path in dirs:
+        for path, trusted_at in entries:
             console.print(f"  {escape(str(path))}")
+            if trusted_at:
+                console.print(
+                    f"    [dim]trusted {escape(trusted_at)}[/dim]", style=theme.MUTED
+                )
         console.print()
     elif command == "revoke":
         target = args.dir
@@ -935,7 +945,10 @@ def _trust(args: argparse.Namespace) -> None:
                 f"{checkmark} Revoked trust for: {escape(str(target))}",
                 style=theme.PRIMARY,
             )
-        else:  # RevokeResult.NOT_FOUND — report honestly, not a false success.
+        elif result is RevokeResult.NOT_FOUND:
+            # Report honestly, not a false success. Matched explicitly (rather
+            # than as a trailing `else`) so a future `RevokeResult` member is not
+            # silently mislabeled as "not found".
             console.print(
                 f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
             )

@@ -9912,7 +9912,23 @@ class DeepAgentsApp(App):
             await mount_error(fallback_error)
             return None
 
-        allowed = await self._push_screen_wait(SkillTrustScreen(skill_name, target_dir))
+        try:
+            allowed = await self._push_screen_wait(
+                SkillTrustScreen(skill_name, target_dir)
+            )
+        except Exception:
+            # This runs inside `_invoke_skill`'s `except PermissionError` block,
+            # so an error escaping the modal push would not be caught by that
+            # method's sibling handlers and would surface as an unhandled worker
+            # crash. Fail closed: treat a modal failure as a deny.
+            logger.warning(
+                "Skill trust prompt failed to display for %s; refusing",
+                target_dir,
+                exc_info=True,
+            )
+            self._skill_trust_denied.add(target_dir)
+            await mount_error(fallback_error)
+            return None
         if not allowed:
             self._skill_trust_denied.add(target_dir)
             await mount_error(fallback_error)

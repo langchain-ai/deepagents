@@ -160,6 +160,14 @@ def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> 
                 },
                 base_home=config.home.parent,
             )
+        elif not _has_configured_assistant_id(config.env):
+            target_config = TalonConfig.from_env(
+                {
+                    **config.env,
+                    "DEEPAGENTS_TALON_ASSISTANT_ID": args.fleet_export.stem,
+                },
+                base_home=config.home.parent,
+            )
         target_dir = target_config.manifest_dir
         assistant_home = target_config.home
 
@@ -174,6 +182,10 @@ def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> 
         return 1
     print(format_import_stdout(result), end="")  # noqa: T201
     return 0
+
+
+def _has_configured_assistant_id(env: Mapping[str, str]) -> bool:
+    return "DEEPAGENTS_TALON_ASSISTANT_ID" in env or "AGENT_ASSISTANT_ID" in env
 
 
 async def _agent_runtime(

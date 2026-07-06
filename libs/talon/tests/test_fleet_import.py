@@ -100,6 +100,33 @@ def test_import_fleet_cli_resolves_target_assistant(
         assert not (tmp_path / "home" / unexpected_id / "AGENTS.md").exists()
 
 
+def test_import_fleet_cli_defaults_assistant_to_export_stem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "crowbar.zip"
+    _write_zip(
+        source,
+        {
+            "AGENTS.md": "root prompt",
+            "subagents/researcher/AGENTS.md": "Research carefully.",
+        },
+    )
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("DEEPAGENTS_TALON_ASSISTANT_ID", raising=False)
+    monkeypatch.delenv("AGENT_ASSISTANT_ID", raising=False)
+    monkeypatch.setattr(sys, "argv", ["deepagents-talon", "import-fleet", str(source)])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    target = tmp_path / "home" / "crowbar"
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
+    assert (target / "agents" / "researcher" / "AGENTS.md").is_file()
+    assert not (tmp_path / "home" / "default" / "AGENTS.md").exists()
+
+
 def test_import_fleet_cli_explicit_target_keeps_subagents_under_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

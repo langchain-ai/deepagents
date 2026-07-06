@@ -7483,6 +7483,53 @@ class TestBuildAgentErrorBody:
         assert _GATEWAY_DOCS_URL in body
         assert "LANGCHAIN_DISABLE_GATEWAY" not in body
 
+    def test_bad_request_with_media_appends_multimodal_hint(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException(
+            {"error": "BadRequestError", "message": "An internal error occurred"}
+        )
+        body = str(
+            _build_agent_error_body(
+                "Agent error: BadRequestError: An internal error occurred",
+                exc,
+                had_media=True,
+            )
+        )
+        assert "An internal error occurred" in body
+        assert "attached images" in body
+        assert "multimodal input" in body
+
+    def test_bad_request_without_media_unchanged(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException(
+            {"error": "BadRequestError", "message": "An internal error occurred"}
+        )
+        text = "Agent error: BadRequestError: An internal error occurred"
+        assert _build_agent_error_body(text, exc, had_media=False) == text
+
+    def test_non_bad_request_with_media_unchanged(self) -> None:
+        from deepagents_code.app import _build_agent_error_body
+
+        body = _build_agent_error_body(
+            "Agent error: boom", RuntimeError("boom"), had_media=True
+        )
+        assert body == "Agent error: boom"
+
+    def test_unprocessable_entity_with_media_appends_hint(self) -> None:
+        from langgraph.pregel.remote import RemoteException
+
+        from deepagents_code.app import _build_agent_error_body
+
+        exc = RemoteException({"error": "UnprocessableEntityError", "message": "bad"})
+        body = str(_build_agent_error_body("Agent error: bad", exc, had_media=True))
+        assert "multimodal input" in body
+
 
 class TestLangsmithGatewayKeyMismatch:
     """Cover gateway/key mismatch detection without inspecting the secret."""

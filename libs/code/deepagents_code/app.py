@@ -1488,6 +1488,16 @@ the secret value is never logged or otherwise introspected.
 _LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
 """Host substring identifying the LangSmith gateway endpoint."""
 
+_MULTIMODAL_REJECTION_ERROR_TYPES = frozenset(
+    {"BadRequestError", "UnprocessableEntityError"}
+)
+"""Client-side (4xx) error types a provider may return when it cannot handle an
+attached image/video. Some providers (e.g. GLM via Fireworks) reject multimodal
+input with an opaque `BadRequestError: An internal error occurred`, so when a
+turn attached media we surface a hint pointing at the likely cause instead of
+the ambiguous provider text.
+"""
+
 
 def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     """Detect a non-LangSmith key being routed through the LangSmith gateway.
@@ -1537,7 +1547,11 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
 
 
 def _build_agent_error_body(
-    text: str, exc: BaseException, *, key_env: str | None = None
+    text: str,
+    exc: BaseException,
+    *,
+    key_env: str | None = None,
+    had_media: bool = False,
 ) -> str | Content:
     """Format an agent-stream exception for `ErrorMessage`.
 
@@ -1547,22 +1561,39 @@ def _build_agent_error_body(
     For `PermissionDeniedError`, appends gateway guidance plus a docs link. When
     `key_env` is supplied (a non-LangSmith key being routed through the
     LangSmith gateway), the message names that env var and how to fix it.
-    Otherwise a generic "key does not match endpoint" message is shown. Returns
-    `text` unchanged for any other error.
+    Otherwise a generic "key does not match endpoint" message is shown.
+
+    When `had_media` is set and the error is a client-side bad-request type
+    (see `_MULTIMODAL_REJECTION_ERROR_TYPES`), appends a hint that the model or
+    provider may not support attached images/videos — providers such as GLM via
+    Fireworks reject multimodal input with an opaque
+    `BadRequestError: An internal error occurred`. Returns `text` unchanged for
+    any other error.
 
     Args:
         text: The already-formatted error string (e.g. `"Agent error: ..."`).
         exc: The exception caught from the agent stream.
         key_env: The offending API-key env var name when a gateway/key mismatch
             was detected, else `None`.
+        had_media: Whether the failing turn attached images or videos.
 
     Returns:
-        A `Content` with a clickable docs link for `PermissionDeniedError`;
-            otherwise the plain `text`.
+        A `Content` with a clickable docs link for `PermissionDeniedError`; the
+            error text plus a multimodal hint when `had_media` and the error is
+            a bad-request type; otherwise the plain `text`.
     """
     from deepagents_code.remote_client import agent_error_type
 
-    if agent_error_type(exc) != "PermissionDeniedError":
+    error_type = agent_error_type(exc)
+    if error_type != "PermissionDeniedError":
+        if had_media and error_type in _MULTIMODAL_REJECTION_ERROR_TYPES:
+            return (
+                f"{text}\n\nThis message included one or more attached images "
+                "or videos. The selected model or provider may not support "
+                "multimodal input, or rejected the attachment. Try resending "
+                "without the attachment, or switch to a model that supports "
+                "images and videos."
+            )
         return text
     if key_env:
         detail = (
@@ -10393,6 +10424,14 @@ class DeepAgentsApp(App):
             return
         from deepagents_code.textual_adapter import execute_task_textual
 
+        # Capture whether this turn attached media before the tracker is cleared
+        # inside `execute_task_textual`, so the error path can hint that a
+        # bad-request failure may stem from unsupported multimodal input.
+        had_media = bool(
+            self._image_tracker
+            and (self._image_tracker.get_images() or self._image_tracker.get_videos())
+        )
+
         # Create the stats object up-front and store on the app so
         # exit() can merge it synchronously if the worker is cancelled
         # before this method can return (e.g. Ctrl+D during HITL).
@@ -10471,7 +10510,9 @@ class DeepAgentsApp(App):
                 key_env = await asyncio.to_thread(
                     _langsmith_gateway_key_mismatch, self._active_provider()
                 )
-                body = _build_agent_error_body(error_text, e, key_env=key_env)
+                body = _build_agent_error_body(
+                    error_text, e, key_env=key_env, had_media=had_media
+                )
             except Exception:
                 logger.exception("Failed to enrich agent error body")
                 body = error_text

@@ -2502,6 +2502,11 @@ class DeepAgentsApp(App):
         self._shell_worker: Worker[None] | None = None
         """Active `!` shell-command worker, tracked for interruption."""
 
+        self._restart_worker: Worker[None] | None = None
+        """Active `/restart` respawn worker. The respawn runs off the Textual
+        message pump so key events keep reaching the chat input during the
+        reconnect; tracked to skip a duplicate `/restart` while one is running."""
+
         self._shell_running = False
         """True while a `!` shell command is executing."""
 
@@ -15285,10 +15290,26 @@ class DeepAgentsApp(App):
         dying subprocess would otherwise raise into the Textual reactor
         after the new server advertises ready, leaving the UI wedged.
 
+        The respawn itself runs on a background worker (`_run_restart_task`)
+        rather than being awaited here: awaiting the multi-second reconnect
+        inside the Textual message handler would block the app message pump
+        from forwarding key events to the chat input, freezing the text input
+        for the whole reconnect. This mirrors `_handle_shell_command` /
+        `_run_agent_task`, which run in a worker to keep the event loop free.
+
         Args:
             command: Raw command string for echoing back to chat.
         """
         await self._mount_message(UserMessage(command))
+
+        # A respawn is already in flight (the input stays live during a
+        # reconnect now, so a user can resubmit `/restart`). Skip the duplicate
+        # rather than racing a second `server_proc.restart()` on the same proc.
+        if self._restart_worker is not None and self._restart_worker.is_running:
+            await self._mount_message(
+                AppMessage("A restart is already in progress."),
+            )
+            return
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
@@ -15362,6 +15383,21 @@ class DeepAgentsApp(App):
                 )
             return
 
+        # Respawn on a worker so the message pump stays free to forward key
+        # events; awaiting the reconnect here would freeze the chat input.
+        self._restart_worker = self.run_worker(
+            self._run_restart_task(),
+            exclusive=False,
+            group="server-restart",
+        )
+
+    async def _run_restart_task(self) -> None:
+        """Respawn the app-owned server for `/restart` on a background worker.
+
+        Split out of `_handle_restart_command` so the multi-second reconnect
+        runs off the Textual message pump, keeping the chat input responsive
+        (mirrors `_run_shell_task` / `_run_agent_task`).
+        """
         restarting = await self._mount_transient_app_message("Restarting server...")
         restarted = False
         try:

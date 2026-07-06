@@ -19427,6 +19427,8 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            assert app._restart_worker is not None
+            await app._restart_worker.wait()
             await pilot.pause()
 
             assert reload_called
@@ -19437,6 +19439,101 @@ class TestRestartCommand:
             # restart succeeds; only the completion banner remains.
             assert not any("Restarting server" in m for m in app_msgs)
             assert any("Restart complete" in m for m in app_msgs)
+
+    async def test_respawn_runs_off_message_pump_so_input_stays_live(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` must not await the respawn inside the message handler.
+
+        Regression: awaiting the multi-second reconnect in the message handler
+        blocks the Textual message pump from forwarding key events, freezing
+        the chat input. The respawn runs on a worker, so the handler returns
+        immediately while the reconnect is still in flight.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            release = asyncio.Event()
+            restart_started = asyncio.Event()
+
+            async def _blocking_restart() -> bool:
+                restart_started.set()
+                await release.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _blocking_restart)
+
+            # The handler returns even though the respawn is still blocked.
+            await asyncio.wait_for(app._handle_command("/restart"), timeout=2)
+            await asyncio.wait_for(restart_started.wait(), timeout=2)
+
+            assert app._restart_worker is not None
+            assert app._restart_worker.is_running
+
+            # Release the respawn and let the worker finish cleanly.
+            release.set()
+            await app._restart_worker.wait()
+            await pilot.pause()
+
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Restart complete." in m for m in app_msgs)
+
+    async def test_duplicate_restart_while_running_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second `/restart` while one is in flight must not respawn twice."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            release = asyncio.Event()
+            restart_started = asyncio.Event()
+            calls = 0
+
+            async def _blocking_restart() -> bool:
+                nonlocal calls
+                calls += 1
+                restart_started.set()
+                await release.wait()
+                return True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                "deepagents_code.model_config.clear_caches", lambda: None
+            )
+            monkeypatch.setattr(app, "_restart_server_manual", _blocking_restart)
+
+            await asyncio.wait_for(app._handle_command("/restart"), timeout=2)
+            await asyncio.wait_for(restart_started.wait(), timeout=2)
+            first_worker = app._restart_worker
+
+            # Second `/restart` while the first respawn is still blocked.
+            await asyncio.wait_for(app._handle_command("/restart"), timeout=2)
+
+            assert app._restart_worker is first_worker
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("already in progress" in m for m in app_msgs)
+
+            release.set()
+            assert app._restart_worker is not None
+            await app._restart_worker.wait()
+            await pilot.pause()
+            assert calls == 1
 
     async def test_failed_restart_removes_transient_and_suppresses_completion(
         self, monkeypatch: pytest.MonkeyPatch
@@ -19475,6 +19572,8 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
 
             await app._handle_command("/restart")
+            assert app._restart_worker is not None
+            await app._restart_worker.wait()
             await pilot.pause()
 
             assert restart_called
@@ -19489,7 +19588,7 @@ class TestRestartCommand:
 
         The transient "Restarting server..." status is mounted before
         `_restart_server_manual()` is awaited, so the `try/finally` in
-        `_handle_restart_command` exists solely to remove it when the restart
+        `_run_restart_task` exists solely to remove it when the restart
         raises (not merely returns `False`). On a raise the transient must be
         gone, the misleading completion banner must never mount, and the
         exception must propagate rather than be swallowed.
@@ -19518,7 +19617,7 @@ class TestRestartCommand:
             monkeypatch.setattr(app, "_restart_server_manual", _boom)
 
             with pytest.raises(RuntimeError, match="respawn exploded"):
-                await app._handle_restart_command("/restart")
+                await app._run_restart_task()
             await pilot.pause()
 
             assert restart_called

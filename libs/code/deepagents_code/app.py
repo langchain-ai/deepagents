@@ -9892,7 +9892,21 @@ class DeepAgentsApp(App):
         from deepagents_code.skills.trust import trust_skill_dir
         from deepagents_code.widgets.skill_trust import SkillTrustScreen
 
-        target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
+        try:
+            target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
+        except (OSError, RuntimeError):
+            # Resolving the skill path can fail (e.g. a symlink loop introduced
+            # in the window after the first containment check raised). Fail
+            # closed with the original error rather than letting the worker
+            # exception escape unhandled — this mirrors the retry block below,
+            # which already guards its own resolve.
+            logger.warning(
+                "Could not resolve skill path %r for the trust prompt; refusing",
+                skill_path,
+                exc_info=True,
+            )
+            await mount_error(fallback_error)
+            return None
 
         if target_dir in self._skill_trust_denied:
             await mount_error(fallback_error)

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from deepagents_code.skills.trust import (
+    RevokeResult,
     clear_trusted_skill_dirs,
     is_skill_dir_trusted,
     list_trusted_skill_dirs,
@@ -31,15 +32,24 @@ class TestSkillTrustStore:
         assert trust_skill_dir(target, store_path=store)
         assert is_skill_dir_trusted(target, store_path=store)
 
-    def test_trust_resolves_symlinks(self, tmp_path: Path) -> None:
-        """Trust is keyed by the resolved target, so a symlink and its target match."""
+    def test_trust_persists_approved_path_without_resolving_again(
+        self, tmp_path: Path
+    ) -> None:
+        """Trust stores the approved path even after a symlink swap."""
         store = tmp_path / "skill_trust.json"
-        real = tmp_path / "real"
-        real.mkdir()
-        link = tmp_path / "link"
-        link.symlink_to(real)
-        trust_skill_dir(link, store_path=store)
-        assert is_skill_dir_trusted(real, store_path=store)
+        approved = tmp_path / "approved"
+        approved.mkdir()
+        approved_key = approved.resolve()
+
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        approved.rmdir()
+        approved.symlink_to(attacker)
+
+        assert trust_skill_dir(approved_key, store_path=store)
+        assert list_trusted_skill_dirs(store_path=store) == [str(approved_key)]
+        assert not is_skill_dir_trusted(attacker, store_path=store)
+        assert load_trusted_skill_dirs(store_path=store) == []
 
     def test_revoke(self, tmp_path: Path) -> None:
         """Revoking trust makes the directory untrusted again."""
@@ -47,13 +57,16 @@ class TestSkillTrustStore:
         target = tmp_path / "shared"
         target.mkdir()
         trust_skill_dir(target, store_path=store)
-        assert revoke_skill_dir_trust(target, store_path=store)
+        assert revoke_skill_dir_trust(target, store_path=store) is RevokeResult.REMOVED
         assert not is_skill_dir_trusted(target, store_path=store)
 
     def test_revoke_nonexistent(self, tmp_path: Path) -> None:
-        """Revoking an untrusted directory returns True."""
+        """Revoking an untrusted directory reports NOT_FOUND, not a false success."""
         store = tmp_path / "skill_trust.json"
-        assert revoke_skill_dir_trust(tmp_path / "nope", store_path=store)
+        assert (
+            revoke_skill_dir_trust(tmp_path / "nope", store_path=store)
+            is RevokeResult.NOT_FOUND
+        )
 
     def test_revoke_stale_entry_after_symlink_swap(self, tmp_path: Path) -> None:
         """Revoking the listed path removes stale trust after a symlink swap."""
@@ -68,7 +81,9 @@ class TestSkillTrustStore:
         approved.rmdir()
         approved.symlink_to(attacker)
 
-        assert revoke_skill_dir_trust(listed[0], store_path=store)
+        assert (
+            revoke_skill_dir_trust(listed[0], store_path=store) is RevokeResult.REMOVED
+        )
         assert list_trusted_skill_dirs(store_path=store) == []
 
     def test_list_sorted(self, tmp_path: Path) -> None:
@@ -130,6 +145,14 @@ class TestSkillTrustStore:
         assert clear_trusted_skill_dirs(store_path=store)
         assert list_trusted_skill_dirs(store_path=store) == []
 
+    def test_clear_replaces_corrupt_store(self, tmp_path: Path) -> None:
+        """Clearing resets an existing corrupt store."""
+        store = tmp_path / "skill_trust.json"
+        store.write_text("{not valid json")
+
+        assert clear_trusted_skill_dirs(store_path=store)
+        assert list_trusted_skill_dirs(store_path=store, strict=True) == []
+
     def test_corrupt_store_degrades_to_empty(self, tmp_path: Path) -> None:
         """A corrupt store file is treated as nothing trusted."""
         store = tmp_path / "skill_trust.json"
@@ -185,7 +208,7 @@ class TestSkillTrustStoreRobustness:
         b.mkdir()
         trust_skill_dir(a, store_path=store)
         trust_skill_dir(b, store_path=store)
-        assert revoke_skill_dir_trust(a, store_path=store)
+        assert revoke_skill_dir_trust(a, store_path=store) is RevokeResult.REMOVED
         assert not is_skill_dir_trusted(a, store_path=store)
         assert is_skill_dir_trusted(b, store_path=store)
         assert json.loads(store.read_text(encoding="utf-8"))["version"] == 1
@@ -244,6 +267,23 @@ class TestSkillTrustStoreRobustness:
         """A missing store is first-run state, not an error, even under strict."""
         store = tmp_path / "skill_trust.json"
         assert list_trusted_skill_dirs(store_path=store, strict=True) == []
+
+    def test_newer_schema_version_is_refused(self, tmp_path: Path) -> None:
+        """A store written by a newer build is not partially read.
+
+        Enforcement/default stays fail-closed (empty) so an unknown schema can't
+        grant access by being misread; the audit path surfaces the error.
+        """
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        store.write_text(
+            json.dumps({"version": 999, "dirs": {"/shared/a": {}}}),
+            encoding="utf-8",
+        )
+        assert list_trusted_skill_dirs(store_path=store) == []
+        with pytest.raises(ValueError, match="newer version"):
+            list_trusted_skill_dirs(store_path=store, strict=True)
 
     def test_load_survives_unresolvable_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

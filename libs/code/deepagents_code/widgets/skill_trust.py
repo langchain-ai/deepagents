@@ -94,10 +94,10 @@ class SkillTrustScreen(ModalScreen[bool]):
             )
             yield Static(
                 Content.from_markup(
-                    "Skill [bold]$name[/bold] resolves via symlink to "
-                    "[bold]$dir[/bold], outside your trusted skill "
-                    "directories. Allowing reads instructions from there and "
-                    "remembers this location for future sessions.",
+                    "Skill [bold]$name[/bold] resolves to [bold]$dir[/bold], "
+                    "outside your trusted skill directories. Allowing reads "
+                    "instructions from there and remembers this location for "
+                    "future sessions.",
                     name=self._skill_name,
                     dir=self._target_dir,
                 ),

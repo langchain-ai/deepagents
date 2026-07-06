@@ -743,3 +743,117 @@ class TestPromptSkillTrustAndRetry:
         app.notify.assert_called_once()
         assert app.notify.call_args.kwargs.get("severity") == "warning"
         app._send_to_agent.assert_awaited_once()
+
+    async def test_retry_os_error_shows_generic_read_failure(self) -> None:
+        """A transient FS error on the post-approval retry surfaces distinctly."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, OSError("disk gone")],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("after granting trust" in t.lower() for t in _app_message_texts(app))
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_resolve_failure_fails_closed_without_prompting(self) -> None:
+        """If resolving the skill path errors, refuse without prompting.
+
+        A symlink loop introduced after the first containment check makes
+        `_resolve_parent_dir` raise; the flow must mount the original error and
+        never reach the trust prompt rather than crashing the worker.
+        """
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=self._CONTAINMENT_ERROR,
+            ),
+            patch(
+                "deepagents_code.app._resolve_parent_dir",
+                side_effect=OSError("ELOOP"),
+            ),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("resolves outside" in t for t in _app_message_texts(app))
+        app._push_screen_wait.assert_not_awaited()
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_allowlisted_dir_not_reprompted_same_session(self) -> None:
+        """Once approved, a later invocation loads without a second prompt.
+
+        The approved directory joins the in-session containment allowlist, so a
+        subsequent read that no longer trips containment must not re-nag.
+        """
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                # 1st invoke: containment fails then the retry succeeds.
+                # 2nd invoke: loads directly (dir already allowlisted).
+                side_effect=[self._CONTAINMENT_ERROR, "# Body", "# Body"],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert app._push_screen_wait.await_count == 1
+        assert app._send_to_agent.await_count == 2
+
+
+class TestDiscoverSkillsAndRoots:
+    """The containment roots must include persisted trust and extra dirs.
+
+    This is the join that makes an in-session approval survive a relaunch. The
+    real `discover_skills_and_roots` is exercised (not mocked wholesale) so a
+    regression that drops the trust join, or re-resolves it instead of adding it
+    as-is, is caught.
+    """
+
+    def _settings_with_no_builtin_roots(self, extra: list[Path]) -> MagicMock:
+        settings = MagicMock()
+        for getter in (
+            "get_built_in_skills_dir",
+            "get_user_skills_dir",
+            "get_project_skills_dir",
+            "get_user_agent_skills_dir",
+            "get_project_agent_skills_dir",
+            "get_user_claude_skills_dir",
+            "get_project_claude_skills_dir",
+        ):
+            getattr(settings, getter).return_value = None
+        settings.get_extra_skills_dirs.return_value = extra
+        return settings
+
+    def test_persisted_trust_and_extra_dirs_join_roots(self, tmp_path: Path) -> None:
+        """Trusted dirs and `extra_allowed_dirs` both reach the containment roots."""
+        from deepagents_code.skills.invocation import discover_skills_and_roots
+
+        trusted = tmp_path / "trusted"
+        trusted.mkdir()
+        extra = tmp_path / "extra"
+        extra.mkdir()
+
+        with (
+            patch(
+                "deepagents_code.config.settings",
+                self._settings_with_no_builtin_roots([extra]),
+            ),
+            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.trust.load_trusted_skill_dirs",
+                return_value=[trusted.resolve()],
+            ),
+        ):
+            _skills, roots = discover_skills_and_roots("agent")
+
+        assert trusted.resolve() in roots
+        assert extra.resolve() in roots

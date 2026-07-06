@@ -9,8 +9,10 @@ config allowlist.
 This module adds an in-the-moment, persistent approval path (mirroring
 `mcp_trust.py`): when a skill resolves outside the trusted roots, the user is
 asked once to allow the resolved target directory, and the decision is
-remembered. Trust is keyed by the resolved target directory, so re-pointing a
-symlink at a new directory is not trusted and re-prompts.
+remembered. Trust is keyed by the approved target directory — the canonical
+path resolved and shown to the user at approval time, stored as-is and never
+re-resolved. Re-pointing a symlink at a new directory therefore fails the
+`resolve()`-to-self re-verification in `load_trusted_skill_dirs` and re-prompts.
 
 Trust entries are app-managed bookkeeping (a set of approved directories), not
 user-facing configuration, so they live alongside the other state files under
@@ -26,13 +28,47 @@ import logging
 import os
 import tempfile
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypedDict
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
 _STORAGE_VERSION = 1
 """Schema version stamped into `skill_trust.json`; bump on incompatible changes."""
+
+
+class _TrustEntry(TypedDict):
+    """One trusted-directory record in the store's `dirs` map."""
+
+    trusted_at: str
+    """ISO-8601 UTC timestamp of when the directory was approved."""
+
+
+class _TrustStore(TypedDict):
+    """On-disk shape of `skill_trust.json`."""
+
+    version: int
+    dirs: dict[str, _TrustEntry]
+
+
+class RevokeResult(Enum):
+    """Outcome of a `revoke_skill_dir_trust` call.
+
+    Distinguishing `NOT_FOUND` from `REMOVED` lets the CLI print an honest
+    message instead of a false success when the target was never trusted (a
+    plain bool collapsed the two).
+    """
+
+    REMOVED = "removed"
+    """An entry existed and was removed from the store."""
+    NOT_FOUND = "not_found"
+    """No matching entry existed; the store was left unchanged."""
+    ERROR = "error"
+    """The store could not be read or the removal could not be persisted."""
 
 
 def _default_store_path() -> Path:
@@ -50,6 +86,11 @@ def _default_store_path() -> Path:
 def _normalize(target_dir: Path | str) -> str:
     """Return the resolved absolute string form of a directory key."""
     return str(Path(target_dir).expanduser().resolve())
+
+
+def _approved_key(target_dir: Path | str) -> str:
+    """Return the already-approved directory key without resolving again."""
+    return str(Path(target_dir).expanduser())
 
 
 def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
@@ -76,7 +117,7 @@ def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
         json.JSONDecodeError: When `strict` and an existing store is not valid
             JSON.
         ValueError: When `strict` and the store's top-level value is not a JSON
-            object.
+            object, or its `version` is newer than this build understands.
     """
     # A missing store is a normal first-run state, never an error — return
     # empty even under `strict` so callers don't have to special-case it.
@@ -111,10 +152,30 @@ def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
             "Skill trust store %s is not a JSON object; ignoring", store_path
         )
         return {}
+    # A store written by a newer build may carry an incompatible schema. Reading
+    # its `dirs` regardless could misinterpret entries, so refuse: fail-closed
+    # (treat as nothing trusted) for enforcement, and surface the error for the
+    # audit path. This makes the `_STORAGE_VERSION` "bump on incompatible
+    # changes" contract enforceable rather than aspirational.
+    version = data.get("version")
+    if isinstance(version, int) and version > _STORAGE_VERSION:
+        if strict:
+            msg = (
+                f"Skill trust store {store_path} was written by a newer version "
+                f"(schema {version} > {_STORAGE_VERSION}); refusing to read it"
+            )
+            raise ValueError(msg)
+        logger.warning(
+            "Skill trust store %s uses a newer schema (%s > %s); treating as empty",
+            store_path,
+            version,
+            _STORAGE_VERSION,
+        )
+        return {}
     return data
 
 
-def _save_store(data: dict[str, Any], store_path: Path) -> bool:
+def _save_store(data: Mapping[str, Any], store_path: Path) -> bool:
     """Atomic write of JSON trust data to `store_path`.
 
     Uses `tempfile.mkstemp` + `Path.replace` for crash safety.
@@ -161,6 +222,16 @@ def is_skill_dir_trusted(
 ) -> bool:
     """Check whether a resolved skill directory has been trusted.
 
+    Warning:
+        This resolves `target_dir` and checks raw membership; it does NOT
+        re-verify that a stored entry still resolves to itself. It is therefore
+        **not** a safe containment-enforcement primitive on its own — a stored
+        directory swapped for a symlink after approval would still report
+        trusted here. Enforcement builds the containment allowlist from
+        `load_trusted_skill_dirs`, which drops post-approval symlink swaps. Use
+        this only for informational "is this exact resolved dir on record?"
+        checks.
+
     Args:
         target_dir: Directory to check; resolved before lookup.
         store_path: Path to the trust store file. Defaults to
@@ -182,7 +253,10 @@ def trust_skill_dir(
     """Persist trust for a resolved skill directory.
 
     Args:
-        target_dir: Directory to trust; resolved before storing.
+        target_dir: Canonical directory to trust. This is expected to be the
+            already-resolved path shown to the user, and is not resolved again
+            before storing so a post-approval symlink swap cannot change what
+            gets persisted.
         store_path: Path to the trust store file. Defaults to
             `~/.deepagents/.state/skill_trust.json`.
 
@@ -207,7 +281,9 @@ def trust_skill_dir(
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
         dirs = {}
-    dirs[_normalize(target_dir)] = {"trusted_at": datetime.now(UTC).isoformat()}
+    dirs[_approved_key(target_dir)] = _TrustEntry(
+        trusted_at=datetime.now(UTC).isoformat()
+    )
     data["version"] = _STORAGE_VERSION
     data["dirs"] = dirs
     return _save_store(data, store_path)
@@ -217,22 +293,29 @@ def revoke_skill_dir_trust(
     target_dir: Path | str,
     *,
     store_path: Path | None = None,
-) -> bool:
-    """Remove trust for a resolved skill directory.
+) -> RevokeResult:
+    """Remove trust for a skill directory.
+
+    Matches on both the approved (expanduser-only) key form that
+    `trust_skill_dir` stores and the fully-resolved form, so a caller can
+    revoke either by the path they see in `skills trust list` or by the
+    original symlink path.
 
     Args:
-        target_dir: Directory to revoke; resolved before lookup.
+        target_dir: Directory to revoke.
         store_path: Path to the trust store file. Defaults to
             `~/.deepagents/.state/skill_trust.json`.
 
     Returns:
-        `True` if the entry was removed (or didn't exist).
+        `RevokeResult.REMOVED` if a matching entry was removed and persisted,
+        `RevokeResult.NOT_FOUND` if no entry matched (store left unchanged), or
+        `RevokeResult.ERROR` if the store could not be read or the write failed.
     """
     if store_path is None:
         store_path = _default_store_path()
 
-    # Read strictly so a transient read error aborts (returns False) rather
-    # than rebuilding from `{}` and dropping the other entries on the next save.
+    # Read strictly so a transient read error aborts rather than rebuilding
+    # from `{}` and dropping the other entries on the next save.
     try:
         data = _load_store(store_path, strict=True)
     except (OSError, ValueError):
@@ -240,21 +323,21 @@ def revoke_skill_dir_trust(
             "Refusing to revoke skill trust: could not read existing store %s",
             store_path,
         )
-        return False
+        return RevokeResult.ERROR
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
-        return True
-    keys = {str(Path(target_dir).expanduser()), _normalize(target_dir)}
+        return RevokeResult.NOT_FOUND
+    keys = {_approved_key(target_dir), _normalize(target_dir)}
     removed = False
     for key in keys:
         if key in dirs:
             del dirs[key]
             removed = True
     if not removed:
-        return True
+        return RevokeResult.NOT_FOUND
     data["version"] = _STORAGE_VERSION
     data["dirs"] = dirs
-    return _save_store(data, store_path)
+    return RevokeResult.REMOVED if _save_store(data, store_path) else RevokeResult.ERROR
 
 
 def clear_trusted_skill_dirs(*, store_path: Path | None = None) -> bool:
@@ -270,9 +353,9 @@ def clear_trusted_skill_dirs(*, store_path: Path | None = None) -> bool:
     if store_path is None:
         store_path = _default_store_path()
 
-    if not _read_dirs(store_path):
+    if not store_path.exists():
         return True
-    return _save_store({"version": _STORAGE_VERSION, "dirs": {}}, store_path)
+    return _save_store(_TrustStore(version=_STORAGE_VERSION, dirs={}), store_path)
 
 
 def list_trusted_skill_dirs(

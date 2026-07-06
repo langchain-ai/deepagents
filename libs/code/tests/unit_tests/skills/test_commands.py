@@ -1457,13 +1457,14 @@ class TestSkillsTrustCommand:
     def test_revoke_success(self) -> None:
         """A successful revoke confirms the removed directory."""
         from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
 
         args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
         output, capture_print = self._capture()
         with (
             patch(
                 "deepagents_code.skills.trust.revoke_skill_dir_trust",
-                return_value=True,
+                return_value=RevokeResult.REMOVED,
             ),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1472,16 +1473,63 @@ class TestSkillsTrustCommand:
 
         assert "revoked" in "\n".join(output).lower()
 
-    def test_revoke_failure_exits(self) -> None:
-        """A failed revoke reports an error and exits non-zero."""
+    def test_revoke_not_found_reports_honestly(self) -> None:
+        """Revoking a dir that was never trusted must not print a false success."""
         from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/nope")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.NOT_FOUND,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        joined = "\n".join(output).lower()
+        assert "no trust entry found" in joined
+        assert "revoked" not in joined
+
+    def test_revoke_json_output(self) -> None:
+        """`revoke --output json` emits the standard envelope with the result."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(
+            trust_command="revoke", dir="/shared/a", output_format="json"
+        )
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.NOT_FOUND,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust revoke"
+        assert result["data"] == {"dir": "/shared/a", "result": "not_found"}
+
+    def test_revoke_failure_exits(self) -> None:
+        """A store/IO error reports an error and exits non-zero."""
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
 
         args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
         output, capture_print = self._capture()
         with (
             patch(
                 "deepagents_code.skills.trust.revoke_skill_dir_trust",
-                return_value=False,
+                return_value=RevokeResult.ERROR,
             ),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1509,6 +1557,28 @@ class TestSkillsTrustCommand:
             _trust(args)
 
         assert "cleared" in "\n".join(output).lower()
+
+    def test_clear_json_output(self) -> None:
+        """`clear --output json` emits the standard envelope."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear", output_format="json")
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=True,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust clear"
+        assert result["data"] == {"cleared": True}
 
     def test_clear_failure_exits(self) -> None:
         """A failed clear reports an error and exits non-zero."""

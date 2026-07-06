@@ -867,6 +867,7 @@ def _trust(args: argparse.Namespace) -> None:
 
     from deepagents_code.config import console, get_glyphs
     from deepagents_code.skills.trust import (
+        RevokeResult,
         clear_trusted_skill_dirs,
         list_trusted_skill_dirs,
         revoke_skill_dir_trust,
@@ -911,28 +912,48 @@ def _trust(args: argparse.Namespace) -> None:
         console.print()
     elif command == "revoke":
         target = args.dir
-        if revoke_skill_dir_trust(target):
-            console.print(
-                f"{checkmark} Revoked trust for: {escape(str(target))}",
-                style=theme.PRIMARY,
-            )
-        else:
+        result = revoke_skill_dir_trust(target)
+        # An I/O/read failure is a hard error regardless of output format
+        # (matching `list`): print red and exit non-zero without emitting a
+        # success envelope a script might misread.
+        if result is RevokeResult.ERROR:
             console.print(
                 "[bold red]Error:[/bold red] Could not revoke trust for: "
                 f"{escape(str(target))}"
             )
             raise SystemExit(1)
-    elif command == "clear":
-        if clear_trusted_skill_dirs():
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "skills trust revoke",
+                {"dir": str(target), "result": result.value},
+            )
+            return
+        if result is RevokeResult.REMOVED:
             console.print(
-                f"{checkmark} Cleared all trusted skill directories.",
+                f"{checkmark} Revoked trust for: {escape(str(target))}",
                 style=theme.PRIMARY,
             )
-        else:
+        else:  # RevokeResult.NOT_FOUND — report honestly, not a false success.
+            console.print(
+                f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
+            )
+    elif command == "clear":
+        if not clear_trusted_skill_dirs():
             console.print(
                 "[bold red]Error:[/bold red] Could not clear trusted directories."
             )
             raise SystemExit(1)
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("skills trust clear", {"cleared": True})
+            return
+        console.print(
+            f"{checkmark} Cleared all trusted skill directories.",
+            style=theme.PRIMARY,
+        )
     else:
         from deepagents_code.ui import show_skills_trust_help
 
@@ -1129,10 +1150,14 @@ def setup_skills_parser(
         help="Revoke trust for a directory",
     )
     revoke_parser.add_argument("dir", help="Directory path to revoke")
-    trust_subparsers.add_parser(
+    if add_output_args is not None:
+        add_output_args(revoke_parser)
+    clear_parser = trust_subparsers.add_parser(
         "clear",
         help="Remove all trusted skill directories",
     )
+    if add_output_args is not None:
+        add_output_args(clear_parser)
     return skills_parser
 
 

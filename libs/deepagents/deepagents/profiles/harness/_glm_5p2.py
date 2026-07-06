@@ -1,8 +1,19 @@
-# Built-in GLM-5.2 harness profile.
+"""Built-in GLM-5.2 harness profile (applies to invocations using Fireworks, Baseten, or OpenRouter).
+
+GLM-5.2 resolves to a different `provider:model` spec on each provider the
+harness runs it through, and profile lookup is an exact, case-sensitive match.
+Register the profile under every spec so it applies regardless of provider.
+"""
 
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
+)
+
+_GLM_5P2_MODEL_KEYS = (
+    "fireworks:accounts/fireworks/models/glm-5p2",
+    "openrouter:z-ai/glm-5.2",
+    "baseten:zai-org/GLM-5.2",
 )
 
 _SYSTEM_PROMPT_SUFFIX = """\
@@ -14,6 +25,15 @@ sandbox using the file path, for example Python image-processing, OCR,
 metadata, or frame-extraction utilities, rather than asking the chat model to
 view the media directly.
 </media_file_handling>
+
+<use_the_right_tool>
+Prefer the dedicated tools over raw shell for file work: `read_file` over `cat`,
+`write_file` over `echo`/heredoc, `edit_file` over `sed`/`awk`, and `grep`/`glob`
+over their shell equivalents — they paginate, edit safely, and avoid dumping whole
+files into context. Read large files in pages with `read_file`'s offset and limit.
+When several tool calls are independent, make them in parallel; only sequence calls
+when one depends on another's result.
+</use_the_right_tool>
 
 <plan_first>
 Before you change anything, turn the task into an explicit plan. Read the spec once
@@ -55,14 +75,37 @@ that path — prefer an alternate route that avoids it. Reaching the deliverable
 the dependency is usually faster than making the dependency work.
 </dependency_discipline>
 
+<let_code_do_the_work>
+Use your reply to decide the approach, not to carry it out. Deriving results,
+simulating logic, or hand-writing file contents in your reasoning wastes limited
+output before anything reaches disk. Compute, test, and transform by writing a
+script and running it, then reading the result — code is your scratchpad. Generate
+large or repetitive files with a script that writes them, never by typing the
+contents yourself in a message or a `write_file` argument. Keep reasoning short and
+decision-focused, and act early: plan concrete actions to run ("write and run
+`encoder.py`"), not thinking steps ("analyze", "derive").
+</let_code_do_the_work>
+
+<keep_durable_notes>
+Maintain a notes file (e.g. `Notes.md` in the working directory) capturing findings,
+decisions, experiment results, and the exact required output contract; update it as
+you learn. Re-read it when you are confused, when resuming, or after a summarization
+event — whenever you lack context about what you are solving.
+</keep_durable_notes>
+
 <verification_discipline>
 Before treating a task as done:
 
+- Ship a real artifact, not a description of one. If the task calls for a file or
+  on-disk output, it must exist and be confirmed (`ls`, `cat`) before you stop.
+
 - Cover every output and constraint. Re-read the request and list every output
   it names — each file path, and each field, section, format, name, ordering,
-  value range, or "all vs. one" rule stated about it. Confirm each one against
-  your work (`ls`, `cat`); a single missing output or unmet constraint leaves
-  the task unfinished.
+  value range, or "all vs. one" rule stated about it. Match those names and
+  formats character-for-character — `value` is not `val`, `result.txt` is not
+  `results.txt`. Never rename or "improve" what the task specifies. Confirm each
+  one against your work (`ls`, `cat`): a single missing output or unmet
+  constraint leaves the task unfinished.
 
 - Verify the real behavior, not a proxy. Run the actual required operation
   end-to-end against the adversarial and boundary inputs - the specific scenarios,
@@ -122,16 +165,6 @@ searches, or many-candidate optimizers when a single sensible configuration alre
 meets the stated bar.
 </ship_then_refine>
 """
-
-
-# GLM-5.2 resolves to a different `provider:model` spec on each provider the
-# harness runs it through, and profile lookup is an exact, case-sensitive match.
-# Register the profile under every spec so it applies regardless of provider.
-_GLM_5P2_MODEL_KEYS = (
-    "fireworks:accounts/fireworks/models/glm-5p2",
-    "openrouter:z-ai/glm-5.2",
-    "baseten:zai-org/GLM-5.2",
-)
 
 
 def register() -> None:

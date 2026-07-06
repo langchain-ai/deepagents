@@ -1,26 +1,23 @@
-"""Internal fake chat models.
+"""Internal fake chat models for local integration tests.
 
-Shared by local integration tests and the `dcode tools list` tool-enumeration
-path (`tool_catalog._CatalogModel`), which both need a model that binds tools
-during agent compilation but is never invoked.
+The tool-binding base these build on (`_fake_models._ToolBindingFakeModel`) is
+factored out into a use-neutral module so the `dcode tools list` enumeration
+path can reuse it without importing this test-named module.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
+
+from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
     from langchain_core.callbacks import CallbackManagerForLLMRun
-    from langchain_core.language_models import LanguageModelInput
-    from langchain_core.runnables import Runnable
-    from langchain_core.tools import BaseTool
 
 
 # Prompt markers that drive `ToolCallingIntegrationChatModel`. Each marker is the
@@ -38,55 +35,13 @@ TOP_LEVEL_WRITE_CONTENT = "auto-approved"
 SUBAGENT_WRITE_CONTENT = "auto-approved-subagent"
 
 
-_TOOL_BINDING_MODEL_PROFILE: dict[str, Any] = {
-    "tool_calling": True,
-    "max_input_tokens": 8000,
-}
-"""Minimal capability profile the agent runtime reads while compiling a model.
-
-Only `tool_calling` is load-bearing — the agent negotiates tool support at
-setup. `max_input_tokens` is required by the profile surface but inert here:
-these models are compiled to bind tools and are never invoked, so no token
-budget ever applies. Defined once so both the fakes below and
-`tool_catalog._CatalogModel` share a single source of truth.
-"""
-
-
-class _ToolBindingFakeModel(GenericFakeChatModel):
-    """Base for fake chat models that must bind tools but are never invoked.
-
-    The agent runtime calls `model.bind_tools(schemas)` and reads
-    `model.profile` while compiling the graph; `GenericFakeChatModel` provides
-    neither, so a bare fake raises `AttributeError` in any agent-loop context.
-    This base supplies a no-op `bind_tools` passthrough and the minimal
-    `profile`, leaving subclasses to add generation behavior (tests) or nothing
-    at all (tool enumeration).
-    """
-
-    # Required by `GenericFakeChatModel`, but subclasses never consume it.
-    messages: object = Field(default_factory=lambda: iter(()))
-    profile: dict[str, Any] | None = Field(
-        default_factory=lambda: dict(_TOOL_BINDING_MODEL_PROFILE)
-    )
-
-    def bind_tools(
-        self,
-        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
-        *,
-        tool_choice: str | None = None,  # noqa: ARG002
-        **kwargs: Any,  # noqa: ARG002
-    ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Return self so the agent can bind tool schemas without a real model."""
-        return self
-
-
 class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
     """Deterministic chat model for integration tests.
 
-    This subclasses LangChain's `GenericFakeChatModel` so the implementation
-    stays aligned with the core fake-chat-model test surface, while overriding
-    generation to remain prompt-driven and restart-safe for real CLI server
-    integration tests.
+    This subclasses `_ToolBindingFakeModel` (itself a `GenericFakeChatModel`) so
+    the implementation stays aligned with the core fake-chat-model test surface,
+    while overriding generation to remain prompt-driven and restart-safe for real
+    CLI server integration tests.
 
     Why the existing `langchain_core` fakes cannot be reused here:
 
@@ -100,13 +55,15 @@ class DeterministicIntegrationChatModel(_ToolBindingFakeModel):
         identical output regardless of process lifecycle.
 
     2. The agent runtime calls `model.bind_tools(schemas)` during
-        initialization. None of the core fakes implement `bind_tools`, so they
-        raise `AttributeError` in any agent-loop context. This model provides a
+        initialization. A bare `GenericFakeChatModel` inherits
+        `BaseChatModel.bind_tools`, which raises `NotImplementedError` in any
+        agent-loop context. The inherited `_ToolBindingFakeModel` supplies a
         no-op passthrough.
 
     3. The app server reads `model.profile` for capability negotiation (e.g.
-        `tool_calling`, `max_input_tokens`). Core fakes have no such attribute,
-        causing `AttributeError` or silent misconfiguration at runtime.
+        `tool_calling`, `max_input_tokens`). A bare fake's `profile` is `None`,
+        causing silent misconfiguration at runtime. The inherited
+        `_ToolBindingFakeModel` supplies a minimal profile.
 
     Additionally, the compact middleware issues summarization prompts mid-
     conversation. A list-based model cannot distinguish these from normal user

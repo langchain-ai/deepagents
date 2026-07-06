@@ -7,9 +7,11 @@ throwaway offline chat model (no credentials, no network) and reading the bound
 tool node; MCP tools are discovered via the same path the app and server use.
 
 The collection functions here lazily import the heavy agent stack (agent
-compilation, MCP discovery) inside their bodies, so importing this module stays
-cheap. Those functions must only run on the `dcode tools list` command path —
-never on the startup hot path.
+compilation, MCP discovery) inside their bodies. Only the fake-model base is
+imported at module top, so importing this module is cheap relative to the agent
+stack — and this module is itself imported lazily inside `_run_tools_list`,
+never on the startup hot path. Those functions must only run on the
+`dcode tools list` command path.
 """
 
 from __future__ import annotations
@@ -20,10 +22,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from deepagents_code._testing_models import _ToolBindingFakeModel
+from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolNode
+
+    from deepagents_code.mcp_tools import MCPServerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +35,8 @@ ToolSource = Literal["built-in", "mcp"]
 """Stable source token identifying where a tool group comes from.
 
 Emitted verbatim in the `--json` output, so it is a public contract; keep it a
-`Literal` (not a bare `str`) mirroring `mcp_tools.MCPServerStatus`.
+`Literal` of stable tokens (not a bare `str`), following the same convention as
+`mcp_tools.MCPServerStatus`.
 """
 
 BUILT_IN_GROUP = "Built-in"
@@ -70,11 +75,21 @@ class UnavailableServer:
     name: str
     """Server name from the MCP configuration."""
 
-    status: str
-    """Load status token (e.g. `error`, `unauthenticated`, `disabled`)."""
+    status: MCPServerStatus
+    """Load status token — any non-`ok` `mcp_tools.MCPServerStatus`.
+
+    Reuses `MCPServerStatus` (rather than a bare `str`) so the same closed value
+    set governs this field and its `--json` output, and so the token list has a
+    single source of truth in `mcp_tools`.
+    """
 
     detail: str
-    """Human-readable reason from discovery, or `""` when none was given."""
+    """Human-readable reason from discovery, or `""` when none was given.
+
+    For config-load failures this is discovery's own reason string, which may
+    include the local config file path (e.g. `~/.deepagents/mcp.json: ...`) —
+    the same text the interactive `/mcp` viewer shows. See `collect_mcp_catalog`.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,17 +138,21 @@ def _first_line(text: str | None) -> str:
     return ""
 
 
-def collect_built_in_tools(*, enable_interpreter: bool = False) -> list[ToolEntry]:
+def collect_built_in_tools(
+    *, assistant_id: str = "agent", enable_interpreter: bool = False
+) -> list[ToolEntry]:
     """Enumerate the built-in tools the agent binds by default.
 
     Compiles the agent with an offline placeholder model and reads the bound
     tool node. Memory and skills are disabled because they contribute no tools
-    (they only augment the system prompt), which keeps enumeration free of
-    on-disk agent-directory side effects. The custom CLI tools are included the
-    same way `server_graph._build_tools` adds them, so `web_search` appears only
-    when Tavily is configured.
+    (they only augment the system prompt). The selected assistant id is still
+    forwarded so agent-specific subagents are loaded from the same directory the
+    normal launch path uses. The custom CLI tools are included the same way
+    `server_graph._build_tools` adds them, so `web_search` appears only when
+    Tavily is configured.
 
     Args:
+        assistant_id: Resolved dcode agent identifier to compile.
         enable_interpreter: Wire the JS interpreter middleware so `js_eval`
             appears when the default agent would bind it. Callers should pass
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
@@ -154,7 +173,7 @@ def collect_built_in_tools(*, enable_interpreter: bool = False) -> list[ToolEntr
 
     agent, _backend = create_cli_agent(
         _CatalogModel(),
-        assistant_id="agent",
+        assistant_id=assistant_id,
         tools=custom_tools,
         enable_memory=False,
         enable_skills=False,
@@ -225,8 +244,10 @@ def collect_mcp_catalog(
         elif server.status != "ok":
             # A server that loaded but has no tools *and* is not "ok" is broken,
             # unauthenticated, or disabled — report it so the omission is
-            # explained. `server.error` is discovery's own curated reason (the
-            # same text the interactive app shows), not a raw exception.
+            # explained. `server.error` is discovery's own reason string (the
+            # same text the interactive `/mcp` viewer shows); it is not a stack
+            # trace, but for config-load failures it can include the local
+            # config file path — see `UnavailableServer.detail`.
             unavailable.append(
                 UnavailableServer(
                     name=server.name,
@@ -256,7 +277,10 @@ async def _load_mcp_server_info(
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
-    except OSError:
+    except (OSError, RuntimeError):
+        # `Path.cwd()`/`.resolve()` raise OSError for a missing cwd and
+        # RuntimeError on a symlink loop (3.11-3.12); match the codebase's own
+        # convention in `project_utils` and fall back to no project context.
         logger.warning("Could not determine working directory for MCP discovery")
         project_context = None
 
@@ -279,6 +303,7 @@ async def _load_mcp_server_info(
 
 def collect_catalog(
     *,
+    assistant_id: str = "agent",
     enable_interpreter: bool = False,
     include_mcp: bool = True,
     mcp_config_path: str | None = None,
@@ -287,6 +312,8 @@ def collect_catalog(
     """Collect everything `dcode tools list` renders.
 
     Args:
+        assistant_id: Resolved dcode agent identifier to compile for built-in
+            tools, including any agent-specific subagents.
         enable_interpreter: Whether the default agent binds `js_eval`; forwarded
             to `collect_built_in_tools`.
         include_mcp: When `True`, discover MCP servers and append their groups
@@ -304,7 +331,12 @@ def collect_catalog(
         ToolGroup(
             label=BUILT_IN_GROUP,
             source="built-in",
-            tools=tuple(collect_built_in_tools(enable_interpreter=enable_interpreter)),
+            tools=tuple(
+                collect_built_in_tools(
+                    assistant_id=assistant_id,
+                    enable_interpreter=enable_interpreter,
+                )
+            ),
         )
     ]
     unavailable: list[UnavailableServer] = []

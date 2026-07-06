@@ -22,9 +22,9 @@ from deepagents_code.tool_catalog import (
 from deepagents_code.tools_commands import _truncate, run_tools_command
 
 
-def _run_text(args: argparse.Namespace) -> tuple[int, str]:
+def _run_text(args: argparse.Namespace, *, width: int = 200) -> tuple[int, str]:
     buf = io.StringIO()
-    test_console = Console(file=buf, highlight=False, width=200)
+    test_console = Console(file=buf, highlight=False, width=width)
     with patch("deepagents_code.config.console", test_console):
         code = run_tools_command(args)
     return code, buf.getvalue()
@@ -337,6 +337,7 @@ class TestToolsList:
         # an explicit --mcp-config on the namespace.
         assert code == 0
         collect.assert_called_once_with(
+            assistant_id="agent",
             enable_interpreter=True,
             include_mcp=False,
             mcp_config_path="/tmp/mcp.json",
@@ -360,11 +361,33 @@ class TestToolsList:
             code = run_tools_command(args)
         assert code == 0
         collect.assert_called_once_with(
+            assistant_id="agent",
             enable_interpreter=False,
             include_mcp=True,
             mcp_config_path=None,
             trust_project_mcp=None,
         )
+
+    def test_list_forwards_selected_agent(self) -> None:
+        """`--agent` selects the agent whose built-in subagents are cataloged."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            agent="custom-agent",
+            resume_thread=None,
+            interpreter=False,
+            sandbox="none",
+            no_mcp=False,
+            mcp_config=None,
+            trust_project_mcp=False,
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog",
+            return_value=ToolCatalog(groups=()),
+        ) as collect:
+            code = run_tools_command(args)
+        assert code == 0
+        assert collect.call_args.kwargs["assistant_id"] == "custom-agent"
 
     def test_list_interpreter_defaults_to_settings(self) -> None:
         """With no explicit flag, the resolved local default drives `js_eval`."""
@@ -410,6 +433,75 @@ class TestToolsList:
             code, output = _run_text(args)
         assert code == 0
         assert "1 tool available" in output
+
+    def test_long_description_clipped_to_terminal_width(self) -> None:
+        """On a narrow terminal, descriptions clip and no row overflows width."""
+        long_desc = "abcdefg " * 60  # ~480 chars, far wider than the terminal
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="read_file", description=long_desc),),
+                ),
+            )
+        )
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args, width=40)
+        assert code == 0
+        assert "read_file" in output
+        # The full description cannot fit; it must have been clipped.
+        assert long_desc.rstrip() not in output
+        # Every rendered row stays within the terminal width (no_wrap + crop).
+        assert all(len(line) <= 40 for line in output.splitlines())
+
+    def test_disabled_server_renders_without_detail_suffix(self) -> None:
+        """An unavailable server with no detail prints status alone, no `: `."""
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(ToolEntry(name="ls", description="List files"),),
+                ),
+            ),
+            unavailable=(
+                UnavailableServer(name="offsvc", status="disabled", detail=""),
+            ),
+        )
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+        assert code == 0
+        assert "Unavailable MCP servers" in output
+        assert "offsvc" in output
+        assert "disabled" in output
+        # Empty detail → status stands alone, no trailing `: `.
+        assert "disabled:" not in output
+
+    def test_list_end_to_end_offline_renders_real_built_ins(self) -> None:
+        """Real `collect_catalog` compiles the agent offline and renders it."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="text",
+            interpreter=False,
+            sandbox="none",
+            no_mcp=True,
+            mcp_config=None,
+            trust_project_mcp=False,
+        )
+        code, output = _run_text(args)
+        assert code == 0
+        assert "tools available" in output
+        assert "Built-in" in output
+        # Representative built-in tools the default agent always binds.
+        assert "read_file" in output
+        assert "execute" in output
 
 
 class TestTruncate:

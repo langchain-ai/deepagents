@@ -79,23 +79,37 @@ def _run_tools_list(args: argparse.Namespace) -> int:
     outright while an explicit `--mcp-config` was supplied, the command exits
     non-zero because the user's explicit request could not be satisfied.
 
+    The exit code is not a complete health signal: only a discovery *failure*
+    (missing/unparseable config) sets a non-zero code, and only for an explicit
+    `--mcp-config`. An explicit config that parses but whose server is merely
+    unreachable is surfaced as an `unavailable` entry with exit `0`. Scripts
+    that need per-server health must inspect `unavailable`/`mcp_error` in the
+    `--json` output, not the exit code alone.
+
     Args:
-        args: Parsed CLI namespace. Reads `output_format`, `interpreter`,
-            `sandbox`, `no_mcp`, `mcp_config`, and `trust_project_mcp`.
+        args: Parsed CLI namespace. Reads `output_format`, `agent`,
+            `interpreter`, `sandbox`, `no_mcp`, `mcp_config`, and
+            `trust_project_mcp`.
 
     Returns:
         `0` on success (including best-effort MCP degradation); `1` when an
         explicit `--mcp-config` was given but MCP discovery failed.
     """
+    from deepagents_code._constants import DEFAULT_AGENT_NAME
     from deepagents_code._server_config import _resolve_enable_interpreter
+    from deepagents_code.main import _resolve_agent_arg
     from deepagents_code.tool_catalog import collect_catalog
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
     mcp_config_path: str | None = getattr(args, "mcp_config", None)
+    assistant_id = (
+        _resolve_agent_arg(args) if hasattr(args, "agent") else DEFAULT_AGENT_NAME
+    )
     enable_interpreter = _resolve_enable_interpreter(
         getattr(args, "interpreter", None), getattr(args, "sandbox", None)
     )
     catalog = collect_catalog(
+        assistant_id=assistant_id,
         enable_interpreter=enable_interpreter,
         include_mcp=not getattr(args, "no_mcp", False),
         mcp_config_path=mcp_config_path,

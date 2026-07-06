@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 from deepagents_code.config import Settings
@@ -82,6 +83,20 @@ class TestCollectBuiltInTools:
         }
         assert "js_eval" in with_interp
 
+    def test_forwards_assistant_id_to_agent_compilation(self) -> None:
+        tool_node = SimpleNamespace(
+            tools_by_name={"task": SimpleNamespace(description="Run a subagent")}
+        )
+        agent = SimpleNamespace(nodes={"tools": SimpleNamespace(bound=tool_node)})
+        with patch(
+            "deepagents_code.agent.create_cli_agent",
+            return_value=(agent, None),
+        ) as create:
+            tools = collect_built_in_tools(assistant_id="custom-agent")
+        assert tools == [ToolEntry(name="task", description="Run a subagent")]
+        create.assert_called_once()
+        assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+
 
 class TestCollectMcpCatalog:
     """Tests for MCP discovery: grouping tools and surfacing broken servers."""
@@ -145,6 +160,42 @@ class TestCollectMcpCatalog:
         assert groups == []
         assert unavailable == []
         assert mcp_error is None
+
+    def test_disabled_and_awaiting_reconnect_servers_are_surfaced(self) -> None:
+        # `disabled` and `awaiting_reconnect` share the `!= "ok"` branch with
+        # error/unauthenticated; lock the contract for the full non-ok set.
+        # (`MCPServerInfo` requires a reason for any non-ok status.)
+        servers = [
+            MCPServerInfo(
+                name="off",
+                transport="unknown",
+                status="disabled",
+                error="turned off via /mcp",
+            ),
+            MCPServerInfo(
+                name="pending",
+                transport="http",
+                status="awaiting_reconnect",
+                error="reconnecting after login",
+            ),
+        ]
+        with patch(
+            "deepagents_code.tool_catalog._load_mcp_server_info",
+            new=AsyncMock(return_value=servers),
+        ):
+            groups, unavailable, mcp_error = collect_mcp_catalog()
+        assert groups == []
+        assert mcp_error is None
+        assert unavailable == [
+            UnavailableServer(
+                name="off", status="disabled", detail="turned off via /mcp"
+            ),
+            UnavailableServer(
+                name="pending",
+                status="awaiting_reconnect",
+                detail="reconnecting after login",
+            ),
+        ]
 
     def test_discovery_failure_returns_generic_error_without_leaking(self) -> None:
         with patch(
@@ -232,9 +283,16 @@ class TestCollectCatalog:
     """Tests for the combined built-in + MCP assembly."""
 
     def test_built_in_group_first_and_mcp_optional(self) -> None:
-        with patch("deepagents_code.tool_catalog.collect_mcp_catalog") as mock_mcp:
+        with (
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ) as built_in,
+            patch("deepagents_code.tool_catalog.collect_mcp_catalog") as mock_mcp,
+        ):
             catalog = collect_catalog(include_mcp=False)
         mock_mcp.assert_not_called()
+        built_in.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
         assert len(catalog.groups) == 1
         assert catalog.groups[0].label == BUILT_IN_GROUP
         assert catalog.groups[0].source == "built-in"
@@ -250,11 +308,24 @@ class TestCollectCatalog:
             )
         ]
         unavailable = [UnavailableServer(name="broken", status="error", detail="boom")]
-        with patch(
-            "deepagents_code.tool_catalog.collect_mcp_catalog",
-            return_value=(mcp_groups, unavailable, None),
+        with (
+            patch(
+                "deepagents_code.tool_catalog.collect_mcp_catalog",
+                return_value=(mcp_groups, unavailable, None),
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ) as built_in,
         ):
-            catalog = collect_catalog(include_mcp=True, mcp_config_path="/tmp/mcp.json")
+            catalog = collect_catalog(
+                assistant_id="custom-agent",
+                include_mcp=True,
+                mcp_config_path="/tmp/mcp.json",
+            )
+        built_in.assert_called_once_with(
+            assistant_id="custom-agent", enable_interpreter=False
+        )
         # Built-in group stays first; MCP groups follow.
         assert catalog.groups[0].label == BUILT_IN_GROUP
         assert catalog.groups[-1].label == "docs"

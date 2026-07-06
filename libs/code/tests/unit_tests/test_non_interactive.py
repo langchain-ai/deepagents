@@ -1135,6 +1135,64 @@ class TestNonInteractivePrompt:
         assert result == 1
         mock_start_server.assert_not_awaited()
 
+    async def test_initial_skill_containment_failure_hard_fails(self) -> None:
+        """A skill resolving outside trusted roots hard-fails headlessly.
+
+        The non-interactive path has no TUI to prompt on, so it must never try
+        to grant trust: it fails closed with the containment error and never
+        starts the server.
+        """
+        skill = {
+            "name": "evil-skill",
+            "description": "Resolves outside trusted roots",
+            "path": "/skills/evil-skill/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+            "source": "user",
+        }
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.settings",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.skills.invocation.discover_skills_and_roots",
+                return_value=([skill], []),
+            ),
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=PermissionError(
+                    "Skill path /tmp/evil resolves outside all allowed skill "
+                    "directories."
+                ),
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(
+                message="review this patch",
+                initial_skill="evil-skill",
+                quiet=True,
+            )
+
+        assert result == 1
+        mock_start_server.assert_not_awaited()
+
 
 def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:
     """Return a stream chunk that triggers one HITL interrupt.

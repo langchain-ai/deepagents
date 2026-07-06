@@ -1441,7 +1441,12 @@ async def run_non_interactive(
 
         normalized_skill = initial_skill.strip().lower()
         try:
-            skills, allowed_roots = discover_skills_and_roots(assistant_id)
+            # Offloaded to a thread: discovery does blocking filesystem I/O
+            # (a JSON trust-store read plus `Path.resolve()` calls) that must
+            # not block the event loop.
+            skills, allowed_roots = await asyncio.to_thread(
+                discover_skills_and_roots, assistant_id
+            )
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
         except OSError as e:
             console.print(

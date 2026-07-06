@@ -10,17 +10,20 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 
 from deepagents_code import auth_store, model_config
 from deepagents_code.config import get_glyphs
 from deepagents_code.widgets.auth import (
+    _ENDPOINT_BY_REGION,
     PROVIDER_API_KEY_URLS,
     PROVIDER_DISPLAY_NAMES,
     AuthManagerScreen,
     AuthPromptScreen,
     AuthResult,
+    Region,
     _is_safe_acquisition_url,
+    _region_for_endpoint,
     provider_display_name,
     provider_short_name,
 )
@@ -662,6 +665,270 @@ api_key_url = "javascript:alert(1)"
         assert os.environ["LANGSMITH_API_KEY"] == "lsv2_live"
         assert os.environ["LANGSMITH_TRACING"] == "true"
 
+    async def test_langsmith_prompt_renders_region_selector(self) -> None:
+        """The LangSmith prompt shows a region selector defaulting to US."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            region = app.screen.query_one("#auth-prompt-region", RadioSet)
+            assert region.display is True
+            us = app.screen.query_one("#auth-region-us", RadioButton)
+            assert us.value is True
+            # The custom URL field stays hidden until Custom is chosen.
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is False
+
+    async def test_langsmith_eu_region_saves_eu_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Choosing the Europe region stores the canonical EU endpoint."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-eu", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("langsmith") == LANGSMITH_EU_ENDPOINT
+
+    async def test_langsmith_custom_region_reveals_input_and_validates(self) -> None:
+        """Custom reveals the URL field and rejects a non-http(s) value."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            custom = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert custom.display is True
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            custom.value = "ftp://nope.example.com"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            error = app.screen.query_one("#auth-prompt-error", Static)
+            assert "http(s)" in str(error.render())
+            assert auth_store.get_stored_key("langsmith") is None
+            # A valid URL now saves the pair.
+            custom.value = "https://langsmith.internal.example.com"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert (
+            auth_store.get_stored_base_url("langsmith")
+            == "https://langsmith.internal.example.com"
+        )
+
+    async def test_langsmith_existing_eu_endpoint_preselects_region(self) -> None:
+        """Reopening with a stored EU endpoint preselects the Europe region."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_existing", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            eu = app.screen.query_one("#auth-region-eu", RadioButton)
+            assert eu.value is True
+
+    async def test_langsmith_existing_custom_endpoint_preselects_and_prefills(
+        self,
+    ) -> None:
+        """Reopening a stored self-hosted URL preselects Custom and prefills it."""
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_existing", base_url="https://self.example.com"
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            custom = app.screen.query_one("#auth-region-custom", RadioButton)
+            assert custom.value is True
+            field = app.screen.query_one("#auth-prompt-base-url", Input)
+            assert field.display is True
+            assert field.value == "https://self.example.com"
+
+    async def test_langsmith_cli_stored_us_url_preselects_us(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A CLI-stored literal US URL reopens as United States, not Custom."""
+        from deepagents_code.config import LANGSMITH_US_ENDPOINT
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_existing", base_url=LANGSMITH_US_ENDPOINT
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            us = app.screen.query_one("#auth-region-us", RadioButton)
+            assert us.value is True
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is False
+
+    async def test_langsmith_custom_empty_url_blocks_save(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom with a blank URL errors instead of silently defaulting to US."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            error = app.screen.query_one("#auth-prompt-error", Static)
+            assert "required" in str(error.render())
+            assert auth_store.get_stored_key("langsmith") is None
+
+    async def test_langsmith_region_switch_discards_typed_custom_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing a custom URL then switching to US saves the US default, not it."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "https://typed.example.com"
+            app.screen.query_one("#auth-region-us", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("langsmith") is None
+
+    async def test_langsmith_region_switch_custom_to_eu_discards_typed_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typing a custom URL then switching to Europe saves the EU endpoint."""
+        from deepagents_code.config import LANGSMITH_EU_ENDPOINT
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "https://typed.example.com"
+            app.screen.query_one("#auth-region-eu", RadioButton).value = True
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_base_url("langsmith") == LANGSMITH_EU_ENDPOINT
+
+    async def test_langsmith_unknown_radio_id_leaves_region_unchanged(self) -> None:
+        """A `Changed` from an unmapped radio id is a no-op, not a silent US reset."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            screen.query_one("#auth-region-eu", RadioButton).value = True
+            await pilot.pause()
+            region_set = screen.query_one("#auth-prompt-region", RadioSet)
+            stray = RadioButton("x", id="auth-region-bogus")
+            # Synthesize a Changed from a foreign (renamed/unknown) radio id.
+            screen.on_radio_set_changed(RadioSet.Changed(region_set, stray))
+            assert screen._region == Region.EU  # unchanged, not degraded to us
+
+    async def test_langsmith_env_notice_via_alternate_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The precedence notice also fires for a lone LANGCHAIN_ENDPOINT."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://from-alt-env.example.com")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert app.screen.query("#auth-prompt-endpoint-env-notice")
+
+    async def test_langsmith_no_env_endpoint_hides_precedence_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no env endpoint the notice is absent (no spurious warning)."""
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert not app.screen.query("#auth-prompt-endpoint-env-notice")
+
+    async def test_non_langsmith_invalid_base_url_blocks_save(self) -> None:
+        """A newly typed non-http(s) base URL is rejected for a non-LangSmith key."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-x"
+            app.screen.query_one(
+                "#auth-prompt-base-url", Input
+            ).value = "ftp://nope.example.com"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            error = app.screen.query_one("#auth-prompt-error", Static)
+            assert "http(s)" in str(error.render())
+            assert auth_store.get_stored_key("openai") is None
+
+    async def test_non_langsmith_preexisting_invalid_base_url_allows_key_reroll(
+        self,
+    ) -> None:
+        """A legacy non-http(s) base URL, left unchanged, never blocks a key update."""
+        # A schemeless value could only get stored before this feature validated;
+        # rotating just the key must not force the user to fix it.
+        auth_store.set_stored_key("openai", "sk-old", base_url="localhost:8000")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-new"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("openai") == "sk-new"
+        assert auth_store.get_stored_base_url("openai") == "localhost:8000"
+
     async def test_base_url_round_trips_on_submit(self) -> None:
         """A base URL typed alongside the key is persisted as the pair."""
         app = _AuthHostApp()
@@ -744,14 +1011,15 @@ api_key_url = "javascript:alert(1)"
         assert auth_store.get_stored_key("langsmith") == "lsv2_test"
         assert auth_store.get_stored_project("langsmith") == "my-app"
 
-    async def test_langsmith_prompt_has_no_base_url_field(self) -> None:
-        """The LangSmith prompt swaps the base-URL field for the project field."""
+    async def test_langsmith_prompt_hides_custom_url_field_by_default(self) -> None:
+        """LangSmith shows the project field; the custom URL field is hidden at US."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("langsmith", "LANGSMITH_API_KEY")
             await pilot.pause()
-            assert not app.screen.query("#auth-prompt-base-url")
             assert app.screen.query("#auth-prompt-project")
+            # The base-URL field exists (for Custom) but stays hidden under US.
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is False
 
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""
@@ -2189,3 +2457,20 @@ class TestCodexAuthInManager:
                     break
         assert results == [True]
         assert any("plus" in note for note in notices)
+
+
+class TestRegionEndpointMapping:
+    """Round-trip tests for the region <-> endpoint single-source table."""
+
+    def test_fixed_saas_regions_round_trip(self) -> None:
+        """Each fixed-SaaS region maps to an endpoint that maps back to it."""
+        from deepagents_code.config import LANGSMITH_US_ENDPOINT
+
+        for region in (Region.US, Region.EU):
+            assert _region_for_endpoint(_ENDPOINT_BY_REGION[region]) == region
+        # The US alias URL (what `--base-url us` persists) also classifies as US.
+        assert _region_for_endpoint(LANGSMITH_US_ENDPOINT) == Region.US
+
+    def test_self_hosted_endpoint_is_custom(self) -> None:
+        """Any endpoint outside the SaaS set classifies as Custom."""
+        assert _region_for_endpoint("https://self.example.com") == Region.CUSTOM

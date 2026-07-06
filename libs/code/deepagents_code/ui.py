@@ -350,6 +350,7 @@ def show_skills_help() -> None:
     console.print("  create <name>     Create a new skill")
     console.print("  info <name>       Show detailed information about a skill")
     console.print("  delete <name>     Delete a skill")
+    console.print("  trust             Manage trusted skill directories")
     console.print()
     _print_option_section(
         "  --agent <name>    Specify agent identifier (default: agent)",
@@ -452,6 +453,30 @@ def show_skills_delete_help() -> None:
     console.print("  dcode skills delete old-skill --force")
     console.print("  dcode skills delete old-skill --project")
     console.print("  dcode skills delete old-skill --dry-run")
+    console.print()
+
+
+def show_skills_trust_help() -> None:
+    """Show help information for the `skills trust` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills trust <command>")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls           List trusted skill directories")
+    console.print("  revoke <dir>      Revoke trust for a directory")
+    console.print("  clear             Remove all trusted skill directories")
+    console.print()
+    console.print(
+        "Directories are trusted when you approve a skill that resolves "
+        "outside the standard skill roots (for example, a symlink target). "
+        "Trust is stored in ~/.deepagents/.state/skill_trust.json."
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills trust list")
+    console.print("  dcode skills trust revoke /shared/skills/my-skill")
+    console.print("  dcode skills trust clear")
     console.print()
 
 
@@ -710,6 +735,10 @@ def show_auth_help() -> None:
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
     console.print("  --project NAME        With `set langsmith`, set the trace project")
+    console.print(
+        "  --base-url URL        With `set`, pair an endpoint with the key "
+        "(langsmith accepts us|eu)"
+    )
     console.print("  -h, --help            Show this help message")
     console.print()
     console.print(
@@ -726,6 +755,7 @@ def show_auth_help() -> None:
     console.print(
         "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
     )
+    console.print("  echo $LANGSMITH_API_KEY | dcode auth set langsmith --base-url eu")
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")

@@ -469,3 +469,60 @@ class TestSkillTrustStoreRobustness:
         from datetime import datetime
 
         datetime.fromisoformat(trusted_at)  # parses without raising
+
+    def test_load_skips_parent_component_symlink_swap(self, tmp_path: Path) -> None:
+        """A swapped *parent* of a stored dir drops the entry, like a leaf swap.
+
+        Both the module docstring and `load_trusted_skill_dirs` claim the
+        `resolve()`-to-self check catches a symlink introduced at *any* path
+        component, not just the leaf. Replace a parent directory with a symlink
+        so the stored path still exists but resolves elsewhere, and confirm the
+        entry is dropped rather than followed to the swapped target.
+        """
+        import shutil
+
+        store = tmp_path / "skill_trust.json"
+        skill = tmp_path / "a" / "b" / "skill"
+        skill.mkdir(parents=True)
+        stored = skill.resolve()
+        trust_skill_dir(stored, store_path=store)
+        assert load_trusted_skill_dirs(store_path=store) == [stored]
+
+        # Replace the parent component `a/b` with a symlink to a sibling that
+        # also contains `skill`, so `stored` remains reachable but canonicalizes
+        # to a directory the user never approved.
+        evil_parent = tmp_path / "evil"
+        (evil_parent / "skill").mkdir(parents=True)
+        parent = tmp_path / "a" / "b"
+        shutil.rmtree(parent)
+        parent.symlink_to(evil_parent, target_is_directory=True)
+
+        assert skill.exists()  # still reachable through the swapped parent
+        assert load_trusted_skill_dirs(store_path=store) == []
+
+    def test_load_corrupt_store_fails_closed(self, tmp_path: Path) -> None:
+        """`load_trusted_skill_dirs` degrades to empty on a corrupt store.
+
+        The existing corrupt-store tests assert on `list_trusted_skill_dirs`;
+        this pins fail-closed at the actual allowlist builder that
+        `discover_skills_and_roots` consumes.
+        """
+        store = tmp_path / "skill_trust.json"
+        store.write_text("{not valid json", encoding="utf-8")
+        assert load_trusted_skill_dirs(store_path=store) == []
+
+    def test_load_newer_version_fails_closed(self, tmp_path: Path) -> None:
+        """A newer-schema store yields no trusted dirs at the enforcement entry.
+
+        A store written by a newer build must not be partially read into the
+        containment allowlist; `load_trusted_skill_dirs` (non-strict) returns
+        empty rather than trusting `dirs` it may misinterpret.
+        """
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        store.write_text(
+            json.dumps({"version": 999, "dirs": {str(tmp_path): {"trusted_at": "t"}}}),
+            encoding="utf-8",
+        )
+        assert load_trusted_skill_dirs(store_path=store) == []

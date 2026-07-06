@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -940,18 +940,23 @@ def _trust(args: argparse.Namespace) -> None:
                 {"dir": str(target), "result": result.value},
             )
             return
-        if result is RevokeResult.REMOVED:
-            console.print(
-                f"{checkmark} Revoked trust for: {escape(str(target))}",
-                style=theme.PRIMARY,
-            )
-        elif result is RevokeResult.NOT_FOUND:
-            # Report honestly, not a false success. Matched explicitly (rather
-            # than as a trailing `else`) so a future `RevokeResult` member is not
-            # silently mislabeled as "not found".
-            console.print(
-                f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
-            )
+        # `ERROR` was handled above (early exit), so only `REMOVED`/`NOT_FOUND`
+        # remain. Match exhaustively with `assert_never` so adding a future
+        # `RevokeResult` member is a static error here rather than a silent
+        # success that prints nothing yet exits 0.
+        match result:
+            case RevokeResult.REMOVED:
+                console.print(
+                    f"{checkmark} Revoked trust for: {escape(str(target))}",
+                    style=theme.PRIMARY,
+                )
+            case RevokeResult.NOT_FOUND:
+                # Report honestly, not a false success.
+                console.print(
+                    f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
+                )
+            case _:  # pragma: no cover - exhaustiveness guard
+                assert_never(result)
     elif command == "clear":
         if not clear_trusted_skill_dirs():
             console.print(

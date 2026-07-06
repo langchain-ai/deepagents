@@ -894,3 +894,110 @@ class TestDiscoverSkillsAndRoots:
         assert real_trusted.resolve() not in roots
         # `extra_allowed_dirs` is the declarative allowlist and is resolved.
         assert real_extra.resolve() in roots
+
+
+class TestResolveParentDir:
+    """`_resolve_parent_dir` keys trust on the resolved target, not the link."""
+
+    def test_resolves_then_takes_parent(self, tmp_path: Path) -> None:
+        """A symlinked SKILL.md keys on the real target's parent directory.
+
+        `resolve().parent` (what the code does) and `parent.resolve()` diverge
+        when the SKILL.md file is itself a symlink and its discovery directory
+        is a *real* directory: the former yields the symlink target's parent,
+        the latter the discovery directory. The trust key must match what
+        `load_skill_content` enforces (it resolves the file), i.e. the resolved
+        target's parent — so the retry's containment check can pass.
+        """
+        from deepagents_code.app import _resolve_parent_dir
+
+        disc = tmp_path / "disc"
+        disc.mkdir()
+        real = tmp_path / "real"
+        real.mkdir()
+        (real / "SKILL.md").write_text("# body", encoding="utf-8")
+        link = disc / "SKILL.md"
+        link.symlink_to(real / "SKILL.md")
+
+        assert _resolve_parent_dir(link) == str(real.resolve())
+        # Not the (real) discovery directory the link lexically sits in.
+        assert _resolve_parent_dir(link) != str(disc.resolve())
+
+
+class TestSkillTrustRealContainment:
+    """Drive `_invoke_skill` through the REAL `load_skill_content` gate.
+
+    Unlike `TestPromptSkillTrustAndRetry` (which mocks `load_skill_content`),
+    these build real directories and symlinks so the actual containment check
+    runs on both the initial load and the post-approval retry — the path a mock
+    cannot exercise, where a wrong/empty `allowed_roots` would silently read a
+    swapped target. `trust_skill_dir` is patched so no real state dir is written.
+    """
+
+    @staticmethod
+    def _outside_skill(tmp_path: Path) -> tuple[MagicMock, Path, Path]:
+        """Return (app, allowed root, outside target) for an escaping skill.
+
+        The discovered skill's SKILL.md lives under `root` (the sole allowed
+        root) but symlinks out to `outside/SKILL.md`, so the initial real
+        containment check refuses it.
+        """
+        root = tmp_path / "skills"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text(
+            "# Real body\nDo real stuff", encoding="utf-8"
+        )
+        link = root / "linked-skill"
+        link.symlink_to(outside, target_is_directory=True)
+
+        app = _make_app()
+        app._skill_allowed_roots = [root.resolve()]
+        app._discovered_skills = [
+            _fake_skill(name="linked-skill", path=str(link / "SKILL.md"))
+        ]
+        return app, root, outside
+
+    async def test_real_retry_reads_after_approval(self, tmp_path: Path) -> None:
+        """Approving an outside skill reads it through the real gate on retry."""
+        app, _root, outside = self._outside_skill(tmp_path)
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True):
+            await app._handle_skill_command("/skill:linked-skill")
+
+        app._send_to_agent.assert_awaited_once()
+        assert "Do real stuff" in app._send_to_agent.call_args[0][0]
+        # The resolved outside dir was actually admitted to the allowlist by the
+        # real retry, not just asserted via a mock.
+        assert outside.resolve() in app._skill_allowed_roots
+
+    async def test_real_retry_refuses_symlink_swap_during_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """Re-pointing the discovery symlink during the prompt is refused.
+
+        The user approves the originally-resolved target dir, but the skill's
+        SKILL.md is re-pointed to an unapproved location before the retry runs.
+        The real containment check must refuse the swapped target rather than
+        read it, even though a directory *was* just approved.
+        """
+        app, root, _outside = self._outside_skill(tmp_path)
+        link = root / "linked-skill"
+        evil = tmp_path / "evil"
+        evil.mkdir()
+        (evil / "SKILL.md").write_text("# stolen", encoding="utf-8")
+
+        def approve_then_swap(_screen: object) -> bool:
+            # Swap the discovery symlink to an unapproved target inside the
+            # prompt window, then approve the (original) resolved dir.
+            link.unlink()
+            link.symlink_to(evil, target_is_directory=True)
+            return True
+
+        app._push_screen_wait = AsyncMock(side_effect=approve_then_swap)
+        with patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True):
+            await app._handle_skill_command("/skill:linked-skill")
+
+        assert any("location changed" in t.lower() for t in _app_message_texts(app))
+        app._send_to_agent.assert_not_awaited()

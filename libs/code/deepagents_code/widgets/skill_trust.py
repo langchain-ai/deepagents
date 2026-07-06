@@ -21,12 +21,17 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-class SkillTrustScreen(ModalScreen[bool]):
+class SkillTrustScreen(ModalScreen[bool | None]):
     """Approval overlay for a skill resolving outside trusted directories.
 
     Dismisses with `True` when the user allows the resolved target and `False`
     when the user declines. Esc is treated as deny so the user is never forced
     into reading from an untrusted location they did not explicitly choose.
+
+    Typed `bool | None` rather than `bool`: a programmatic pop, or the app's
+    priority Esc binding falling through to `dismiss(None)` (see
+    `action_cancel`), can yield `None`. The caller collapses `None` and `False`
+    to deny (`if not allowed`), so both dismiss values fail closed.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [

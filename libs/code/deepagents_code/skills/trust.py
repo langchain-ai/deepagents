@@ -214,8 +214,22 @@ def _save_store(data: Mapping[str, Any], store_path: Path) -> bool:
     try:
         store_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=store_path.parent, suffix=".tmp")
+        # Wrap the raw fd in a file object in its own stage: if `os.fdopen`
+        # raises, it did not take ownership, so the fd is still open and must be
+        # closed explicitly (otherwise it leaks). Only close it here — once
+        # `fdopen` succeeds the `with` below owns and closes it exactly once, and
+        # a bare `os.close(fd)` in the outer handler could race a recycled fd
+        # (this runs under `asyncio.to_thread`).
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+        try:
+            with handle as f:
                 json.dump(data, f, indent=2)
             Path(tmp_path).replace(store_path)
         except BaseException:
@@ -247,14 +261,21 @@ def is_skill_dir_trusted(
     """Check whether a resolved skill directory has been trusted.
 
     Warning:
-        This resolves `target_dir` and checks raw membership; it does NOT
-        re-verify that a stored entry still resolves to itself. It is therefore
-        **not** a safe containment-enforcement primitive on its own — a stored
-        directory swapped for a symlink after approval would still report
-        trusted here. Enforcement builds the containment allowlist from
-        `load_trusted_skill_dirs`, which drops post-approval symlink swaps. Use
-        this only for informational "is this exact resolved dir on record?"
+        This resolves `target_dir` and checks raw membership; it does NOT do
+        the `resolve()`-to-self re-verification that `load_trusted_skill_dirs`
+        performs on each stored entry. It is therefore **not** the
+        containment-enforcement primitive — enforcement builds the allowlist
+        from `load_trusted_skill_dirs`, which drops post-approval symlink swaps.
+        Use this only for informational "is this exact resolved dir on record?"
         checks.
+
+        Note that this check happens to fail *closed*, not open: because it
+        resolves the query `target_dir`, a stored directory later swapped for a
+        symlink is reported **not** trusted (the query resolves to the swap
+        target, which is not the stored key), forcing a re-prompt — the safe
+        direction. It is excluded from enforcement for being an exact-membership
+        test that skips the resolve-to-self recheck, not because it could grant
+        access the user never approved.
 
         The lookup resolves `target_dir` (via `_normalize`), but `trust_skill_dir`
         stores the expanduser-only `_approved_key`. In the live flow the two

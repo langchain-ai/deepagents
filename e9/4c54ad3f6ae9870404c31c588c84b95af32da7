@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_thread_selector.py
+  s_7e6f3edc9efe41::t_db29146676ac50 443,454,1570,1716,1737,1758,1779
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e94c54ad3f6ae9870404c31c588c84b95af32da7",
+  "prompts": {},
+  "sessions": {
+    "s_7e6f3edc9efe41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8feeecf8-4d95-4981-9c4a-78c4d406bdf4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,37 @@
+libs/deepagents/deepagents/backends/composite.py
+  s_9b58e688c9e217::t_dd1061724386ad 429,431-434
+  s_9b58e688c9e217::t_764ee0f9383278 454
+  s_9b58e688c9e217::t_2e1ef4e4ee41b0 481,483-484
+  s_9b58e688c9e217::t_22bd7153d3d627 504
+  s_9b58e688c9e217::t_9843088db1e24d 451-453
+  s_9b58e688c9e217::t_8c0e707684e97b 455-457
+  s_9b58e688c9e217::t_cb5788fc76c34f 501-503
+  s_9b58e688c9e217::t_eed7c698c9e0d4 505-507
+  s_9b58e688c9e217::t_856d5f6dfd9f89 308-314,458-478,508-528
+libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
+  s_9b58e688c9e217::t_501b0c6521aada 275-285
+  s_9b58e688c9e217::t_e6ccca4890873e 272-274
+  s_9b58e688c9e217::t_7a5e482d3697a8 286-287
+  s_9b58e688c9e217::t_d3ff0a87b4eeed 265-271
+libs/deepagents/tests/unit_tests/backends/test_composite_backend_async.py
+  s_9b58e688c9e217::t_d30a56d2d5c83d 251-261
+  s_9b58e688c9e217::t_b25d043a53710a 248-250
+  s_9b58e688c9e217::t_1a51d6140c71c5 262-263
+  s_9b58e688c9e217::t_8ab75c3c9747bb 241-247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e7b6c63eff003f0ef86a958aecc611f400947f01",
+  "prompts": {},
+  "sessions": {
+    "s_9b58e688c9e217": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c1cb4a21-4ed5-4408-ad37-fa3b1d66ce60",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

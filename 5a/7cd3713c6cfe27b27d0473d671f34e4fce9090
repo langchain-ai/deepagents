@@ -1,0 +1,37 @@
+libs/deepagents/tests/unit_tests/test_middleware_async.py
+  s_084d738d1a1ffa::t_950f3ca23b833f 603-623
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/tests/unit_tests/backends/test_utils.py
+  s_084d738d1a1ffa::t_8330c55aa7adde 53-60
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/deepagents/backends/utils.py
+  s_084d738d1a1ffa::t_f95ee9218f11d3 897,900-901
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute_tools.json
+  s_084d738d1a1ffa::t_07f6e25c6dc765 217
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_084d738d1a1ffa::t_52a5b32ea94dc9 644-647
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "5a7cd3713c6cfe27b27d0473d671f34e4fce9090",
+  "prompts": {},
+  "sessions": {
+    "s_084d738d1a1ffa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65185f09-5235-442e-9e0d-978adfbe8641",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

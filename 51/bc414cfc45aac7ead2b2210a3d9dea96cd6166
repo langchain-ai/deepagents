@@ -1,0 +1,47 @@
+libs/code/tests/unit_tests/skills/test_skill_trust.py
+  s_8a8e6b5624e781::t_685bcf5eb78b15 4
+  s_8a8e6b5624e781::t_e5e01510f6fc45 274-275
+  s_8a8e6b5624e781::t_8a373cf84d729a 233-234,240
+  s_8a8e6b5624e781::t_23d3bc02260e71 272,276
+  s_8a8e6b5624e781::t_ca9e604064a7e1 152-232,235-239,241-271,273,277-279
+libs/code/deepagents_code/skills/trust.py
+  s_8a8e6b5624e781::t_9f4326d526a8c4 55,58-67,69-77,81-84,88-89,98-99,107-109
+  s_8a8e6b5624e781::t_efa6d1cf7aa0dc 234-243
+  s_8a8e6b5624e781::t_4b51e1a3e32a49 195-206
+  s_8a8e6b5624e781::t_a54e7658576bd9 297-299
+  s_8a8e6b5624e781::t_8394c5ebc622f5 146-153
+  s_8a8e6b5624e781::t_4d457d1d84084c 78-79
+  s_8a8e6b5624e781::t_d578fa5dcfcab1 278-282,288-292,296,303
+  s_8a8e6b5624e781::t_c6a05ea3f7c85a 330-343
+libs/code/tests/unit_tests/test_skill_invocation.py
+  s_8a8e6b5624e781::t_5516b44f3f312a 606-651,653-666,668-745
+  s_8a8e6b5624e781::t_60ae9e9e2af2aa 652
+  s_8a8e6b5624e781::t_1d98c42b2d800e 5
+  s_8a8e6b5624e781::t_10cd70ce3da8f4 269,279-282,284-286
+  s_8a8e6b5624e781::t_bd46b3ec2619a9 667
+libs/code/deepagents_code/app.py
+  s_8a8e6b5624e781::t_f88cfbb46baf05 9908-9912,9914-9919,9931-9948
+libs/code/tests/unit_tests/test_skill_trust_screen.py
+  s_8a8e6b5624e781::t_87e3aaaa6c9d41 1-78
+libs/code/tests/unit_tests/skills/test_commands.py
+  s_8a8e6b5624e781::t_8acc4aeaaa8d14 1339-1517,1519-1548
+  s_8a8e6b5624e781::t_b383f3a437f5b6 1518
+libs/code/deepagents_code/skills/commands.py
+  s_8a8e6b5624e781::t_e61907dea83554 863-864,866-867,880-890,910,916-917,921-922
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51bc414cfc45aac7ead2b2210a3d9dea96cd6166",
+  "prompts": {},
+  "sessions": {
+    "s_8a8e6b5624e781": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53364a34-2db8-41c4-823d-36ff267a77ca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

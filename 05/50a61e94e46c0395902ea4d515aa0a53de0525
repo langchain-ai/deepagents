@@ -1,0 +1,22 @@
+libs/code/tests/unit_tests/test_sessions.py
+  s_044cad897c3f94::t_c0139c20c18e03 177-223
+libs/code/deepagents_code/sessions.py
+  s_044cad897c3f94::t_7828794e5a431b 314-363
+  s_044cad897c3f94::t_7ed115de21cae7 398-402
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0550a61e94e46c0395902ea4d515aa0a53de0525",
+  "prompts": {},
+  "sessions": {
+    "s_044cad897c3f94": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6f6fd64-c004-4fb3-b0ef-3ede681a3bca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

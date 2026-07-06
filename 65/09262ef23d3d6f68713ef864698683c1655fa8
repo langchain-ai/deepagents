@@ -1,0 +1,83 @@
+libs/code/tests/unit_tests/tui/widgets/test_ask_user.py
+  s_ff40ecccd68157::t_ff7e7fcb5f57cf 13
+  s_ff40ecccd68157::t_82a368d4c3f255 27
+  s_ff40ecccd68157::t_54af603fab9df1 15,154
+libs/code/tests/unit_tests/tui/widgets/test_goal_review.py
+  s_ff40ecccd68157::t_8d5f742eddaa73 18
+  s_ff40ecccd68157::t_1424540b0a0105 12
+  s_ff40ecccd68157::t_c7f28d25d47dd6 13-14
+libs/code/tests/unit_tests/tui/widgets/test_agent_selector.py
+  s_ff40ecccd68157::t_9960b6c3e0aafe 11,268,287,313,335,361,396,424,450
+libs/code/tests/unit_tests/tui/widgets/test_approval.py
+  s_ff40ecccd68157::t_26081b6f663625 8
+libs/code/tests/unit_tests/tui/widgets/test_auth_widgets.py
+  s_ff40ecccd68157::t_fd94135e34b289 17,30,1155,1173,1194,1482,1512,1553,1592,1643,1688,1794,1830,1856,1881,1905,1931,1936,1958,1987,2008,2028,2065,2095,2211,2261,2294,2367,2388,2427
+libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  s_ff40ecccd68157::t_749047b57b8553 13-14
+libs/code/tests/unit_tests/tui/widgets/test_chat_input.py
+  s_ff40ecccd68157::t_0c39a71c7d1d04 20-22,4533,4543
+libs/code/tests/unit_tests/tui/widgets/test_cwd_switch.py
+  s_ff40ecccd68157::t_22af4a38202e28 11-14
+libs/code/tests/unit_tests/tui/widgets/test_history.py
+  s_ff40ecccd68157::t_c352fc8f1918e0 12
+libs/code/tests/unit_tests/tui/widgets/test_install_confirm.py
+  s_ff40ecccd68157::t_9e7d01f1ad1f03 8
+libs/code/tests/unit_tests/tui/widgets/test_launch_init.py
+  s_ff40ecccd68157::t_72643a97f11c39 21
+libs/code/tests/unit_tests/tui/widgets/test_links.py
+  s_ff40ecccd68157::t_bd5f609d9912ae 10,73,95,114,133,154,176-179,196,216,234,246,264,281,293
+libs/code/tests/unit_tests/tui/widgets/test_loading.py
+  s_ff40ecccd68157::t_d7cdd3b7a445b5 10,78,102,133
+libs/code/tests/unit_tests/tui/widgets/test_mcp_login_modal.py
+  s_ff40ecccd68157::t_46b8db7d047d84 14
+libs/code/tests/unit_tests/tui/widgets/test_mcp_reconnect.py
+  s_ff40ecccd68157::t_03a4f2318a2221 8
+libs/code/tests/unit_tests/tui/widgets/test_mcp_viewer.py
+  s_ff40ecccd68157::t_9b37d14d33d4f8 12,625,1724,1823,1856,1938,1944,1950,1956,1962,1968,1976,1990,2025,2033,2039,2062,2073,2087,2099,2110,2125
+libs/code/tests/unit_tests/tui/widgets/test_message_store.py
+  s_ff40ecccd68157::t_b6982d6d94b436 6,12,154
+libs/code/tests/unit_tests/tui/widgets/test_messages.py
+  s_ff40ecccd68157::t_e872355be57e39 21,118,135,379,402-404,2556,2562,3266,3449,3508,3523,3762,3768,3777,3795,3811,3832,3848,3864,3881,3910,3934,3962,3988,4014,4021,4033,4051,4081
+libs/code/tests/unit_tests/tui/widgets/test_model_selector.py
+  s_ff40ecccd68157::t_dc89aa5fd9ea22 22,528,553,573,599,631,661,682,714,755,782,818,928,967-968,998-999,1028-1029,1057,1592,1644,1688,1735,1789,2256,2266,2493,2540,2588,2613,2646,2678,2706,2738,2774,2796,2831,2870
+libs/code/tests/unit_tests/tui/widgets/test_notification_center.py
+  s_ff40ecccd68157::t_bb06cf0f6f0eb3 15,21-22
+libs/code/tests/unit_tests/tui/widgets/test_notification_detail.py
+  s_ff40ecccd68157::t_c7321105b685ed 14
+libs/code/tests/unit_tests/tui/widgets/test_restart_prompt.py
+  s_ff40ecccd68157::t_b3bcd5d56fb62c 8
+libs/code/tests/unit_tests/tui/widgets/test_skill_trust_screen.py
+  s_ff40ecccd68157::t_e5a5f3bdd24648 8
+libs/code/tests/unit_tests/tui/widgets/test_status.py
+  s_ff40ecccd68157::t_f4874a5f46d8a7 15,323,595,999
+libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py
+  s_ff40ecccd68157::t_fd136b7eb80729 17
+libs/code/tests/unit_tests/tui/widgets/test_thread_selector.py
+  s_ff40ecccd68157::t_c23025bcb26dc3 22,1046,1212,1284,1327,1366,1408,1423,1556,1591,1637,1669,1698,1702,1723,1744,1765,1789,1824,1945,2211,3468,3493,3514,3538,3559,3584,3617,3645,3674,3707-3708,3802,4170,4192,4203,4225,4245,4260,4272,4303,4331,4349,4562,4574,4595,4673,4698,4713,4736,4767,4793,4832,4898,4940,4982
+libs/code/tests/unit_tests/tui/widgets/test_tool_renderers.py
+  s_ff40ecccd68157::t_7fe9fcd0a8a174 3-4
+libs/code/tests/unit_tests/tui/widgets/test_update_available.py
+  s_ff40ecccd68157::t_7b7aa3f2b5c895 16
+libs/code/tests/unit_tests/tui/widgets/test_update_confirm.py
+  s_ff40ecccd68157::t_c51b59faddf863 8
+libs/code/tests/unit_tests/tui/widgets/test_update_progress.py
+  s_ff40ecccd68157::t_f016dff9cc2d63 12
+libs/code/tests/unit_tests/tui/widgets/test_welcome.py
+  s_ff40ecccd68157::t_acdb47a80d1f9e 19,26-30,118,126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6509262ef23d3d6f68713ef864698683c1655fa8",
+  "prompts": {},
+  "sessions": {
+    "s_ff40ecccd68157": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3811984f-11d8-4c1b-b9c1-8caff268364e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

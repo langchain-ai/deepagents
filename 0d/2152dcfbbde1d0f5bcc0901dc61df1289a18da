@@ -1,0 +1,48 @@
+libs/code/tests/unit_tests/test_install_script.py
+  s_c45687aea43331::t_672305b58fc527 1103,1444-1452
+  s_c45687aea43331::t_a8ba7c1540042b 1424,1427,1431-1433,1439-1443,1460,1465-1469
+  s_88998a1aa0dfd4::t_1a2c57fda14007 1164-1224
+  s_88998a1aa0dfd4::t_59af0d1c2c32bd 1104-1107
+  s_88998a1aa0dfd4::t_470d267f26f225 1453
+libs/code/scripts/install.sh
+  s_88998a1aa0dfd4::t_2941fe535ffa72 970-971
+  s_c45687aea43331::t_4c3b91ad5b3899 899-901,905,908-910,949,990,1001-1009,1025,1037,1048,1166
+  s_88998a1aa0dfd4::t_1029a1a61a11a0 135-139
+  s_88998a1aa0dfd4::t_e66b8c90b7c291 132-134
+  s_88998a1aa0dfd4::t_24a9e1dd215f9e 140-142
+  s_c45687aea43331::t_39b96989f4c853 896-898
+  s_c45687aea43331::t_f4dc2d836f3e13 902-904
+  s_c45687aea43331::t_1993db8e0762d9 906-907
+  s_c45687aea43331::t_ecb91e547208d7 911-913,946-948
+  s_c45687aea43331::t_7770cfa3725563 991-993,998-1000
+  s_c45687aea43331::t_33cf58aac30917 1010-1012,1022-1024
+  s_c45687aea43331::t_6688f66f9cad1a 1026-1028,1034-1036
+  s_c45687aea43331::t_7b24ab87f26923 1038-1040,1045-1047
+  s_c45687aea43331::t_e2c19ee893c534 1049-1051
+  s_c45687aea43331::t_fa886162b3d2ef 1163-1165
+  s_88998a1aa0dfd4::t_6c70fe813b3932 78-79,83-94,120-121,123,125,143-145,457-487,497,503,507-511,592-593,720,858,860,862-895,914-945,950-969,972-989,994-997,1013-1021,1029-1033,1041-1044,1052-1060,1154-1162,1291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0d2152dcfbbde1d0f5bcc0901dc61df1289a18da",
+  "prompts": {},
+  "sessions": {
+    "s_88998a1aa0dfd4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "25227762-b236-4838-9f1d-e808386ad7fe",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_c45687aea43331": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f267c-6aa8-7201-a427-7cb683eb31b2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

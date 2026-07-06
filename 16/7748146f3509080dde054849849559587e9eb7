@@ -1,0 +1,21 @@
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_5a46886786ce60::t_881088d4c48659 1892-1945,1975-2006,2011
+libs/code/deepagents_code/non_interactive.py
+  s_5a46886786ce60::t_a6f36fec71b4f0 287-289,512-514,552-557,571-572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "167748146f3509080dde054849849559587e9eb7",
+  "prompts": {},
+  "sessions": {
+    "s_5a46886786ce60": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a1f-7f15-7f02-9023-ad9e56c92d91",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,52 @@
+libs/code/deepagents_code/textual_adapter.py
+  s_6589375b2eba82::t_731f2d09fa7d3d 1828-1834,1841-1843,1845
+  s_2d63ec116c3665::t_27ed576dd38de6 1473-1476,1478-1484,1512-1519,1530-1535,1537-1543,1566-1573,1595-1601
+  s_6589375b2eba82::t_9bdd039630465f 1825-1827,1835-1840,1844
+libs/code/tests/unit_tests/test_messages.py
+  s_6589375b2eba82::t_fced59356d1689 786-830
+libs/code/tests/unit_tests/test__tool_stream.py
+  s_6589375b2eba82::t_147ac931882101 249-268
+libs/code/deepagents_code/_tool_stream.py
+  s_6589375b2eba82::t_430ab819499df3 355,358-365
+  s_6589375b2eba82::t_25eb2f13c2834b 327-329
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_6589375b2eba82::t_b577e79cb6fde5 4145-4151
+  s_6589375b2eba82::t_be8299951b3c63 2359-2368,2370,2383-2384
+  s_6589375b2eba82::t_388994bfd16933 2306-2315,2317,2330-2331
+  s_2d63ec116c3665::t_06e07f5581109d 4604-4691
+  s_6589375b2eba82::t_bd1f3594d35ca4 4352-4465
+libs/code/deepagents_code/hooks.py
+  s_6589375b2eba82::t_b0677eb7710a6c 52-61
+  s_6589375b2eba82::t_f123146aafe663 82-85
+libs/code/deepagents_code/app.py
+  s_6589375b2eba82::t_218a9ed1966c42 12010-12027
+libs/code/tests/unit_tests/test_app.py
+  s_6589375b2eba82::t_cdf4ae59723fb5 11070-11139
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_6589375b2eba82::t_ccfa76528a152c 2612
+  s_6589375b2eba82::t_0ea34cf577dc84 2587-2611,2613-2614
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "84905a7e7119d2fd76f69f69490fd1bf74ad9922",
+  "prompts": {},
+  "sessions": {
+    "s_2d63ec116c3665": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3080-79b6-7092-b042-c2196752a8d7",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_6589375b2eba82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "47f56b8e-1462-4f59-97b8-87dec8805f78",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

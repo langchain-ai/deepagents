@@ -1,0 +1,58 @@
+libs/code/deepagents_code/paste_collapse.py
+  s_88db5a11c26627::t_39f86147a6792a 103
+  s_88db5a11c26627::t_c2f8d9ca7ac859 22
+libs/code/deepagents_code/widgets/chat_input.py
+  s_88db5a11c26627::t_76e2dad8a765a7 2426,2438-2440,2442-2444
+  s_88db5a11c26627::t_1575fae49a00eb 2437,2445-2448
+  s_a869f5eee04b7f::t_c1481d1887550e 2422-2425,2433-2436,2441
+  s_88db5a11c26627::t_bf6a1997f88087 1341-1365
+  s_88db5a11c26627::t_b4188f22d4c978 34
+  s_88db5a11c26627::t_dce54a1cbdc809 1271-1272,1285,1296,1301-1306,1317-1321
+  s_03937cc60a59bb::t_8b176c493bdd81 1311-1314
+  s_88db5a11c26627::t_c4dbb6cfd1f96e 1216,1221
+libs/code/tests/unit_tests/test_chat_input.py
+  s_03937cc60a59bb::t_b522a4955d828b 4741-4778
+  s_88db5a11c26627::t_08e4b1ba160f46 4547-4548,4557-4558,4564,4568-4570,4594-4606,4608-4613
+  s_a869f5eee04b7f::t_907fce6e235658 4562-4563,4565,4571-4593,4614-4642
+  s_88db5a11c26627::t_85de6e2f5be0cd 4679-4714,4718-4735,4740
+  s_03937cc60a59bb::t_3f5d6bc25d1204 4715-4717
+  s_03937cc60a59bb::t_75dd2673e20d5e 4736-4739
+  s_88db5a11c26627::t_2126d5b94fee5f 4549-4556,4559-4561,4566-4567,4607,4643
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "39488d07254bd4ff5ffe0bdf094a4a6f064e8b44",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_03937cc60a59bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b9d0dcf-357a-40f5-9d8f-cbc819d7e7f7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_88db5a11c26627": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6fb4f8a5-905d-4c06-ac02-d4846d026476",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_a869f5eee04b7f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f25d8-3766-7612-b8ec-99f7983707ad",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

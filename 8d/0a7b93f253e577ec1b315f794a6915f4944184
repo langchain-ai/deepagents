@@ -1,0 +1,21 @@
+libs/code/deepagents_code/non_interactive.py
+  s_38a5ff31da0aa9::t_4dd607082c867d 567-574,578,581-582
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_38a5ff31da0aa9::t_cbd7f0b20379cd 2014,2033-2045
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8d0a7b93f253e577ec1b315f794a6915f4944184",
+  "prompts": {},
+  "sessions": {
+    "s_38a5ff31da0aa9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a28-5e9a-7a92-8fe8-ce45feb0e90a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

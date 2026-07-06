@@ -12,7 +12,7 @@ import json
 import re
 import time
 import uuid
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from langchain.agents.middleware import ToolRetryMiddleware
 from langchain.agents.middleware.types import (
@@ -452,10 +452,16 @@ Results are returned with line numbers. Lines longer than 5,000 characters may
 be split with continuation markers. Always read a file before editing it."""
 
 
+def _parsed_tool_is_available(name: str, valid_tools: set[str] | None) -> bool:
+    return valid_tools is None or name in valid_tools
+
+
 def _parse_text_tool_calls(content: str, valid_tools: set[str] | None = None) -> tuple[list[ToolCall], str]:
     calls: list[ToolCall] = []
     for block in _FUNCTION_BLOCK_RE.finditer(content):
         name = block.group(1).strip("\"'")
+        if not _parsed_tool_is_available(name, valid_tools):
+            continue
         args = {param.group(1).strip("\"'"): param.group(2).strip() for param in _PARAMETER_RE.finditer(block.group(2))}
         calls.append({"name": name, "args": args, "id": uuid.uuid4().hex, "type": "tool_call"})
     if not calls:
@@ -514,7 +520,7 @@ def _first_json_object(content: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _parse_json_tool_calls(content: str) -> list[ToolCall]:
+def _parse_json_tool_calls(content: str, valid_tools: set[str] | None = None) -> list[ToolCall]:
     obj = _first_json_object(content)
     if obj is None:
         return []
@@ -522,6 +528,8 @@ def _parse_json_tool_calls(content: str) -> list[ToolCall]:
     if not isinstance(name, str) or not name.strip():
         return []
     name = _JSON_TOOL_NAME_ALIASES.get(name.strip().lower(), name.strip())
+    if not _parsed_tool_is_available(name, valid_tools):
+        return []
     raw_args = obj.get("args")
     if isinstance(raw_args, dict):
         args: dict[str, Any] = raw_args
@@ -666,7 +674,7 @@ class NemotronTextToolCallParser(AgentMiddleware):
             text = ""
         calls, leftover = _parse_text_tool_calls(text, valid_tools)
         if not calls:
-            json_calls = _parse_json_tool_calls(text)
+            json_calls = _parse_json_tool_calls(text, valid_tools)
             if json_calls:
                 calls, leftover = json_calls, ""
         if not calls:
@@ -798,10 +806,11 @@ def _tool_call_for_message(messages: list[Any], tool_message: ToolMessage) -> To
 
 def _tool_name(tool: object) -> str | None:
     if isinstance(tool, dict):
-        name = tool.get("name")
+        tool_dict = cast("dict[str, Any]", tool)
+        name = tool_dict.get("name")
         if isinstance(name, str):
             return name
-        function = tool.get("function")
+        function = tool_dict.get("function")
         if isinstance(function, dict) and isinstance(function.get("name"), str):
             return function["name"]
         return None
@@ -1269,19 +1278,19 @@ class NemotronPolicyNudgeMiddleware(AgentMiddleware):
 
     def before_model(
         self,
-        state: NemotronPolicyNudgeState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Inject one-shot policy nudges before the model acts."""
-        return self._nudge(state)
+        return self._nudge(cast("NemotronPolicyNudgeState", state))
 
     async def abefore_model(
         self,
-        state: NemotronPolicyNudgeState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_model`."""
-        return self._nudge(state)
+        return self._nudge(cast("NemotronPolicyNudgeState", state))
 
 
 class FollowupDisciplineState(AgentState):
@@ -1347,20 +1356,20 @@ class FollowupDisciplineMiddleware(AgentMiddleware):
     @hook_config(can_jump_to=["model"])
     def after_agent(
         self,
-        state: FollowupDisciplineState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Loop once when the final follow-up asks redundant setup questions."""
-        return self._nudge(state)
+        return self._nudge(cast("FollowupDisciplineState", state))
 
     @hook_config(can_jump_to=["model"])
     async def aafter_agent(
         self,
-        state: FollowupDisciplineState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent`."""
-        return self._nudge(state)
+        return self._nudge(cast("FollowupDisciplineState", state))
 
 
 class EntityResolutionGuardState(AgentState):
@@ -1562,37 +1571,37 @@ class EntityResolutionGuardMiddleware(AgentMiddleware):
 
     def before_model(
         self,
-        state: EntityResolutionGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Inject entity-branch guidance before the model finalizes."""
-        return self._before_nudge(state)
+        return self._before_nudge(cast("EntityResolutionGuardState", state))
 
     async def abefore_model(
         self,
-        state: EntityResolutionGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_model`."""
-        return self._before_nudge(state)
+        return self._before_nudge(cast("EntityResolutionGuardState", state))
 
     @hook_config(can_jump_to=["model"])
     def after_agent(
         self,
-        state: EntityResolutionGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Loop once when final text needs ID resolution or branch rebinding."""
-        return self._nudge(state)
+        return self._nudge(cast("EntityResolutionGuardState", state))
 
     @hook_config(can_jump_to=["model"])
     async def aafter_agent(
         self,
-        state: EntityResolutionGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent`."""
-        return self._nudge(state)
+        return self._nudge(cast("EntityResolutionGuardState", state))
 
 
 class FinalAnswerGuardState(AgentState):
@@ -1668,20 +1677,20 @@ class FinalAnswerGuardMiddleware(AgentMiddleware):
     @hook_config(can_jump_to=["model"])
     def after_agent(
         self,
-        state: FinalAnswerGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Loop once when the final answer misses concrete tool-derived details."""
-        return self._nudge(state)
+        return self._nudge(cast("FinalAnswerGuardState", state))
 
     @hook_config(can_jump_to=["model"])
     async def aafter_agent(
         self,
-        state: FinalAnswerGuardState,
+        state: AgentState[Any],
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent`."""
-        return self._nudge(state)
+        return self._nudge(cast("FinalAnswerGuardState", state))
 
 
 _SYSTEM_PROMPT_SUFFIX: str = """\

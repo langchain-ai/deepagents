@@ -308,6 +308,19 @@ def test_text_tool_call_parser_repairs_function_blocks() -> None:
     }
 
 
+def test_text_tool_call_parser_respects_available_function_tools() -> None:
+    """Function-block repairs should not synthesize hidden or unavailable tools."""
+    message = AIMessage(content="<function=execute><parameter name=command>pytest -q</parameter></function>")
+
+    repaired = NemotronTextToolCallParser._repair_message(message, {"execute"})
+    untouched = NemotronTextToolCallParser._repair_message(message, {"read_file"})
+
+    assert repaired.content == ""
+    assert repaired.tool_calls[0]["name"] == "execute"
+    assert untouched.content == message.content
+    assert untouched.tool_calls == []
+
+
 def test_text_tool_call_parser_repairs_json_shell_alias() -> None:
     """JSON shell aliases should become `execute` tool calls."""
     message = AIMessage(content='{"tool": "bash", "cmd": "pytest -q"}')
@@ -317,6 +330,19 @@ def test_text_tool_call_parser_repairs_json_shell_alias() -> None:
     assert repaired.content == ""
     assert repaired.tool_calls[0]["name"] == "execute"
     assert repaired.tool_calls[0]["args"] == {"command": "pytest -q"}
+
+
+def test_text_tool_call_parser_respects_available_json_tools() -> None:
+    """JSON tool repairs should be gated to tools exposed on the request."""
+    message = AIMessage(content='{"tool": "bash", "cmd": "pytest -q"}')
+
+    repaired = NemotronTextToolCallParser._repair_message(message, {"execute"})
+    untouched = NemotronTextToolCallParser._repair_message(message, {"read_file"})
+
+    assert repaired.content == ""
+    assert repaired.tool_calls[0]["name"] == "execute"
+    assert untouched.content == message.content
+    assert untouched.tool_calls == []
 
 
 def test_chatnvidia_message_compatibility_mirrors_tool_call_metadata() -> None:

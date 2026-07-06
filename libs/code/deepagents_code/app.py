@@ -9325,7 +9325,7 @@ class DeepAgentsApp(App):
 
         cmd = command.lower().strip()
 
-        if cmd in {"/quit", "/q"}:
+        if cmd in {"/quit", "/q", "/exit"}:
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))

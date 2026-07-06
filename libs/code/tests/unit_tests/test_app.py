@@ -11225,6 +11225,20 @@ class TestSlashCommandBypass:
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
 
+    async def test_exit_alias_bypasses_queue(self) -> None:
+        """/exit alias should also bypass the queue."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("/exit", "command"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
     async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
         """/force-clear should process immediately when agent is running."""
         app = DeepAgentsApp()

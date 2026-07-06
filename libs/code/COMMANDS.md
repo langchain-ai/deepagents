@@ -30,7 +30,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/model` |  | Switch models or edit model settings |
 | `/notifications` |  | Configure startup warnings |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
-| `/quit` | `/q` | Exit app |
+| `/quit` | `/q`, `/exit` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |

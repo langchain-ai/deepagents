@@ -267,7 +267,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Exit app",
         bypass_tier=BypassTier.ALWAYS,
         hidden_keywords="close leave",
-        aliases=("/q",),
+        aliases=("/q", "/exit"),
     ),
 )
 """All slash commands."""

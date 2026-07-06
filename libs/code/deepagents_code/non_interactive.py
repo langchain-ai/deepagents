@@ -121,15 +121,23 @@ def _make_stdio_encoding_safe() -> None:
     stream encoding itself is left untouched.
     """
     for stream in (sys.stdout, sys.stderr):
-        # Streams replaced by non-reconfigurable objects (e.g. a StringIO in
-        # tests) are left as-is.
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
         try:
             reconfigure(errors="replace")
-        except (ValueError, OSError):
-            # Closed or detached stream — leave it as-is.
+        except (ValueError, OSError, TypeError):
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the run.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
             continue
 
 

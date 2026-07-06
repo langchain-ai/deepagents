@@ -72,9 +72,11 @@ class TalonConfig:
             raise TalonConfigError(msg)
         _validate_assistant_id(assistant_id)
 
-        root = Path(values.get("DEEPAGENTS_TALON_HOME", "")) if base_home is None else base_home
-        if not str(root):
-            root = Path.home() / ".deepagents"
+        if base_home is None:
+            configured_home = values.get("DEEPAGENTS_TALON_HOME")
+            root = Path(configured_home) if configured_home else Path.home() / ".deepagents"
+        else:
+            root = base_home
 
         model = _first_present(values, "DEEPAGENTS_TALON_MODEL", "AGENT_MODEL", default=None)
         return cls(

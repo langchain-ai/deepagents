@@ -3561,3 +3561,31 @@ class TestSelectiveProjectMcpTrust:
             info.status == "error" and "config.toml" in (info.error or "")
             for info in infos
         )
+
+    async def test_env_enabled_survives_unreadable_user_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read_error fails closed, but an env-enabled name still loads.
+
+        On a corrupt config.toml the loader forces the config untrusted, yet the
+        allowlist read from a still-readable source (the env var) applies: the
+        env-enabled server loads while a non-listed sibling is dropped. Pins the
+        "readable source (shell env) still survives" branch so a future hardening
+        that also empties `enabled` on read_error doesn't silently drop a server
+        the user explicitly allowlisted.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project, {"docs": self._stdio(), "other": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[[not valid toml")
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}

@@ -468,6 +468,94 @@ class TestReloadFromEnvironment:
         # A normal project var is unaffected — only the trust-list keys are gated.
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
+    def test_global_dotenv_can_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global `~/.deepagents/.env` (is_project=False) MAY set trust lists.
+
+        Positive counterpart to `test_project_dotenv_cannot_set_mcp_trust_lists`:
+        the deny is scoped to the *project* `.env`. This pins the allow half so a
+        regression that gates these keys unconditionally (e.g. dropping the
+        `is_project` qualifier, or moving them into `_DOTENV_DENIED_ENV_KEYS`)
+        would fail here rather than silently breaking the user's own global
+        pre-approval path.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=docs\n"
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=blocked\n"
+        )
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        # No project `.env`, so the global file is the only source.
+        monkeypatch.setattr(
+            "deepagents_code.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        for key in (
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        isolated = tmp_path / "no_project_env"
+        isolated.mkdir()
+        _load_dotenv(start_path=isolated)
+
+        assert os.environ.get("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS") == "docs"
+        assert (
+            os.environ.get("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS") == "blocked"
+        )
+
+    def test_preview_project_dotenv_cannot_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview mirrors `_load_dotenv`: a project `.env` can't set trust lists.
+
+        The same `is_project` guard was added to both `_load_dotenv` and
+        `_preview_dotenv_environ`; keep their coverage parallel so the two copies
+        cannot drift.
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\nOPENAI_API_KEY=sk-ok\n"
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in env
+        assert env["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_preview_global_dotenv_can_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview allows the global `.env` (is_project=False) to set trust lists."""
+        from deepagents_code.config import _preview_dotenv_environ
+
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=blocked\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        # No project `.env` to find, so only the global file contributes.
+        monkeypatch.setattr(
+            "deepagents_code.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        monkeypatch.delenv(
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
+        )
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert env["DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"] == "blocked"
+
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

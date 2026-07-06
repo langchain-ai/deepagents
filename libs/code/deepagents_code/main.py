@@ -2356,14 +2356,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     Servers already resolved by the user's `enabled_project_servers` /
     `disabled_project_servers` lists are shown for transparency but not
     prompted for (enabled ones load regardless; disabled ones never load).
-    `None` is returned when that leaves nothing to decide.
+    `None` is returned when that leaves nothing to decide. If the user's own
+    allow/deny policy cannot be read, returns `False` (fail closed) rather than
+    prompting under an unknown deny list.
 
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project servers, `False` to deny, or `None`
-            when there are no project servers whose fate this prompt decides.
+        `True` to allow project servers, `False` to deny (including when the
+            user's trust policy could not be read), or `None` when there are no
+            project servers whose fate this prompt decides.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2441,14 +2444,6 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     from rich.markup import escape
 
     prompt_console = _Console(stderr=True)
-    if trust_lists.read_error is not None:
-        # The user's allow/deny policy could not be read; the loader fails closed
-        # (treats project configs as untrusted). Make that visible here too.
-        prompt_console.print(
-            f"[yellow]Warning: {escape(str(trust_lists.read_error))}; treating "
-            "project MCP servers as untrusted.[/yellow]",
-            highlight=False,
-        )
     prompt_servers: list[tuple[str, str, str]] = []
     preapproved: list[tuple[str, str, str]] = []
     blocked: list[tuple[str, str, str]] = []
@@ -2481,6 +2476,20 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
                 f"(disabled_project_servers):  {escape(summary)}",
                 highlight=False,
             )
+
+    if trust_lists.read_error is not None:
+        # The user's allow/deny policy could not be read. Fail closed here too
+        # (matching the loader, which forces the config untrusted) instead of
+        # prompting and possibly persisting fingerprint trust under an unknown
+        # deny list. Any env-enabled names still load — the loader re-applies the
+        # lists downstream — but nothing is approved via this prompt.
+        prompt_console.print(
+            f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
+            "project MCP servers as untrusted.[/yellow]",
+            highlight=False,
+        )
+        _print_auto_resolved()
+        return False
 
     if not prompt_servers:
         # Nothing left to decide interactively, but surface what the lists

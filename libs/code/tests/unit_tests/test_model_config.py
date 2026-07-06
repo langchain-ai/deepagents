@@ -5240,6 +5240,13 @@ class TestMcpServerTrustLists:
             frozenset(), frozenset(), read_error="boom"
         ) == McpServerTrustLists(frozenset(), frozenset())
 
+    def test_load_failed_tracks_read_error(self) -> None:
+        """`load_failed` names the fail-closed contract for `read_error`."""
+        assert not McpServerTrustLists(frozenset(), frozenset()).load_failed
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ).load_failed
+
 
 class TestLoadMcpServerTrustLists:
     """Tests for load_mcp_server_trust_lists()."""
@@ -5470,6 +5477,64 @@ class TestLoadMcpServerTrustLists:
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.disabled == frozenset({"blocked"})
+
+    def test_bare_string_disabled_splits_on_commas(self, tmp_path: Path) -> None:
+        """A comma-separated bare-string deny list parses like the env form.
+
+        Without splitting, `"a, b"` would become one bogus token matching no
+        server and silently enforce nothing — a fail-open for the deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = "evil, backdoor"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"evil", "backdoor"})
+        assert result.read_error is None
+
+    def test_wrong_typed_disabled_fails_closed_with_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed deny list sets `read_error` instead of silently emptying.
+
+        Emptying the deny on a malformed value would be a fail-open (the user's
+        rejection stops being enforced). Surfacing `read_error` lets callers fail
+        closed, matching the corrupt-file path.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\ndisabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset()
+        assert result.load_failed
+        assert "disabled_project_servers" in (result.read_error or "")
+
+    def test_wrong_typed_enabled_stays_empty_without_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed allow list degrades to empty (already fail-closed).
+
+        Unlike the deny list, an unreadable allow list approves nothing extra, so
+        it must NOT set `read_error` (which would block even trusted configs).
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\nenabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.read_error is None
+
+    def test_non_table_mcp_sets_read_error(self, tmp_path: Path) -> None:
+        """An `[mcp]` value that is not a table fails closed (deny unreadable)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('mcp = "oops"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.load_failed
 
 
 class TestGetModelProfiles:

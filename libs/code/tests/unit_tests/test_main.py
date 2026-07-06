@@ -2532,6 +2532,74 @@ class TestCheckMcpProjectTrustPrompt:
             in err
         )
 
+    def test_unreadable_policy_fails_closed_without_prompting(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A corrupt user config.toml makes the prompt fail closed (return False).
+
+        The allow/deny policy could not be read, so the prompt must not ask (and
+        possibly persist trust) under an unknown deny list; it warns and denies,
+        matching the loader's fail-closed behavior.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[[not valid toml")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "prompt must be skipped when the trust policy is unreadable"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={"mcpServers": {"docs": {"command": "echo"}}},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "echo docs")],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", _no_input),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = capsys.readouterr().err
+        # Rich may wrap the warning across lines; flatten before matching.
+        flattened = err.replace("\n", "")
+        assert "treating project MCP servers as untrusted" in flattened
+        assert "require approval" not in err
+
 
 class TestCheckMcpProjectTrustDedupe:
     """Regression tests for the project MCP approval prompt deduplication.

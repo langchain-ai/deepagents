@@ -1925,9 +1925,10 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed, or header
-            env-var interpolation in `explicit_config_path` references an
-            unset variable.
+        RuntimeError: If the merged MCP config is malformed. (Header `${VAR}`
+            interpolation is deferred to activation inside
+            `_load_tools_from_config`, which captures such failures into the
+            returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
     if no_mcp:
         return [], None, []
@@ -1962,12 +1963,17 @@ async def resolve_and_load_mcp_tools(
 
         project_servers = extract_project_server_summaries(config)
         if not project_servers:
-            validated, validation_error = load_mcp_config_with_error(path)
-            if validation_error is not None:
-                config_load_errors.append((path, validation_error))
-                continue
-            if validated is not None:
-                configs.append(validated)
+            # No dict servers yielded a summary, so every entry is malformed.
+            # Re-validate the already-loaded config (no second file read) to
+            # surface a precise per-server error; this always fails today, but
+            # the append path is kept so a future validator that accepts such a
+            # shape would still load it.
+            try:
+                _validate_mcp_config_servers(config)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                config_load_errors.append((path, str(exc)))
+            else:
+                configs.append(config)
             continue
 
         # Whether the config as a whole is trusted (flag/env/fingerprint). This
@@ -2006,7 +2012,7 @@ async def resolve_and_load_mcp_tools(
                 # logger.warning has no handler outside debug mode).
                 config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
 
-        if trust_lists.read_error is not None:
+        if trust_lists.load_failed:
             # Fail closed: the user's allow/deny policy could not be read, so do
             # not honor whole-config trust — otherwise a server the user meant to
             # deny would load. Names explicitly enabled via a readable source
@@ -2031,15 +2037,26 @@ async def resolve_and_load_mcp_tools(
             try:
                 _validate_mcp_config_servers(filtered)
             except (ValueError, TypeError, RuntimeError) as exc:
+                # The whole filtered config is dropped, so name the kept
+                # (trusted/allowlisted) servers that will NOT load — otherwise
+                # they vanish silently (the skip-log below only covers servers
+                # dropped by the trust decision, not by this validation failure).
                 logger.warning(
-                    "Skipping invalid MCP config %s after project trust filtering: %s",
+                    "Skipping invalid MCP config %s after project trust "
+                    "filtering; these trusted/allowlisted servers will not "
+                    "load: %s (%s)",
                     path,
+                    ", ".join(kept),
                     exc,
                 )
                 config_load_errors.append((path, str(exc)))
             else:
                 configs.append(filtered)
 
+        # Servers dropped by the trust *decision* (disabled, or not allowlisted
+        # in an untrusted config). A validation failure above is reported
+        # separately, so those kept-but-unloaded names are intentionally not
+        # re-listed here with a trust-based reason.
         dropped = [
             (name, kind, summary)
             for name, kind, summary in project_servers

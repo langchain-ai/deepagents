@@ -3068,12 +3068,16 @@ class McpServerTrustLists:
     """Server names always rejected; reject wins over `enabled` and over trust."""
 
     read_error: str | None = field(default=None, compare=False)
-    """Non-`None` when the user's `config.toml` existed but could not be read or
-    parsed, so the lists are empty by *failure* rather than by the user leaving
-    them unset. Callers treat this as fail-closed (do not grant whole-config
-    project trust) and surface it, rather than silently dropping the deny list.
-    Excluded from equality so a failed load still compares equal to empty lists
-    for tests that only care about the resolved names."""
+    """Non-`None` when the user's `config.toml` existed but its trust policy
+    could not be fully read: the file was unreadable/unparseable, its `[mcp]`
+    value was not a table, or its `disabled_project_servers` was a wrong type
+    that could not be interpreted as a deny list. Callers must treat this as
+    fail-closed (do not grant whole-config project trust) and surface it, rather
+    than proceeding with a deny list that may not have loaded — use `load_failed`
+    for that check. Note the resolved `enabled`/`disabled` sets are not
+    necessarily empty here: names from a still-readable source (the env vars)
+    continue to apply. Excluded from equality so a failed load still compares
+    equal to empty lists for tests that only care about the resolved names."""
 
     def __post_init__(self) -> None:
         """Enforce reject precedence by removing disabled names from enabled.
@@ -3084,6 +3088,18 @@ class McpServerTrustLists:
         """
         if self.enabled & self.disabled:
             object.__setattr__(self, "enabled", self.enabled - self.disabled)
+
+    @property
+    def load_failed(self) -> bool:
+        """Whether the user's trust policy failed to load (see `read_error`).
+
+        Callers gating on trust MUST check this and fail closed: a failed load
+        means a configured deny may be missing, so whole-config project trust
+        must not be honored. Named so the fail-closed contract is discoverable
+        rather than resting on every caller remembering the `read_error`
+        sentinel.
+        """
+        return self.read_error is not None
 
 
 def _parse_csv_env(name: str) -> list[str] | None:
@@ -3100,17 +3116,20 @@ def _parse_csv_env(name: str) -> list[str] | None:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
+def _toml_str_list(
+    value: object, *, key: str, config_path: Path
+) -> tuple[list[str], bool]:
     """Coerce a raw TOML value into a list of trimmed, non-empty server names.
 
-    A bare string (e.g. `disabled_project_servers = "docs"`, valid TOML but not a
-    list) is treated as a single-element list. This honors the obvious intent and
-    — for the deny list — is the safe direction: dropping it to empty instead
-    would silently stop enforcing the user's rejection, a fail-open. Genuinely
-    wrong types (number, table, bool) still degrade to "nothing configured"
-    rather than crashing startup, but every discarded value is logged. Elements
-    are stripped and empties dropped so matching behaves the same as the
-    comma-separated env parsing in `_parse_csv_env`.
+    A bare string is *split on commas* (e.g. `disabled_project_servers = "a, b"`
+    yields `["a", "b"]`), so a scalar written in the TOML parses identically to
+    the comma-separated env form in `_parse_csv_env` — the two forms can never
+    silently diverge into one bogus `"a, b"` token that matches no server. Non-
+    string list elements are dropped (with a log) while the surrounding valid
+    names survive. A genuinely wrong type (number, table, bool) cannot be
+    interpreted as names at all: it yields an empty list *and* flags `malformed`,
+    so a caller enforcing a deny list can fail closed rather than silently drop
+    the rejection.
 
     Args:
         value: The raw value read from the `[mcp]` table (or `None` when the
@@ -3119,24 +3138,26 @@ def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
         config_path: The config file the value came from, for log context.
 
     Returns:
-        The trimmed, non-empty string elements of `value`. A bare string is
-            wrapped into a one-element list; an absent value or a non-list,
-            non-string value yields an empty list.
+        `(names, malformed)`. `names` are the trimmed, non-empty server names.
+            `malformed` is `True` only when `value` is present but neither a
+            string nor a list (so it could not be read as names); it is `False`
+            for an absent value, a string, or any list — even one whose non-
+            string elements were dropped.
     """
     if value is None:
-        return []
+        return [], False
     if isinstance(value, str):
-        # A single bare string is one server name, not a malformed list.
-        return [value.strip()] if value.strip() else []
+        # Split on commas so a bare string parses exactly like the env form; a
+        # single name with no comma still yields a one-element list.
+        return [item.strip() for item in value.split(",") if item.strip()], False
     if not isinstance(value, list):
         logger.warning(
-            "[mcp].%s in %s should be a list of strings, got %s; ignoring it "
-            "(this list is now empty)",
+            "[mcp].%s in %s should be a list of strings, got %s; ignoring it",
             key,
             config_path,
             type(value).__name__,
         )
-        return []
+        return [], True
     result: list[str] = []
     discarded = 0
     for item in value:
@@ -3152,7 +3173,7 @@ def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
             discarded,
             "y" if discarded == 1 else "ies",
         )
-    return result
+    return result, False
 
 
 def load_mcp_server_trust_lists(
@@ -3190,9 +3211,11 @@ def load_mcp_server_trust_lists(
 
     Returns:
         The resolved `McpServerTrustLists`. A missing file yields empty lists
-            (the normal "unset" case). A file that exists but cannot be read or
-            parsed also yields empty lists but sets `read_error`, so callers can
-            fail closed instead of treating a broken config as "nothing denied."
+            (the normal "unset" case). `read_error` is set (so callers can fail
+            closed instead of treating a broken config as "nothing denied") when
+            the file exists but cannot be read/parsed, when `[mcp]` is not a
+            table, or when `disabled_project_servers` is a wrong type that cannot
+            be read as a deny list; env-sourced names still apply in that case.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3206,19 +3229,38 @@ def load_mcp_server_trust_lists(
                 data = tomllib.load(f)
             mcp_section = data.get("mcp", {})
             if isinstance(mcp_section, dict):
-                toml_enabled = _toml_str_list(
+                # A wrong-typed `enabled` value degrades to an empty allowlist:
+                # approving nothing extra is already fail-closed, so the
+                # `malformed` flag is intentionally ignored here.
+                toml_enabled, _ = _toml_str_list(
                     mcp_section.get("enabled_project_servers"),
                     key="enabled_project_servers",
                     config_path=config_path,
                 )
-                toml_disabled = _toml_str_list(
+                toml_disabled, disabled_malformed = _toml_str_list(
                     mcp_section.get("disabled_project_servers"),
                     key="disabled_project_servers",
                     config_path=config_path,
                 )
+                if disabled_malformed:
+                    # A wrong-typed deny list cannot be read, so proceeding as
+                    # if nothing were denied would be a fail-open. Surface it and
+                    # fail closed, mirroring the unreadable-file path below.
+                    read_error = (
+                        f"[mcp].disabled_project_servers in {config_path} must be "
+                        "a list of strings; refusing to proceed with an "
+                        "unenforced deny list"
+                    )
             else:
+                # An `[mcp]` value that is not a table means the deny list is
+                # unreadable too; fail closed rather than leave it unenforced.
+                read_error = (
+                    f"[mcp] in {config_path} must be a table, got "
+                    f"{type(mcp_section).__name__}"
+                )
                 logger.warning(
-                    "[mcp] in %s should be a table, got %s; ignoring",
+                    "[mcp] in %s should be a table, got %s; treating project "
+                    "configs as untrusted",
                     config_path,
                     type(mcp_section).__name__,
                 )

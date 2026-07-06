@@ -160,6 +160,49 @@ class TestMediaTracker:
         assert len(tracker.images) == 1
         assert tracker.images[0].placeholder == "[image 2]"
 
+    def test_sync_to_text_tracks_duplicate_inserted_before_placeholder(self) -> None:
+        """A typed duplicate before the display token does not steal the media span."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+
+        text = "literal [image 1] then actual [image 1]"
+        tracker.sync_to_text(text, previous_text="[image 1]", cursor_offset=30)
+
+        assert img.placeholder_span == (30, 39)
+
+    def test_sync_to_text_tracks_duplicate_inserted_after_placeholder(self) -> None:
+        """A typed duplicate after the display token does not steal the media span."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+
+        text = "[image 1] literal [image 1]"
+        tracker.sync_to_text(text, previous_text="[image 1]")
+
+        assert img.placeholder_span == (0, 9)
+
+    def test_sync_to_text_edit_between_placeholder_and_duplicate_keeps_actual(
+        self,
+    ) -> None:
+        """Typing between an actual placeholder and a duplicate does not rebind it."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+        tracker.sync_to_text("[image 1] literal [image 1]", previous_text="[image 1]")
+
+        text = "[image 1] edited literal [image 1]"
+        tracker.sync_to_text(
+            text,
+            previous_text="[image 1] literal [image 1]",
+            cursor_offset=17,
+        )
+
+        assert img.placeholder_span == (0, 9)
+
 
 class TestEncodeImageToBase64:
     """Tests for base64 encoding."""
@@ -255,7 +298,12 @@ class TestCreateMultimodalContent:
 
     def test_literal_duplicate_placeholder_preserved_in_text_block(self) -> None:
         """Only the display placeholder occurrence is stripped from text."""
-        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        img = ImageData(
+            base64_data="abc",
+            format="png",
+            placeholder="[image 1]",
+            placeholder_span=(0, 9),
+        )
         result = create_multimodal_content(
             "[image 1] compare with literal [image 1]",
             [img],
@@ -264,6 +312,24 @@ class TestCreateMultimodalContent:
         assert len(result) == 2
         assert result[0]["type"] == "text"
         assert result[0]["text"] == "compare with literal [image 1]"
+        assert result[1]["type"] == "image_url"
+
+    def test_literal_duplicate_before_placeholder_preserved_in_text_block(self) -> None:
+        """A literal duplicate before the display placeholder is preserved."""
+        img = ImageData(
+            base64_data="abc",
+            format="png",
+            placeholder="[image 1]",
+            placeholder_span=(30, 39),
+        )
+        result = create_multimodal_content(
+            "literal [image 1] then actual [image 1]",
+            [img],
+        )
+
+        assert len(result) == 2
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "literal [image 1] then actual"
         assert result[1]["type"] == "image_url"
 
     def test_placeholder_removed_when_only_placeholder(self) -> None:
@@ -354,9 +420,22 @@ class TestStripMediaPlaceholders:
         """Duplicate literal text is preserved when one matching media is attached."""
         assert (
             strip_media_placeholders(
-                "[image 1] describe literal [image 1]", ["[image 1]"]
+                "[image 1] describe literal [image 1]",
+                ["[image 1]"],
+                placeholder_spans=[(0, 9)],
             )
             == "describe literal [image 1]"
+        )
+
+    def test_literal_duplicate_before_placeholder_preserved(self) -> None:
+        """Span tracking strips the display token, not the first duplicate."""
+        assert (
+            strip_media_placeholders(
+                "literal [image 1] then actual [image 1]",
+                ["[image 1]"],
+                placeholder_spans=[(30, 39)],
+            )
+            == "literal [image 1] then actual"
         )
 
     def test_only_bound_placeholders_removed(self) -> None:

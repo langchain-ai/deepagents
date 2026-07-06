@@ -1968,8 +1968,11 @@ class ChatInput(Vertical):
         # preserves replacement edits where selected text is replaced by a path
         # of similar length.
         should_check_path_payload = self._should_check_path_payload(text)
+        previous_text = self._prev_text
+        self._sync_media_tracker_to_text(
+            text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
+        )
         self._prev_text = text
-        self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -2384,11 +2387,19 @@ class ChatInput(Vertical):
         self._next_paste_id = 1
         self.mode = "normal"
 
-    def _sync_media_tracker_to_text(self, text: str) -> None:
+    def _sync_media_tracker_to_text(
+        self,
+        text: str,
+        *,
+        previous_text: str | None = None,
+        cursor_offset: int | None = None,
+    ) -> None:
         """Keep tracked media aligned with placeholder tokens in input text.
 
         Args:
             text: Current text in the input area.
+            previous_text: Previous text in the input area.
+            cursor_offset: Current cursor offset in the input area.
         """
         if not self._image_tracker:
             return
@@ -2402,7 +2413,9 @@ class ChatInput(Vertical):
             else:
                 self._skip_media_sync_events -= 1
             return
-        self._image_tracker.sync_to_text(text)
+        self._image_tracker.sync_to_text(
+            text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
 
     def on_chat_text_area_typing(
         self,

@@ -53,7 +53,12 @@ MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
 """Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
 
 
-def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
+def strip_media_placeholders(
+    text: str,
+    placeholders: Iterable[str],
+    *,
+    placeholder_spans: Iterable[tuple[int, int]] | None = None,
+) -> str:
     """Remove display-only media placeholders from user text.
 
     Placeholders like `[image 1]` are inserted into the terminal input purely for
@@ -61,15 +66,17 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
     leak into the canonical model-facing message or LangSmith trace as if the user
     typed them.
 
-    Only the exact placeholder tokens bound to real tracked media are removed, and
-    each tracked media item removes at most one matching occurrence. This prevents
-    a literal duplicate like `[image 1]` in user-authored text from being stripped
-    just because a display placeholder with the same token is attached.
+    When available, tracked placeholder spans identify the exact display tokens to
+    strip so user-authored literal duplicates with the same token are preserved.
+    The token fallback removes one matching occurrence per tracked media item for
+    callers that only have placeholder text.
 
     Args:
         text: Raw user text that may contain media placeholders.
         placeholders: Exact placeholder tokens for the media actually attached to
             this message (e.g. ``["[image 1]", "[video 1]"]``).
+        placeholder_spans: Exact `(start, end)` spans for tracked display tokens
+            in `text`, when known.
 
     Returns:
         Text with the given media placeholders removed and surrounding whitespace
@@ -77,13 +84,18 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
         Returns an empty string when only whitespace remains after removal, so
         callers can treat a placeholder-only message as having no text block.
     """
-    counts = Counter(p for p in placeholders if p)
-    if not counts:
+    tokens = [p for p in placeholders if p]
+    if not tokens:
         return text
-    # Consume any leading spaces/tabs so removing an inline placeholder collapses
-    # to a single space rather than leaving a double space behind.
-    spans: list[tuple[int, int]] = []
+
+    valid_spans = _valid_placeholder_spans(text, tokens, placeholder_spans)
+    spans = [(start, end) for start, end, _token in valid_spans]
+    counts = Counter(tokens)
+    for _start, _end, token in valid_spans:
+        counts[token] -= 1
     for token, count in counts.items():
+        if count <= 0:
+            continue
         pattern = re.compile(r"[ \t]*" + re.escape(token))
         for index, match in enumerate(pattern.finditer(text)):
             if index >= count:
@@ -98,6 +110,30 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
         cleaned = cleaned[:start] + cleaned[end:]
     cleaned = cleaned.strip(" \t")
     return cleaned if cleaned.strip() else ""
+
+
+def _valid_placeholder_spans(
+    text: str,
+    tokens: list[str],
+    spans: Iterable[tuple[int, int]] | None,
+) -> list[tuple[int, int, str]]:
+    """Return valid display placeholder spans expanded over adjacent padding."""
+    if spans is None:
+        return []
+
+    token_set = set(tokens)
+    valid: list[tuple[int, int, str]] = []
+    for start, end in spans:
+        if not (0 <= start < end <= len(text)):
+            continue
+        token = text[start:end]
+        if token not in token_set:
+            continue
+        expanded_start = start
+        while expanded_start > 0 and text[expanded_start - 1] in " \t":
+            expanded_start -= 1
+        valid.append((expanded_start, end, token))
+    return valid
 
 
 def _get_executable(name: str) -> str | None:
@@ -119,6 +155,7 @@ class ImageData:
     base64_data: str
     format: str  # "png", "jpeg", etc.
     placeholder: str  # Display text like "[image 1]"
+    placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> dict:
         """Convert to LangChain message content format.
@@ -139,6 +176,7 @@ class VideoData:
     base64_data: str
     format: str  # "mp4", "quicktime", etc.
     placeholder: str  # Display text like "[video 1]"
+    placeholder_span: tuple[int, int] | None = None
 
     def to_message_content(self) -> "VideoContentBlock":
         """Convert to LangChain `VideoContentBlock` format.
@@ -519,10 +557,12 @@ def create_multimodal_content(
     # never contains fake user-authored placeholder text, while text that merely
     # resembles the schema is left untouched. The media itself is carried by the
     # structured blocks below.
-    placeholders = [img.placeholder for img in images]
-    if videos:
-        placeholders.extend(video.placeholder for video in videos)
-    clean_text = strip_media_placeholders(text, placeholders)
+    media = [*images, *(videos or [])]
+    placeholders = [item.placeholder for item in media]
+    spans = [
+        item.placeholder_span for item in media if item.placeholder_span is not None
+    ]
+    clean_text = strip_media_placeholders(text, placeholders, placeholder_spans=spans)
     if clean_text:
         content_blocks.append({"type": "text", "text": clean_text})
 

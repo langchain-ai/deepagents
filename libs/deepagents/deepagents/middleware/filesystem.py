@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
+import string
 import threading
 import uuid
 from binascii import Error as BinasciiError
@@ -918,6 +919,42 @@ FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "gl
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
+
+_CUSTOM_TOOL_MESSAGE_PLACEHOLDERS: Final[Mapping[str, frozenset[str]]] = {
+    "write_file": frozenset({"path"}),
+    "edit_file": frozenset({"path", "occurrences"}),
+}
+"""Tools that support `custom_tool_messages`, mapped to their allowed placeholders."""
+
+
+def _validate_custom_tool_messages(custom_tool_messages: Mapping[str, str]) -> None:
+    """Validate custom success-message templates at middleware initialization.
+
+    Rejects unknown tool keys, unsupported placeholders, and any format-spec or
+    conversion syntax (e.g. `{path!r}`, `{path:.20}`) so that success messages are
+    rendered with a fixed allowlist of values and never evaluate arbitrary expressions.
+    """
+    for tool_name, template in custom_tool_messages.items():
+        allowed = _CUSTOM_TOOL_MESSAGE_PLACEHOLDERS.get(tool_name)
+        if allowed is None:
+            supported = ", ".join(sorted(_CUSTOM_TOOL_MESSAGE_PLACEHOLDERS))
+            msg = f"custom_tool_messages does not support tool {tool_name!r}; supported tools: {supported}"
+            raise ValueError(msg)
+        for _literal, field_name, format_spec, conversion in string.Formatter().parse(template):
+            if field_name is None:
+                continue
+            if conversion is not None or format_spec:
+                msg = (
+                    f"custom_tool_messages[{tool_name!r}] must not use format specifiers or "
+                    f"conversions; use a plain placeholder like {{{next(iter(sorted(allowed)))}}}"
+                )
+                raise ValueError(msg)
+            if field_name == "" or field_name not in allowed:
+                allowed_str = ", ".join(f"{{{name}}}" for name in sorted(allowed))
+                msg = f"custom_tool_messages[{tool_name!r}] uses unsupported placeholder {{{field_name}}}; allowed placeholders: {allowed_str}"
+                raise ValueError(msg)
+
+
 _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
     "ls": "ls: list files in a directory (requires absolute path)",
     "read_file": "read_file: read a file from the filesystem",
@@ -1238,6 +1275,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         backend: BACKEND_TYPES | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: Mapping[str, str] | None = None,
+        custom_tool_messages: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
@@ -1251,6 +1289,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 Defaults to StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
+            custom_tool_messages: Optional overrides for the success message returned by
+                filesystem tools. Maps a tool name to a template string rendered on
+                successful operations only; error, validation, and permission messages are
+                unchanged. When a tool is not present, its default success message is used.
+
+                Supported tools and placeholders:
+
+                - `"write_file"`: `{path}`
+                - `"edit_file"`: `{path}`, `{occurrences}`
+
+                Templates use plain `str.format` placeholders; format specifiers and
+                conversions (e.g. `{path!r}`, `{path:.20}`) are not supported. Unknown tool
+                keys and unsupported placeholders are rejected at initialization.
+
+                Example::
+
+                    custom_tool_messages={
+                        "write_file": "Created or updated {path}. Use this exact absolute path in later tool calls.",
+                    }
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
             human_message_token_limit_before_evict: Optional token limit before
                 evicting a HumanMessage to the filesystem.
@@ -1310,6 +1367,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
+        if custom_tool_messages:
+            _validate_custom_tool_messages(custom_tool_messages)
+        self._custom_tool_messages = dict(custom_tool_messages or {})
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
@@ -1664,6 +1724,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=args_schema,
         )
 
+    def _write_file_success_content(self, path: str | None) -> str:
+        """Render the write_file success message, honoring any custom template."""
+        template = self._custom_tool_messages.get("write_file")
+        if template is None:
+            return f"Updated file {path}"
+        return template.format(path=path)
+
+    def _edit_file_success_content(self, path: str | None, occurrences: int | None) -> str:
+        """Render the edit_file success message, honoring any custom template."""
+        template = self._custom_tool_messages.get("edit_file")
+        if template is None:
+            return f"Successfully replaced {occurrences} instance(s) of the string in '{path}'"
+        return template.format(path=path, occurrences=occurrences)
+
     def _create_write_file_tool(self) -> BaseTool:
         """Create the write_file tool."""
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
@@ -1701,7 +1775,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=self._write_file_success_content(res.path),
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1740,7 +1814,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=self._write_file_success_content(res.path),
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1795,7 +1869,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=self._edit_file_success_content(res.path, res.occurrences),
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1837,7 +1911,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=self._edit_file_success_content(res.path, res.occurrences),
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

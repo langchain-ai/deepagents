@@ -9,7 +9,7 @@ from textual.geometry import Size
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
-from deepagents_code.widgets.status import ModelLabel, StatusBar
+from deepagents_code.widgets.status import BranchLabel, ModelLabel, StatusBar
 
 
 class StatusBarApp(App):
@@ -107,7 +107,7 @@ class TestBranchDisplay:
             assert display.render() == ""
 
     @staticmethod
-    def _visible_branch_text(display: Static) -> str:
+    def _visible_branch_text(display: BranchLabel) -> str:
         """Return the branch text as actually rendered to the terminal line."""
         from rich.segment import Segment
 
@@ -126,12 +126,12 @@ class TestBranchDisplay:
         async with StatusBarApp().run_test(size=(110, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = long_branch
-            display = pilot.app.query_one("#branch-display", Static)
+            display = pilot.app.query_one("#branch-display", BranchLabel)
             # Force a box far narrower than the branch text so overflow applies.
             display.styles.width = 20
             await pilot.pause()
             visible = self._visible_branch_text(display)
-            # A *trailing* ellipsis (text-overflow: ellipsis), not a leading
+            # A *trailing* ellipsis (glyph-aware truncation), not a leading
             # one, with the head of the name preserved.
             assert visible.rstrip().endswith("\u2026")
             assert "feature/" in visible
@@ -150,7 +150,7 @@ class TestBranchDisplay:
         async with StatusBarApp().run_test(size=(90, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = long_branch
-            display = pilot.app.query_one("#branch-display", Static)
+            display = pilot.app.query_one("#branch-display", BranchLabel)
             display.styles.width = 20
             await pilot.pause()
             assert display.display is True
@@ -164,10 +164,40 @@ class TestBranchDisplay:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
-            display = pilot.app.query_one("#branch-display", Static)
+            display = pilot.app.query_one("#branch-display", BranchLabel)
             visible = self._visible_branch_text(display)
             assert "\u2026" not in visible
             assert "main" in visible
+
+    async def test_long_branch_truncates_with_ascii_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In ASCII charset mode, truncation uses `"..."` not `"…"`.
+
+        CSS `text-overflow: ellipsis` always emits the Unicode ellipsis
+        character; `BranchLabel` truncates manually via `get_glyphs` so
+        the configured glyph (ASCII `"..."` in ascii mode) is used instead.
+        """
+        from deepagents_code.config import reset_glyphs_cache
+
+        monkeypatch.setenv("UI_CHARSET_MODE", "ascii")
+        reset_glyphs_cache()
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        try:
+            async with StatusBarApp().run_test(size=(110, 24)) as pilot:
+                bar = pilot.app.query_one("#status-bar", StatusBar)
+                bar.branch = long_branch
+                display = pilot.app.query_one("#branch-display", BranchLabel)
+                display.styles.width = 20
+                await pilot.pause()
+                visible = self._visible_branch_text(display)
+                # ASCII ellipsis is three dots, not the Unicode character.
+                assert visible.rstrip().endswith("...")
+                assert "\u2026" not in visible
+                assert "feature/" in visible
+        finally:
+            monkeypatch.delenv("UI_CHARSET_MODE", raising=False)
+            reset_glyphs_cache()
 
     async def test_branch_display_contains_git_icon(self) -> None:
         """Branch display should include the git branch glyph prefix."""

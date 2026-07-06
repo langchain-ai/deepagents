@@ -130,6 +130,54 @@ class ModelLabel(Widget):
         return Content("\u2026")
 
 
+class BranchLabel(Widget):
+    """A label that displays the git branch with glyph-aware truncation.
+
+    Unlike CSS ``text-overflow: ellipsis`` (which always uses the Unicode
+    ``…``), this widget truncates manually in :meth:`render` using
+    :func:`get_glyphs` so ASCII mode (``DEEPAGENTS_CODE_UI_CHARSET_MODE=ascii``)
+    gets ``"..."`` instead of ``"…"``.
+    """
+
+    branch: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so the widget participates in flex layout.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Character length of the full branch string (icon + space + name),
+                or `0` when the branch is empty.
+        """
+        if not self.branch:
+            return 0
+        icon = get_glyphs().git_branch
+        return len(icon) + 1 + len(self.branch)
+
+    def render(self) -> RenderResult:
+        """Render the branch label, truncating with the configured glyph.
+
+        Returns:
+            Branch text (icon + name) truncated from the right with
+                :func:`get_glyphs`'s ellipsis when it overflows the available
+                width, or an empty string when no branch is set.
+        """
+        width = self.content_size.width
+        if not self.branch or width <= 0:
+            return ""
+        icon = get_glyphs().git_branch
+        full = f"{icon} {self.branch}"
+        if len(full) <= width:
+            return full
+        ellipsis = get_glyphs().ellipsis
+        if width <= len(ellipsis):
+            return full[:width]
+        return full[: width - len(ellipsis)] + ellipsis
+
+
 class StatusBar(Horizontal):
     """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
 
@@ -210,13 +258,8 @@ class StatusBar(Horizontal):
     StatusBar .status-branch {
         width: 1fr;
         min-width: 0;
-        color: $text-muted;
-        /* No left pad: the separating gap is owned by the cwd's right pad (or
-           the message's) so nothing lingers where the cwd was once it hides. */
-        padding: 0 1 0 0;
         overflow-x: hidden;
         text-wrap: nowrap;
-        text-overflow: ellipsis;
     }
 
     StatusBar .status-left-collapsible {
@@ -244,6 +287,13 @@ class StatusBar(Horizontal):
         padding: 0 2;
         color: $text-muted;
         text-align: right;
+    }
+
+    StatusBar BranchLabel {
+        color: $text-muted;
+        /* No left pad: the separating gap is owned by the cwd's right pad (or
+           the message's) so nothing lingers where the cwd was once it hides. */
+        padding: 0 1 0 0;
     }
     """
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
@@ -291,7 +341,7 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-connection", id="connection-indicator")
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
-            yield Static("", classes="status-branch", id="branch-display")
+            yield BranchLabel(classes="status-branch", id="branch-display")
         yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
@@ -326,7 +376,7 @@ class StatusBar(Horizontal):
                 self.query_one("#cwd-display", Static).display = False
         if self._hide_git_branch:
             with suppress(NoMatches):
-                self.query_one("#branch-display", Static).display = False
+                self.query_one("#branch-display", BranchLabel).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
@@ -389,11 +439,10 @@ class StatusBar(Horizontal):
     def watch_branch(self, new_value: str) -> None:
         """Update branch display when it changes."""
         try:
-            display = self.query_one("#branch-display", Static)
+            display = self.query_one("#branch-display", BranchLabel)
         except NoMatches:
             return
-        icon = get_glyphs().git_branch
-        display.update(f"{icon} {new_value}" if new_value else "")
+        display.branch = new_value
 
     def watch_status_message(self, new_value: str) -> None:
         """Update status message display."""

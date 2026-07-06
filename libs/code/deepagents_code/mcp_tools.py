@@ -711,6 +711,93 @@ def _json_error_snippet(
     return f"    {source}\n    {' ' * caret_col}^"
 
 
+def _load_mcp_config_json(config_path: str) -> dict[str, Any]:
+    """Load MCP configuration JSON with parser diagnostics.
+
+    Args:
+        config_path: Path to the MCP JSON configuration file.
+
+    Returns:
+        Parsed configuration dictionary.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        json.JSONDecodeError: If config file contains invalid JSON.
+    """
+    path = Path(config_path)
+
+    if not path.exists():
+        error_msg = f"MCP config file not found: {config_path}"
+        raise FileNotFoundError(error_msg)
+
+    try:
+        with path.open(encoding="utf-8") as file_obj:
+            return json.load(file_obj)
+    except json.JSONDecodeError as exc:
+        # Build a layered message: core reason, an actionable hint for common
+        # mistakes, then a caret snippet last so the auto-appended
+        # "line X column Y" suffix reads as the location of the caret.
+        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
+        hint = _json_error_hint(exc)
+        if hint is not None:
+            parts.append(hint)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
+        if snippet is not None:
+            parts.append(snippet)
+        error_msg = "\n".join(parts)
+        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
+
+
+def _validate_mcp_config_top_level(config: dict[str, Any]) -> None:
+    """Validate top-level MCP configuration fields.
+
+    Args:
+        config: Parsed MCP config dictionary.
+
+    Raises:
+        TypeError: If top-level fields have wrong types.
+        ValueError: If required top-level fields are missing.
+    """
+    if "mcpServers" not in config:
+        error_msg = (
+            "MCP config must contain 'mcpServers' field. "
+            'Expected format: {"mcpServers": {"server-name": {...}}}'
+        )
+        raise ValueError(error_msg)
+
+    if not isinstance(config["mcpServers"], dict):
+        error_msg = "'mcpServers' field must be a dictionary"
+        raise TypeError(error_msg)
+
+    if not config["mcpServers"]:
+        error_msg = "'mcpServers' field is empty - no servers configured"
+        raise ValueError(error_msg)
+
+
+def _validate_mcp_config_servers(config: dict[str, Any]) -> None:
+    """Validate every server in an MCP configuration.
+
+    Args:
+        config: Parsed MCP config dictionary.
+    """
+    for server_name, server_config in config["mcpServers"].items():
+        _validate_server_config(server_name, server_config)
+
+
+def _load_mcp_config_top_level(config_path: Path) -> dict[str, Any]:
+    """Load an MCP config file and validate only its top-level shape.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        Parsed configuration dictionary with a valid `mcpServers` mapping.
+    """
+    config = _load_mcp_config_json(str(config_path))
+    _validate_mcp_config_top_level(config)
+    return config
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -744,46 +831,8 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         ValueError: If config is missing required fields.
         RuntimeError: If header env-var interpolation references an unset var.
     """  # noqa: DOC502 - `_validate_server_config()` raises `RuntimeError` indirectly
-    path = Path(config_path)
-
-    if not path.exists():
-        error_msg = f"MCP config file not found: {config_path}"
-        raise FileNotFoundError(error_msg)
-
-    try:
-        with path.open(encoding="utf-8") as file_obj:
-            config = json.load(file_obj)
-    except json.JSONDecodeError as exc:
-        # Build a layered message: core reason, an actionable hint for common
-        # mistakes, then a caret snippet last so the auto-appended
-        # "line X column Y" suffix reads as the location of the caret.
-        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
-        hint = _json_error_hint(exc)
-        if hint is not None:
-            parts.append(hint)
-        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
-        if snippet is not None:
-            parts.append(snippet)
-        error_msg = "\n".join(parts)
-        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
-
-    if "mcpServers" not in config:
-        error_msg = (
-            "MCP config must contain 'mcpServers' field. "
-            'Expected format: {"mcpServers": {"server-name": {...}}}'
-        )
-        raise ValueError(error_msg)
-
-    if not isinstance(config["mcpServers"], dict):
-        error_msg = "'mcpServers' field must be a dictionary"
-        raise TypeError(error_msg)
-
-    if not config["mcpServers"]:
-        error_msg = "'mcpServers' field is empty - no servers configured"
-        raise ValueError(error_msg)
-
-    for server_name, server_config in config["mcpServers"].items():
-        _validate_server_config(server_name, server_config)
+    config = _load_mcp_config_top_level(Path(config_path))
+    _validate_mcp_config_servers(config)
 
     return config
 
@@ -991,6 +1040,31 @@ def load_mcp_config_with_error(
         logger.warning("Skipping unreadable MCP config %s: %s", config_path, exc)
         return None, f"Unreadable: {exc}"
     except (json.JSONDecodeError, ValueError, TypeError, RuntimeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None, str(exc)
+
+
+def _load_mcp_config_top_level_with_error(
+    config_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Load an MCP config file, validating only its top-level structure.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        `(parsed_config, None)` on success, `(None, None)` when the file
+        doesn't exist, or `(None, error_message)` on load/top-level validate
+        failure.
+    """
+    try:
+        return _load_mcp_config_top_level(config_path), None
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        logger.warning("Skipping unreadable MCP config %s: %s", config_path, exc)
+        return None, f"Unreadable: {exc}"
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
         return None, str(exc)
 
@@ -1872,7 +1946,7 @@ async def resolve_and_load_mcp_tools(
     project_trusted: bool | None = None
     trust_lists: McpServerTrustLists | None = None
     for path in project_configs:
-        config, error = load_mcp_config_with_error(path)
+        config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:
             config_load_errors.append((path, error))
         if config is None:
@@ -1926,7 +2000,18 @@ async def resolve_and_load_mcp_tools(
             if config_trusted or name in trust_lists.enabled:
                 kept[name] = server
         if kept:
-            configs.append({**config, "mcpServers": kept})
+            filtered = {**config, "mcpServers": kept}
+            try:
+                _validate_mcp_config_servers(filtered)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                logger.warning(
+                    "Skipping invalid MCP config %s after project trust filtering: %s",
+                    path,
+                    exc,
+                )
+                config_load_errors.append((path, str(exc)))
+            else:
+                configs.append(filtered)
 
         dropped = [
             (name, kind, summary)

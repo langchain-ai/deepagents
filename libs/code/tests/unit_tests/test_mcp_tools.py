@@ -3207,6 +3207,29 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
+    async def test_allowlisted_loads_with_invalid_unlisted_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An invalid unlisted server cannot block an allowlisted sibling."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project,
+            {
+                "docs": self._stdio(),
+                "broken": ["not", "a", "server"],
+            },
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
     async def test_disabled_dropped_even_when_trusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3215,6 +3238,29 @@ class TestSelectiveProjectMcpTrust:
         project.mkdir()
         self._write_project_config(
             project, {"docs": self._stdio(), "blocked": self._stdio()}
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_disabled_invalid_server_dropped_before_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An invalid disabled server cannot block a trusted sibling."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project,
+            {
+                "docs": self._stdio(),
+                "blocked": ["not", "a", "server"],
+            },
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')

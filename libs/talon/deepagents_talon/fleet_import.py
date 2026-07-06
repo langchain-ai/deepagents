@@ -594,8 +594,7 @@ def _subagent_prompt_paths(assistant_home: Path) -> list[Path]:
 
 def _display_path(path: Path) -> str:
     parts = path.parts
-    for directory in ("subagents", "agents"):
-        if directory in parts:
-            index = parts.index(directory)
-            return "/".join(parts[index:])
+    if "agents" in parts:
+        index = parts.index("agents")
+        return "/".join(parts[index:])
     return path.name

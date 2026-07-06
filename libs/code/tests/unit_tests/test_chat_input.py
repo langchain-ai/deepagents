@@ -2984,6 +2984,31 @@ class TestDroppedImagePaste:
             assert chat._text_area.text.strip() == "[image 1]"
             assert len(app.tracker.get_images()) == 1
 
+    async def test_paste_image_path_skips_literal_placeholder_in_draft(
+        self, tmp_path
+    ) -> None:
+        """Attaching media does not bind a literal placeholder already in text."""
+        img_path = tmp_path / "drop.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="blue")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.text = "restore [image 1] "
+            chat._text_area.move_cursor_to_end()
+
+            await chat._text_area._on_paste(events.Paste(str(img_path)))
+            await pilot.pause()
+
+            assert chat._text_area.text == "restore [image 1] [image 2] "
+            assert [img.placeholder for img in app.tracker.get_images()] == [
+                "[image 2]"
+            ]
+
     async def test_paste_non_image_path_keeps_original_text(self, tmp_path) -> None:
         """Non-image dropped paths should keep the default path paste behavior."""
         file_path = tmp_path / "notes.txt"

@@ -12,6 +12,7 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -60,11 +61,10 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
     leak into the canonical model-facing message or LangSmith trace as if the user
     typed them.
 
-    Only the exact placeholder tokens bound to real tracked media are removed, so
-    text that merely resembles the placeholder schema (e.g. a user pasting the
-    literal string ``[image 7]`` without attaching image 7) is preserved verbatim.
-    No escaping mechanism is needed because stripping is scoped to known tokens
-    rather than a blanket pattern.
+    Only the exact placeholder tokens bound to real tracked media are removed, and
+    each tracked media item removes at most one matching occurrence. This prevents
+    a literal duplicate like `[image 1]` in user-authored text from being stripped
+    just because a display placeholder with the same token is attached.
 
     Args:
         text: Raw user text that may contain media placeholders.
@@ -75,18 +75,26 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
         Text with the given media placeholders removed and surrounding whitespace
         tidied. Newlines are preserved so multi-line prompts keep their structure.
     """
-    tokens = [p for p in placeholders if p]
-    if not tokens:
+    counts = Counter(p for p in placeholders if p)
+    if not counts:
         return text
     # Consume any leading spaces/tabs so removing an inline placeholder collapses
     # to a single space rather than leaving a double space behind.
-    pattern = re.compile(
-        r"[ \t]*(?:" + "|".join(re.escape(token) for token in tokens) + r")"
-    )
+    spans: list[tuple[int, int]] = []
+    for token, count in counts.items():
+        pattern = re.compile(r"[ \t]*" + re.escape(token))
+        for index, match in enumerate(pattern.finditer(text)):
+            if index >= count:
+                break
+            spans.append(match.span())
+
     # Only strip spaces/tabs (not newlines) so code indentation on lines after a
     # removed placeholder is preserved. A full .strip() would collapse
     # "[image 1]\n    def foo():" to "def foo():", losing the leading indent.
-    cleaned = pattern.sub("", text).strip(" \t")
+    cleaned = text
+    for start, end in sorted(spans, reverse=True):
+        cleaned = cleaned[:start] + cleaned[end:]
+    cleaned = cleaned.strip(" \t")
     return cleaned if cleaned.strip() else ""
 
 

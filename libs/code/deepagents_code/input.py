@@ -118,49 +118,65 @@ class MediaTracker:
         self.next_image_id: int = 1
         self.next_video_id: int = 1
 
-    def add_media(self, data: ImageData | VideoData, kind: MediaKind) -> str:
+    def add_media(
+        self,
+        data: ImageData | VideoData,
+        kind: MediaKind,
+        *,
+        existing_text: str = "",
+    ) -> str:
         """Add a media item and return its placeholder text.
 
         Args:
             data: The image or video data to track.
             kind: Media type key.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[image 1]" or "[video 1]".
         """
         if kind == "image":
+            while f"[image {self.next_image_id}]" in existing_text:
+                self.next_image_id += 1
             placeholder = f"[image {self.next_image_id}]"
             data.placeholder = placeholder
             self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
         else:
+            while f"[video {self.next_video_id}]" in existing_text:
+                self.next_video_id += 1
             placeholder = f"[video {self.next_video_id}]"
             data.placeholder = placeholder
             self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
         return placeholder
 
-    def add_image(self, image_data: ImageData) -> str:
+    def add_image(self, image_data: ImageData, *, existing_text: str = "") -> str:
         """Add an image and return its placeholder text.
 
         Args:
             image_data: The image data to track.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[image 1]".
         """
-        return self.add_media(image_data, "image")
+        return self.add_media(image_data, "image", existing_text=existing_text)
 
-    def add_video(self, video_data: VideoData) -> str:
+    def add_video(self, video_data: VideoData, *, existing_text: str = "") -> str:
         """Add a video and return its placeholder text.
 
         Args:
             video_data: The video data to track.
+            existing_text: Current draft text. Placeholder IDs already present
+                here are skipped so literal user text is not bound to new media.
 
         Returns:
             Placeholder string like "[video 1]".
         """
-        return self.add_media(video_data, "video")
+        return self.add_media(video_data, "video", existing_text=existing_text)
 
     def get_images(self) -> list[ImageData]:
         """Get all tracked images.

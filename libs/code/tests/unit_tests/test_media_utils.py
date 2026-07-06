@@ -112,6 +112,28 @@ class TestMediaTracker:
 
         assert placeholder == "[image 1]"
 
+    def test_add_image_skips_placeholder_already_in_text(self) -> None:
+        """A literal placeholder in the draft is not rebound to new media."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+
+        placeholder = tracker.add_image(img, existing_text="restore [image 1]")
+
+        assert placeholder == "[image 2]"
+        assert img.placeholder == "[image 2]"
+        assert tracker.next_image_id == 3
+
+    def test_add_video_skips_placeholder_already_in_text(self) -> None:
+        """Video attachment IDs skip literal placeholders in the draft."""
+        tracker = MediaTracker()
+        vid = VideoData(base64_data="abc", format="mp4", placeholder="")
+
+        placeholder = tracker.add_video(vid, existing_text="restore [video 1]")
+
+        assert placeholder == "[video 2]"
+        assert vid.placeholder == "[video 2]"
+        assert tracker.next_video_id == 3
+
     def test_sync_to_text_resets_when_placeholders_removed(self) -> None:
         """Removing placeholders from input should clear tracked images and IDs."""
         tracker = MediaTracker()
@@ -231,6 +253,19 @@ class TestCreateMultimodalContent:
         assert result[0]["text"] == "what's in this image?"
         assert result[1]["type"] == "image_url"
 
+    def test_literal_duplicate_placeholder_preserved_in_text_block(self) -> None:
+        """Only the display placeholder occurrence is stripped from text."""
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        result = create_multimodal_content(
+            "[image 1] compare with literal [image 1]",
+            [img],
+        )
+
+        assert len(result) == 2
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "compare with literal [image 1]"
+        assert result[1]["type"] == "image_url"
+
     def test_placeholder_removed_when_only_placeholder(self) -> None:
         """A message that is only a placeholder yields no text block."""
         img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
@@ -297,6 +332,15 @@ class TestStripMediaPlaceholders:
         assert (
             strip_media_placeholders("before [image 1] after", ["[image 1]"])
             == "before after"
+        )
+
+    def test_duplicate_literal_placeholder_preserved(self) -> None:
+        """Duplicate literal text is preserved when one matching media is attached."""
+        assert (
+            strip_media_placeholders(
+                "[image 1] describe literal [image 1]", ["[image 1]"]
+            )
+            == "describe literal [image 1]"
         )
 
     def test_only_bound_placeholders_removed(self) -> None:

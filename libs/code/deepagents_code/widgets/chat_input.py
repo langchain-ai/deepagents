@@ -2578,7 +2578,14 @@ class ChatInput(Vertical):
             media = get_media_from_path(path)
             if media is not None:
                 kind = "image" if isinstance(media, ImageData) else "video"
-                parts.append(self._image_tracker.add_media(media, kind))
+                existing_text = self._text_area.text if self._text_area else raw_text
+                parts.append(
+                    self._image_tracker.add_media(
+                        media,
+                        kind,
+                        existing_text=existing_text,
+                    )
+                )
                 attached = True
                 continue
 

@@ -83,7 +83,11 @@ def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
     pattern = re.compile(
         r"[ \t]*(?:" + "|".join(re.escape(token) for token in tokens) + r")"
     )
-    return pattern.sub("", text).strip()
+    # Only strip spaces/tabs (not newlines) so code indentation on lines after a
+    # removed placeholder is preserved. A full .strip() would collapse
+    # "[image 1]\n    def foo():" to "def foo():", losing the leading indent.
+    cleaned = pattern.sub("", text).strip(" \t")
+    return cleaned if cleaned.strip() else ""
 
 
 def _get_executable(name: str) -> str | None:

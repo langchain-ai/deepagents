@@ -332,6 +332,18 @@ class TestStripMediaPlaceholders:
         """Placeholder tokens are treated literally, not as regex."""
         assert strip_media_placeholders("a [image (1)] b", ["[image (1)]"]) == "a b"
 
+    def test_indentation_preserved_after_placeholder(self) -> None:
+        r"""Leading newlines and code indentation after a placeholder survive.
+
+        Regression: ``.strip()`` removed all leading whitespace, so attaching
+        an image before indented code (``[image 1]\n    def foo():``) would
+        lose the four-space indent. Only spaces/tabs on each edge are trimmed.
+        """
+        assert (
+            strip_media_placeholders("[image 1]\n    def foo():", ["[image 1]"])
+            == "\n    def foo():"
+        )
+
 
 class TestGetClipboardImage:
     """Tests for clipboard image detection."""

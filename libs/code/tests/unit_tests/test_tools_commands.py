@@ -228,6 +228,29 @@ class TestToolsList:
             trust_project_mcp=True,
         )
 
+    def test_list_consults_persisted_project_mcp_trust_by_default(self) -> None:
+        """Absent `--trust-project-mcp` lets MCP discovery use stored trust."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            interpreter=False,
+            sandbox="none",
+            no_mcp=False,
+            mcp_config=None,
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_tool_groups",
+            return_value=[],
+        ) as collect:
+            code = run_tools_command(args)
+        assert code == 0
+        collect.assert_called_once_with(
+            enable_interpreter=False,
+            include_mcp=True,
+            mcp_config_path=None,
+            trust_project_mcp=None,
+        )
+
     def test_list_interpreter_defaults_to_settings(self) -> None:
         """With no explicit flag, the resolved local default drives `js_eval`."""
         args = argparse.Namespace(

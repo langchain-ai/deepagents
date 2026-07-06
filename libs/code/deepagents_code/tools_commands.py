@@ -91,7 +91,7 @@ def _run_tools_list(args: argparse.Namespace) -> int:
         enable_interpreter=enable_interpreter,
         include_mcp=not getattr(args, "no_mcp", False),
         mcp_config_path=getattr(args, "mcp_config", None),
-        trust_project_mcp=getattr(args, "trust_project_mcp", False),
+        trust_project_mcp=_tools_list_project_mcp_trust(args),
     )
 
     if output_format == "json":
@@ -113,6 +113,21 @@ def _run_tools_list(args: argparse.Namespace) -> int:
 
     _print_tool_groups(groups)
     return 0
+
+
+def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
+    """Resolve project MCP trust behavior for `dcode tools list`.
+
+    Args:
+        args: Parsed CLI namespace.
+
+    Returns:
+        `True` when project MCP trust was explicitly requested, otherwise
+        `None` so MCP discovery can consult persisted trust.
+    """
+    if getattr(args, "trust_project_mcp", False):
+        return True
+    return None
 
 
 def _print_tool_groups(groups: list[ToolGroup]) -> None:

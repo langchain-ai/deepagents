@@ -34,6 +34,16 @@ AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
 
+COLLAPSE_PASTES = "DEEPAGENTS_CODE_COLLAPSE_PASTES"
+"""Collapse large chat-input pastes into `[Pasted text #N +M lines]` placeholders.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable auto-collapsing so pasted text is inserted verbatim. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). Also settable via `[ui].collapse_pastes` in
+config.toml.
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 

@@ -1,0 +1,23 @@
+services:
+  talon:
+    build:
+      context: ../..
+      dockerfile: examples/talon/Dockerfile
+    image: deepagents-talon:local
+    working_dir: /workspace
+    env_file:
+      - .env
+    environment:
+      DEEPAGENTS_TALON_HOME: /root/.deepagents
+      DEEPAGENTS_TALON_WORKSPACE: /workspace
+      DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED:-true}
+      DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE:-cpu}
+    volumes:
+      - ${HOME}/talon-workspace:/workspace
+      - ${HOME}/.deepagents:/root/.deepagents
+    command: >
+      bash -c "
+      mkdir -p /root/.deepagents/$${AGENT_ASSISTANT_ID}/agents &&
+      cp -n /opt/deepagents-talon/AGENTS.md /root/.deepagents/$${AGENT_ASSISTANT_ID}/AGENTS.md &&
+      /opt/deepagents-talon-venv/bin/deepagents-talon
+      "

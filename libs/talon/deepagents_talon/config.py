@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
 _ASSISTANT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ENV_PREFIX = "DEEPAGENTS_TALON_"
-_RUNTIME_ENV_PREFIXES = (_ENV_PREFIX, "AGENT_", "LANGSMITH_", "OPENAI_", "SPEECH_")
-_RUNTIME_ENV_KEYS = frozenset({"BUILTIN_MCP_URL", "HOST_LANGCHAIN_API_URL"})
+_RUNTIME_ENV_PREFIXES = (_ENV_PREFIX, "AGENT_", "LANGSMITH_", "OPENAI_", "SPEECH_", "TELEGRAM_")
+_RUNTIME_ENV_KEYS = frozenset({"BUILTIN_MCP_URL", "HOST_LANGCHAIN_API_URL", "TELEGRAM_BOT_TOKEN"})
 
 
 class TalonConfigError(ValueError):
@@ -32,15 +32,12 @@ class TalonConfig:
         assistant_id: Stable identifier used to namespace all local assistant state.
         home: Per-assistant home directory for state, manifests, sessions, and jobs.
         model: Chat model identifier supplied by the operator environment.
-        fleet_dir: Optional operator-unzipped Fleet export directory to load with
-            `fleet-deepagents-export`.
         env: Environment values visible to channels, providers, and future adapters.
     """
 
     assistant_id: str
     home: Path
     model: str | None = None
-    fleet_dir: Path | None = None
     env: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -75,23 +72,17 @@ class TalonConfig:
             raise TalonConfigError(msg)
         _validate_assistant_id(assistant_id)
 
-        root = Path(values.get("DEEPAGENTS_TALON_HOME", "")) if base_home is None else base_home
-        if not str(root):
-            root = Path.home() / ".deepagents"
+        if base_home is None:
+            configured_home = values.get("DEEPAGENTS_TALON_HOME")
+            root = Path(configured_home) if configured_home else Path.home() / ".deepagents"
+        else:
+            root = base_home
 
         model = _first_present(values, "DEEPAGENTS_TALON_MODEL", "AGENT_MODEL", default=None)
-        fleet_dir = _first_present(
-            values,
-            "DEEPAGENTS_TALON_FLEET_DIR",
-            "AGENT_FLEET_DIR",
-            "FLEET_DIR",
-            default=None,
-        )
         return cls(
             assistant_id=assistant_id,
             home=root.expanduser() / assistant_id,
             model=model,
-            fleet_dir=Path(fleet_dir).expanduser() if fleet_dir else None,
             env={key: value for key, value in values.items() if _is_runtime_env(key)},
         )
 
@@ -103,7 +94,13 @@ class TalonConfig:
         """
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.home.chmod(0o700)
-        for child in (self.manifest_dir, self.cron_dir, self.channel_dir, self.inbound_media_dir):
+        for child in (
+            self.manifest_dir,
+            self.agents_dir,
+            self.cron_dir,
+            self.channel_dir,
+            self.inbound_media_dir,
+        ):
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         return self.home
@@ -111,7 +108,12 @@ class TalonConfig:
     @property
     def manifest_dir(self) -> Path:
         """Directory where agent manifest files are materialized."""
-        return self.home / "agent"
+        return self.home
+
+    @property
+    def agents_dir(self) -> Path:
+        """Directory reserved for custom subagent definitions."""
+        return self.home / "agents"
 
     @property
     def cron_dir(self) -> Path:

@@ -113,6 +113,24 @@ def main(pyproject_path: Path) -> int:
     return 0
 
 
+def run(argv: list[str]) -> int:
+    """Check each path in `argv`, returning `1` if any fails else `0`.
+
+    Defaults to `pyproject.toml` when `argv` is empty. Every path is checked
+    even after one fails, so all problems surface in a single pass rather than
+    only the first.
+
+    Returns:
+        `0` if every checked file is in sync, `1` if any file mismatches or
+        fails to parse.
+    """
+    paths = [Path(p) for p in argv] or [Path("pyproject.toml")]
+    exit_code = 0
+    for path in paths:
+        if main(path) != 0:
+            exit_code = 1
+    return exit_code
+
+
 if __name__ == "__main__":
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("pyproject.toml")
-    raise SystemExit(main(path))
+    raise SystemExit(run(sys.argv[1:]))

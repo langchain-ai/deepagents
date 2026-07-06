@@ -34,10 +34,15 @@ AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
 
-DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
-    "DEEPAGENTS_CODE_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
-)
-"""Override the startup splash subheader text when set."""
+COLLAPSE_PASTES = "DEEPAGENTS_CODE_COLLAPSE_PASTES"
+"""Collapse large chat-input pastes into `[Pasted text #N +M lines]` placeholders.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable auto-collapsing so pasted text is inserted verbatim. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). Also settable via `[ui].collapse_pastes` in
+config.toml.
+"""
 
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
@@ -88,6 +93,42 @@ real PyPI release.
 Any non-empty value enables the flag (including `"0"` or `"false"`).
 """
 
+DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
+"""Comma-separated project MCP server names to always reject by name.
+
+A user-level equivalent of `[mcp].disabled_project_servers`.
+
+Rejection wins over approval: a name listed here is dropped even when it also
+appears in `ENABLED_PROJECT_MCP_SERVERS` (or `[mcp].enabled_project_servers`)
+and even when the project config is otherwise trusted. Unlike the enabled list,
+this env var *unions* with (rather than replaces)
+`[mcp].disabled_project_servers` — denies accumulate across sources, so neither
+can silently empty a deny set in the other. This is process env the user
+controls, not a repo file, so it does not weaken the user-level-only
+trust boundary: a committed *project* `.env` is blocked from setting it
+(see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's shell,
+launch env, or global `~/.deepagents/.env` can.
+"""
+
+ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
+"""Comma-separated project MCP server names to pre-approve by name.
+
+A user-level equivalent of `[mcp].enabled_project_servers`.
+
+Servers named here load from an otherwise-untrusted project `.mcp.json` without
+prompting (they are omitted from the interactive approval prompt), while
+non-listed servers stay dropped. Like `DISABLED_PROJECT_MCP_SERVERS`, this is
+user-controlled process env, not a repo file, so it does not weaken
+the user-level-only trust boundary (a committed *project* `.env` cannot set it;
+see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). This contract is name-based:
+a project command or URL change under the same server name still matches.
+
+When set, this replaces (takes precedence over) the
+`[mcp].enabled_project_servers` TOML list.
+(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
+is never silently emptied.)
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -102,16 +143,18 @@ EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
 HIDE_CWD = "DEEPAGENTS_CODE_HIDE_CWD"
-"""Hide local path displays in the TUI footer and startup splash when enabled."""
+"""Hide local path displays in the TUI footer and the editable-install path in
+the startup splash when enabled.
+
+Does not control the splash working-directory row, which is gated solely by
+`SPLASH_SHOW_CWD`.
+"""
 
 HIDE_GIT_BRANCH = "DEEPAGENTS_CODE_HIDE_GIT_BRANCH"
 """Hide the current git branch in the TUI footer when enabled."""
 
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CODE_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
-
-HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
-"""Hide rotating tips in the startup splash when enabled."""
 
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
@@ -121,6 +164,9 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
+
+LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
@@ -158,6 +204,15 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"
+"""Show the "Installed Integrations" summary screen during first-run onboarding.
+
+Off by default: onboarding goes straight from the name prompt to the model
+selector, which already surfaces (and installs) uninstalled model providers.
+Set to a truthy value to bring the standalone integrations screen back into the
+flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.
@@ -167,6 +222,16 @@ still reports as available (a no-op upgrade that did not change the running
 version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
+
+RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
+"""Select how ripgrep is provisioned: `managed` (default) or `system`.
+
+`managed` downloads the pinned, SHA-256-verified upstream binary into
+`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
+rely on their distro package / existing toolchain instead; the install script's
+`system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
+reused under either setting. Unrecognized values fall back to `managed`. See
+`managed_tools.ripgrep_installer`."""
 
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
@@ -182,6 +247,52 @@ SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to hide replica tracing details from the splash while leaving tracing active.
+"""
+
+SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
+"""Show the vertical scrollbar in the chat area when enabled.
+
+Off by default; use the `/scrollbar` slash command or `[ui].show_scrollbar` in
+config.toml to toggle. Parsed by `classify_env_bool` (an unrecognized or empty
+value falls through to the config value rather than forcing the default).
+
+When set, this env var takes precedence over the persisted `[ui].show_scrollbar`
+config value on launch, so a `/scrollbar` toggle will not appear to "stick"
+across restarts while the env var remains set.
+"""
+
+SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
+"""Show a confirmation toast after clicking a URL that opens in a browser.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the success toast while still opening URLs normally.
+"""
+
+SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"
+"""Show the working-directory row in the startup welcome banner when enabled.
+
+Off by default and independent of the status bar's `HIDE_CWD`.
+"""
+
+SPLASH_SHOW_MODEL = "DEEPAGENTS_CODE_SPLASH_SHOW_MODEL"
+"""Show the active model row in the startup welcome banner when enabled.
+
+Off by default; the model is always visible in the status bar, so the banner
+row is opt-in to avoid duplicating it.
+"""
+
+SUPPRESS_ENV_OVERRIDE_WARNING = "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING"
+"""Silence the startup warning emitted when a `DEEPAGENTS_CODE_`-prefixed
+LangSmith variable overrides its canonical counterpart (e.g. both
+`LANGSMITH_API_KEY` and `DEEPAGENTS_CODE_LANGSMITH_API_KEY` are set to
+different values).
+
+The override is intentional: the prefixed value overwrites the canonical
+variable inside the Deep Agents Code process (so the LangSmith SDK, which
+only reads canonical names, picks it up). The value you exported in your own
+shell is unaffected, since a process cannot change its parent's environment.
+Off by default; set to a truthy value (`1`, `true`, `yes`, `on`) to suppress
+the warning when this coexistence is expected. Parsed by `is_env_truthy`.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

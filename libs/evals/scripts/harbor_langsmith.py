@@ -40,15 +40,15 @@ def main() -> int:
         help="Create a LangSmith dataset from Harbor tasks",
     )
     dataset_parser.add_argument(
-        "dataset_name",
+        "dataset_ref",
         type=str,
-        help="Dataset name (e.g., 'terminal-bench')",
+        help="Harbor dataset ref (e.g., 'terminal-bench/terminal-bench-2')",
     )
     dataset_parser.add_argument(
         "--version",
         type=str,
-        default="head",
-        help="Dataset version (default: 'head')",
+        default=None,
+        help="Deprecated. Include the version in dataset_ref instead.",
     )
     dataset_parser.add_argument(
         "--overwrite",
@@ -64,15 +64,15 @@ def main() -> int:
         help="Ensure a LangSmith dataset exists for Harbor tasks",
     )
     ensure_dataset_parser.add_argument(
-        "dataset_name",
+        "dataset_ref",
         type=str,
-        help="Dataset name (e.g., 'terminal-bench')",
+        help="Harbor dataset ref (e.g., 'terminal-bench/terminal-bench-2')",
     )
     ensure_dataset_parser.add_argument(
         "--version",
         type=str,
-        default="head",
-        help="Dataset version (default: 'head')",
+        default=None,
+        help="Deprecated. Include the version in dataset_ref instead.",
     )
     ensure_dataset_parser.add_argument(
         "--overwrite",
@@ -138,13 +138,13 @@ def main() -> int:
     # Route to appropriate command
     if args.command == "create-dataset":
         create_dataset(
-            dataset_name=args.dataset_name,
+            dataset_name=args.dataset_ref,
             version=args.version,
             overwrite=args.overwrite,
         )
     elif args.command == "ensure-dataset":
         ensure_dataset(
-            dataset_name=args.dataset_name,
+            dataset_name=args.dataset_ref,
             version=args.version,
             overwrite=args.overwrite,
         )

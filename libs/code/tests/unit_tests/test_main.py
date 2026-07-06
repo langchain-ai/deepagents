@@ -2379,13 +2379,13 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert "could not be saved" in capsys.readouterr().err
 
-    def test_all_servers_list_resolved_skips_prompt(
+    def test_all_servers_list_resolved_shows_context_without_prompt(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When every server is on the user's lists, no prompt fires."""
+        """When every server is list-resolved, show what happened but don't ask."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2448,15 +2448,20 @@ class TestCheckMcpProjectTrustPrompt:
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is None
-        assert "require approval" not in capsys.readouterr().err
+        err = capsys.readouterr().err
+        # No approval question, but the config's decisions are surfaced.
+        assert "require approval" not in err
+        assert "Resolved by your config" in err
+        assert '"docs" (stdio): pre-approved (enabled_project_servers):  echo' in err
+        assert '"blocked" (stdio): blocked (disabled_project_servers):  echo' in err
 
-    def test_prompt_lists_only_unlisted_servers(
+    def test_prompt_asks_only_about_unlisted_but_shows_preapproved(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A pre-approved server is omitted from the prompt; unlisted ones stay."""
+        """The prompt asks only about unlisted servers; pre-approved ones show."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2512,9 +2517,13 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is False
         err = capsys.readouterr().err
-        assert '"other"' in err
-        # The pre-approved server must not be presented as needing approval.
-        assert '"docs"' not in err
+        # The unlisted server is the one actually being asked about.
+        assert '  "other" (stdio):  echo other' in err
+        # The pre-approved server is shown as resolved, not asked about.
+        assert (
+            '  "docs" (stdio): pre-approved (enabled_project_servers):  echo docs'
+            in err
+        )
 
 
 class TestCheckMcpProjectTrustDedupe:

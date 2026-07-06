@@ -1106,7 +1106,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="MCP",
         summary=(
             "Project MCP server names to pre-approve by name from an untrusted "
-            ".mcp.json (env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+            ".mcp.json; command/URL changes under the same name still match "
+            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),

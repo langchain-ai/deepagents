@@ -99,8 +99,10 @@ A user-level equivalent of `[mcp].enabled_project_servers`: servers named here
 load from an otherwise-untrusted project `.mcp.json` without prompting (they are
 omitted from the interactive approval prompt), while non-listed servers stay
 dropped. This is process env the user controls, not a repo file, so it does not
-weaken the user-level-only trust boundary. When set, this replaces (takes
-precedence over) the `[mcp].enabled_project_servers` TOML list;
+weaken the user-level-only trust boundary. This contract is name-based: a
+project command or URL change under the same server name still matches. When
+set, this replaces (takes precedence over) the `[mcp].enabled_project_servers`
+TOML list;
 `DISABLED_PROJECT_MCP_SERVERS` behaves the same way for its list."""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"

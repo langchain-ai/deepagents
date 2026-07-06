@@ -1,10 +1,4 @@
-"""Built-in GLM-5.2 harness profile.
-
-GLM-5.2 is used in the eval harness as a text-oriented model. The filesystem
-tooling may encounter media files even for terminal-oriented tasks, so this
-profile nudges the model toward inspecting media through the sandbox instead
-of relying on direct visual input from the chat model.
-"""
+# Built-in GLM-5.2 harness profile.
 
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,

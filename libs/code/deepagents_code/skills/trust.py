@@ -17,13 +17,13 @@ Two distinct post-approval swaps are caught by two distinct layers, so neither
 grants access the user never approved:
 
 * Re-pointing the *discovery* symlink (the `SKILL.md` path) at a new target is
-  caught by containment enforcement in `load_skill_content`: the new target is
-  not on the allowlist, so the read is refused and the user is re-prompted. The
-  stored trust entry — the original resolved target — is untouched.
+    caught by containment enforcement in `load_skill_content`: the new target is
+    not on the allowlist, so the read is refused and the user is re-prompted.
+    The stored trust entry — the original resolved target — is untouched.
 * Replacing the *stored* directory itself (or one of its parents) with a symlink
-  is caught by the `resolve()`-to-self re-verification in
-  `load_trusted_skill_dirs`, which drops the stale entry rather than following
-  the injected symlink to a directory the user never approved.
+    is caught by the `resolve()`-to-self re-verification in
+    `load_trusted_skill_dirs`, which drops the stale entry rather than following
+    the injected symlink to a directory the user never approved.
 
 Trust entries are app-managed bookkeeping (a set of approved directories), not
 user-facing configuration, so they live alongside the other state files under
@@ -63,7 +63,10 @@ class _TrustStore(TypedDict):
     """On-disk shape of `skill_trust.json`."""
 
     version: int
+    """Schema version written to the store file."""
+
     dirs: dict[str, _TrustEntry]
+    """Trusted directories keyed by their approved absolute path."""
 
 
 class RevokeResult(Enum):
@@ -76,8 +79,10 @@ class RevokeResult(Enum):
 
     REMOVED = "removed"
     """An entry existed and was removed from the store."""
+
     NOT_FOUND = "not_found"
     """No matching entry existed; the store was left unchanged."""
+
     ERROR = "error"
     """The store could not be read or the removal could not be persisted."""
 
@@ -119,12 +124,13 @@ def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
 
     Returns:
         Parsed JSON data, or an empty dict when the file is missing, or (only
-        when `strict` is `False`) when it is unreadable or corrupt. A corrupt
-        store degrades to "nothing trusted" so a bad file can't crash startup.
-        It is *not* self-healed on the next approval: ordinary writes read with
-        `strict=True` and refuse rather than clobber a store they can't parse,
-        so recovery from a corrupt file requires `skills trust clear` (or
-        `clear_trusted_skill_dirs`, the only writer that overwrites blindly).
+            when `strict` is `False`) when it is unreadable or corrupt.
+            A corrupt store degrades to "nothing trusted" so a bad file can't
+            crash startup. It is *not* self-healed on the next approval:
+            ordinary writes read with `strict=True` and refuse rather than
+            clobber a store they can't parse, so recovery from a corrupt file
+            requires `skills trust clear` (or `clear_trusted_skill_dirs`,
+            the only writer that overwrites blindly).
 
     Raises:
         OSError: When `strict` and an existing store cannot be read.
@@ -476,8 +482,9 @@ def list_trusted_skill_dir_entries(
 
     Returns:
         `(path, trusted_at)` tuples sorted by path. `trusted_at` is the stored
-        ISO-8601 string, or `""` when a hand-edited entry omitted or malformed
-        it (the path is still listed so it remains visible and revocable).
+            ISO-8601 string, or `""` when a hand-edited entry omitted
+            or malformed it (the path is still listed so it remains
+            visible and revocable).
     """
     if store_path is None:
         store_path = _default_store_path()
@@ -507,7 +514,7 @@ def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
 
     Returns:
         Canonical directory paths that still resolve to themselves; empty when
-        nothing is trusted.
+            nothing is trusted.
     """
     verified: list[Path] = []
     for entry in list_trusted_skill_dirs(store_path=store_path):

@@ -4363,10 +4363,12 @@ class TestPasteCollapseHelpers:
 
     def test_load_collapse_pastes_env_disables(self, monkeypatch) -> None:
         """A falsy env var disables paste collapsing in the loader."""
+        from deepagents_code import config_manifest
         from deepagents_code._env_vars import COLLAPSE_PASTES
         from deepagents_code.widgets import chat_input
 
         monkeypatch.setenv(COLLAPSE_PASTES, "0")
+        monkeypatch.setattr(config_manifest, "load_config_toml", dict)
         assert chat_input._load_collapse_pastes() is False
 
 
@@ -4412,6 +4414,48 @@ class TestPasteCollapseIntegration:
             chat._collapse_pastes = False
 
             chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            assert chat._text_area.text == big_text
+            assert "[Pasted text #1]" not in chat._text_area.text
+            assert len(chat._pasted_contents) == 0
+
+    async def test_bracketed_paste_not_collapsed_when_disabled(self) -> None:
+        """With collapsing disabled, `_on_paste` does not collapse the paste.
+
+        Exercises the production `_on_paste` path (gated via
+        `_paste_collapse_enabled()` -> owner `_collapse_pastes`) rather than
+        `handle_external_paste`, which gates on `_collapse_pastes` directly.
+        The verbatim insert is left to Textual's base `TextArea._on_paste`
+        (invoked separately by MRO dispatch), so this only asserts that our
+        handler took the deferral branch: no placeholder, no stored content.
+        Were the helper to ignore the owner and collapse anyway, both
+        assertions would fail.
+        """
+        big_text = "z" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._collapse_pastes = False
+
+            await chat._text_area._on_paste(events.Paste(big_text))
+            await pilot.pause()
+
+            assert "[Pasted text #1]" not in chat._text_area.text
+            assert len(chat._pasted_contents) == 0
+
+    async def test_paste_burst_flush_inserted_verbatim_when_disabled(self) -> None:
+        """With collapsing disabled, a buffered paste burst inserts in full."""
+        big_text = "q" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._collapse_pastes = False
+
+            chat._text_area._paste_burst_buffer = big_text
+            await chat._text_area._flush_paste_burst()
             await pilot.pause()
 
             assert chat._text_area.text == big_text

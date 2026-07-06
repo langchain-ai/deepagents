@@ -35,7 +35,7 @@ AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 ('0', 'false', 'no', 'off', or empty) to opt out."""
 
 COLLAPSE_PASTES = "DEEPAGENTS_CODE_COLLAPSE_PASTES"
-"""Collapse large chat-input pastes into `[Pasted text #N]` placeholders.
+"""Collapse large chat-input pastes into `[Pasted text #N +M lines]` placeholders.
 
 Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to disable auto-collapsing so pasted text is inserted verbatim. Parsed by

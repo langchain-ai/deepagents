@@ -168,6 +168,11 @@ def _load_collapse_pastes() -> bool:
 
     option = get_option("display.collapse_pastes")
     if option is None:
+        # Unreachable unless the manifest key is renamed without updating this
+        # literal; log so that mismatch surfaces instead of silently defaulting.
+        logger.warning(
+            "Unknown config option %r; defaulting to enabled", "display.collapse_pastes"
+        )
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
@@ -1689,7 +1694,8 @@ class ChatInput(Vertical):
         self._pasted_contents: dict[int, PastedContent] = {}
         self._next_paste_id = 1
 
-        # Whether large pastes are collapsed into `[Pasted text #N]` placeholders.
+        # Whether large pastes are collapsed into `[Pasted text #N +M lines]`
+        # placeholders.
         # Gated by `display.collapse_pastes` (env / `[ui].collapse_pastes`);
         # when disabled, pasted text is inserted verbatim.
         self._collapse_pastes = _load_collapse_pastes()

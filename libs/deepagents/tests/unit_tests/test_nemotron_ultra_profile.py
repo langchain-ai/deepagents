@@ -39,6 +39,7 @@ _EXPECTED_NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
     "nebius:nvidia/Nemotron-3-Ultra-550b-a55b",
+    "together:nvidia/nemotron-3-ultra-550b-a55b",
 )
 
 

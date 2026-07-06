@@ -148,6 +148,7 @@ Content
         "name_line",
         [
             'name: ""',  # present-but-empty string
+            'name: "   "',  # present-but-whitespace-only
             "name:",  # present-but-null
             "name: 123",  # present-but-non-string
         ],
@@ -158,8 +159,8 @@ Content
         """Test that a present-but-invalid name is rejected despite a fallback.
 
         The fallback only applies when `name` is omitted entirely; an explicit
-        empty/null/non-string value must fail loudly rather than silently
-        resolving to the folder name.
+        empty/whitespace-only/null/non-string value must fail loudly rather than
+        silently resolving to the folder name.
         """
         subagent_file = tmp_path / "AGENTS.md"
         subagent_file.write_text(f"""---
@@ -398,6 +399,26 @@ class TestListSubagents:
         (folder / "AGENTS.md").write_text(
             make_subagent_content("researcher", "Research assistant")
         )
+
+        result = list_subagents(user_agents_dir=user_dir)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "researcher"
+        assert result[0]["source"] == "user"
+
+    def test_list_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that the folder-name fallback surfaces through list_subagents."""
+        user_dir = tmp_path / "user_agents"
+        folder = user_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Research assistant
+---
+
+You are a research assistant.
+""")
 
         result = list_subagents(user_agents_dir=user_dir)
 

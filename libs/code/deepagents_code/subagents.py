@@ -8,7 +8,7 @@ Directory structure:
 
 Example file (researcher/AGENTS.md):
     ---
-    name: researcher
+    name: researcher  # optional; defaults to the folder name
     description: Research topics on the web before writing content
     model: anthropic:claude-haiku-4-5-20251001
     ---
@@ -20,9 +20,9 @@ Example file (researcher/AGENTS.md):
     2. Summarize findings clearly
 
 The `name` field is optional; when omitted it defaults to the folder name
-(e.g. `researcher`).  This diverges from the Agent Skills specification
+(e.g. `researcher`). This diverges from the Agent Skills specification
 (`deepagents.middleware.skills`), which requires `name` in frontmatter and
-requires it to match the parent directory name exactly.  Subagents use the
+warns when it does not match the parent directory name. Subagents use the
 folder name as an implicit fallback instead because subagent definitions are
 already uniquely identified by their folder — requiring a redundant `name`
 field adds friction without adding information.
@@ -73,16 +73,17 @@ def _parse_subagent_file(
     a 'description' field. The body of the file becomes the system_prompt.
 
     Unlike the Agent Skills spec, `name` is optional here — when omitted the
-    folder name passed via `fallback_name` is used instead.  Skills require
-    `name` in frontmatter and enforce a match with the directory name; subagents
-    relax that to a fallback so users don't repeat the folder name redundantly.
+    folder name passed via `fallback_name` is used instead. Skills require
+    `name` in frontmatter and warn when it doesn't match the directory name;
+    subagents relax that to a fallback so users don't repeat the folder name
+    redundantly.
 
     Args:
         file_path: Path to the markdown file.
         fallback_name: Name to use when the frontmatter omits `name` entirely.
-            A present-but-empty or non-string `name` is treated as invalid and
-            rejected rather than falling back, so a typo surfaces loudly instead
-            of being silently masked by the folder name.
+            A present-but-empty, whitespace-only, or non-string `name` is
+            treated as invalid and rejected rather than falling back, so a typo
+            surfaces loudly instead of being silently masked by the folder name.
 
     Returns:
         SubagentMetadata if parsing succeeds, None otherwise.
@@ -122,18 +123,22 @@ def _parse_subagent_file(
 
     name_value = frontmatter.get("name", fallback_name)
     description_value = frontmatter.get("description")
-    model_value = frontmatter.get("model")
+    model = frontmatter.get("model")
 
-    # Validate types: name and description must be non-empty strings
-    # model is optional but must be string if present
-    name = name_value if isinstance(name_value, str) and name_value else None
-    description = (
-        description_value
-        if isinstance(description_value, str) and description_value
+    # Validate types: name and description must be non-empty strings (leading and
+    # trailing whitespace is stripped, so a whitespace-only value is rejected).
+    # model is optional but must be a string if present.
+    name = (
+        name_value.strip()
+        if isinstance(name_value, str) and name_value.strip()
         else None
     )
-    model_valid = model_value is None or isinstance(model_value, str)
-    model = model_value if model_valid else None
+    description = (
+        description_value.strip()
+        if isinstance(description_value, str) and description_value.strip()
+        else None
+    )
+    model_valid = model is None or isinstance(model, str)
 
     if name is None or description is None or not model_valid:
         invalid_fields: list[str] = []
@@ -149,6 +154,15 @@ def _parse_subagent_file(
             ", ".join(invalid_fields),
         )
         return None
+
+    if "name" not in frontmatter:
+        # Fallback engaged. Log it so a typo'd key (e.g. `nmae:`) that silently
+        # resolves to the folder name is at least diagnosable at debug level.
+        logger.debug(
+            "Subagent %s: 'name' omitted from frontmatter; using folder name %r.",
+            file_path,
+            name,
+        )
 
     return {
         "name": name,

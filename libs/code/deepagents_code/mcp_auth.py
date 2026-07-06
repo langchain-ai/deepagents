@@ -862,19 +862,12 @@ def _oauth_result_html(
     escaped = html.escape(message)
     # `window.close()` is only honored for tabs the script itself opened
     # (browser policy). The loopback flow launches the browser via
-    # `webbrowser.open`, so the callback tab was opened by the OS rather than
-    # by a script and the browser refuses to close it. Attempt the close for
-    # the rare script-opened case, then rewrite the message so it stays
-    # accurate when the tab stays open instead of promising it will vanish.
+    # `webbrowser.open`, so the callback tab was usually opened by the OS and
+    # the browser refuses to close it. Attempt the close for the rare
+    # script-opened case; the static message already reads correctly whether
+    # or not the tab closes, so nothing is rewritten and the text never shifts.
     auto_close = (
-        "<script>setTimeout(function(){"
-        "window.close();"
-        "setTimeout(function(){"
-        "var m=document.getElementById('oauth-message');"
-        "if(m){m.textContent="
-        "'You can close this tab and return to your terminal.';}"
-        "},500);"
-        "},1000);</script>"
+        "<script>setTimeout(function(){window.close();},1000);</script>"
         if status == "success"
         else ""
     )
@@ -896,7 +889,7 @@ def _oauth_result_html(
         "</style></head><body>"
         '<main class="panel">'
         f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
-        f'<h1>{escaped_heading}</h1><p id="oauth-message">{escaped}</p>'
+        f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
         "</main>"
         f"{auto_close}"
         "</body></html>"

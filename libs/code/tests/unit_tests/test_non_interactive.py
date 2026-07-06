@@ -35,6 +35,7 @@ from deepagents_code.non_interactive import (
     _collect_action_request_warnings,
     _dispatch_orphaned_tool_result_hooks,
     _make_hitl_decision,
+    _make_stdio_encoding_safe,
     _process_ai_message,
     _process_message_chunk,
     _run_agent_loop,
@@ -1757,6 +1758,123 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
         yield item
 
 
+class TestMakeStdioEncodingSafe:
+    """Tests for `_make_stdio_encoding_safe`."""
+
+    def test_cp1252_stream_survives_unicode_glyphs(self):
+        """Unencodable glyphs degrade to "?" instead of raising."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+            sys.stdout.write("✓ Server ready")
+            sys.stdout.flush()
+
+        assert buffer.getvalue() == b"? Server ready"
+
+    def test_stream_encoding_is_preserved(self):
+        """Only the error handler changes; the encoding stays untouched."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert stream.encoding == "cp1252"
+        assert stream.errors == "replace"
+
+    def test_non_reconfigurable_stream_is_left_alone(self):
+        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
+        stream = io.StringIO()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert not stream.closed
+
+    def test_streams_handled_independently(self):
+        """A non-reconfigurable stdout must not stop stderr from being hardened.
+
+        In quiet mode `run_non_interactive` routes glyph-emitting output to
+        stderr, so a per-stream `continue` (not `break`/`return`) is
+        load-bearing: skipping stdout must still leave stderr reconfigured.
+        """
+        stdout = io.StringIO()  # no `reconfigure` -> skipped
+        stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            _make_stdio_encoding_safe()
+
+        assert stderr.errors == "replace"
+        assert not stdout.closed
+
+    def test_closed_stream_is_swallowed(self):
+        """A closed stream raises `ValueError` on reconfigure; swallowed, no crash."""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        stream.close()
+        with (
+            patch.object(sys, "stdout", stream),
+            patch.object(sys, "stderr", io.StringIO()),
+        ):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert stream.closed
+
+    def test_duck_typed_reconfigure_typeerror_is_swallowed(self):
+        """A `reconfigure` with an incompatible signature must not crash the run."""
+        # This `reconfigure` takes no args, so calling it with `errors=` raises
+        # `TypeError` — the failure mode a non-stdlib stream wrapper (e.g. a
+        # capture/tee library) could exhibit. The guard must not propagate it.
+        stream = SimpleNamespace(reconfigure=lambda: None)
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()  # must not raise
+
+        assert hasattr(stream, "reconfigure")
+
+    async def test_run_non_interactive_invokes_helper(self):
+        """`run_non_interactive` must call `_make_stdio_encoding_safe` at entry.
+
+        Guards against a silent revert: the fix only protects users if the
+        helper is actually invoked. Server-mocked tests run under pytest's
+        UTF-8 capture, so nothing else would fail if the call were removed.
+        """
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+            ) as mock_helper,
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="test task")
+
+        mock_helper.assert_called_once_with()
+
+
 # ---------------------------------------------------------------------------
 # tool.use / tool.result hook dispatch
 # ---------------------------------------------------------------------------
@@ -2908,6 +3026,9 @@ class TestDrainWiring:
         mock_server_proc = MagicMock()
 
         with (
+            patch(
+                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+            ),
             patch(
                 "deepagents_code.non_interactive.create_model",
                 return_value=ModelResult(

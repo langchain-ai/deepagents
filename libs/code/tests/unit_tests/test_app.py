@@ -10840,6 +10840,20 @@ class TestTerminalBackgroundSync:
 class TestExitGracefulWorkerHandoff:
     """Verify `exit()` defers teardown for an in-flight agent worker."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_background_hooks(self) -> Iterator[None]:
+        """Isolate the module-global hook task set across tests.
+
+        These tests read the real `has_pending_hooks()`; a stray undone task
+        left in `_background_tasks` by an earlier test would otherwise push
+        `test_synchronous_when_worker_finished` onto the graceful path and flake.
+        """
+        import deepagents_code.hooks as hooks_mod
+
+        hooks_mod._background_tasks.clear()
+        yield
+        hooks_mod._background_tasks.clear()
+
     async def test_defers_when_agent_worker_unfinished(self) -> None:
         """A running, unfinished worker arms a deferred graceful exit."""
         app = DeepAgentsApp()
@@ -10997,6 +11011,131 @@ class TestExitGracefulWorkerHandoff:
                 super_exit.assert_called_once()
             assert app._graceful_exit_task is None
             worker.wait.assert_not_awaited()
+
+    async def test_drains_pending_hooks_before_exit_without_worker(self) -> None:
+        """Pending fire-and-forget hooks defer teardown until they drain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+
+                await app._graceful_exit_task
+
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_after_waiting_for_agent(self) -> None:
+        """Both the agent-worker wait and the hook drain run before teardown.
+
+        Covers the combined path: an in-flight agent worker AND pending hooks
+        must each be awaited inside the single graceful-exit task before the
+        event loop tears down.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_when_worker_wait_fails(self) -> None:
+        """The hook drain still runs when the agent-worker wait errors.
+
+        The drain sits in its own try/except after the worker-wait block, so a
+        worker that fails to persist must not skip draining pending hooks — the
+        final tool.result would otherwise be dropped whenever shutdown coincides
+        with a worker error.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=RuntimeError("boom"))
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_hook_drain_timeout_is_bounded_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung hook drain is bounded by the graceful-exit budget and logged.
+
+        A slow/hanging hook subprocess must not stall an interactive quit; the
+        drain is wrapped in `asyncio.wait_for`, so teardown proceeds after the
+        timeout and the possibly-dropped final tool.result is announced rather
+        than the UI silently hanging.
+        """
+
+        async def hang() -> None:
+            await asyncio.Event().wait()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=hang),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "Hook drain did not finish" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.

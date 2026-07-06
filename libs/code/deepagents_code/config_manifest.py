@@ -789,6 +789,22 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_HEADER,
     ),
     ConfigOption(
+        key="display.splash_show_model",
+        group="Display",
+        summary="Show the active model row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_MODEL,
+    ),
+    ConfigOption(
+        key="display.splash_show_cwd",
+        group="Display",
+        summary="Show the working-directory row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_CWD,
+    ),
+    ConfigOption(
         key="display.kitty_keyboard",
         group="Display",
         summary="Override kitty-keyboard detection (1 forces on, 0 forces off).",
@@ -844,14 +860,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
-    ),
-    ConfigOption(
-        key="display.hide_splash_tips",
-        group="Display",
-        summary="Hide rotating tips in the startup splash.",
-        kind=OptionKind.BOOL,
-        default=False,
-        env_var=_env_vars.HIDE_SPLASH_TIPS,
     ),
     ConfigOption(
         key="display.hide_splash_version",
@@ -1182,13 +1190,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
-    ),
-    ConfigOption(
-        key="debug.override_startup_subheader",
-        group="Debug",
-        summary="Override the startup splash subheader text.",
-        kind=OptionKind.STR,
-        env_var=_env_vars.DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
     ),
 )
 

@@ -44,11 +44,6 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
-DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
-    "DEEPAGENTS_CODE_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
-)
-"""Override the startup splash subheader text when set."""
-
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -112,16 +107,18 @@ EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
 HIDE_CWD = "DEEPAGENTS_CODE_HIDE_CWD"
-"""Hide local path displays in the TUI footer and startup splash when enabled."""
+"""Hide local path displays in the TUI footer and the editable-install path in
+the startup splash when enabled.
+
+Does not control the splash working-directory row, which is gated solely by
+`SPLASH_SHOW_CWD`.
+"""
 
 HIDE_GIT_BRANCH = "DEEPAGENTS_CODE_HIDE_GIT_BRANCH"
 """Hide the current git branch in the TUI footer when enabled."""
 
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CODE_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
-
-HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
-"""Hide rotating tips in the startup splash when enabled."""
 
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
@@ -233,6 +230,19 @@ SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to suppress the success toast while still opening URLs normally.
+"""
+
+SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"
+"""Show the working-directory row in the startup welcome banner when enabled.
+
+Off by default and independent of the status bar's `HIDE_CWD`.
+"""
+
+SPLASH_SHOW_MODEL = "DEEPAGENTS_CODE_SPLASH_SHOW_MODEL"
+"""Show the active model row in the startup welcome banner when enabled.
+
+Off by default; the model is always visible in the status bar, so the banner
+row is opt-in to avoid duplicating it.
 """
 
 SUPPRESS_ENV_OVERRIDE_WARNING = "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING"

@@ -89,8 +89,13 @@ DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
 A user-level equivalent of `[mcp].disabled_project_servers`. Rejection wins over
 approval: a name listed here is dropped even when it also appears in
 `ENABLED_PROJECT_MCP_SERVERS` (or `[mcp].enabled_project_servers`) and even when
-the project config is otherwise trusted. This is process env the user controls,
-not a repo file, so it does not weaken the user-level-only trust boundary."""
+the project config is otherwise trusted. Unlike the enabled list, this env var
+*unions* with (rather than replaces) `[mcp].disabled_project_servers` — denies
+accumulate across sources, so neither can silently empty a deny set in the
+other. This is process env the user controls, not a repo file, so it does not
+weaken the user-level-only trust boundary: a committed *project* `.env` is
+blocked from setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the
+user's shell, launch env, or global `~/.deepagents/.env` can."""
 
 ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
 """Comma-separated project MCP server names to pre-approve by name.
@@ -99,11 +104,13 @@ A user-level equivalent of `[mcp].enabled_project_servers`: servers named here
 load from an otherwise-untrusted project `.mcp.json` without prompting (they are
 omitted from the interactive approval prompt), while non-listed servers stay
 dropped. This is process env the user controls, not a repo file, so it does not
-weaken the user-level-only trust boundary. This contract is name-based: a
-project command or URL change under the same server name still matches. When
-set, this replaces (takes precedence over) the `[mcp].enabled_project_servers`
-TOML list;
-`DISABLED_PROJECT_MCP_SERVERS` behaves the same way for its list."""
+weaken the user-level-only trust boundary: a committed *project* `.env` is
+blocked from setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the
+user's shell, launch env, or global `~/.deepagents/.env` can. This contract is
+name-based: a project command or URL change under the same server name still
+matches. When set, this replaces (takes precedence over) the
+`[mcp].enabled_project_servers` TOML list. (`DISABLED_PROJECT_MCP_SERVERS`
+instead *unions* with its TOML list, so a deny is never silently emptied.)"""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.

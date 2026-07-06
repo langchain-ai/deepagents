@@ -436,6 +436,38 @@ class TestReloadFromEnvironment:
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
+    def test_project_dotenv_cannot_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A committed project `.env` must not self-approve project MCP servers.
+
+        The MCP trust-list env vars are a user-level decision; honoring them from
+        a repo-committed `.env` would let an attacker pair a malicious `.mcp.json`
+        with a `.env` and pre-approve their own servers, defeating the whole
+        point of the trust gate. Ordinary project vars are still loaded.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\n"
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        for key in (
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in os.environ
+        assert "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS" not in os.environ
+        # A normal project var is unaffected — only the trust-list keys are gated.
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

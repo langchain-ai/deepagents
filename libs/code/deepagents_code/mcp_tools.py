@@ -829,8 +829,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-        RuntimeError: If header env-var interpolation references an unset var.
-    """  # noqa: DOC502 - `_validate_server_config()` raises `RuntimeError` indirectly
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` header interpolation is deferred to activation time, so no RuntimeError here)
     config = _load_mcp_config_top_level(Path(config_path))
     _validate_mcp_config_servers(config)
 
@@ -974,6 +973,11 @@ def extract_project_server_summaries(
         return results
     for name, server in servers.items():
         if not isinstance(server, dict):
+            logger.debug(
+                "Skipping malformed MCP server entry %r: expected a table, got %s",
+                name,
+                type(server).__name__,
+            )
             continue
         kind = _resolve_server_type(server)
         if kind == "stdio":
@@ -1958,7 +1962,12 @@ async def resolve_and_load_mcp_tools(
 
         project_servers = extract_project_server_summaries(config)
         if not project_servers:
-            configs.append(config)
+            validated, validation_error = load_mcp_config_with_error(path)
+            if validation_error is not None:
+                config_load_errors.append((path, validation_error))
+                continue
+            if validated is not None:
+                configs.append(validated)
             continue
 
         # Whether the config as a whole is trusted (flag/env/fingerprint). This
@@ -1986,9 +1995,23 @@ async def resolve_and_load_mcp_tools(
         # config.toml + env) — never from the repo — so a committed .mcp.json
         # cannot self-approve. Loaded lazily and reused across project configs.
         if trust_lists is None:
-            from deepagents_code.model_config import load_mcp_server_trust_lists
+            from deepagents_code.model_config import (
+                DEFAULT_CONFIG_PATH,
+                load_mcp_server_trust_lists,
+            )
 
             trust_lists = load_mcp_server_trust_lists()
+            if trust_lists.read_error is not None:
+                # Surface the read failure as a visible config error (a bare
+                # logger.warning has no handler outside debug mode).
+                config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+
+        if trust_lists.read_error is not None:
+            # Fail closed: the user's allow/deny policy could not be read, so do
+            # not honor whole-config trust — otherwise a server the user meant to
+            # deny would load. Names explicitly enabled via a readable source
+            # (shell env) still survive the filter below.
+            config_trusted = False
 
         # Keep only servers that survive the trust decision. Dropping the rest
         # here (rather than loading all or none) preserves the SSRF/header-

@@ -5216,6 +5216,31 @@ class TestUnsuppressWarning:
         assert not is_warning_suppressed("tavily", config_path)
 
 
+class TestMcpServerTrustLists:
+    """Tests for the McpServerTrustLists value object itself."""
+
+    def test_post_init_enforces_disjointness_on_direct_construction(self) -> None:
+        """A name in both lists is dropped from enabled, however constructed.
+
+        The docstring promises the invariant holds "no matter how it was
+        constructed; callers need not pre-subtract" — pin that at the type level,
+        independent of the loader.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset({"keep", "both"}),
+            disabled=frozenset({"both"}),
+        )
+
+        assert lists.enabled == frozenset({"keep"})
+        assert lists.disabled == frozenset({"both"})
+
+    def test_read_error_excluded_from_equality(self) -> None:
+        """`read_error` is diagnostic only and does not affect equality."""
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ) == McpServerTrustLists(frozenset(), frozenset())
+
+
 class TestLoadMcpServerTrustLists:
     """Tests for load_mcp_server_trust_lists()."""
 
@@ -5250,10 +5275,33 @@ class TestLoadMcpServerTrustLists:
         assert result.disabled == frozenset({"both"})
 
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
-        """A missing config file yields empty lists, not an error."""
+        """A missing config file yields empty lists, not an error.
+
+        A missing file is the normal "unset" case and must NOT set `read_error`
+        (that is reserved for a file that exists but cannot be read/parsed), so
+        callers do not fail closed just because the user has no config.toml.
+        """
         result = load_mcp_server_trust_lists(tmp_path / "nonexistent.toml")
 
         assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is None
+
+    def test_env_deny_beats_toml_allow_same_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject wins across sources: env-disabled beats TOML-enabled by name.
+
+        Proves the disjointness invariant runs on the final merged frozensets
+        (after env/TOML resolution), not merely within a single source.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["srv"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "srv")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.disabled == frozenset({"srv"})
 
     def test_missing_mcp_section_returns_empty(self, tmp_path: Path) -> None:
         """A config without an [mcp] table yields empty lists."""
@@ -5264,27 +5312,36 @@ class TestLoadMcpServerTrustLists:
 
         assert result == McpServerTrustLists(frozenset(), frozenset())
 
-    def test_corrupt_toml_falls_back_to_empty(self, tmp_path: Path) -> None:
-        """Malformed TOML degrades to empty lists rather than crashing."""
+    def test_corrupt_toml_falls_back_to_empty_and_sets_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Malformed TOML degrades to empty lists but records a read error.
+
+        The empty lists compare equal to a clean empty result (`read_error` is
+        excluded from equality), but `read_error` is set so callers can fail
+        closed instead of treating a broken config as "nothing denied."
+        """
         config_path = tmp_path / "config.toml"
         config_path.write_text("[[invalid toml")
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is not None
+        assert str(config_path) in result.read_error
 
-    def test_malformed_table_shape_ignored(self, tmp_path: Path) -> None:
-        """Non-list values and non-string elements are dropped, no crash."""
+    def test_scalar_coerced_and_mixed_elements_dropped(self, tmp_path: Path) -> None:
+        """A bare string is one name; non-string list elements are dropped."""
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             "[mcp]\n"
-            'enabled_project_servers = "docs"\n'  # not a list
+            'enabled_project_servers = "docs"\n'  # bare string -> single name
             'disabled_project_servers = [1, "blocked", true]\n'  # mixed types
         )
 
         result = load_mcp_server_trust_lists(config_path)
 
-        assert result.enabled == frozenset()
+        assert result.enabled == frozenset({"docs"})
         assert result.disabled == frozenset({"blocked"})
 
     def test_env_overrides_toml(
@@ -5345,10 +5402,14 @@ class TestLoadMcpServerTrustLists:
 
         assert result.disabled == frozenset({"blocked", "other"})
 
-    def test_disabled_env_overrides_toml(
+    def test_disabled_env_unions_with_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The disabled env list replaces the TOML deny list; enabled falls back."""
+        """The disabled env list UNIONS with the TOML deny list (denies accrue).
+
+        Unlike the enabled list (env replaces TOML), a deny must never be
+        silently dropped by the other source, so both contribute.
+        """
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             "[mcp]\n"
@@ -5361,20 +5422,26 @@ class TestLoadMcpServerTrustLists:
 
         result = load_mcp_server_trust_lists(config_path)
 
-        assert result.disabled == frozenset({"env-disabled"})
+        assert result.disabled == frozenset({"toml-disabled", "env-disabled"})
         assert result.enabled == frozenset({"toml-enabled"})
 
-    def test_empty_disabled_env_clears_toml_list(
+    def test_empty_disabled_env_preserves_toml_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A set-but-empty disabled env var clears (does not fall back to) TOML."""
+        """A set-but-empty disabled env var cannot clear the TOML deny list.
+
+        Because disabled unions across sources, an empty env value contributes
+        nothing and the configured deny survives — closing the fail-open where
+        `DISABLED=""` (e.g. from an attacker-adjacent source) would silently
+        neutralize the user's deny list.
+        """
         config_path = tmp_path / "config.toml"
         config_path.write_text('[mcp]\ndisabled_project_servers = ["toml-disabled"]\n')
         monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "")
 
         result = load_mcp_server_trust_lists(config_path)
 
-        assert result.disabled == frozenset()
+        assert result.disabled == frozenset({"toml-disabled"})
 
     def test_toml_entries_are_trimmed(self, tmp_path: Path) -> None:
         """TOML names are stripped, matching env parsing (no whitespace mismatch)."""
@@ -5386,27 +5453,23 @@ class TestLoadMcpServerTrustLists:
         # " docs " -> "docs"; the whitespace-only "  " entry is dropped.
         assert result.enabled == frozenset({"docs"})
 
-    def test_bare_string_disabled_logs_and_yields_empty(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    def test_bare_string_disabled_is_coerced_to_single_name(
+        self, tmp_path: Path
     ) -> None:
-        """A bare-string deny list (a fail-open typo) is dropped *and* logged.
+        """A bare-string deny list is one server name, not a dropped-to-empty typo.
 
-        Without the warning this would silently stop enforcing the user's
-        rejection, which is the dangerous direction for the deny list.
+        Coercing (rather than silently dropping) is the safe direction for the
+        deny list: it keeps enforcing the user's rejection instead of failing
+        open on a scalar-instead-of-list mistake.
         """
         config_path = tmp_path / "config.toml"
         # Valid TOML, but a string rather than a list — the [mcp] table is still
         # a dict, so the "should be a table" branch does not fire.
         config_path.write_text('[mcp]\ndisabled_project_servers = "blocked"\n')
 
-        with caplog.at_level(logging.WARNING):
-            result = load_mcp_server_trust_lists(config_path)
+        result = load_mcp_server_trust_lists(config_path)
 
-        assert result.disabled == frozenset()
-        assert any(
-            "disabled_project_servers" in r.message and "list of strings" in r.message
-            for r in caplog.records
-        )
+        assert result.disabled == frozenset({"blocked"})
 
 
 class TestGetModelProfiles:

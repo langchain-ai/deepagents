@@ -3050,9 +3050,11 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
 class McpServerTrustLists:
     """User-level allow/deny lists for project MCP servers, by server name.
 
-    Sourced only from the user's own configuration (home `config.toml` and
-    process env), never from a repo, so a committed `.mcp.json` cannot
-    self-approve. See `load_mcp_server_trust_lists`.
+    Sourced only from the user's own configuration — the home `config.toml`, the
+    global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
+    committed `.mcp.json` cannot self-approve. A committed *project* `.env` is
+    specifically prevented from setting the env forms of these lists (see
+    `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). See `load_mcp_server_trust_lists`.
 
     The "reject wins" invariant — a name in both lists is only rejected — is
     enforced in `__post_init__`, so every instance is disjoint no matter how it
@@ -3064,6 +3066,14 @@ class McpServerTrustLists:
 
     disabled: frozenset[str]
     """Server names always rejected; reject wins over `enabled` and over trust."""
+
+    read_error: str | None = field(default=None, compare=False)
+    """Non-`None` when the user's `config.toml` existed but could not be read or
+    parsed, so the lists are empty by *failure* rather than by the user leaving
+    them unset. Callers treat this as fail-closed (do not grant whole-config
+    project trust) and surface it, rather than silently dropping the deny list.
+    Excluded from equality so a failed load still compares equal to empty lists
+    for tests that only care about the resolved names."""
 
     def __post_init__(self) -> None:
         """Enforce reject precedence by removing disabled names from enabled.
@@ -3093,13 +3103,13 @@ def _parse_csv_env(name: str) -> list[str] | None:
 def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
     """Coerce a raw TOML value into a list of trimmed, non-empty server names.
 
-    Malformed input degrades to "nothing configured" instead of crashing
-    startup (consistent with the other structured loaders), but — unlike a
-    silent drop — every discarded value is logged. That matters most for the
-    deny list: a user who mistypes `disabled_project_servers` (e.g. a bare
-    string instead of a list, which is still valid TOML) would otherwise have
-    their rejection silently stop being enforced, a fail-open. Elements are
-    stripped and empties dropped so matching behaves the same as the
+    A bare string (e.g. `disabled_project_servers = "docs"`, valid TOML but not a
+    list) is treated as a single-element list. This honors the obvious intent and
+    — for the deny list — is the safe direction: dropping it to empty instead
+    would silently stop enforcing the user's rejection, a fail-open. Genuinely
+    wrong types (number, table, bool) still degrade to "nothing configured"
+    rather than crashing startup, but every discarded value is logged. Elements
+    are stripped and empties dropped so matching behaves the same as the
     comma-separated env parsing in `_parse_csv_env`.
 
     Args:
@@ -3109,11 +3119,15 @@ def _toml_str_list(value: object, *, key: str, config_path: Path) -> list[str]:
         config_path: The config file the value came from, for log context.
 
     Returns:
-        The trimmed, non-empty string elements of `value`, or an empty list
-            when `value` is absent or not a list.
+        The trimmed, non-empty string elements of `value`. A bare string is
+            wrapped into a one-element list; an absent value or a non-list,
+            non-string value yields an empty list.
     """
     if value is None:
         return []
+    if isinstance(value, str):
+        # A single bare string is one server name, not a malformed list.
+        return [value.strip()] if value.strip() else []
     if not isinstance(value, list):
         logger.warning(
             "[mcp].%s in %s should be a list of strings, got %s; ignoring it "
@@ -3156,8 +3170,16 @@ def load_mcp_server_trust_lists(
     servers; the approval must live in the user's home config. This mirrors
     Claude Code's "untrusted folder → only non-checked-in settings" rule.
 
-    Each env var, when set, replaces (takes precedence over) its TOML list so
-    the behavior matches the env-beats-config resolution used elsewhere.
+    Source resolution differs by list, matching each one's security direction:
+
+    - `enabled` (permissive): the env var, when set, *replaces* the TOML list
+      (env-beats-config, as elsewhere). Clearing it via an empty env value is
+      fail-closed — it only ever pre-approves fewer servers.
+    - `disabled` (restrictive): the env var *unions* with the TOML list — denies
+      accumulate and a lower-effort source can never silently empty a deny entry
+      set in the other, which would be a fail-open. There is deliberately no way
+      to *remove* a configured deny via env.
+
     Rejection wins: a name appearing in both the enabled and disabled result is
     reported only in `disabled`.
 
@@ -3167,14 +3189,17 @@ def load_mcp_server_trust_lists(
             defeat the boundary above.
 
     Returns:
-        The resolved `McpServerTrustLists`. Falls back to empty lists (logging
-            a warning) when the file is missing, unreadable, or malformed.
+        The resolved `McpServerTrustLists`. A missing file yields empty lists
+            (the normal "unset" case). A file that exists but cannot be read or
+            parsed also yields empty lists but sets `read_error`, so callers can
+            fail closed instead of treating a broken config as "nothing denied."
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
     toml_enabled: list[str] = []
     toml_disabled: list[str] = []
+    read_error: str | None = None
     try:
         if config_path.exists():
             with config_path.open("rb") as f:
@@ -3197,9 +3222,13 @@ def load_mcp_server_trust_lists(
                     config_path,
                     type(mcp_section).__name__,
                 )
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # The file exists but is unreadable/unparseable. Record it so callers
+        # fail closed rather than silently proceeding with an empty deny list.
+        read_error = f"Could not read MCP trust lists from {config_path}: {exc}"
         logger.warning(
-            "Could not read %s for MCP server trust lists; using none",
+            "Could not read %s for MCP server trust lists; treating project "
+            "configs as untrusted",
             config_path,
             exc_info=True,
         )
@@ -3207,11 +3236,15 @@ def load_mcp_server_trust_lists(
     env_enabled = _parse_csv_env(_env_vars.ENABLED_PROJECT_MCP_SERVERS)
     env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
 
+    # Enabled: env replaces TOML. Disabled: env unions with TOML (denies
+    # accumulate; env can add a deny but never clear a configured one).
     enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
-    disabled = frozenset(env_disabled if env_disabled is not None else toml_disabled)
+    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
     # Reject precedence (a name in both lists ends up only in `disabled`) is
     # enforced by `McpServerTrustLists.__post_init__`, so no subtraction here.
-    return McpServerTrustLists(enabled=enabled, disabled=disabled)
+    return McpServerTrustLists(
+        enabled=enabled, disabled=disabled, read_error=read_error
+    )
 
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {

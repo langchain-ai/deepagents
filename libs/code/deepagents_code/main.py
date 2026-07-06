@@ -1897,7 +1897,8 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
@@ -2056,7 +2057,8 @@ async def _run_acp_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
     Returns:
         Exit code for ACP mode.
@@ -2435,6 +2437,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     from deepagents_code.model_config import load_mcp_server_trust_lists
 
     trust_lists = load_mcp_server_trust_lists()
+    from rich.console import Console as _Console
+
+    prompt_console = _Console(stderr=True)
+    if trust_lists.read_error is not None:
+        # The user's allow/deny policy could not be read; the loader fails closed
+        # (treats project configs as untrusted). Make that visible here too.
+        prompt_console.print(
+            f"[yellow]Warning: {trust_lists.read_error}; treating project MCP "
+            "servers as untrusted.[/yellow]",
+            highlight=False,
+        )
     prompt_servers: list[tuple[str, str, str]] = []
     preapproved: list[tuple[str, str, str]] = []
     blocked: list[tuple[str, str, str]] = []
@@ -2446,10 +2459,6 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
             preapproved.append((name, kind, summary))
         else:
             prompt_servers.append((name, kind, summary))
-
-    from rich.console import Console as _Console
-
-    prompt_console = _Console(stderr=True)
 
     def _print_auto_resolved() -> None:
         """List servers the config already decided, without asking about them."""

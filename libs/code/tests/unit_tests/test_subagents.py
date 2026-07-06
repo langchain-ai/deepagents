@@ -126,6 +126,52 @@ Content
         assert result["name"] == "helper"
         assert result["description"] == "Missing name field"
 
+    def test_parse_subagent_frontmatter_name_overrides_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that an explicit frontmatter name wins over the fallback."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+name: explicit
+description: Has explicit name
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="folder")
+
+        assert result is not None
+        assert result["name"] == "explicit"
+
+    @pytest.mark.parametrize(
+        "name_line",
+        [
+            'name: ""',  # present-but-empty string
+            "name:",  # present-but-null
+            "name: 123",  # present-but-non-string
+        ],
+    )
+    def test_parse_subagent_invalid_name_not_rescued_by_fallback(
+        self, tmp_path: Path, name_line: str
+    ) -> None:
+        """Test that a present-but-invalid name is rejected despite a fallback.
+
+        The fallback only applies when `name` is omitted entirely; an explicit
+        empty/null/non-string value must fail loudly rather than silently
+        resolving to the folder name.
+        """
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text(f"""---
+{name_line}
+description: Has invalid name
+---
+
+Content
+""")
+
+        assert _parse_subagent_file(subagent_file, fallback_name="helper") is None
+
     def test_parse_subagent_missing_description(self, tmp_path: Path) -> None:
         """Test that subagent without description is rejected."""
         subagent_file = tmp_path / "invalid.md"
@@ -615,6 +661,34 @@ class TestDiagnostics:
         assert len(result) == 1
         assert "name collision" in caplog.text
         assert "researcher" in caplog.text
+
+    def test_warns_on_collision_between_fallback_and_frontmatter_name(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A folder-name fallback colliding with an explicit name is flagged."""
+        agents_dir = tmp_path / "agents"
+        # This folder omits `name`, so it resolves to its folder name "helper".
+        fallback_folder = agents_dir / "helper"
+        fallback_folder.mkdir(parents=True)
+        (fallback_folder / "AGENTS.md").write_text("""---
+description: Resolves to folder name
+---
+
+Content
+""")
+        # This folder declares name="helper" explicitly, colliding with the above.
+        explicit_folder = agents_dir / "other"
+        explicit_folder.mkdir(parents=True)
+        (explicit_folder / "AGENTS.md").write_text(
+            make_subagent_content("helper", "Declares name explicitly")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert len(result) == 1
+        assert "name collision" in caplog.text
+        assert "helper" in caplog.text
 
     def test_no_warning_for_valid_or_unrelated_entries(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

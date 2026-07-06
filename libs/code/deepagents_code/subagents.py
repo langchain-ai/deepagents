@@ -18,6 +18,14 @@ Example file (researcher/AGENTS.md):
     ## Your Process
     1. Search for relevant information
     2. Summarize findings clearly
+
+The `name` field is optional; when omitted it defaults to the folder name
+(e.g. `researcher`).  This diverges from the Agent Skills specification
+(`deepagents.middleware.skills`), which requires `name` in frontmatter and
+requires it to match the parent directory name exactly.  Subagents use the
+folder name as an implicit fallback instead because subagent definitions are
+already uniquely identified by their folder — requiring a redundant `name`
+field adds friction without adding information.
 """
 
 from __future__ import annotations
@@ -64,9 +72,17 @@ def _parse_subagent_file(
     The file must have YAML frontmatter (delimited by ---) containing at minimum
     a 'description' field. The body of the file becomes the system_prompt.
 
+    Unlike the Agent Skills spec, `name` is optional here — when omitted the
+    folder name passed via `fallback_name` is used instead.  Skills require
+    `name` in frontmatter and enforce a match with the directory name; subagents
+    relax that to a fallback so users don't repeat the folder name redundantly.
+
     Args:
         file_path: Path to the markdown file.
-        fallback_name: Name to use when the frontmatter omits `name`.
+        fallback_name: Name to use when the frontmatter omits `name` entirely.
+            A present-but-empty or non-string `name` is treated as invalid and
+            rejected rather than falling back, so a typo surfaces loudly instead
+            of being silently masked by the folder name.
 
     Returns:
         SubagentMetadata if parsing succeeds, None otherwise.
@@ -116,8 +132,8 @@ def _parse_subagent_file(
         if isinstance(description_value, str) and description_value
         else None
     )
-    model = model_value if model_value is None or isinstance(model_value, str) else None
     model_valid = model_value is None or isinstance(model_value, str)
+    model = model_value if model_valid else None
 
     if name is None or description is None or not model_valid:
         invalid_fields: list[str] = []
@@ -204,7 +220,7 @@ def _load_subagents_from_dir(
             existing = subagents.get(subagent["name"])
             if existing is not None:
                 logger.warning(
-                    "Subagent name collision in %s: %s and %s both declare "
+                    "Subagent name collision in %s: %s and %s both resolve to "
                     "name=%r. Using %s; give each subagent a unique folder or "
                     "frontmatter 'name'.",
                     agents_dir,

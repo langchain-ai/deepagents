@@ -2372,6 +2372,16 @@ class ChatInput(Vertical):
         if prefix and not value.startswith(prefix):
             value = prefix + value
 
+        # Placeholder spans were captured against the raw draft; the transforms
+        # above (whitespace strip, paste expansion, path substitution, prefix)
+        # shifted offsets. Re-map spans onto the final submitted text so the
+        # adapter strips the correct display token from the model-facing message
+        # instead of a same-looking literal the user typed.
+        if self._text_area is not None and self._image_tracker is not None:
+            self._image_tracker.remap_spans_to_text(
+                value, previous_text=self._text_area.text
+            )
+
         self._history.add(value)
         self.post_message(self.Submitted(value, mode))
 

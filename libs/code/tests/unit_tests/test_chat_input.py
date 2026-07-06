@@ -16,7 +16,7 @@ from textual.widgets.text_area import Selection
 from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.input import MediaTracker
-from deepagents_code.media_utils import ImageData
+from deepagents_code.media_utils import ImageData, create_multimodal_content
 from deepagents_code.widgets import chat_input as chat_input_module
 from deepagents_code.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.widgets.chat_input import (
@@ -2910,6 +2910,44 @@ class TestDroppedImagePaste:
             # typed look-alike intact.
             assert chat._text_area.text == "[image 2] "
 
+    async def test_submit_remaps_span_onto_stripped_value(self, tmp_path) -> None:
+        """`_submit_value` re-maps placeholder spans onto the final submitted text.
+
+        Regression: spans captured against the raw draft go stale when submit
+        strips leading whitespace (and expands pastes), so the adapter would
+        strip the wrong token from the model-facing message. The span must
+        follow the transform.
+        """
+        img_path = tmp_path / "submit.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="navy").save(img_path, format="PNG")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+
+            # Leading whitespace shifts every offset when submit strips it.
+            chat._text_area.text = "  look [image 1]"
+            await pilot.pause()
+            img = app.tracker.get_images()[0]
+            assert img.placeholder_span == (7, 16)
+
+            chat._submit_value(chat._text_area.text.strip())
+            await pilot.pause()
+
+            assert app.submitted[-1].value == "look [image 1]"
+            # The span now indexes the submitted value, not the raw draft.
+            assert img.placeholder_span == (5, 14)
+            content = create_multimodal_content(
+                app.submitted[-1].value, app.tracker.get_images()
+            )
+            assert content[0]["text"] == "look"
+
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
         img_path = tmp_path / "external.png"
@@ -3382,6 +3420,29 @@ class TestDroppedVideoPaste:
 
             assert "[video" not in chat._text_area.text
             assert app.tracker.get_videos() == []
+
+    async def test_typed_video_placeholder_is_not_atomic(self) -> None:
+        """Manually typed `[video N]` (no attachment) edits char-by-char.
+
+        Mirrors the image look-alike guard for the video code path, which shares
+        `_bound_media_placeholders` but was otherwise only tested for bound
+        tokens.
+        """
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "[video 2]"
+            await pilot.pause()
+            assert app.tracker.get_videos() == []
+
+            chat._text_area.move_cursor((0, len("[video 2]")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[video 2"
 
     async def test_mixed_image_and_video_drop(self, tmp_path: Path) -> None:
         """Dropping an image and video should produce both placeholder types."""

@@ -172,6 +172,27 @@ class TestMediaTracker:
 
         assert img.placeholder_span == (30, 39)
 
+    def test_sync_to_text_preserves_mapped_duplicate_after_prefix_edit(self) -> None:
+        """Edits before duplicates keep the mapped display token bound to media."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+
+        previous_text = "literal [image 1] actual [image 1]"
+        tracker.sync_to_text(
+            previous_text,
+            previous_text="[image 1]",
+            cursor_offset=25,
+        )
+
+        text = "Xliteral [image 1] actual [image 1]"
+        tracker.sync_to_text(text, previous_text=previous_text, cursor_offset=1)
+        result = create_multimodal_content(text, tracker.images)
+
+        assert img.placeholder_span == (26, 35)
+        assert result[0]["text"] == "Xliteral [image 1] actual"
+
     def test_sync_to_text_tracks_duplicate_inserted_after_placeholder(self) -> None:
         """A typed duplicate after the display token does not steal the media span."""
         tracker = MediaTracker()
@@ -202,6 +223,56 @@ class TestMediaTracker:
         )
 
         assert img.placeholder_span == (0, 9)
+
+    def test_remap_spans_to_text_shifts_span_and_strips_correct_duplicate(
+        self,
+    ) -> None:
+        """Remapping keeps the real (second) token bound after an offset shift.
+
+        Regression: spans are captured against the draft but consumed after
+        submit-time rewrites (whitespace trim, paste expansion) shift offsets.
+        Without remapping, the stale span is discarded and the token-count
+        fallback strips the *first* occurrence — the user's literal — leaving the
+        real display token in the model-facing text. Remapping fixes the offset.
+        """
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+
+        # A literal duplicate precedes the real display token in the draft.
+        draft = "see [image 1] then real [image 1]"
+        tracker.sync_to_text(draft, previous_text="[image 1]", cursor_offset=24)
+        assert img.placeholder_span == (24, 33)
+
+        # Submit expands a paste before the token, shifting it right by 15 chars.
+        final = "EXPANDED PASTE see [image 1] then real [image 1]"
+        tracker.remap_spans_to_text(final, previous_text=draft)
+        assert img.placeholder_span == (39, 48)
+
+        result = create_multimodal_content(final, tracker.get_images())
+        assert result[0]["text"] == "EXPANDED PASTE see [image 1] then real"
+
+    def test_remap_spans_to_text_drops_span_when_token_edited(self) -> None:
+        """A span whose token was edited in the transformed text becomes None."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="")
+        tracker.add_image(img)
+        tracker.sync_to_text("[image 1]")
+        assert img.placeholder_span == (0, 9)
+
+        # The token characters themselves changed: cannot be cleanly mapped.
+        tracker.remap_spans_to_text("[image 2]", previous_text="[image 1]")
+        assert img.placeholder_span is None
+
+    def test_remap_spans_to_text_ignores_items_without_span(self) -> None:
+        """Items with no captured span are left as None (token-fallback path)."""
+        tracker = MediaTracker()
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        tracker.images.append(img)  # attached but never span-synced
+
+        tracker.remap_spans_to_text("[image 1]", previous_text="[image 1]")
+        assert img.placeholder_span is None
 
 
 class TestEncodeImageToBase64:
@@ -444,6 +515,28 @@ class TestStripMediaPlaceholders:
             "keep [image 2] drop [image 1]", ["[image 1]"]
         )
         assert result == "keep [image 2] drop"
+
+    def test_stale_span_is_discarded_and_falls_back_to_token(self) -> None:
+        """A span whose slice no longer matches the token is ignored, not used.
+
+        Guards the graceful-degradation contract: an out-of-date span (here the
+        offset points at non-token text) must not delete arbitrary characters;
+        the token fallback removes the real occurrence instead.
+        """
+        result = strip_media_placeholders(
+            "hello [image 1] world",
+            ["[image 1]"],
+            placeholder_spans=[(0, 5)],  # points at "hello", not the token
+        )
+        assert result == "hello world"
+
+    def test_ambiguous_fallback_strips_leading_occurrence(self) -> None:
+        """With no span and duplicate tokens, the fallback strips the first one."""
+        result = strip_media_placeholders(
+            "first [image 1] second [image 1]",
+            ["[image 1]"],
+        )
+        assert result == "first second [image 1]"
 
     def test_mixed_image_and_video_tokens_removed(self) -> None:
         """Heterogeneous image and video tokens are stripped in one pass."""

@@ -227,6 +227,34 @@ class MediaTracker:
         if not img_found and not vid_found:
             self.clear()
 
+    def remap_spans_to_text(self, text: str, *, previous_text: str) -> None:
+        """Re-map tracked placeholder spans onto a transformed copy of the text.
+
+        Submission rewrites the draft before the display placeholders are
+        stripped from the model-facing text: whitespace is trimmed, collapsed
+        pastes expand back to full content, dropped paths become placeholders,
+        and a mode prefix may be prepended. Every one of those shifts character
+        offsets, so a `placeholder_span` captured against the draft would be
+        stale by the time `strip_media_placeholders` consumes it — silently
+        stripping the wrong occurrence when a user-typed duplicate is present.
+
+        Re-mapping each span through the same before/after diff keeps it pointing
+        at its own display token in `text`. Spans that cannot be cleanly mapped
+        become `None`, degrading to the token-count fallback rather than a wrong
+        strip.
+
+        Args:
+            text: The transformed text the spans must line up with.
+            previous_text: The draft text the current spans were captured
+                against.
+        """
+        for item in (*self.images, *self.videos):
+            if item.placeholder_span is None:
+                continue
+            item.placeholder_span = self._map_placeholder_span(
+                item.placeholder_span, previous_text, text
+            )
+
     def _sync_kind_images(
         self,
         text: str,
@@ -316,14 +344,19 @@ class MediaTracker:
             mapped = self._map_placeholder_span(
                 item.placeholder_span, previous_text, text
             )
-            if cursor_span is not None and (
+            had_duplicate = (
+                previous_text is not None and previous_text.count(item.placeholder) > 1
+            )
+            if had_duplicate and mapped is not None and mapped in spans:
+                item.placeholder_span = mapped
+            elif cursor_span is not None and (
                 item.placeholder_span is None or mapped != item.placeholder_span
             ):
                 item.placeholder_span = cursor_span
-            elif mapped is not None and mapped in spans:
-                item.placeholder_span = mapped
             elif len(spans) == 1:
                 item.placeholder_span = spans[0]
+            elif mapped is not None and mapped in spans:
+                item.placeholder_span = mapped
             elif item.placeholder_span not in spans:
                 item.placeholder_span = None
 
@@ -331,7 +364,15 @@ class MediaTracker:
     def _placeholder_span_after_cursor(
         spans: list[tuple[int, int]], cursor_offset: int | None
     ) -> tuple[int, int] | None:
-        """Return a duplicate placeholder span adjacent to the cursor."""
+        """Return the first duplicate placeholder span at or after the cursor.
+
+        Only meaningful when the token is duplicated (`len(spans) > 1`); returns
+        `None` otherwise, or when no span starts at/after the cursor.
+
+        Args:
+            spans: Placeholder spans for one token in current text.
+            cursor_offset: Current cursor offset, or `None` when unknown.
+        """
         if cursor_offset is None or len(spans) <= 1:
             return None
         for span in spans:
@@ -348,8 +389,19 @@ class MediaTracker:
     ) -> tuple[int, int] | None:
         """Map a placeholder span from the previous text into current text.
 
+        Uses a `SequenceMatcher` diff so the span survives edits elsewhere in the
+        text: it returns the shifted span only when its whole range falls inside
+        an unchanged (`equal`) block, and `None` when the token's own characters
+        were edited or the span cannot be located.
+
+        Args:
+            span: The placeholder span in `previous_text`, or `None`.
+            previous_text: Text the span was captured against, or `None`.
+            text: Text to map the span into.
+
         Returns:
-            The mapped span when the same placeholder occurrence survives.
+            The mapped span when the same placeholder occurrence survives,
+            otherwise `None`.
         """
         if span is None or previous_text is None:
             return None

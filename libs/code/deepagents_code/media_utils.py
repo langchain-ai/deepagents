@@ -97,7 +97,21 @@ def strip_media_placeholders(
         if count <= 0:
             continue
         pattern = re.compile(r"[ \t]*" + re.escape(token))
-        for index, match in enumerate(pattern.finditer(text)):
+        matches = list(pattern.finditer(text))
+        if len(matches) > count:
+            # No (or too few) tracked spans, yet the token appears more times
+            # than we intend to strip: we can't tell the display token from a
+            # user-typed literal and fall back to removing the leading
+            # occurrence(s). That guess can strip a literal and leave the real
+            # display token behind, so leave a breadcrumb (never the text).
+            logger.debug(
+                "Ambiguous media placeholder strip: removing %d of %d "
+                "occurrences of %r with no tracked span to disambiguate",
+                count,
+                len(matches),
+                token,
+            )
+        for index, match in enumerate(matches):
             if index >= count:
                 break
             spans.append(match.span())
@@ -117,7 +131,22 @@ def _valid_placeholder_spans(
     tokens: list[str],
     spans: Iterable[tuple[int, int]] | None,
 ) -> list[tuple[int, int, str]]:
-    """Return valid display placeholder spans expanded over adjacent padding."""
+    """Return valid display placeholder spans expanded over adjacent padding.
+
+    A span is kept only when it is in range and its slice equals one of the
+    bound tokens, so a stale span (e.g. left by an offset shift) is dropped
+    rather than used to delete arbitrary text; the caller then falls back to
+    token matching for that item.
+
+    Args:
+        text: Text the spans index into.
+        tokens: Bound placeholder tokens for the attached media.
+        spans: Candidate `(start, end)` display-token spans, or `None`.
+
+    Returns:
+        `(start, end, token)` triples with `start` expanded left over any
+        adjacent spaces/tabs, for spans that validate against `text`.
+    """
     if spans is None:
         return []
 
@@ -554,9 +583,16 @@ def create_multimodal_content(
 
     # Add text block. Strip only the display-only placeholders bound to the media
     # actually attached here (e.g. "[image 1]") so the canonical/model-facing text
-    # never contains fake user-authored placeholder text, while text that merely
-    # resembles the schema is left untouched. The media itself is carried by the
+    # never contains fake user-authored placeholder text. When a span is known,
+    # text that merely resembles the schema is preserved exactly; without a span
+    # `strip_media_placeholders` falls back to removing one occurrence per item,
+    # which can catch a look-alike literal. The media itself is carried by the
     # structured blocks below.
+    #
+    # `placeholders` and `spans` are passed as parallel-but-unzipped lists on
+    # purpose: `strip_media_placeholders` recovers each span's token from the
+    # text slice, and each tracked media item has a unique token, so it never
+    # needs index alignment between the two.
     media = [*images, *(videos or [])]
     placeholders = [item.placeholder for item in media]
     spans = [

@@ -545,12 +545,36 @@ def show_tools_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  install           Install or repair the managed ripgrep binary")
+    console.print("  list              List the tools available to the agent")
     console.print()
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode tools install")
     console.print("  dcode tools install --json")
+    console.print("  dcode tools list")
+    console.print("  dcode tools list --json")
+    console.print()
+
+
+def show_tools_list_help() -> None:
+    """Show help information for the `tools list` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools list [options]")
+    console.print()
+    console.print(
+        "List the tools available to the agent, grouped by source: built-in",
+    )
+    console.print(
+        "tools first, then the tools exposed by each configured MCP server.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools list")
+    console.print("  dcode tools list --json")
     console.print()
 
 

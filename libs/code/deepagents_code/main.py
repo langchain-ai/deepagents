@@ -1404,6 +1404,14 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(tools_install)
 
+    tools_list = tools_sub.add_parser(
+        "list",
+        help="List the tools available to the agent",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_list_help")),
+    )
+    add_json_output_arg(tools_list)
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(

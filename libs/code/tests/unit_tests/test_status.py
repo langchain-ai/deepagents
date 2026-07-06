@@ -61,7 +61,7 @@ class TestCwdDisplay:
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is False
             assert branch.display is True
-            assert branch.styles.padding.left == 2
+            assert branch.styles.padding.left == 1
 
     async def test_cwd_owns_left_gap_after_auto_approve_pill(self) -> None:
         """The cwd keeps visible spacing when transient status slots are hidden."""
@@ -72,7 +72,7 @@ class TestCwdDisplay:
 
             assert connection.display is False
             assert status.display is False
-            assert cwd.styles.padding.left == 2
+            assert cwd.styles.padding.left == 1
             assert cwd.styles.padding.right == 1
 
 
@@ -263,14 +263,14 @@ class TestResizePriority:
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
             assert branch.display is True
-            assert branch.styles.padding.left == 2
+            assert branch.styles.padding.left == 1
 
     async def test_branch_removes_fallback_gap_when_cwd_returns(self) -> None:
         """Resizing wide again restores branch spacing to the cwd-visible layout."""
         async with StatusBarApp().run_test(size=(50, 24)) as pilot:
             branch = pilot.app.query_one("#branch-display")
             await pilot.pause()
-            assert branch.styles.padding.left == 2
+            assert branch.styles.padding.left == 1
 
             await pilot.resize_terminal(120, 24)
             await pilot.pause()

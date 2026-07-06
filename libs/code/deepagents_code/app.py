@@ -2907,11 +2907,11 @@ class DeepAgentsApp(App):
         gc.freeze()
 
         chat = self.query_one("#chat", VerticalScroll)
-        # Don't anchor at startup: anchoring bottom-sticks content shorter than
-        # the viewport, which would float the welcome banner at the bottom of an
-        # empty chat. The banner sits at the top (like Claude Code); streaming,
-        # shell, command, and thread-resume paths re-anchor/scroll as content
-        # arrives.
+        # Don't establish bottom-follow intent at startup. `_ChatScroll.anchor()`
+        # defers the real anchor until content overflows, but not calling it at
+        # all keeps the welcome banner pinned to the top of an empty chat (like
+        # Claude Code). Streaming, shell, command, and thread-resume paths call
+        # `anchor()` to opt into bottom-follow as content arrives.
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
@@ -10171,7 +10171,9 @@ class DeepAgentsApp(App):
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
         except (NoMatches, ScreenStackError):
-            pass
+            logger.debug(
+                "Welcome banner not available during model sync", exc_info=True
+            )
         if self._status_bar is None:
             return
         if not provider or not model:
@@ -15332,8 +15334,10 @@ class DeepAgentsApp(App):
             self._chat_input.set_cwd(cwd)
         if self._status_bar is not None:
             self._status_bar.cwd = cwd_text
-        with suppress(NoMatches, ScreenStackError):
+        try:
             self.query_one("#welcome-banner", WelcomeBanner).update_cwd(cwd_text)
+        except (NoMatches, ScreenStackError):
+            logger.debug("Welcome banner not available during cwd sync", exc_info=True)
 
     @staticmethod
     def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:

@@ -19971,6 +19971,81 @@ class TestChatScrollAnchoring:
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
 
+    async def test_anchor_engages_immediately_when_already_scrollable(self) -> None:
+        """Resuming into an overflowing transcript anchors to the bottom at once."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            # Content already overflows before we opt into bottom-follow (the
+            # thread-resume case), so anchor() must engage without deferral.
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            assert chat.max_scroll_y > 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_resets_to_top_when_content_shrinks(self) -> None:
+        """Content shrinking below the viewport releases the bottom anchor."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            tall = Static("\n".join(f"line {i}" for i in range(20)))
+            await chat.mount(tall)
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            # Removing the overflow (e.g. /clear) must not leave the banner
+            # bottom-pinned in a near-empty chat.
+            await tall.remove()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not chat.is_anchored
+            assert chat.scroll_y == 0
+
+    async def test_release_anchor_stops_following_bottom(self) -> None:
+        """After release_anchor, streamed content must not snap to the bottom."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+            # The user scrolls up: release bottom-follow and move off the end
+            # (Textual re-anchors automatically while parked at the bottom).
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+
+            # More content streams in. Textual keeps `_anchored` set as standing
+            # intent after a release, so the behavioral signal is the scroll
+            # position: it must stay where the user left it, not snap to the new
+            # bottom.
+            await chat.mount(Static("\n".join(f"tail {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == 0
+
 
 class TestStatusBarConnectionMirroring:
     """The bottom status bar must mirror the connection + queue state.

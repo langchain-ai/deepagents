@@ -110,9 +110,6 @@ HIDE_GIT_BRANCH = "DEEPAGENTS_CODE_HIDE_GIT_BRANCH"
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CODE_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
-HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
-"""Hide rotating tips in the startup splash when enabled."""
-
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
@@ -198,6 +195,19 @@ SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
 
 SHOW_HEADER = "DEEPAGENTS_CODE_SHOW_HEADER"
 """Show Textual's native header bar at the top of the TUI when enabled."""
+
+SPLASH_SHOW_MODEL = "DEEPAGENTS_CODE_SPLASH_SHOW_MODEL"
+"""Show the active model row in the startup welcome banner when enabled.
+
+Off by default; the model is always visible in the status bar, so the banner
+row is opt-in to avoid duplicating it.
+"""
+
+SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"
+"""Show the working-directory row in the startup welcome banner when enabled.
+
+Off by default and independent of the status bar's `HIDE_CWD`.
+"""
 
 SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING"
 """Show LangSmith replica project info in the startup splash when enabled.

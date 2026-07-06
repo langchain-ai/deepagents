@@ -4,23 +4,27 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from rich.style import Style
 from textual.content import Content
 
 from deepagents_code._env_vars import (
     DEBUG,
-    HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_VERSION,
+    SPLASH_SHOW_CWD,
+    SPLASH_SHOW_MODEL,
 )
 from deepagents_code._version import __version__
 from deepagents_code.widgets.welcome import (
     WelcomeBanner,
     _home_prefixed,
+    _langsmith_project_link,
+    _langsmith_project_link_style,
 )
 
 _EDITABLE = "deepagents_code.widgets.welcome._is_editable_install"
+_EDITABLE_PATH = "deepagents_code.widgets.welcome._get_editable_install_path"
 _PROJECT_NAME = "deepagents_code.widgets.welcome.get_langsmith_project_name"
+_FETCH_URL = "deepagents_code.widgets.welcome.fetch_langsmith_project_url"
 
 
 def _make_banner(
@@ -30,7 +34,13 @@ def _make_banner(
     cwd: str | None = "/work/project",
     thread_id: str | None = None,
     mcp_tool_count: int = 0,
+    mcp_unauthenticated: int = 0,
+    mcp_errored: int = 0,
+    mcp_awaiting_reconnect: int = 0,
     project_name: str | None = None,
+    project_url: str | None = None,
+    show_model: bool = True,
+    show_cwd: bool = False,
     env: dict[str, str] | None = None,
 ) -> WelcomeBanner:
     """Create a `WelcomeBanner` with a controlled environment.
@@ -38,26 +48,46 @@ def _make_banner(
     Args:
         model_provider: Model provider to display.
         model_name: Model name to display.
-        cwd: Working directory to display.
+        cwd: Working directory to display (only shown when `show_cwd`).
         thread_id: Thread ID to display (only shown in debug mode).
         mcp_tool_count: MCP tool count to display.
+        mcp_unauthenticated: Number of MCP servers awaiting login.
+        mcp_errored: Number of MCP servers that failed to load.
+        mcp_awaiting_reconnect: Number of MCP servers awaiting reconnect.
         project_name: LangSmith project name to inject (or `None`).
-        env: Environment variables to set while constructing.
+        project_url: LangSmith project URL to inject (or `None`).
+        show_model: Set `SPLASH_SHOW_MODEL` so the model row renders. Defaults to
+            `True` so model tests exercise the row; the real default is off.
+        show_cwd: Set `SPLASH_SHOW_CWD` so the directory row renders.
+        env: Additional environment variables to set while constructing.
 
     Returns:
         A `WelcomeBanner` instance ready for testing.
     """
+    resolved_env: dict[str, str] = {}
+    if show_model:
+        resolved_env[SPLASH_SHOW_MODEL] = "1"
+    if show_cwd:
+        resolved_env[SPLASH_SHOW_CWD] = "1"
+    if env:
+        resolved_env.update(env)
     with (
         patch(_PROJECT_NAME, return_value=project_name),
-        patch.dict("os.environ", env or {}, clear=True),
+        patch.dict("os.environ", resolved_env, clear=True),
     ):
-        return WelcomeBanner(
+        widget = WelcomeBanner(
             model_provider=model_provider,
             model_name=model_name,
             cwd=cwd,
             thread_id=thread_id,
             mcp_tool_count=mcp_tool_count,
+            mcp_unauthenticated=mcp_unauthenticated,
+            mcp_errored=mcp_errored,
+            mcp_awaiting_reconnect=mcp_awaiting_reconnect,
         )
+        if project_url:
+            widget._project_url = project_url
+        return widget
 
 
 class TestHomePrefixed:
@@ -71,6 +101,39 @@ class TestHomePrefixed:
     def test_leaves_non_home_path_unchanged(self) -> None:
         """Paths outside the home directory are returned as-is."""
         assert _home_prefixed("/tmp/work") == "/tmp/work"
+
+
+class TestLangsmithLinkHelpers:
+    """Tests for the LangSmith link helper functions."""
+
+    def test_link_appends_utm_source(self) -> None:
+        """`_langsmith_project_link` appends the UTM source tag."""
+        result = _langsmith_project_link("https://smith.langchain.com/o/org/p/proj")
+        assert "utm_source=deepagents-code" in result
+
+    def test_link_style_non_ansi_has_link(self) -> None:
+        """Non-ANSI link style carries the project URL as a link."""
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _langsmith_project_link_style(
+            "https://smith.langchain.com/o/org/p/proj",
+            ansi=False,
+            colors=DARK_COLORS,
+        )
+        assert style.link is not None
+        assert "utm_source=deepagents-code" in style.link
+
+    def test_link_style_ansi_is_bold(self) -> None:
+        """ANSI link style is bold with a link."""
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _langsmith_project_link_style(
+            "https://smith.langchain.com/o/org/p/proj",
+            ansi=True,
+            colors=DARK_COLORS,
+        )
+        assert style.bold is True
+        assert style.link is not None
 
 
 class TestTitle:
@@ -138,39 +201,77 @@ class TestModelLine:
         assert "openai:gpt-5" in plain
         assert "claude-opus-4-8" not in plain
 
+    def test_hidden_without_show_model_flag(self) -> None:
+        """No model row when `SPLASH_SHOW_MODEL` is not set (opt-in)."""
+        plain = _make_banner(show_model=False)._build_banner().plain
+        assert "model:" not in plain
+
 
 class TestDirectoryLine:
-    """Tests for the directory row."""
+    """Tests for the opt-in directory row (`SPLASH_SHOW_CWD`)."""
 
-    def test_shows_directory(self) -> None:
-        """The directory row renders the working directory."""
-        plain = _make_banner(cwd="/work/project")._build_banner().plain
+    def test_shows_directory_when_flag_set(self) -> None:
+        """The directory row renders the working directory when enabled."""
+        plain = _make_banner(cwd="/work/project", show_cwd=True)._build_banner().plain
         assert "directory:" in plain
         assert "/work/project" in plain
 
     def test_home_prefixed(self) -> None:
         """The directory is home-prefixed with `~`."""
         cwd = str(Path.home() / "code" / "app")
-        plain = _make_banner(cwd=cwd)._build_banner().plain
+        plain = _make_banner(cwd=cwd, show_cwd=True)._build_banner().plain
         assert "~/code/app" in plain
 
-    def test_hidden_when_hide_cwd_env_set(self) -> None:
-        """`HIDE_CWD` removes the directory row."""
-        plain = (
-            _make_banner(cwd="/work/project", env={HIDE_CWD: "1"})._build_banner().plain
-        )
+    def test_hidden_without_flag(self) -> None:
+        """No directory row when `SPLASH_SHOW_CWD` is not set (opt-in)."""
+        plain = _make_banner(cwd="/work/project")._build_banner().plain
         assert "directory:" not in plain
+
+    def test_update_cwd_refreshes_when_shown(self) -> None:
+        """`update_cwd` re-renders the directory row when the row is enabled."""
+        widget = _make_banner(cwd="/work/project", show_cwd=True)
+        with patch.object(widget, "update"):
+            widget.update_cwd("/work/other")
+        plain = widget._build_banner().plain
+        assert "/work/other" in plain
         assert "/work/project" not in plain
 
 
 class TestTracingLine:
     """Tests for the LangSmith tracing project row."""
 
-    def test_shows_project_name(self) -> None:
-        """The tracing row renders the LangSmith project name."""
+    def test_shows_project_name_without_url(self) -> None:
+        """The tracing row renders the project name even before the URL resolves."""
         plain = _make_banner(project_name="dcode-johannes")._build_banner().plain
         assert "tracing:" in plain
         assert "'dcode-johannes'" in plain
+
+    def test_project_name_is_clickable_when_url_resolved(self) -> None:
+        """The project name is a hyperlink when the URL has been fetched."""
+        from textual.style import Style as TStyle
+
+        widget = _make_banner(
+            project_name="dcode-johannes",
+            project_url="https://smith.langchain.com/o/org/p/dcode-johannes",
+        )
+        content = widget._build_banner()
+        linked_spans = [
+            s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
+        ]
+        assert any(
+            "dcode-johannes" in content._text[s.start : s.end] for s in linked_spans
+        )
+
+    def test_project_name_not_clickable_without_url(self) -> None:
+        """The project name has no link when the URL has not been fetched."""
+        from textual.style import Style as TStyle
+
+        widget = _make_banner(project_name="dcode-johannes")
+        content = widget._build_banner()
+        linked = [
+            s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
+        ]
+        assert not linked
 
     def test_omitted_when_no_project(self) -> None:
         """No tracing row when the project name is `None`."""
@@ -188,6 +289,34 @@ class TestTracingLine:
             .plain
         )
         assert "tracing:" not in plain
+
+    async def test_fetch_and_update_sets_url(self) -> None:
+        """`_fetch_and_update` fetches the URL and re-renders the banner."""
+        widget = _make_banner(project_name="dcode-johannes")
+        with (
+            patch(
+                _FETCH_URL,
+                return_value="https://smith.langchain.com/o/org/p/dcode-johannes",
+            ),
+            patch.object(widget, "update"),
+        ):
+            await widget._fetch_and_update()
+        assert widget._project_url is not None
+        assert "dcode-johannes" in widget._project_url
+
+    async def test_fetch_and_update_handles_timeout(self) -> None:
+        """`_fetch_and_update` does not crash on timeout."""
+        widget = _make_banner(project_name="dcode-johannes")
+
+        def _raise_timeout(*_args: object, **_kwargs: object) -> str:
+            raise TimeoutError
+
+        with (
+            patch(_FETCH_URL, side_effect=_raise_timeout),
+            patch.object(widget, "update"),
+        ):
+            await widget._fetch_and_update()
+        assert widget._project_url is None
 
 
 class TestThreadLine:
@@ -234,6 +363,88 @@ class TestMcpToolLine:
         assert "mcp:" not in plain
 
 
+class TestMcpWarnings:
+    """Tests for MCP server warning lines."""
+
+    def test_shows_unauthenticated_warning(self) -> None:
+        """An unauthenticated-server warning line is rendered."""
+        plain = _make_banner(mcp_unauthenticated=2)._build_banner().plain
+        assert "2 MCP servers need login" in plain
+        assert "open /mcp" in plain
+
+    def test_singular_unauthenticated(self) -> None:
+        """A single unauthenticated server uses singular wording."""
+        plain = _make_banner(mcp_unauthenticated=1)._build_banner().plain
+        assert "1 MCP server needs login" in plain
+
+    def test_shows_errored_warning(self) -> None:
+        """An errored-server warning line is rendered."""
+        plain = _make_banner(mcp_errored=1)._build_banner().plain
+        assert "1 MCP server failed to load" in plain
+        assert "open /mcp for details" in plain
+
+    def test_shows_awaiting_reconnect_warning(self) -> None:
+        """An awaiting-reconnect warning line is rendered."""
+        plain = _make_banner(mcp_awaiting_reconnect=3)._build_banner().plain
+        assert "3 MCP servers ready to load" in plain
+        assert "/mcp reconnect" in plain
+
+    def test_no_warnings_when_all_zero(self) -> None:
+        """No warning lines when all warning counts are zero."""
+        plain = _make_banner()._build_banner().plain
+        assert "login" not in plain
+        assert "failed to load" not in plain
+        assert "reconnect" not in plain
+
+    def test_set_connected_updates_warnings(self) -> None:
+        """`set_connected` updates warning counts and re-renders."""
+        widget = _make_banner()
+        with patch.object(widget, "update"):
+            widget.set_connected(
+                5, mcp_unauthenticated=1, mcp_errored=2, mcp_awaiting_reconnect=3
+            )
+        assert widget._mcp_tool_count == 5
+        assert widget._mcp_unauthenticated == 1
+        assert widget._mcp_errored == 2
+        assert widget._mcp_awaiting_reconnect == 3
+        plain = widget._build_banner().plain
+        assert "1 MCP server needs login" in plain
+        assert "2 MCP servers failed to load" in plain
+        assert "3 MCP servers ready to load" in plain
+
+
+class TestEditableInstallPath:
+    """Tests for the editable-install path row."""
+
+    def test_shows_install_path_for_editable(self) -> None:
+        """The install path is shown for editable installs."""
+        with (
+            patch(_EDITABLE, return_value=True),
+            patch(_EDITABLE_PATH, return_value="~/oss/deepagents/libs/code"),
+        ):
+            plain = _make_banner()._build_banner().plain
+        assert "installed:" in plain
+        assert "~/oss/deepagents/libs/code" in plain
+
+    def test_no_install_path_for_non_editable(self) -> None:
+        """No install path row for non-editable installs."""
+        with (
+            patch(_EDITABLE, return_value=False),
+            patch(_EDITABLE_PATH, return_value=None),
+        ):
+            plain = _make_banner()._build_banner().plain
+        assert "installed:" not in plain
+
+    def test_no_install_path_when_version_hidden(self) -> None:
+        """No install path row when the version is hidden."""
+        with (
+            patch(_EDITABLE, return_value=True),
+            patch(_EDITABLE_PATH, return_value="~/code"),
+        ):
+            plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
+        assert "installed:" not in plain
+
+
 class TestRemovedSections:
     """The banner does not show the old splash tips/footer content."""
 
@@ -254,17 +465,6 @@ class TestReturnType:
 
 class TestCompatibilityMethods:
     """Retained no-op/state methods keep the app's call sites working."""
-
-    def test_set_connected_tracks_counts(self) -> None:
-        """`set_connected` stores counts without raising."""
-        widget = _make_banner()
-        widget.set_connected(
-            5, mcp_unauthenticated=1, mcp_errored=2, mcp_awaiting_reconnect=3
-        )
-        assert widget._mcp_tool_count == 5
-        assert widget._mcp_unauthenticated == 1
-        assert widget._mcp_errored == 2
-        assert widget._mcp_awaiting_reconnect == 3
 
     def test_set_connecting_and_idle_are_noops(self) -> None:
         """`set_connecting`/`set_idle` do not raise and render nothing extra."""
@@ -296,68 +496,3 @@ class TestAutoLinksDisabled:
     def test_auto_links_is_false(self) -> None:
         """`WelcomeBanner` should disable Textual's `auto_links`."""
         assert WelcomeBanner.auto_links is False
-
-
-_WEBBROWSER_OPEN = "deepagents_code.widgets._links.webbrowser.open"
-
-
-class TestOnClickOpensLink:
-    """Tests for `WelcomeBanner.on_click` opening Rich-style hyperlinks."""
-
-    def test_click_on_link_opens_browser(self) -> None:
-        """Clicking a Rich link should call `webbrowser.open`."""
-        widget = _make_banner()
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            widget.on_click(event)
-
-        mock_open.assert_called_once_with("https://example.com")
-        event.stop.assert_called_once()
-
-    def test_click_without_link_is_noop(self) -> None:
-        """Clicking on non-link text should not open the browser."""
-        widget = _make_banner()
-        event = MagicMock()
-        event.style = Style()
-
-        with patch(_WEBBROWSER_OPEN) as mock_open:
-            widget.on_click(event)
-
-        mock_open.assert_not_called()
-        event.stop.assert_not_called()
-
-
-class TestPointerShapeOnHover:
-    """Tests for the hand pointer shown when hovering link spans."""
-
-    def test_mouse_move_over_link_sets_pointer(self) -> None:
-        """Hovering a link span should show the hand pointer."""
-        widget = _make_banner()
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-
-        widget.on_mouse_move(event)
-
-        assert widget.styles.pointer == "pointer"
-
-    def test_mouse_move_off_link_resets_pointer(self) -> None:
-        """Hovering non-link text should reset to the default pointer."""
-        widget = _make_banner()
-        widget.styles.pointer = "pointer"
-        event = MagicMock()
-        event.style = Style()
-
-        widget.on_mouse_move(event)
-
-        assert widget.styles.pointer == "default"
-
-    def test_leave_resets_pointer(self) -> None:
-        """Leaving the banner should reset to the default pointer."""
-        widget = _make_banner()
-        widget.styles.pointer = "pointer"
-
-        widget.on_leave()
-
-        assert widget.styles.pointer == "default"

@@ -71,16 +71,16 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
-from deepagents_code.widgets._links import open_url_async
-from deepagents_code.widgets.chat_input import ChatInput
-from deepagents_code.widgets.loading import LoadingWidget
-from deepagents_code.widgets.message_store import (
+from deepagents_code.tui.widgets._links import open_url_async
+from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.loading import LoadingWidget
+from deepagents_code.tui.widgets.message_store import (
     MessageData,
     MessageStore,
     MessageType,
     ToolStatus,
 )
-from deepagents_code.widgets.messages import (
+from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -91,9 +91,9 @@ from deepagents_code.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
-from deepagents_code.widgets.status import StatusBar
-from deepagents_code.widgets.subagent_panel import SubagentPanel
-from deepagents_code.widgets.welcome import WelcomeBanner
+from deepagents_code.tui.widgets.status import StatusBar
+from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
+from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
 _GRACEFUL_EXIT_WAIT_SECONDS = 2.0
@@ -352,15 +352,15 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.textual_adapter import TextualUIAdapter
-    from deepagents_code.widgets.approval import ApprovalMenu
-    from deepagents_code.widgets.ask_user import AskUserMenu
-    from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
-    from deepagents_code.widgets.model_selector import ModelSelectorScreen
-    from deepagents_code.widgets.notification_center import (
+    from deepagents_code.tui.widgets.approval import ApprovalMenu
+    from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+    from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+    from deepagents_code.tui.widgets.notification_center import (
         NotificationSuppressRequested,
     )
-    from deepagents_code.widgets.restart_prompt import RestartChoice
-    from deepagents_code.widgets.update_progress import UpdateProgressScreen
+    from deepagents_code.tui.widgets.restart_prompt import RestartChoice
+    from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during onboarding model switch.
@@ -4302,13 +4302,15 @@ class DeepAgentsApp(App):
         _get_lexer("python")
 
         # Widgets deferred from app.py module level.
-        from deepagents_code.widgets.approval import ApprovalMenu  # noqa: F401
-        from deepagents_code.widgets.ask_user import AskUserMenu  # noqa: F401
-        from deepagents_code.widgets.launch_init import LaunchNameScreen  # noqa: F401
-        from deepagents_code.widgets.model_selector import (
+        from deepagents_code.tui.widgets.approval import ApprovalMenu  # noqa: F401
+        from deepagents_code.tui.widgets.ask_user import AskUserMenu  # noqa: F401
+        from deepagents_code.tui.widgets.launch_init import (
+            LaunchNameScreen,  # noqa: F401
+        )
+        from deepagents_code.tui.widgets.model_selector import (
             ModelSelectorScreen,  # noqa: F401
         )
-        from deepagents_code.widgets.thread_selector import (  # noqa: F401
+        from deepagents_code.tui.widgets.thread_selector import (  # noqa: F401
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
         )
@@ -4920,7 +4922,7 @@ class DeepAgentsApp(App):
                 on cancel, timeout, or mount failure so `/update --deps` continues
                 with the requested dependency refresh.
         """
-        from deepagents_code.widgets.update_confirm import (
+        from deepagents_code.tui.widgets.update_confirm import (
             UpdateBeforeDependenciesConfirmScreen,
         )
 
@@ -4973,7 +4975,7 @@ class DeepAgentsApp(App):
             `True` only when the user explicitly confirmed; `False` on cancel,
                 timeout, or mount failure.
         """
-        from deepagents_code.widgets.update_confirm import (
+        from deepagents_code.tui.widgets.update_confirm import (
             RefreshDependenciesConfirmScreen,
         )
 
@@ -5381,7 +5383,7 @@ class DeepAgentsApp(App):
             `True` only when the user explicitly confirmed; `False` on cancel,
                 timeout, or mount failure.
         """
-        from deepagents_code.widgets.install_confirm import (
+        from deepagents_code.tui.widgets.install_confirm import (
             InstallPackageConfirmScreen,
         )
 
@@ -6108,7 +6110,7 @@ class DeepAgentsApp(App):
         result_future.add_done_callback(self._resume_loading_spinner_after_approval)
 
         # Create menu with unique ID to avoid conflicts
-        from deepagents_code.widgets.approval import ApprovalMenu
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         unique_id = f"approval-menu-{uuid.uuid4().hex[:8]}"
         menu = ApprovalMenu(action_requests, assistant_id, id=unique_id)
@@ -6335,7 +6337,7 @@ class DeepAgentsApp(App):
                     break
                 await asyncio.sleep(0.1)
 
-        from deepagents_code.widgets.ask_user import AskUserMenu
+        from deepagents_code.tui.widgets.ask_user import AskUserMenu
 
         unique_id = f"ask-user-menu-{uuid.uuid4().hex[:8]}"
         menu = AskUserMenu(questions, id=unique_id)
@@ -6485,7 +6487,7 @@ class DeepAgentsApp(App):
             context="goal-review replacement cleanup",
         )
 
-        from deepagents_code.widgets.goal_review import GoalReviewMenu
+        from deepagents_code.tui.widgets.goal_review import GoalReviewMenu
 
         unique_id = f"goal-review-menu-{uuid.uuid4().hex[:8]}"
         menu = GoalReviewMenu(objective, criteria, id=unique_id)
@@ -6864,7 +6866,7 @@ class DeepAgentsApp(App):
         Returns:
             Future completed with the submitted name or `None` when skipped.
         """
-        from deepagents_code.widgets.launch_init import LaunchNameScreen
+        from deepagents_code.tui.widgets.launch_init import LaunchNameScreen
 
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[str | None] = loop.create_future()
@@ -6951,7 +6953,7 @@ class DeepAgentsApp(App):
         self._launch_init_running = True
         try:
             if name_result is None:
-                from deepagents_code.widgets.launch_init import LaunchNameScreen
+                from deepagents_code.tui.widgets.launch_init import LaunchNameScreen
 
                 name = await self._push_screen_wait(LaunchNameScreen())
             else:
@@ -7085,7 +7087,7 @@ class DeepAgentsApp(App):
         if settings.has_tavily:
             return
 
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         result = await self._push_screen_wait(
             AuthPromptScreen(
@@ -7221,7 +7223,7 @@ class DeepAgentsApp(App):
         Returns:
             Dependency summary modal.
         """
-        from deepagents_code.widgets.launch_init import LaunchDependenciesScreen
+        from deepagents_code.tui.widgets.launch_init import LaunchDependenciesScreen
 
         return LaunchDependenciesScreen(
             continue_screen=continue_screen,
@@ -9093,7 +9095,7 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing a rubric grader model."""
         from deepagents_code.config import settings
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         current_provider = settings.model_provider
         current_model = settings.model_name
@@ -9918,7 +9920,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.skills.load import load_skill_content
         from deepagents_code.skills.trust import trust_skill_dir
-        from deepagents_code.widgets.skill_trust import SkillTrustScreen
+        from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
         try:
             target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
@@ -10460,7 +10462,7 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        from deepagents_code.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 
         context = self._resolve_effort_context()
         if isinstance(context, _EffortUnavailable):
@@ -12004,7 +12006,7 @@ class DeepAgentsApp(App):
         8. If agent is running, interrupt it
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         # Any higher-priority Esc breaks the double-Esc clear sequence: only two
         # consecutive Escs with nothing else to handle should clear the draft.
@@ -12128,11 +12130,11 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
-        from deepagents_code.widgets.auth import (
+        from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
         )
-        from deepagents_code.widgets.thread_selector import (
+        from deepagents_code.tui.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
         )
@@ -12376,19 +12378,21 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
-        from deepagents_code.widgets.agent_selector import AgentSelectorScreen
-        from deepagents_code.widgets.auth import AuthManagerScreen, AuthPromptScreen
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
-        from deepagents_code.widgets.notification_detail import NotificationDetailScreen
-        from deepagents_code.widgets.notification_settings import (
+        from deepagents_code.tui.widgets.notification_detail import (
+            NotificationDetailScreen,
+        )
+        from deepagents_code.tui.widgets.notification_settings import (
             NotificationSettingsScreen,
         )
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
@@ -12683,7 +12687,7 @@ class DeepAgentsApp(App):
             Configured model selector modal.
         """
         from deepagents_code.config import settings
-        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
         return ModelSelectorScreen(
             current_model=settings.model_name,
@@ -12908,7 +12912,7 @@ class DeepAgentsApp(App):
             get_credential_env_var,
             get_provider_auth_status,
         )
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         parsed = ModelSpec.try_parse(model_spec)
         provider = parsed.provider if parsed else detect_provider(model_spec)
@@ -12963,7 +12967,7 @@ class DeepAgentsApp(App):
 
     async def _show_theme_selector(self) -> None:
         """Show interactive theme selector as a modal screen."""
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         # Capture scroll state.  The submit handler may have already caused
         # a reflow that re-anchored to the bottom, so we save the *current*
@@ -13024,7 +13028,7 @@ class DeepAgentsApp(App):
         """Show the interactive agent selector modal."""
         from deepagents_code.agent import get_available_agent_names
         from deepagents_code.model_config import load_default_agent
-        from deepagents_code.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
 
         agent_names, default_agent = await asyncio.gather(
             asyncio.to_thread(get_available_agent_names),
@@ -13057,7 +13061,7 @@ class DeepAgentsApp(App):
                 reopening after an install-on-select so the cursor lands on
                 the just-installed provider instead of the top of the list.
         """
-        from deepagents_code.widgets.auth import AuthManagerScreen
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
 
         def handle_result(_result: None) -> None:
             if self._chat_input:
@@ -13590,7 +13594,7 @@ class DeepAgentsApp(App):
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""
         from deepagents_code.model_config import is_warning_suppressed
-        from deepagents_code.widgets.notification_settings import (
+        from deepagents_code.tui.widgets.notification_settings import (
             WARNING_TOGGLES,
             NotificationSettingsScreen,
         )
@@ -13711,7 +13715,7 @@ class DeepAgentsApp(App):
 
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""
-        from deepagents_code.widgets.notification_center import (
+        from deepagents_code.tui.widgets.notification_center import (
             NotificationActionResult,
             NotificationCenterScreen,
         )
@@ -13778,7 +13782,9 @@ class DeepAgentsApp(App):
         message: NotificationSuppressRequested,
     ) -> None:
         """Suppress the notice in place and refresh the open center."""
-        from deepagents_code.widgets.notification_center import NotificationCenterScreen
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
 
         message.stop()
         await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
@@ -13812,7 +13818,7 @@ class DeepAgentsApp(App):
         modal closes. Also clears `_update_modal_pending` so
         missing-dep toasts stop suppressing themselves.
         """
-        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ModalScreen):
             # We can't stack; leave the entry in the registry and tell
@@ -14031,7 +14037,7 @@ class DeepAgentsApp(App):
             self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
             return
 
-        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
 
         result = await self._push_screen_wait(
             AuthPromptScreen(service, env_var),
@@ -14081,7 +14087,7 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            from deepagents_code.widgets.update_progress import UpdateProgressScreen
+            from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
 
             cmd = payload.upgrade_cmd
             log_path = create_update_log_path()
@@ -14361,7 +14367,7 @@ class DeepAgentsApp(App):
                 ),
             )
             return
-        from deepagents_code.widgets.mcp_reconnect import (
+        from deepagents_code.tui.widgets.mcp_reconnect import (
             MCPReconnectForceConfirmScreen,
         )
 
@@ -14405,7 +14411,7 @@ class DeepAgentsApp(App):
         an `unauthenticated` header row to start in-TUI OAuth login) or
         with `None` (close without action).
         """
-        from deepagents_code.widgets.mcp_viewer import (
+        from deepagents_code.tui.widgets.mcp_viewer import (
             MCP_VIEWER_RECONNECT_REQUEST,
             MCPViewerScreen,
         )
@@ -14839,7 +14845,7 @@ class DeepAgentsApp(App):
             return
 
         from deepagents_code.mcp_auth import login as mcp_login
-        from deepagents_code.widgets.mcp_login import (
+        from deepagents_code.tui.widgets.mcp_login import (
             LoginOutcome,
             MCPLoginCancelledError,
             MCPLoginScreen,
@@ -14941,7 +14947,7 @@ class DeepAgentsApp(App):
             server_name: Server whose login just completed — surfaced in the
                 modal title and downstream messages only.
         """
-        from deepagents_code.widgets.mcp_reconnect import (
+        from deepagents_code.tui.widgets.mcp_reconnect import (
             MCPReconnectPromptScreen,
             ReconnectChoice,
         )
@@ -15090,7 +15096,7 @@ class DeepAgentsApp(App):
         back to its own guard, so swallow it rather than crash the install.
         """
         try:
-            import deepagents_code.widgets.restart_prompt  # noqa: F401
+            import deepagents_code.tui.widgets.restart_prompt  # noqa: F401
         except ModuleNotFoundError:
             logger.warning("Could not preload restart_prompt modal", exc_info=True)
 
@@ -15135,7 +15141,7 @@ class DeepAgentsApp(App):
         manual_hint = f"Run `/restart` to load '{label}' now."
 
         try:
-            from deepagents_code.widgets.restart_prompt import RestartPromptScreen
+            from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
         except ModuleNotFoundError:
             # `/install` runs `uv tool install --reinstall -U
             # 'deepagents-code[...]'`, which can rewrite deepagents-code's own
@@ -15473,7 +15479,7 @@ class DeepAgentsApp(App):
         from functools import partial
 
         from deepagents_code.sessions import get_cached_threads, get_thread_limit
-        from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
         current = self._session_state.thread_id if self._session_state else None
         thread_limit = get_thread_limit()
@@ -15959,7 +15965,7 @@ class DeepAgentsApp(App):
         if target is None:
             return "continue"
 
-        from deepagents_code.widgets.cwd_switch import CwdSwitchPromptScreen
+        from deepagents_code.tui.widgets.cwd_switch import CwdSwitchPromptScreen
 
         project_settings_change_detected = await self._preview_project_settings_change(
             target

@@ -43,7 +43,7 @@ from deepagents_code.textual_adapter import (
     format_token_count,
     print_usage_table,
 )
-from deepagents_code.widgets.messages import (
+from deepagents_code.tui.widgets.messages import (
     AppMessage,
     SummarizationMessage,
     ToolCallMessage,

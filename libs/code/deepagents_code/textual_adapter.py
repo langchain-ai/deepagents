@@ -77,7 +77,7 @@ from deepagents_code.hooks import (
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
-from deepagents_code.widgets.messages import (
+from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,

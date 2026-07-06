@@ -379,6 +379,65 @@ _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
+LANGSMITH_US_ENDPOINT = "https://api.smith.langchain.com"
+"""Canonical LangSmith SaaS endpoint for the US region (the SDK default)."""
+
+LANGSMITH_EU_ENDPOINT = "https://eu.api.smith.langchain.com"
+"""Canonical LangSmith SaaS endpoint for the EU region."""
+
+
+def normalize_langsmith_endpoint(value: str) -> str:
+    """Resolve a LangSmith endpoint shorthand to its canonical URL.
+
+    Maps the case-insensitive region aliases `us`/`eu` to the LangSmith SaaS
+    endpoints so the CLI `--base-url` flag and the TUI `/auth` prompt share one
+    decode. Any other non-empty value is returned stripped and unchanged (a
+    self-hosted or proxied URL); empty input returns an empty string.
+
+    Args:
+        value: A region alias, a full endpoint URL, or an empty string.
+
+    Returns:
+        The canonical endpoint URL, the stripped literal value, or `""`.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    alias = cleaned.lower()
+    if alias == "us":
+        return LANGSMITH_US_ENDPOINT
+    if alias == "eu":
+        return LANGSMITH_EU_ENDPOINT
+    return cleaned
+
+
+def is_http_url(value: str) -> bool:
+    """Return whether `value` is a non-empty `http`/`https` URL with a host.
+
+    Guards the LangSmith endpoint so a stored API key is never paired with a
+    non-HTTP, malformed, or schemeless value that could route trace ingestion
+    (and the key) somewhere unintended.
+
+    Args:
+        value: Candidate endpoint URL.
+
+    Returns:
+        `True` when `value` parses as an `http`/`https` URL with a network
+            location that contains no whitespace.
+    """
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    # A real host never contains whitespace, but `urlparse` keeps an internal
+    # space in the netloc (e.g. "exa mple.com"). Such a value would be stored,
+    # written to `LANGSMITH_ENDPOINT`, and its traces may then be dropped at
+    # ingest. Reject it loudly at save time.
+    return not any(char.isspace() for char in parsed.netloc)
+
+
 _TRACING_RUNS_ENDPOINTS_ENV_VARS = (
     "LANGSMITH_RUNS_ENDPOINTS",
     "LANGCHAIN_RUNS_ENDPOINTS",
@@ -650,7 +709,9 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     which bootstrap bridges to `LANGSMITH_TRACING`) is honored and tracing stays
     off, so the stored key can be paused without deleting it. A custom stored
     project is applied to `LANGSMITH_PROJECT` when the user has not set one,
-    unless `replace_project` is set for the immediate `/auth` save path.
+    unless `replace_project` is set for the immediate `/auth` save path. A stored
+    endpoint (e.g. the EU region) is applied to `LANGSMITH_ENDPOINT` with the
+    same precedence via `_apply_stored_langsmith_endpoint`.
 
     No-op when no LangSmith key is stored, so a key supplied only through the
     environment keeps the prior behavior (tracing stays off unless a flag is
@@ -688,6 +749,8 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     # (tracing stays off unless a flag is set).
     if entry is None or entry["type"] != "api_key" or not entry["key"]:
         return
+    if _stored_langsmith_key_is_suppressed(entry["key"]):
+        return
 
     # The key was bridged onto LANGSMITH_API_KEY by
     # `apply_stored_service_credentials`. Decide whether to enable tracing.
@@ -704,6 +767,10 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     if not any(flag is True for flag in flags):
         os.environ["LANGSMITH_TRACING"] = "true"
 
+    _apply_stored_langsmith_endpoint(
+        entry.get("base_url") or None, replace=replace_project
+    )
+
     project = entry.get("project") or None
     if replace_project:
         if project:
@@ -713,6 +780,64 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
         return
     if project and not os.environ.get("LANGSMITH_PROJECT"):
         os.environ["LANGSMITH_PROJECT"] = project
+
+
+def _stored_langsmith_key_is_suppressed(stored_key: str) -> bool:
+    """Return whether an env override keeps `stored_key` from taking effect."""
+    prefixed_names = [f"DEEPAGENTS_CODE_{name}" for name in _TRACING_API_KEY_ENV_VARS]
+    prefixed_values = [
+        os.environ.get(name) or None for name in prefixed_names if name in os.environ
+    ]
+    if prefixed_values:
+        return any(value != stored_key for value in prefixed_values)
+    env_key = os.environ.get("LANGSMITH_API_KEY")
+    return bool(env_key and env_key != stored_key)
+
+
+def _apply_stored_langsmith_endpoint(endpoint: str | None, *, replace: bool) -> None:
+    """Apply a `/auth`-stored LangSmith endpoint to `LANGSMITH_ENDPOINT`.
+
+    Writes a stored endpoint to the canonical `LANGSMITH_ENDPOINT` and clears the
+    `LANGCHAIN_ENDPOINT` alternate so the SDK can't read a stale value through it.
+    Precedence mirrors the stored project:
+
+    - `replace` (the immediate `/auth` save): the stored endpoint replaces the
+        current value, and a blank endpoint (the US default) clears both names so
+        ingestion falls back to the LangSmith SaaS default.
+    - Startup (`replace=False`): a non-empty `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
+        already in the environment stays authoritative, so a stored endpoint is
+        applied only when neither is set. A stored credential without an endpoint
+        never clears an existing env value (self-hosted setups keep working).
+
+    Like a stored key, a stored endpoint is trusted by *presence*, not
+    reachability: this never connects to it. A wrong-but-well-formed endpoint (a
+    typo'd or dead host) is applied anyway, and its traces may then be dropped at
+    ingest. `is_http_url` rejects the obviously malformed cases at save time, but
+    if traces never appear the stored endpoint is worth re-checking via `/auth`
+    alongside the key.
+
+    Args:
+        endpoint: The stored endpoint URL, or `None` when none is stored.
+        replace: Whether the stored value should overwrite the current
+            environment (the immediate `/auth` save path).
+    """
+    canonical, alternate = _TRACING_ENDPOINT_ENV_VARS
+    if replace:
+        if endpoint:
+            os.environ[canonical] = endpoint
+        else:
+            os.environ.pop(canonical, None)
+        os.environ.pop(alternate, None)
+        return
+    if not endpoint:
+        return
+    if any(os.environ.get(var) for var in _TRACING_ENDPOINT_ENV_VARS):
+        return
+    os.environ[canonical] = endpoint
+    # Past the guard above both endpoint vars are falsy, so this only clears an
+    # empty-string `LANGCHAIN_ENDPOINT`; it keeps canonical as the one name the
+    # SDK reads and mirrors the `replace` branch's alternate-clearing.
+    os.environ.pop(alternate, None)
 
 
 def _ensure_bootstrap() -> None:

@@ -40,6 +40,7 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
+from deepagents_code._session_stats import SessionStats, print_usage_table
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -69,7 +70,6 @@ from deepagents_code.hooks import (
 )
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.sessions import generate_thread_id
-from deepagents_code.textual_adapter import SessionStats, print_usage_table
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,

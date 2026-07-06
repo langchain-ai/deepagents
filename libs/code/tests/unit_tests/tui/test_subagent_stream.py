@@ -7,7 +7,7 @@ main agent's namespace are forwarded.
 
 from __future__ import annotations
 
-from deepagents_code.textual_adapter import _is_renderable_subagent_event
+from deepagents_code.tui.textual_adapter import _is_renderable_subagent_event
 
 
 def _event(**overrides: object) -> dict:

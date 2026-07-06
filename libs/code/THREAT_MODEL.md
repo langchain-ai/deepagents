@@ -12,7 +12,7 @@
 
 - `deepagents_code/` — all Python source modules shipped as the `deepagents-code` package
 - CLI entry point (`main.py`, `__init__.py`)
-- Interactive TUI (`app.py`, `textual_adapter.py`, `widgets/`)
+- Interactive TUI (`app.py`, `tui/textual_adapter.py`, `tui/widgets/`)
 - Non-interactive pipeline runner (`client/non_interactive.py`)
 - Agent creation (`agent.py`)
 - Built-in tools (`tools.py`: `http_request`, `web_search`, `fetch_url`)

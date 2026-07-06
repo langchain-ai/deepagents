@@ -351,7 +351,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
-    from deepagents_code.textual_adapter import TextualUIAdapter
+    from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -3257,7 +3257,7 @@ class DeepAgentsApp(App):
         # Create UI adapter unconditionally — it only holds UI callbacks and
         # doesn't depend on the agent. The agent is injected later at
         # execute_task_textual() call time.
-        from deepagents_code.textual_adapter import TextualUIAdapter
+        from deepagents_code.tui.textual_adapter import TextualUIAdapter
 
         self._ui_adapter = TextualUIAdapter(
             mount_message=self._mount_message,
@@ -4266,7 +4266,7 @@ class DeepAgentsApp(App):
         from deepagents_code.config import settings  # noqa: F401
         from deepagents_code.hooks import dispatch_hook  # noqa: F401
         from deepagents_code.model_config import ModelSpec  # noqa: F401
-        from deepagents_code.textual_adapter import TextualUIAdapter  # noqa: F401
+        from deepagents_code.tui.textual_adapter import TextualUIAdapter  # noqa: F401
         from deepagents_code.update_check import is_update_check_enabled  # noqa: F401
 
         try:
@@ -10573,7 +10573,7 @@ class DeepAgentsApp(App):
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
-        from deepagents_code.textual_adapter import execute_task_textual
+        from deepagents_code.tui.textual_adapter import execute_task_textual
 
         # Create the stats object up-front and store on the app so
         # exit() can merge it synchronously if the worker is cancelled

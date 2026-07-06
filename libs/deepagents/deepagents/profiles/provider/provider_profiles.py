@@ -13,8 +13,9 @@ kwargs, running pre-initialization side effects, and deriving kwargs from
 runtime state (e.g. environment variables).
 """
 # Built-in profiles are registered lazily on first registry access for
-# `"openai"` (enables the Responses API by default) and `"openrouter"`
-# (enforces a minimum version and injects app-attribution headers).
+# `"nvidia"` (injects NIM app-attribution headers), `"openai"` (enables the
+# Responses API by default), and `"openrouter"` (enforces a minimum version and
+# injects app-attribution headers).
 # Additional providers or per-model overrides can be registered with
 # `register_provider_profile`.
 

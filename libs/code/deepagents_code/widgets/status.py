@@ -48,10 +48,16 @@ class ModelLabel(Widget):
     When the full `provider:model` text doesn't fit, the provider is dropped
     first. If the bare model name still doesn't fit, it is left-truncated
     with a leading ellipsis so the most distinctive tail stays visible.
+
+    When a reasoning effort is set, its label is appended to the model and
+    participates in the same ladder: the effort suffix is preserved (with the
+    model left-truncated to make room) and is only dropped once even the
+    left-truncated model plus effort cannot fit.
     """
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+    effort: reactive[str] = reactive("", layout=True)
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -68,6 +74,19 @@ class ModelLabel(Widget):
                 return name[len(prefix) :]
         return name
 
+    def _with_effort(self, text: str) -> str:
+        """Append the reasoning effort label when one is set.
+
+        Args:
+            text: Base model display text.
+
+        Returns:
+            Model display text with the effort suffix (a per-session override or
+                the provider default) when one is present, else
+                `text` unchanged.
+        """
+        return f"{text} {self.effort}" if self.effort else text
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -82,7 +101,7 @@ class ModelLabel(Widget):
             return 0
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        return len(full)
+        return len(self._with_effort(full))
 
     def render(self) -> RenderResult:
         """Render the model label with width-aware truncation.
@@ -95,13 +114,68 @@ class ModelLabel(Widget):
             return ""
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        if len(full) <= width:
-            return Content(full)
+        full_with_effort = self._with_effort(full)
+        model_with_effort = self._with_effort(model)
+        if len(full_with_effort) <= width:
+            return Content(full_with_effort)
+        if len(model_with_effort) <= width:
+            return Content(model_with_effort)
+        if self.effort and width > len(self.effort) + 2:
+            model_width = width - len(self.effort) - 1
+            return Content(f"\u2026{model[-(model_width - 1) :]} {self.effort}")
         if len(model) <= width:
             return Content(model)
         if width > 1:
             return Content("\u2026" + model[-(width - 1) :])
         return Content("\u2026")
+
+
+class BranchLabel(Widget):
+    """A label that displays the git branch with glyph-aware truncation.
+
+    Unlike CSS `text-overflow: ellipsis` (which always uses the Unicode
+    ellipsis character), this widget truncates manually in :meth:`render` using
+    :func:`get_glyphs` so ASCII mode (`DEEPAGENTS_CODE_UI_CHARSET_MODE=ascii`)
+    gets `"..."` instead of `"…"`.
+    """
+
+    branch: reactive[str] = reactive("", layout=True)
+
+    def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
+        """Return the intrinsic width so the widget participates in flex layout.
+
+        Args:
+            container: Size of the container.
+            viewport: Size of the viewport.
+
+        Returns:
+            Character length of the full branch string (icon + space + name),
+                or `0` when the branch is empty.
+        """
+        if not self.branch:
+            return 0
+        icon = get_glyphs().git_branch
+        return len(icon) + 1 + len(self.branch)
+
+    def render(self) -> RenderResult:
+        """Render the branch label, truncating with the configured glyph.
+
+        Returns:
+            Branch text (icon + name) truncated from the right with
+                :func:`get_glyphs`'s ellipsis when it overflows the available
+                width, or an empty string when no branch is set.
+        """
+        width = self.content_size.width
+        if not self.branch or width <= 0:
+            return ""
+        icon = get_glyphs().git_branch
+        full = f"{icon} {self.branch}"
+        if len(full) <= width:
+            return full
+        ellipsis = get_glyphs().ellipsis
+        if width <= len(ellipsis):
+            return full[:width]
+        return full[: width - len(ellipsis)] + ellipsis
 
 
 class StatusBar(Horizontal):
@@ -111,7 +185,7 @@ class StatusBar(Horizontal):
     StatusBar {
         height: 1;
         dock: bottom;
-        background: $surface;
+        background: $background;
     }
 
     StatusBar .status-mode {
@@ -176,12 +250,17 @@ class StatusBar(Horizontal):
         width: auto;
         text-align: right;
         color: $text-muted;
+        /* Own both adjacent gaps so they disappear with the cwd: the left gap
+           separates it from the auto-approve pill when transient status slots
+           are hidden, and the right gap separates it from the branch. */
+        padding: 0 1 0 1;
     }
 
     StatusBar .status-branch {
-        width: auto;
-        color: $text-muted;
-        padding: 0 1;
+        width: 1fr;
+        min-width: 0;
+        overflow-x: hidden;
+        text-wrap: nowrap;
     }
 
     StatusBar .status-left-collapsible {
@@ -197,11 +276,38 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-rubric {
+        width: auto;
+        padding: 0 1;
+        color: $success;
+        text-style: bold;
+    }
+
     StatusBar ModelLabel {
         width: auto;
         padding: 0 2;
         color: $text-muted;
         text-align: right;
+    }
+
+    StatusBar BranchLabel {
+        color: $text-muted;
+        /* No left pad while cwd is visible: the cwd owns that gap. */
+        padding: 0 1 0 0;
+    }
+
+    StatusBar .status-cwd.after-status {
+        padding: 0 1 0 0;
+    }
+
+    StatusBar BranchLabel.cwd-hidden {
+        /* When cwd is hidden, the branch needs the same left separator that
+           cwd normally provides after the auto-approve pill. */
+        padding: 0 1 0 1;
+    }
+
+    StatusBar BranchLabel.cwd-hidden.after-status {
+        padding: 0 1 0 0;
     }
     """
     """Mode badges and auto-approve pills use distinct colors for at-a-glance status."""
@@ -214,6 +320,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the status bar.
@@ -229,6 +336,7 @@ class StatusBar(Horizontal):
         self._hide_git_branch = is_env_truthy(HIDE_GIT_BRANCH)
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
+        self._busy_message = ""
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -247,34 +355,54 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-connection", id="connection-indicator")
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
-            yield Static("", classes="status-branch", id="branch-display")
+            yield BranchLabel(classes="status-branch", id="branch-display")
+        yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
-    _BRANCH_WIDTH_THRESHOLD = 100
-    """Hide git branch display below this terminal width."""
     _CWD_WIDTH_THRESHOLD = 70
     """Hide cwd display below this terminal width."""
 
     def on_resize(self, event: events.Resize) -> None:
-        """Manage visibility of status items based on terminal width.
+        """Hide the cwd on very narrow terminals.
 
-        Priority (highest first): model, cwd, git branch.
+        The git branch stays visible at any width (unless disabled via
+        `HIDE_GIT_BRANCH`) and ellipsizes to fit; only the cwd is dropped
+        outright to reclaim space when the terminal gets narrow.
         """
         width = event.size.width
-        branch_threshold = (
-            self._CWD_WIDTH_THRESHOLD
-            if self._hide_cwd
-            else self._BRANCH_WIDTH_THRESHOLD
-        )
+        self._set_cwd_visible(not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD)
+
+    def _set_cwd_visible(self, visible: bool) -> None:
+        """Show or hide cwd and keep adjacent branch spacing in sync."""
         with suppress(NoMatches):
-            self.query_one("#branch-display", Static).display = (
-                not self._hide_git_branch and width >= branch_threshold
-            )
+            self.query_one("#cwd-display", Static).display = visible
         with suppress(NoMatches):
-            self.query_one("#cwd-display", Static).display = (
-                not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD
+            branch = self.query_one("#branch-display", BranchLabel)
+            if visible:
+                branch.remove_class("cwd-hidden")
+            else:
+                branch.add_class("cwd-hidden")
+        self._sync_left_separator()
+
+    def _sync_left_separator(self) -> None:
+        """Use one separator between the last transient status item and cwd/branch."""
+        preceded_by_status = False
+        with suppress(NoMatches):
+            preceded_by_status = bool(
+                self.query_one("#connection-indicator", Static).display
+                or self.query_one("#status-message", Static).display
             )
+        for selector, widget_type in (
+            ("#cwd-display", Static),
+            ("#branch-display", BranchLabel),
+        ):
+            with suppress(NoMatches):
+                widget = self.query_one(selector, widget_type)
+                if preceded_by_status:
+                    widget.add_class("after-status")
+                else:
+                    widget.remove_class("after-status")
 
     def on_unmount(self) -> None:
         """Stop the spinner timer so it can't tick on a detached widget."""
@@ -286,18 +414,24 @@ class StatusBar(Horizontal):
 
         self.cwd = self._initial_cwd
         if self._hide_cwd:
-            with suppress(NoMatches):
-                self.query_one("#cwd-display", Static).display = False
+            self._set_cwd_visible(False)
         if self._hide_git_branch:
             with suppress(NoMatches):
-                self.query_one("#branch-display", Static).display = False
+                self.query_one("#branch-display", BranchLabel).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
         label.model = settings.model_name or ""
+        with suppress(NoMatches):
+            self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on
         # mount; render once to hide the empty indicator (and its padding).
         self._render_connection()
+        # Same reasoning for the message and token slots: both start empty, so
+        # hide them on mount so their padding doesn't reserve a blank gap.
+        self.watch_status_message(self.status_message)
+        with suppress(NoMatches):
+            self.query_one("#tokens-display", Static).display = False
 
     def watch_mode(self, mode: str) -> None:
         """Update mode indicator when mode changes."""
@@ -346,41 +480,60 @@ class StatusBar(Horizontal):
     def watch_branch(self, new_value: str) -> None:
         """Update branch display when it changes."""
         try:
-            display = self.query_one("#branch-display", Static)
+            display = self.query_one("#branch-display", BranchLabel)
         except NoMatches:
             return
-        icon = get_glyphs().git_branch
-        display.update(f"{icon} {new_value}" if new_value else "")
+        display.branch = new_value
 
     def watch_status_message(self, new_value: str) -> None:
         """Update status message display."""
+        if self._busy_message:
+            # The busy indicator owns the status-message slot while active;
+            # defer regular status updates until `set_busy("")` clears it.
+            return
         try:
             msg_widget = self.query_one("#status-message", Static)
         except NoMatches:
             return
 
         msg_widget.remove_class("thinking")
+        # Hide when empty so the widget's padding doesn't reserve a blank gap
+        # in the footer (mirrors the connection indicator).
+        msg_widget.display = bool(new_value)
         if new_value:
             msg_widget.update(new_value)
             if "thinking" in new_value.lower() or "executing" in new_value.lower():
                 msg_widget.add_class("thinking")
         else:
             msg_widget.update("")
+        self._sync_left_separator()
 
-    def watch_connection_state(self, new_value: ConnectionState) -> None:
+    def watch_connection_state(self, _new_value: ConnectionState) -> None:
         """Start or stop the spinner and re-render when connection state changes."""
-        if new_value in {"connecting", "reconnecting", "resuming"}:
-            self._start_spinner()
-        else:
-            self._stop_spinner()
+        self._sync_spinner()
         self._render_connection()
 
     def watch_queued_count(self, _new_value: int) -> None:
         """Re-render the connection indicator when the queued count changes."""
         self._render_connection()
 
+    def _spinner_active(self) -> bool:
+        """Whether any indicator (connection or busy) needs the shared spinner.
+
+        Returns:
+            `True` when a connection state or a busy message is active.
+        """
+        return bool(self.connection_state) or bool(self._busy_message)
+
+    def _sync_spinner(self) -> None:
+        """Start or stop the shared spinner to match connection/busy state."""
+        if self._spinner_active():
+            self._start_spinner()
+        else:
+            self._stop_spinner()
+
     def _start_spinner(self) -> None:
-        """Begin cycling the connection-indicator spinner frames.
+        """Begin cycling the shared spinner frames.
 
         No-op when not yet running (e.g. before mount) since `set_interval`
         requires a live event loop, or when an animation is already active.
@@ -399,9 +552,10 @@ class StatusBar(Horizontal):
         self._spinner = Spinner()
 
     def _tick_spinner(self) -> None:
-        """Advance the spinner frame and re-render the connection indicator."""
+        """Advance the spinner frame and re-render the animated indicators."""
         self._spinner.next_frame()
         self._render_connection()
+        self._render_busy()
 
     def _render_connection(self) -> None:
         """Render the combined connection + queued-count indicator text."""
@@ -426,6 +580,39 @@ class StatusBar(Horizontal):
         # leave a 2-column gap between the auto-approve pill and the cwd.
         widget.display = bool(text)
         widget.update(text)
+        self._sync_left_separator()
+
+    def _render_busy(self) -> None:
+        """Render the animated busy indicator into the status-message slot."""
+        if not self._busy_message:
+            return
+        try:
+            widget = self.query_one("#status-message", Static)
+        except NoMatches:
+            return
+        widget.remove_class("thinking")
+        widget.display = True
+        frame = self._spinner.current_frame()
+        widget.update(Content.assemble(frame, " ", Content(self._busy_message)))
+        self._sync_left_separator()
+
+    def set_busy(self, message: str) -> None:
+        """Show or clear an animated busy indicator in the status-message slot.
+
+        Reuses the shared status-bar spinner so heavier UI operations (e.g. a
+        model switch that imports a provider package) show activity instead of
+        appearing to hang.
+
+        Args:
+            message: Busy text to animate with a spinner, or empty string to
+                clear it and restore the regular status message.
+        """
+        self._busy_message = message
+        self._sync_spinner()
+        if message:
+            self._render_busy()
+        else:
+            self.watch_status_message(self.status_message)
 
     def set_connection(self, state: ConnectionState) -> None:
         """Set the connection indicator state.
@@ -503,6 +690,15 @@ class StatusBar(Horizontal):
         """Update token display when count changes."""
         self._render_tokens(new_value, approximate=self._approximate)
 
+    def watch_rubric_label(self, new_value: str) -> None:
+        """Update rubric display when active rubric state changes."""
+        try:
+            display = self.query_one("#rubric-display", Static)
+        except NoMatches:
+            return
+        display.display = bool(new_value)
+        display.update(new_value)
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Render the token count into the display widget.
 
@@ -516,6 +712,8 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
+        # Hide when empty so the widget's padding doesn't reserve a blank gap.
+        display.display = count > 0
         if count > 0:
             suffix = "+" if approximate else ""
             # Format with K suffix for thousands
@@ -525,6 +723,14 @@ class StatusBar(Horizontal):
                 display.update(f"{count}{suffix} tokens")
         else:
             display.update("")
+
+    def set_rubric_label(self, label: str) -> None:
+        """Set the rubric status label.
+
+        Args:
+            label: Label to display, or empty string to hide the badge.
+        """
+        self.rubric_label = label
 
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
@@ -557,13 +763,16 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-    def set_model(self, *, provider: str, model: str) -> None:
+    def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.
 
         Args:
             provider: Model provider name (e.g., `'anthropic'`).
             model: Model name (e.g., `'claude-sonnet-4-5'`).
+            effort: Reasoning effort label to display (per-session override or
+                provider default), or empty when none applies.
         """
         label = self.query_one("#model-display", ModelLabel)
         label.provider = provider
         label.model = model
+        label.effort = effort

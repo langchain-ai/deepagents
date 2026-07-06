@@ -34,7 +34,7 @@ from deepagents.profiles.harness import (
     _openai_codex,
 )
 from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
-from deepagents.profiles.provider import _openai, _openrouter
+from deepagents.profiles.provider import _nvidia, _openai, _openrouter
 from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES
 
 logger = logging.getLogger(__name__)
@@ -146,6 +146,7 @@ def _ensure_builtin_profiles_loaded() -> None:
     saved_harness_profiles = dict(_HARNESS_PROFILES)
     saved_bootstrap_harness_keys = _BOOTSTRAP_HARNESS_KEYS
     try:
+        _nvidia.register()
         _openai.register()
         _openrouter.register()
         _anthropic_opus_4_7.register()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
@@ -9,7 +11,19 @@ from textual.geometry import Size
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
-from deepagents_code.widgets.status import ModelLabel, StatusBar
+from deepagents_code.config import reset_glyphs_cache
+from deepagents_code.widgets.status import BranchLabel, ModelLabel, StatusBar
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def reset_glyphs_between_tests() -> Iterator[None]:
+    """Clear process-global glyph detection before and after each test."""
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 class StatusBarApp(App):
@@ -47,6 +61,19 @@ class TestCwdDisplay:
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is False
             assert branch.display is True
+            assert branch.styles.padding.left == 1
+
+    async def test_cwd_owns_left_gap_after_auto_approve_pill(self) -> None:
+        """The cwd keeps visible spacing when transient status slots are hidden."""
+        async with StatusBarApp().run_test() as pilot:
+            cwd = pilot.app.query_one("#cwd-display")
+            connection = pilot.app.query_one("#connection-indicator")
+            status = pilot.app.query_one("#status-message")
+
+            assert connection.display is False
+            assert status.display is False
+            assert cwd.styles.padding.left == 1
+            assert cwd.styles.padding.right == 1
 
 
 class TestBranchDisplay:
@@ -87,7 +114,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_with_feature_branch(self) -> None:
         """Feature branch names with slashes should display correctly."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "feat/new-feature"
             await pilot.pause()
@@ -106,6 +133,103 @@ class TestBranchDisplay:
             display = pilot.app.query_one("#branch-display")
             assert display.render() == ""
 
+    @staticmethod
+    def _visible_branch_text(display: BranchLabel) -> str:
+        """Return the branch text as actually rendered to the terminal line."""
+        from rich.segment import Segment
+
+        return "".join(
+            seg.text for seg in display.render_line(0) if isinstance(seg, Segment)
+        )
+
+    async def test_long_branch_name_truncates_with_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A branch too long for the footer should render a trailing ellipsis.
+
+        The branch widget's width is pinned directly (rather than relying on
+        whole-status-bar layout arithmetic) so truncation is deterministic and
+        independent of the other status items' sizes.
+        """
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        async with StatusBarApp().run_test(size=(110, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = long_branch
+            display = pilot.app.query_one("#branch-display", BranchLabel)
+            # Force a box far narrower than the branch text so overflow applies.
+            display.styles.width = 20
+            await pilot.pause()
+            visible = self._visible_branch_text(display)
+            # A *trailing* ellipsis (glyph-aware truncation), not a leading
+            # one, with the head of the name preserved.
+            assert visible.rstrip().endswith("\u2026")
+            assert "feature/" in visible
+
+    async def test_long_branch_truncates_with_ellipsis_when_cwd_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Truncation still applies in the cwd-hidden layout.
+
+        With `HIDE_CWD` set, the branch is shown at a lower width threshold
+        and fills the collapsible region alone; a too-long name must still
+        ellipsize rather than hard-clip.
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        async with StatusBarApp().run_test(size=(90, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = long_branch
+            display = pilot.app.query_one("#branch-display", BranchLabel)
+            display.styles.width = 20
+            await pilot.pause()
+            assert display.display is True
+            visible = self._visible_branch_text(display)
+            assert visible.rstrip().endswith("\u2026")
+            assert "feature/" in visible
+
+    async def test_short_branch_name_not_truncated(self) -> None:
+        """A branch that fits should render in full with no ellipsis."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            display = pilot.app.query_one("#branch-display", BranchLabel)
+            visible = self._visible_branch_text(display)
+            assert "\u2026" not in visible
+            assert "main" in visible
+
+    async def test_long_branch_truncates_with_ascii_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In ASCII charset mode, truncation uses `"..."` not `"…"`.
+
+        CSS `text-overflow: ellipsis` always emits the Unicode ellipsis
+        character; `BranchLabel` truncates manually via `get_glyphs` so
+        the configured glyph (ASCII `"..."` in ascii mode) is used instead.
+        """
+        monkeypatch.setenv("UI_CHARSET_MODE", "ascii")
+        reset_glyphs_cache()
+        long_branch = "feature/some-really-long-descriptive-branch-name-here"
+        try:
+            async with StatusBarApp().run_test(size=(110, 24)) as pilot:
+                bar = pilot.app.query_one("#status-bar", StatusBar)
+                bar.branch = long_branch
+                display = pilot.app.query_one("#branch-display", BranchLabel)
+                display.styles.width = 20
+                await pilot.pause()
+                visible = self._visible_branch_text(display)
+                # ASCII ellipsis is three dots, not the Unicode character.
+                assert visible.rstrip().endswith("...")
+                assert "\u2026" not in visible
+                assert "feature/" in visible
+        finally:
+            monkeypatch.delenv("UI_CHARSET_MODE", raising=False)
+            reset_glyphs_cache()
+
     async def test_branch_display_contains_git_icon(self) -> None:
         """Branch display should include the git branch glyph prefix."""
         async with StatusBarApp().run_test() as pilot:
@@ -120,19 +244,40 @@ class TestBranchDisplay:
 
 
 class TestResizePriority:
-    """Branch hides before cwd, cwd hides before model."""
+    """The cwd hides on narrow terminals; the branch truncates but never hides."""
 
-    async def test_branch_hidden_on_narrow_terminal(self) -> None:
-        """Branch display should be hidden when terminal width < 100."""
+    async def test_branch_stays_visible_on_narrow_terminal(self) -> None:
+        """The branch truncates rather than hiding on a narrow terminal."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
-            assert branch.display is False
+            assert branch.display is True
+
+    async def test_branch_stays_visible_below_cwd_threshold(self) -> None:
+        """Even below the cwd hide threshold the branch stays visible."""
+        async with StatusBarApp().run_test(size=(50, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            branch = pilot.app.query_one("#branch-display")
+            assert branch.display is True
+            assert branch.styles.padding.left == 1
+
+    async def test_branch_removes_fallback_gap_when_cwd_returns(self) -> None:
+        """Resizing wide again restores branch spacing to the cwd-visible layout."""
+        async with StatusBarApp().run_test(size=(50, 24)) as pilot:
+            branch = pilot.app.query_one("#branch-display")
+            await pilot.pause()
+            assert branch.styles.padding.left == 1
+
+            await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert branch.styles.padding.left == 0
 
     async def test_branch_visible_on_wide_terminal(self) -> None:
-        """Branch display should be visible when terminal width >= 100."""
+        """Branch display should be visible on a wide terminal."""
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
@@ -146,8 +291,8 @@ class TestResizePriority:
             cwd = pilot.app.query_one("#cwd-display")
             assert cwd.display is False
 
-    async def test_cwd_visible_branch_hidden_at_medium_width(self) -> None:
-        """Between 70-99 cols: cwd visible, branch hidden."""
+    async def test_cwd_and_branch_visible_at_medium_width(self) -> None:
+        """Between 70-99 cols: cwd visible and branch visible (truncating)."""
         async with StatusBarApp().run_test(size=(85, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
@@ -155,17 +300,20 @@ class TestResizePriority:
             cwd = pilot.app.query_one("#cwd-display")
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is True
-            assert branch.display is False
+            assert branch.display is True
 
-    async def test_resize_restores_branch_visibility(self) -> None:
-        """Widening terminal should restore branch display."""
+    async def test_resize_never_hides_branch(self) -> None:
+        """Resizing must never toggle the branch off; it only truncates."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
-            assert branch.display is False
+            assert branch.display is True
             await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert branch.display is True
+            await pilot.resize_terminal(50, 24)
             await pilot.pause()
             assert branch.display is True
 
@@ -285,6 +433,58 @@ class TestTokenDisplay:
             rendered = str(display.render())
             assert "8.0K" in rendered
             assert "+" not in rendered
+
+    async def test_empty_tokens_hidden_on_mount(self) -> None:
+        """An empty token slot is hidden so its padding adds no gap."""
+        async with StatusBarApp().run_test() as pilot:
+            display = pilot.app.query_one("#tokens-display")
+            assert display.display is False
+
+    async def test_set_tokens_shows_then_zero_hides(self) -> None:
+        """A positive count reveals the token slot; zeroing hides it again."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert display.display is True
+            bar.set_tokens(0)
+            await pilot.pause()
+            assert display.display is False
+
+
+class TestStatusMessageVisibility:
+    """The status-message slot hides when empty so its padding adds no gap."""
+
+    async def test_empty_message_hidden_on_mount(self) -> None:
+        """The status-message slot starts empty and is hidden on mount."""
+        async with StatusBarApp().run_test() as pilot:
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is False
+
+    async def test_setting_message_shows_then_clearing_hides(self) -> None:
+        """Setting a message reveals the slot; clearing it hides it again."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_status_message("Thinking")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is True
+            bar.set_status_message("")
+            await pilot.pause()
+            assert msg.display is False
+
+    async def test_busy_shows_slot_and_clearing_hides(self) -> None:
+        """A busy indicator reveals the slot; clearing busy (no message) hides it."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message")
+            assert msg.display is True
+            bar.set_busy("")
+            await pilot.pause()
+            assert msg.display is False
 
 
 class TestModeIndicator:
@@ -416,6 +616,62 @@ class TestModelLabelPrefixStripping:
             rendered = str(label.render())
             assert "openai:gpt-5.5" in rendered
 
+    async def test_effort_suffix_rendered(self) -> None:
+        """Active reasoning effort should be shown next to the model."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.5", effort="xhigh")
+            await pilot.pause()
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            assert str(label.render()) == "openai:gpt-5.5 xhigh"
+
+    async def test_effort_suffix_survives_provider_drop(self) -> None:
+        """When narrow, provider is dropped before the effort label."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "xhigh"
+            label.styles.width = 18
+            await pilot.pause()
+            assert str(label.render()) == "gpt-5.5 xhigh"
+
+    async def test_effort_suffix_left_truncates_model(self) -> None:
+        """Overflowing model text is left-truncated while the effort stays."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5-turbo-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+            width = label.content_size.width
+            rendered = str(label.render())
+            # Starts with an ellipsis (left-truncated) yet retains the effort
+            # label — the branch that keeps effort while dropping model chars.
+            assert rendered.startswith("…")
+            assert rendered.endswith(" high")
+            assert "openai:" not in rendered
+            assert len(rendered) <= width
+
+    async def test_effort_suffix_dropped_when_only_bare_model_fits(self) -> None:
+        """In the narrow window where effort can't fit, the bare model wins.
+
+        When the width is too small for even the left-truncated `model effort`
+        form but still fits the bare model, the effort suffix is dropped rather
+        than the model — the last rung before ellipsis truncation.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
+            # and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 10
+            await pilot.pause()
+            assert str(label.render()) == "o1"
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:
@@ -540,8 +796,9 @@ class TestConnectionIndicator:
             await pilot.pause()
             indicator = pilot.app.query_one("#connection-indicator", Static)
             rendered = str(indicator.render())
-            assert get_glyphs().spinner_frames[0] in rendered
-            assert "Reconnecting" in rendered
+            frame, _, label = rendered.partition(" ")
+            assert frame in get_glyphs().spinner_frames
+            assert label == "Reconnecting"
 
     async def test_unmount_stops_spinner(self) -> None:
         """Leaving the DOM must stop the timer so it can't tick detached."""
@@ -562,6 +819,121 @@ class TestConnectionIndicator:
         """
         bar = StatusBar()
         bar._start_spinner()
+        assert bar._spinner_timer is None
+
+
+class TestBusyIndicator:
+    """Tests for the animated busy indicator used during model switches."""
+
+    async def test_set_busy_shows_message_and_spinner(self) -> None:
+        """`set_busy` should render a spinner-prefixed message and run the timer."""
+        from deepagents_code.config import get_glyphs
+
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            rendered = str(msg.render())
+            assert "Switching model" in rendered
+            # A spinner frame prefixes the message. Don't pin frame[0]: the
+            # 0.1s timer may have ticked during the pause, so accept any frame.
+            assert any(frame in rendered for frame in get_glyphs().spinner_frames)
+            assert bar._spinner_timer is not None
+
+    async def test_set_busy_treats_bracket_text_as_literal(self) -> None:
+        """A model spec with markup-like brackets must render verbatim, not crash."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching to openai:[00]")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching to openai:[00]" in str(msg.render())
+
+    async def test_clear_busy_stops_spinner_and_clears_message(self) -> None:
+        """Clearing the busy state should stop the timer and empty the slot."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            bar.set_busy("")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert str(msg.render()) == ""
+            assert bar._spinner_timer is None
+
+    async def test_clear_busy_restores_status_message(self) -> None:
+        """A status message set before busy should reappear once busy clears."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_status_message("Thinking")
+            await pilot.pause()
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching" in str(msg.render())
+            bar.set_busy("")
+            await pilot.pause()
+            assert str(msg.render()) == "Thinking"
+
+    async def test_status_message_deferred_while_busy(self) -> None:
+        """Regular status updates must not clobber an active busy indicator."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            bar.set_status_message("Executing")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching" in str(msg.render())
+
+    async def test_busy_keeps_spinner_running_while_connecting(self) -> None:
+        """Clearing busy while connecting must leave the shared spinner running."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+            bar.set_busy("")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+
+    async def test_clear_busy_while_connecting_restores_message(self) -> None:
+        """Clearing busy mid-connection restores the message and keeps the spinner.
+
+        Exercises the combined state the shared-spinner refactor targets: the
+        busy slot and the independent connection indicator are both active, and
+        clearing busy must repaint the deferred message without stopping the
+        spinner that the still-active connection state owns.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            bar.set_status_message("Thinking")
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            conn = pilot.app.query_one("#connection-indicator", Static)
+            # Busy owns the message slot; the connection indicator is separate.
+            assert "Switching model" in str(msg.render())
+            assert "Connecting" in str(conn.render())
+            bar.set_busy("")
+            await pilot.pause()
+            # Deferred message reappears; spinner keeps ticking for the
+            # still-active connection state.
+            assert str(msg.render()) == "Thinking"
+            assert "Connecting" in str(conn.render())
+            assert bar._spinner_timer is not None
+
+    async def test_set_busy_before_mount_does_not_raise(self) -> None:
+        """`set_busy` on an unmounted bar is a safe no-op (no widgets, no timer)."""
+        bar = StatusBar()
+        bar.set_busy("Switching model")
+        assert bar._busy_message == "Switching model"
+        assert bar._spinner_timer is None
+        bar.set_busy("")
+        assert bar._busy_message == ""
         assert bar._spinner_timer is None
 
 

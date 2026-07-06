@@ -23,6 +23,8 @@ from deepagents_code.output import write_json
 if TYPE_CHECKING:
     import argparse
 
+    from deepagents_code.config import TracingStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,15 +77,49 @@ def _sdk_version() -> tuple[str, bool]:
     return "unknown", False
 
 
+def _build_commit() -> str | None:
+    """Return the commit stamped into the package at build time, if present.
+
+    Released wheels carry a generated `_build_info.py` (see `hatch_build.py`);
+    editable and local installs do not, so this returns `None` for them.
+    """
+    try:
+        from deepagents_code._build_info import (  # ty: ignore[unresolved-import]  # generated at build time
+            BUILD_COMMIT,
+        )
+    except ImportError:
+        return None
+    except Exception:  # a corrupt stamp must never crash `doctor`
+        logger.debug("Build-info module present but failed to import", exc_info=True)
+        return None
+    commit = (BUILD_COMMIT or "").strip()
+    return commit or None
+
+
 def _commit_hash(path: str) -> str:
-    """Return the short git commit hash for a source path, if available.
+    """Return the short git commit hash for the install, if available.
+
+    Prefers the commit stamped into a released wheel at build time, but only for
+    non-editable installs: an editable install may carry a stale stamp from a
+    prior local build (the generated file is gitignored and survives a failed
+    build), so it always probes the live git working tree, which reflects local
+    changes.
 
     Args:
         path: Directory used as the git command working directory.
 
     Returns:
-        The short commit hash, or `unknown` when git metadata cannot be read.
+        The short commit hash, or `unknown` when no commit can be determined.
     """
+    baked = _build_commit()
+    if baked:
+        from deepagents_code.config import _is_editable_install
+
+        # A baked commit only describes a built wheel; ignore it for editable
+        # installs so a stale stamp can't mask the live working-tree commit.
+        if not _is_editable_install():
+            return baked
+
     import shutil
     import subprocess  # noqa: S404  # fixed-argv git metadata probe
     from pathlib import Path
@@ -182,9 +218,33 @@ def _collect_updates() -> DiagnosticSection:
         update_status = f"v{latest} available"
     else:
         update_status = "up to date"
-    items.append(DiagnosticItem("Latest version", update_status))
+    items.extend(
+        (
+            DiagnosticItem("Latest version", update_status),
+            DiagnosticItem("Last checked", _format_last_checked()),
+        )
+    )
 
     return DiagnosticSection(title="Updates", items=items)
+
+
+def _format_last_checked() -> str:
+    """Return a relative description of the last update check, or `never`.
+
+    `never` covers both the no-check-recorded case and, defensively, a stamp
+    that cannot be formatted. `get_last_update_check_time` only returns finite,
+    in-range epochs, so the formatting path does not raise here.
+    """
+    from datetime import UTC, datetime
+
+    from deepagents_code.sessions import format_relative_timestamp
+    from deepagents_code.update_check import get_last_update_check_time
+
+    checked_at = get_last_update_check_time()
+    if checked_at is None:
+        return "never"
+    iso = datetime.fromtimestamp(checked_at, tz=UTC).isoformat()
+    return format_relative_timestamp(iso) or "never"
 
 
 def _sanitize_endpoint(endpoint: str) -> str:
@@ -214,14 +274,103 @@ def _sanitize_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{netloc}"
 
 
+_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host identifying LangSmith's managed (SaaS) tracing gateway.
+
+Traces sent to an endpoint whose host is `smith.langchain.com` (or a subdomain
+of it) route through the managed gateway; any other host is a self-hosted or
+dev/staging target. `app.py` keeps the same constant for its model-gateway
+key-mismatch check, but matches a raw-URL substring; this module matches the
+parsed hostname exactly or by subdomain suffix so lookalike hosts such as
+`smith.langchain.com.evil.example` are not treated as the gateway.
+"""
+
+
+def _endpoint_gateway_state(endpoint: str) -> str:
+    """Classify a single tracing endpoint as gateway, non-gateway, or unknown.
+
+    Args:
+        endpoint: A configured tracing endpoint URL.
+
+    Returns:
+        `"yes"` when the endpoint's host is the LangSmith managed gateway (an
+            exact host or a subdomain), `"no"` for any other resolvable host,
+            and `"unknown"` when the endpoint cannot be parsed into a host — so
+            a typo'd or malformed URL is never silently reported as `"no"`.
+    """
+    try:
+        host = urlsplit(endpoint.strip()).hostname or ""
+    except ValueError:
+        # urlsplit raises on bracket-malformed IPv6 (e.g. `http://[::1`); a
+        # diagnostic must degrade to "unknown" rather than crash `dcode doctor`.
+        return "unknown"
+    if not host:
+        return "unknown"
+    if host == _LANGSMITH_GATEWAY_HOST or host.endswith(f".{_LANGSMITH_GATEWAY_HOST}"):
+        return "yes"
+    return "no"
+
+
+def _tracing_gateway_state(status: TracingStatus) -> str:
+    """Report whether all trace ingestion targets are the managed gateway.
+
+    Considers both the primary endpoint and any replica ingestion URLs
+    (`LANGSMITH_RUNS_ENDPOINTS`), since a self-hosted replica means traces leave
+    for a custom target even when the primary endpoint is unset. With no target
+    configured, tracing falls back to the LangSmith SDK default
+    (`https://api.smith.langchain.com`), which is the managed gateway.
+
+    Args:
+        status: The resolved tracing status.
+
+    Returns:
+        `"yes"` when every configured target is the managed gateway (or none is
+            configured, i.e. the SDK default), `"no"` when any target is a
+            self-hosted or dev/staging host, and `"unknown"` when a target
+            cannot be parsed and none is a definite non-gateway host.
+    """
+    states = [
+        _endpoint_gateway_state(target)
+        for target in (status.endpoint, *status.runs_endpoints)
+        if target
+    ]
+    if not states:
+        return "yes"
+    if "no" in states:
+        return "no"
+    if "unknown" in states:
+        return "unknown"
+    return "yes"
+
+
+def _format_tracing_project(status: TracingStatus) -> str:
+    """Render the tracing project, marking the unconfigured default.
+
+    Returns:
+        The project name with a `(default)` suffix when it is the built-in
+            fallback rather than an explicit setting, or `(unset)` when absent.
+    """
+    if not status.project:
+        return "(unset)"
+    if status.project_is_default:
+        return f"{status.project} (default)"
+    return status.project
+
+
 def _collect_tracing() -> DiagnosticSection:
     """Collect LangSmith tracing status from env and profile (offline).
 
-    Credentials are reported as configured/not configured only — the API key
+    Tracing reads `enabled` when a flag is truthy, `disabled` only when a flag
+    is explicitly set to a falsy value, and `not configured` when no flag is set.
+    Credentials are reported as configured/not set only — the API key
     value is never read or printed. The `Credentials` item is flagged as a
     problem only when tracing is enabled without a key and without a custom
     endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
-    self-hosted endpoint is a valid, healthy setup).
+    self-hosted endpoint is a valid, healthy setup). When tracing is enabled, a
+    `Gateway` item reports whether traces route through LangSmith's managed
+    (SaaS) gateway (`yes`), a custom self-hosted/dev/staging endpoint (`no`), or
+    an endpoint that could not be parsed (`unknown`), accounting for both the
+    primary endpoint and any replica ingestion targets.
 
     Returns:
         The `Tracing` section.
@@ -230,17 +379,25 @@ def _collect_tracing() -> DiagnosticSection:
 
     status = get_tracing_status()
     creds_required = status.enabled and status.endpoint is None
+    if status.enabled:
+        tracing_value = "enabled"
+    elif status.explicitly_disabled:
+        tracing_value = "disabled"
+    else:
+        tracing_value = "not configured"
     items = [
-        DiagnosticItem("Tracing", "enabled" if status.enabled else "disabled"),
+        DiagnosticItem("Tracing", tracing_value),
         DiagnosticItem(
             "Credentials",
-            "configured" if status.has_credentials else "not configured",
+            "configured" if status.has_credentials else "not set",
             ok=status.has_credentials or not creds_required,
         ),
-        DiagnosticItem("Project", status.project or "(unset)"),
+        DiagnosticItem("Project", _format_tracing_project(status)),
     ]
     if status.endpoint:
         items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))
+    if status.enabled:
+        items.append(DiagnosticItem("Gateway", _tracing_gateway_state(status)))
     if status.replica_project:
         items.append(DiagnosticItem("Replica project", status.replica_project))
     return DiagnosticSection(title="Tracing", items=items)

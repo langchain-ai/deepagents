@@ -102,6 +102,23 @@ def setup_auth_parser(
         help="Copy the key from this environment variable instead of stdin",
     )
     set_parser.add_argument(
+        "--project",
+        dest="project",
+        metavar="NAME",
+        default=None,
+        help="With `set langsmith`, set a custom LangSmith project name",
+    )
+    set_parser.add_argument(
+        "--base-url",
+        dest="base_url",
+        metavar="URL",
+        default=None,
+        help=(
+            "Pair an endpoint with the key. For `set langsmith`, accepts the "
+            "`us`/`eu` region shorthands or a full URL"
+        ),
+    )
+    set_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_auth_help")),
@@ -160,7 +177,12 @@ def run_auth_command(args: argparse.Namespace) -> int:
     if command in {"list", "ls"}:
         return _run_list()
     if command == "set":
-        return _run_set(args.provider, from_env=args.from_env)
+        return _run_set(
+            args.provider,
+            from_env=args.from_env,
+            project=getattr(args, "project", None),
+            base_url=getattr(args, "base_url", None),
+        )
     if command in {"remove", "rm", "delete"}:
         return _run_remove(args.provider)
     if command == "status":
@@ -233,6 +255,7 @@ def _known_providers() -> tuple[list[str], str | None]:
     from deepagents_code.model_config import (
         CODEX_PROVIDER,
         PROVIDER_API_KEY_ENV,
+        SERVICE_API_KEY_ENV,
         ModelConfig,
         get_available_models,
     )
@@ -253,8 +276,12 @@ def _known_providers() -> tuple[list[str], str | None]:
     # no API-key env var entry. Mirror the TUI auth manager by showing it when
     # the OpenAI integration was discovered.
     codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
+    # Non-model services (Tavily web search, LangSmith tracing) are always
+    # shown — they are configurable here regardless of any backing package —
+    # so the CLI listing matches the TUI `/auth` manager.
+    services = set(SERVICE_API_KEY_ENV)
     providers = sorted(
-        well_known_installed | codex_installed | stored | config_providers
+        well_known_installed | codex_installed | stored | config_providers | services
     )
     return providers, warning
 
@@ -288,13 +315,22 @@ def _warn_if_store_unreadable() -> None:
 
 def _print_rows(providers: list[str]) -> None:
     """Print one `<provider>  <status>` row per provider, column-aligned."""
-    from deepagents_code.model_config import get_provider_auth_status
+    from deepagents_code.model_config import (
+        get_provider_auth_status,
+        get_service_auth_status,
+        is_service,
+    )
 
     if not providers:
         return
     width = max(len(name) for name in providers)
     for provider in providers:
-        label = _resolution_label(get_provider_auth_status(provider))
+        status = (
+            get_service_auth_status(provider)
+            if is_service(provider)
+            else get_provider_auth_status(provider)
+        )
+        label = _resolution_label(status)
         # Plain stdout so rows stay greppable/pipeable, not Rich-styled.
         print(f"{provider.ljust(width)}  {label}")  # noqa: T201
 
@@ -333,13 +369,24 @@ def _run_status(provider: str | None) -> int:
     return 0
 
 
-def _run_set(provider: str, *, from_env: str | None) -> int:
+def _run_set(
+    provider: str,
+    *,
+    from_env: str | None,
+    project: str | None,
+    base_url: str | None,
+) -> int:
     """Store an API key for `provider`, reading it from env or stdin.
 
     Returns:
         Process exit code (`0` on success, `1` on a recoverable input error).
     """
-    from deepagents_code.model_config import CODEX_PROVIDER
+    from deepagents_code.config import is_http_url, normalize_langsmith_endpoint
+    from deepagents_code.model_config import (
+        CODEX_PROVIDER,
+        LANGSMITH_SERVICE,
+        is_langsmith,
+    )
 
     if provider == CODEX_PROVIDER:
         print(  # noqa: T201
@@ -348,6 +395,32 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if project is not None and not is_langsmith(provider):
+        print(  # noqa: T201
+            f"Error: --project is only valid for {LANGSMITH_SERVICE}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Resolve --base-url before reading the store: a malformed value is a clean
+    # input error. `None` means "not passed" (preserve the stored endpoint); an
+    # explicit empty string clears it. LangSmith accepts the `us`/`eu` region
+    # shorthands; any non-empty value must be an http(s) URL so the key is never
+    # paired with a non-HTTP endpoint.
+    base_url_override: str | None = None
+    if base_url is not None:
+        base_url_override = (
+            normalize_langsmith_endpoint(base_url)
+            if is_langsmith(provider)
+            else base_url.strip()
+        )
+        if base_url_override and not is_http_url(base_url_override):
+            print(  # noqa: T201
+                "Error: --base-url must be an http(s) URL.",
+                file=sys.stderr,
+            )
+            return 1
 
     import os
 
@@ -383,8 +456,23 @@ def _run_set(provider: str, *, from_env: str | None) -> int:
             return 1
 
     try:
+        # Preserve a previously stored project/endpoint unless `--project` /
+        # `--base-url` overrides it (an explicit empty value clears it). Resolved
+        # inside the try so a corrupt store surfaces as a clean error, not a
+        # traceback.
+        stored_project = (
+            project if project is not None else auth_store.get_stored_project(provider)
+        )
+        stored_base_url = (
+            base_url_override
+            if base_url is not None
+            else auth_store.get_stored_base_url(provider)
+        )
         outcome = auth_store.set_stored_key(
-            provider, key, base_url=auth_store.get_stored_base_url(provider)
+            provider,
+            key,
+            base_url=stored_base_url,
+            project=stored_project,
         )
     except (ValueError, RuntimeError) as exc:
         # `auth_store` messages never include the secret value. `ValueError`

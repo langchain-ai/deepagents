@@ -392,17 +392,29 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text(
+            "BASH_ENV=/tmp/evil.sh\n"
+            "BASHOPTS=expand_aliases\n"
+            "CDPATH=/tmp\n"
+            "ENV=/tmp/evil.sh\n"
+            "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
             "PATH=/tmp/evil\n"
             "NODE_OPTIONS=--require /tmp/evil.js\n"
+            "SHELLOPTS=xtrace\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
             "NODE_OPTIONS",
+            "SHELLOPTS",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
             "OPENAI_API_KEY",
         ):
@@ -410,13 +422,139 @@ class TestReloadFromEnvironment:
 
         _load_dotenv(start_path=tmp_path)
 
+        assert "BASH_ENV" not in os.environ
+        assert "BASHOPTS" not in os.environ
+        assert "CDPATH" not in os.environ
+        assert "ENV" not in os.environ
+        assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
         assert "NODE_OPTIONS" not in os.environ
+        assert "SHELLOPTS" not in os.environ
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_project_dotenv_cannot_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A committed project `.env` must not self-approve project MCP servers.
+
+        The MCP trust-list env vars are a user-level decision; honoring them from
+        a repo-committed `.env` would let an attacker pair a malicious `.mcp.json`
+        with a `.env` and pre-approve their own servers, defeating the whole
+        point of the trust gate. Ordinary project vars are still loaded.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\n"
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        for key in (
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in os.environ
+        assert "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS" not in os.environ
+        # A normal project var is unaffected — only the trust-list keys are gated.
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_global_dotenv_can_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global `~/.deepagents/.env` (is_project=False) MAY set trust lists.
+
+        Positive counterpart to `test_project_dotenv_cannot_set_mcp_trust_lists`:
+        the deny is scoped to the *project* `.env`. This pins the allow half so a
+        regression that gates these keys unconditionally (e.g. dropping the
+        `is_project` qualifier, or moving them into `_DOTENV_DENIED_ENV_KEYS`)
+        would fail here rather than silently breaking the user's own global
+        pre-approval path.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=docs\n"
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=blocked\n"
+        )
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        # No project `.env`, so the global file is the only source.
+        monkeypatch.setattr(
+            "deepagents_code.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        for key in (
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        isolated = tmp_path / "no_project_env"
+        isolated.mkdir()
+        _load_dotenv(start_path=isolated)
+
+        assert os.environ.get("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS") == "docs"
+        assert (
+            os.environ.get("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS") == "blocked"
+        )
+
+    def test_preview_project_dotenv_cannot_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview mirrors `_load_dotenv`: a project `.env` can't set trust lists.
+
+        The same `is_project` guard was added to both `_load_dotenv` and
+        `_preview_dotenv_environ`; keep their coverage parallel so the two copies
+        cannot drift.
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS=exfil\nOPENAI_API_KEY=sk-ok\n"
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" not in env
+        assert env["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_preview_global_dotenv_can_set_mcp_trust_lists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Preview allows the global `.env` (is_project=False) to set trust lists."""
+        from deepagents_code.config import _preview_dotenv_environ
+
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS=blocked\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        # No project `.env` to find, so only the global file contributes.
+        monkeypatch.setattr(
+            "deepagents_code.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        monkeypatch.delenv(
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
+        )
+
+        env = _preview_dotenv_environ(start_path=tmp_path)
+
+        assert env["DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"] == "blocked"
 
     def test_multiple_simultaneous_changes(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -490,6 +628,52 @@ class TestReloadFromEnvironment:
         env = _preview_dotenv_environ(start_path=tmp_path)
 
         assert env["TEST_PREVIEW_KEY2"] == "project-value"
+
+    def test_preview_dotenv_denies_environment_hijack_keys(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Preview env mirrors `_load_dotenv`: denied keys are omitted.
+
+        Exercises the full shell-startup-hook set so the preview path stays
+        visibly parallel to the mutating path, and asserts the debug breadcrumb
+        names the denied key (and only the key, never its value).
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        denied_keys = (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
+            "SHELLOPTS",
+        )
+        evil_value = "/tmp/evil.sh"  # test fixture value, never read
+
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        dotenv_lines = [f"{key}={evil_value}\n" for key in denied_keys]
+        dotenv_lines.append("OPENAI_API_KEY=sk-ok\n")
+        (tmp_path / ".env").write_text("".join(dotenv_lines))
+        for key in (*denied_keys, "OPENAI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.config"):
+            env = _preview_dotenv_environ(start_path=tmp_path)
+
+        for key in denied_keys:
+            assert key not in env
+        assert env["OPENAI_API_KEY"] == "sk-ok"
+
+        # The breadcrumb names each denied key but never leaks the value.
+        for key in denied_keys:
+            assert any(key in record.getMessage() for record in caplog.records)
+        assert evil_value not in caplog.text
 
     def test_preview_reports_api_key_masked_without_mutating(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -764,3 +948,88 @@ class TestReloadSkillReport:
         # Critical: must not claim every prior skill was removed.
         assert "Removed:" not in text
         assert "Skills updated" not in text
+
+
+class TestReloadThemeReapply:
+    """`/reload` should re-apply the resolved theme preference.
+
+    Guards the cross-session behavior: saving a per-terminal (or global)
+    default theme in one window should be picked up by an already-running
+    session's `/reload`, matching startup resolution.
+    """
+
+    async def _run_reload_theme(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        initial_theme: str,
+        resolved_theme: str,
+    ) -> tuple[str, str]:
+        """Drive `/reload` once with a stubbed preference resolver.
+
+        Args:
+            monkeypatch: pytest fixture for restorable patching.
+            initial_theme: theme active before reload.
+            resolved_theme: value `_load_theme_preference` returns on reload.
+
+        Returns:
+            The active theme after reload and the mounted `AppMessage` text.
+        """
+        from deepagents_code import app as app_module
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.theme = initial_theme
+
+            async def _fake_discover() -> bool:  # noqa: RUF029  # awaited by handler
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(
+                app_module, "_load_theme_preference", lambda: resolved_theme
+            )
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            text = "\n".join(str(w._content) for w in app.query(AppMessage))
+            return app.theme, text
+
+    async def test_switches_to_new_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A newly resolved preference should become the active theme."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="langchain-light",
+        )
+        assert active == "langchain-light"
+        assert "Switched theme to" in text
+
+    async def test_no_switch_when_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the resolved preference matches the active theme, no switch."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="langchain",
+        )
+        assert active == "langchain"
+        assert "Switched theme to" not in text
+
+    async def test_unregistered_preference_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolved name that isn't registered must not change the theme."""
+        active, text = await self._run_reload_theme(
+            monkeypatch,
+            initial_theme="langchain",
+            resolved_theme="not-a-real-theme",
+        )
+        assert active == "langchain"
+        assert "Switched theme to" not in text

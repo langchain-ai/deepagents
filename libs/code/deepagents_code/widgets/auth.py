@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, NamedTuple
 from urllib.parse import urlsplit
 
 from textual.binding import Binding, BindingType
@@ -30,8 +30,8 @@ from textual.content import Content
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
-from textual.widgets import Input, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -41,7 +41,15 @@ if TYPE_CHECKING:
 
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
-from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.config import (
+    LANGSMITH_EU_ENDPOINT,
+    LANGSMITH_US_ENDPOINT,
+    apply_stored_langsmith_auth,
+    get_glyphs,
+    is_ascii_mode,
+    is_http_url,
+    normalize_langsmith_endpoint,
+)
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
@@ -54,10 +62,12 @@ from deepagents_code.model_config import (
     clear_caches,
     get_available_models,
     get_base_url_env_var,
+    get_base_url_env_vars,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
     get_service_auth_status,
+    is_langsmith,
     is_service,
     resolved_env_var_name,
 )
@@ -69,6 +79,81 @@ logger = logging.getLogger(__name__)
 CONFIGURATION_DOCS_URL = (
     "https://docs.langchain.com/oss/python/deepagents/code/configuration"
 )
+
+
+class Region(StrEnum):
+    """The closed set of LangSmith region selections in the `/auth` prompt."""
+
+    US = "us"
+    EU = "eu"
+    CUSTOM = "custom"
+
+
+class _RegionSpec(NamedTuple):
+    """One region row: its enum, radio widget id, SaaS endpoint, and label.
+
+    The single source of truth for the region <-> radio-id <-> endpoint mapping,
+    so `_REGION_BY_RADIO_ID`, `compose`'s radio buttons, `_region_for_endpoint`,
+    and `_resolve_langsmith_endpoint` can't drift apart. `endpoint` is the
+    canonical URL stored for a fixed-SaaS region (`""` for the US default, which
+    clears the stored endpoint); `Region.CUSTOM` carries `""` here because the
+    user supplies its endpoint at prompt time, so it is handled explicitly.
+    """
+
+    region: Region
+    radio_id: str
+    endpoint: str
+    label: str
+
+
+_REGION_SPECS: tuple[_RegionSpec, ...] = (
+    _RegionSpec(Region.US, "auth-region-us", "", "United States (default)"),
+    _RegionSpec(Region.EU, "auth-region-eu", LANGSMITH_EU_ENDPOINT, "Europe"),
+    _RegionSpec(
+        Region.CUSTOM, "auth-region-custom", "", "Custom (self-hosted / proxy)"
+    ),
+)
+
+_REGION_BY_RADIO_ID: dict[str, Region] = {
+    spec.radio_id: spec.region for spec in _REGION_SPECS
+}
+"""Map each region radio's widget id to its region, avoiding string-munging."""
+
+_ENDPOINT_BY_REGION: dict[Region, str] = {
+    spec.region: spec.endpoint for spec in _REGION_SPECS
+}
+"""Canonical endpoint stored for each fixed-SaaS region (Custom is dynamic)."""
+
+
+class ResolvedEndpoint(NamedTuple):
+    """Outcome of resolving the region selector to an endpoint to persist.
+
+    `endpoint` is the canonical URL to store (empty for the US SaaS default);
+    `error` is a user-facing message when a Custom URL is missing or malformed,
+    in which case `endpoint` is empty and nothing should be saved.
+    """
+
+    endpoint: str
+    error: str | None
+
+
+def _region_for_endpoint(base_url: str) -> Region:
+    """Map a stored LangSmith endpoint to its `/auth` region selection.
+
+    Args:
+        base_url: The stored endpoint, or an empty string for the SaaS default.
+
+    Returns:
+        `Region.US` (blank, or the canonical US SaaS URL that the CLI
+            `--base-url us` shorthand stores), `Region.EU` (the EU SaaS URL), or
+            `Region.CUSTOM` (any other endpoint, e.g. self-hosted).
+    """
+    if not base_url or base_url == LANGSMITH_US_ENDPOINT:
+        return Region.US
+    for spec in _REGION_SPECS:
+        if spec.endpoint and base_url == spec.endpoint:
+            return spec.region
+    return Region.CUSTOM
 
 
 PROVIDER_DISPLAY_NAMES: dict[str, str] = {
@@ -83,6 +168,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "groq": "Groq",
     "huggingface": "Hugging Face",
     "ibm": "IBM watsonx",
+    "langsmith": "LangSmith (tracing)",
     "litellm": "LiteLLM",
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
@@ -95,6 +181,20 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
+PROVIDER_SHORT_NAMES: dict[str, str] = {
+    # Only providers whose `PROVIDER_DISPLAY_NAMES` label is too verbose for a
+    # compact tag need an entry here; everything else falls back to the display
+    # name, which is already short.
+    "openai_codex": "OpenAI Codex",
+}
+"""Compact brand labels for space-constrained UI (e.g. the `/model` Recent tag).
+
+Sparse companion to `PROVIDER_DISPLAY_NAMES`: an entry exists only when the full
+display name carries a parenthetical qualifier that reads badly inside a tag
+(e.g. `"OpenAI Codex (ChatGPT login)"`). Resolved via `provider_short_name`.
+"""
+
+
 PROVIDER_API_KEY_URLS: dict[str, str] = {
     "anthropic": "https://platform.claude.com/login?returnTo=%2Fsettings%2Fkeys",
     "baseten": "https://docs.baseten.co/organization/api-keys",
@@ -105,6 +205,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "groq": "https://console.groq.com/keys",
     "huggingface": "https://huggingface.co/login?next=%2Fsettings%2Ftokens",
     "ibm": "https://cloud.ibm.com/iam/apikeys",
+    "langsmith": "https://smith.langchain.com/settings",
     "litellm": "https://docs.litellm.ai/docs/proxy/virtual_keys",
     "mistralai": "https://console.mistral.ai/api-keys",
     "nvidia": "https://build.nvidia.com/settings/api-keys",
@@ -133,8 +234,14 @@ def _is_safe_acquisition_url(url: str) -> bool:
     return urlsplit(url).scheme in {"http", "https"}
 
 
-def _provider_display_name(provider: str, config: ModelConfig | None = None) -> str:
-    """Return a human-readable provider label for auth UI.
+def provider_display_name(provider: str, config: ModelConfig | None = None) -> str:
+    """Return a human-readable provider label.
+
+    Shared by the auth UI and the model selector so a provider is labeled
+    identically in both. (The install prompt reuses the underlying
+    `PROVIDER_DISPLAY_NAMES` map directly rather than this function, to avoid an
+    event-loop config read, so a user-configured `display_name` won't surface
+    there.)
 
     Resolution order: a configured `display_name`, then the built-in
     `PROVIDER_DISPLAY_NAMES` map, then a title-cased form of the provider key.
@@ -150,6 +257,48 @@ def _provider_display_name(provider: str, config: ModelConfig | None = None) -> 
     return model_config.get_provider_display_name(
         provider
     ) or PROVIDER_DISPLAY_NAMES.get(provider, provider.replace("_", " ").title())
+
+
+def provider_short_name(provider: str, config: ModelConfig | None = None) -> str:
+    """Return a compact brand label for a provider.
+
+    For space-constrained UI (e.g. the `/model` Recent tag). Resolution order:
+    a configured `short_name`, then the built-in `PROVIDER_SHORT_NAMES` map,
+    then the full `provider_display_name` (which is already short for providers
+    without a parenthetical qualifier).
+
+    Args:
+        provider: Provider config key.
+        config: Parsed model config, if already loaded by the caller.
+
+    Returns:
+        Compact brand label, falling back to the display name when none is set.
+    """
+    model_config = config or ModelConfig.load()
+    return (
+        model_config.get_provider_short_name(provider)
+        or PROVIDER_SHORT_NAMES.get(provider)
+        or provider_display_name(provider, model_config)
+    )
+
+
+def _auth_status_for(provider: str) -> ProviderAuthStatus:
+    """Resolve the credential readiness of a provider or non-model service.
+
+    Routes services (e.g. Tavily) and model providers to their respective
+    status helpers. Each call reads the credential file, so callers that need
+    the status more than once should resolve it here a single time and reuse
+    the result.
+
+    Args:
+        provider: Provider or service config key.
+
+    Returns:
+        The auth status used for both ordering and badge rendering.
+    """
+    if is_service(provider):
+        return get_service_auth_status(provider)
+    return get_provider_auth_status(provider)
 
 
 class AuthResult(StrEnum):
@@ -220,7 +369,7 @@ class AuthConfirmScreen(ModalScreen[bool]):
     }
 
     AuthConfirmScreen .auth-confirm-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -430,6 +579,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         margin-bottom: 1;
     }
 
+    AuthPromptScreen #auth-prompt-project-hint {
+        margin-top: 1;
+    }
+
+    AuthPromptScreen #auth-prompt-region {
+        height: auto;
+        width: 100%;
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    AuthPromptScreen #auth-prompt-region:focus-within {
+        border: solid $primary;
+    }
+
     AuthPromptScreen #auth-prompt-input,
     AuthPromptScreen #auth-prompt-base-url {
         margin-bottom: 1;
@@ -448,7 +612,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     }
 
     AuthPromptScreen .auth-prompt-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -461,6 +625,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         env_var: str | None,
         *,
         reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -469,13 +636,24 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             env_var: Canonical env var the SDK reads, shown as helper text.
                 May be `None` for providers that don't use one of the
                 hardcoded env-var bindings (rare; the prompt still works).
-            reason: Optional one-line context, e.g.,
-                `"Required to use anthropic:claude-opus-4-7"`.
+            reason: Optional context, e.g.,
+                `"Required to use anthropic:claude-opus-4-8"`.
+            allow_empty_submit: Whether pressing Enter on an empty key dismisses
+                with `AuthResult.CANCELLED` instead of showing a validation error.
+            input_placeholder: Optional placeholder override for the key input.
+            submit_label: Optional help-label override for the Enter action.
         """
         super().__init__()
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
+        self._allow_empty_submit = allow_empty_submit
+        self._input_placeholder = input_placeholder
+        self._submit_label = submit_label
+        # LangSmith is configured as a tracing service: it carries an optional
+        # project name and an endpoint chosen from a region selector (US/EU SaaS
+        # or a custom self-hosted URL), and saving a key turns tracing on.
+        self._is_langsmith = is_langsmith(provider)
         # Resolve the current credential source and probe the store, but never
         # let a corrupt `auth.json`/config crash the screen at construction
         # time — Textual would propagate the exception before the modal mounts.
@@ -486,14 +664,14 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cached instance instead of reloading outside this crash-safety guard.
         try:
             self._config = ModelConfig.load()
-            self._auth_status = (
-                get_service_auth_status(provider)
-                if is_service(provider)
-                else get_provider_auth_status(provider)
-            )
+            self._auth_status = _auth_status_for(provider)
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
-            self._advanced_visible = bool(self._existing_base_url)
+            self._existing_project = auth_store.get_stored_project(provider) or ""
+            self._advanced_visible = bool(
+                self._existing_base_url or self._existing_project
+            )
+            self._region: Region = _region_for_endpoint(self._existing_base_url)
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
@@ -505,9 +683,27 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
             self._has_existing = False
             self._existing_base_url = ""
+            self._existing_project = ""
             self._advanced_visible = False
+            self._region = Region.US
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
+            )
+        # Surface when an environment endpoint is set: at startup an existing
+        # `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT` takes precedence over the
+        # stored region, so without this note the radio could show one region
+        # while traces route somewhere else. (The note fires on presence, not on
+        # divergence — it may show even when the env value matches the stored
+        # region.) Saving here applies the selection (the save path replaces the
+        # env value), so word the note around that.
+        self._endpoint_env_notice: str | None = None
+        if self._is_langsmith and any(
+            os.environ.get(var) for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+        ):
+            self._endpoint_env_notice = (
+                "An endpoint is set in your environment "
+                "(LANGSMITH_ENDPOINT/LANGCHAIN_ENDPOINT) and takes precedence at "
+                "startup; saving a region here applies your selection instead."
             )
 
     def compose(self) -> ComposeResult:
@@ -517,7 +713,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Widgets that make up the auth prompt modal.
         """
         glyphs = get_glyphs()
-        provider_label = _provider_display_name(self._provider, self._config)
+        provider_label = provider_display_name(self._provider, self._config)
         with Vertical():
             # Tag the title with `(stored)` so the user knows a replacement
             # (or the `Ctrl+D delete` affordance shown in the help line) is
@@ -606,7 +802,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     classes="auth-prompt-error",
                 )
             yield Input(
-                placeholder=(
+                placeholder=self._input_placeholder
+                or (
                     "Paste a new key to replace the stored one"
                     if self._has_existing
                     else "Paste your API key"
@@ -614,15 +811,30 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
-            yield Static(
-                Content.from_markup(
+            storage_note: Content | None
+            if self._is_langsmith:
+                storage_note = Content.from_markup(
+                    "Deep Agents Code stores the above key locally and turns on "
+                    "LangSmith tracing. To pause tracing without removing the key, "
+                    "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
+                )
+            elif is_service(self._provider):
+                # Services (e.g. Tavily) skip the storage note: the title and
+                # reason copy already say what the key is for, so it only adds
+                # redundant copy here.
+                storage_note = None
+            else:
+                storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
-                ),
-                classes="auth-prompt-meta",
-                id="auth-prompt-storage-note",
-            )
+                )
+            if storage_note is not None:
+                yield Static(
+                    storage_note,
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-storage-note",
+                )
             yield Static(
                 self._build_advanced_toggle_label(),
                 classes="auth-prompt-advanced-toggle",
@@ -650,29 +862,106 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 )
                 key_meta.display = self._advanced_visible
                 yield key_meta
-            base_url_label = Static(
-                Content.from_markup("[bold]Base URL override[/bold]"),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-label",
-            )
-            base_url_label.display = self._advanced_visible
-            yield base_url_label
-            base_url_input = Input(
-                value=self._existing_base_url,
-                placeholder="Base URL",
-                id="auth-prompt-base-url",
-            )
-            base_url_input.display = self._advanced_visible
-            yield base_url_input
-            base_url_hint_widget = Static(
-                self._build_base_url_hint(),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-hint",
-            )
-            base_url_hint_widget.display = self._advanced_visible
-            yield base_url_hint_widget
+            if self._is_langsmith:
+                if self._endpoint_env_notice:
+                    yield Static(
+                        Content.from_markup("$msg", msg=self._endpoint_env_notice),
+                        classes="auth-prompt-meta",
+                        id="auth-prompt-endpoint-env-notice",
+                    )
+                region_label = Static(
+                    Content.from_markup("[bold]LangSmith region[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-region-label",
+                )
+                region_label.display = self._advanced_visible
+                yield region_label
+                region_set = RadioSet(
+                    *(
+                        RadioButton(
+                            spec.label,
+                            value=self._region == spec.region,
+                            id=spec.radio_id,
+                        )
+                        for spec in _REGION_SPECS
+                    ),
+                    id="auth-prompt-region",
+                )
+                region_set.display = self._advanced_visible
+                yield region_set
+                custom_visible = (
+                    self._advanced_visible and self._region == Region.CUSTOM
+                )
+                base_url_input = Input(
+                    value=(
+                        self._existing_base_url if self._region == Region.CUSTOM else ""
+                    ),
+                    placeholder="https://my-langsmith.example.com",
+                    id="auth-prompt-base-url",
+                )
+                base_url_input.display = custom_visible
+                yield base_url_input
+                base_url_hint_widget = Static(
+                    Content.from_markup(
+                        "Point tracing at a self-hosted or proxied LangSmith. "
+                        "Sets [bold]LANGSMITH_ENDPOINT[/bold]; must be an "
+                        "http(s) URL."
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-hint",
+                )
+                base_url_hint_widget.display = custom_visible
+                yield base_url_hint_widget
+                project_label = Static(
+                    Content.from_markup("[bold]Project name[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-label",
+                )
+                project_label.display = self._advanced_visible
+                yield project_label
+                project_input = Input(
+                    value=self._existing_project,
+                    placeholder="LANGSMITH_PROJECT (default: deepagents-code)",
+                    id="auth-prompt-project",
+                )
+                project_input.display = self._advanced_visible
+                yield project_input
+                project_hint_widget = Static(
+                    Content.from_markup(
+                        "Route agent traces to this LangSmith project. "
+                        "Leave blank to use the default [bold]deepagents-code[/bold]."
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-hint",
+                )
+                project_hint_widget.display = self._advanced_visible
+                yield project_hint_widget
+            else:
+                base_url_label = Static(
+                    Content.from_markup("[bold]Base URL override[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-label",
+                )
+                base_url_label.display = self._advanced_visible
+                yield base_url_label
+                base_url_input = Input(
+                    value=self._existing_base_url,
+                    placeholder="Base URL",
+                    id="auth-prompt-base-url",
+                )
+                base_url_input.display = self._advanced_visible
+                yield base_url_input
+                base_url_hint_widget = Static(
+                    self._build_base_url_hint(),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-hint",
+                )
+                base_url_hint_widget.display = self._advanced_visible
+                yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
-            save_label = "Enter replace" if self._has_existing else "Enter save"
+            save_label = self._submit_label or (
+                "Enter replace" if self._has_existing else "Enter save"
+            )
             help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
@@ -699,9 +988,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Build provider-specific API-key acquisition guidance.
 
         Returns:
-            Content shown before the API-key input. Appends a muted notice when
-                a user-configured `api_key_url` was rejected for using an
-                unsupported URL scheme.
+            Content shown before the API-key input. May append muted notices: a
+                provider-specific caveat (e.g. Anthropic subscription plans are
+                unsupported) and/or a warning that a user-configured `api_key_url`
+                was rejected for using an unsupported URL scheme.
         """
         config = self._config
         configured_url = config.get_provider_api_key_url(self._provider)
@@ -715,12 +1005,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
+        provider = provider_display_name(self._provider, config)
         label = (
-            "Provider key page"
+            f"{provider} key page"
             if configured_url or self._provider in PROVIDER_API_KEY_URLS
-            else "Provider setup docs"
+            else f"{provider} setup docs"
         )
-        provider = _provider_display_name(self._provider, config)
         if self._provider == "azure_openai":
             instructions = Content.assemble(
                 "Find your key in your Azure OpenAI resource's "
@@ -735,6 +1025,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "(/v1/responses). For older models, you may also need "
                 "Request access to Chat completions (/v1/chat/completions). ",
                 (label, self._link_style(url)),
+            )
+        elif self._provider == "anthropic":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+                "\n",
+                (
+                    (
+                        "Subscription plans (Claude Pro/Max, Claude Code) cannot "
+                        "be used for Anthropic calls in Deep Agents Code. Only a "
+                        "standard API key with pay-as-you-go billing works here."
+                    ),
+                    "italic $text-muted",
+                ),
             )
         else:
             instructions = Content.assemble(
@@ -775,22 +1080,25 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Content describing blank behavior and env-var precedence.
         """
         surviving_base_url_env = get_default_base_url_env(self._provider)
-        endpoint_env = get_base_url_env_var(self._provider)
-        if surviving_base_url_env and endpoint_env:
+        endpoint_envs = get_base_url_env_vars(self._provider)
+        env_order = ", then ".join(
+            item for env in endpoint_envs for item in (f"DEEPAGENTS_CODE_{env}", env)
+        )
+        if surviving_base_url_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use [bold]$prefixed[/bold].\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                "Env override order: [bold]$order[/bold].",
                 prefixed=surviving_base_url_env,
-                plain=endpoint_env,
+                order=env_order,
             )
-        if endpoint_env:
+        endpoint_env = get_base_url_env_var(self._provider)
+        if endpoint_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use the provider default.\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
-                prefixed=f"DEEPAGENTS_CODE_{endpoint_env}",
-                plain=endpoint_env,
+                "Env override order: [bold]$order[/bold].",
+                order=env_order,
             )
         return Content.from_markup(
             "Override the provider endpoint for this stored key. "
@@ -806,17 +1114,46 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._advanced_visible = not self._advanced_visible
         for selector in (
             "#auth-prompt-key-meta",
+            "#auth-prompt-region-label",
+            "#auth-prompt-region",
             "#auth-prompt-base-url-label",
             "#auth-prompt-base-url",
             "#auth-prompt-base-url-hint",
+            "#auth-prompt-project-label",
+            "#auth-prompt-project",
+            "#auth-prompt-project-hint",
         ):
             for widget in self.query(selector):
                 widget.display = self._advanced_visible
+        # For LangSmith the custom URL field only shows under the Custom region,
+        # so re-apply its region-gated visibility after the blanket toggle above.
+        if self._is_langsmith:
+            self._refresh_langsmith_custom_visibility()
         self.query_one("#auth-prompt-advanced-toggle", Static).update(
             self._build_advanced_toggle_label()
         )
         if not self._advanced_visible:
             self.query_one("#auth-prompt-input", Input).focus()
+
+    def _refresh_langsmith_custom_visibility(self) -> None:
+        """Show the custom URL field only when Advanced is open and region is Custom."""
+        custom_visible = self._advanced_visible and self._region == Region.CUSTOM
+        for selector in ("#auth-prompt-base-url", "#auth-prompt-base-url-hint"):
+            for widget in self.query(selector):
+                widget.display = custom_visible
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        """Track the chosen LangSmith region and reveal the custom URL field."""
+        event.stop()
+        region = _REGION_BY_RADIO_ID.get(event.pressed.id or "")
+        if region is None:
+            # An unknown id (e.g. a renamed radio) must not silently degrade to a
+            # region — leave the current selection unchanged rather than guess.
+            return
+        self._region = region
+        self._refresh_langsmith_custom_visibility()
+        if self._region == Region.CUSTOM:
+            self.query_one("#auth-prompt-base-url", Input).focus()
 
     def on_click(self, event: Click) -> None:
         """Open style-embedded hyperlinks or toggle Advanced."""
@@ -852,21 +1189,85 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
 
+    def _resolve_langsmith_endpoint(self) -> ResolvedEndpoint:
+        """Resolve the endpoint to store from the LangSmith region selector.
+
+        Returns:
+            A `ResolvedEndpoint`: the canonical endpoint to persist (empty for
+                the US SaaS default), and a non-`None` error when a custom URL is
+                missing or malformed (so an explicit `Custom` selection never
+                silently routes the key to the US SaaS default, and the key is
+                never paired with a non-http(s) endpoint).
+        """
+        if self._region != Region.CUSTOM:
+            # US and EU resolve to their fixed SaaS endpoints from the table
+            # (US -> "" clears the stored endpoint back to the SaaS default).
+            return ResolvedEndpoint(_ENDPOINT_BY_REGION[self._region], None)
+        raw = self.query_one("#auth-prompt-base-url", Input).value.strip()
+        if not raw:
+            # `Custom` is a deliberate non-default choice; a blank field must not
+            # silently fall back to the US SaaS default (which would reroute the
+            # key and traces to the very endpoint a self-hosted user is avoiding).
+            missing_url_error = (
+                "Custom endpoint URL is required (or choose United States/Europe)."
+            )
+            return ResolvedEndpoint("", missing_url_error)
+        endpoint = normalize_langsmith_endpoint(raw)
+        if not is_http_url(endpoint):
+            return ResolvedEndpoint("", "Custom endpoint must be an http(s) URL.")
+        return ResolvedEndpoint(endpoint, None)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Validate, persist, and dismiss.
 
         Reads both fields regardless of which one was submitted, so pressing
-        Enter in either the key or the base-URL input saves the pair.
+        Enter in either the key or the secondary input (base URL, or the
+        LangSmith project name) saves the pair.
         """
         event.stop()
         cleaned = self.query_one("#auth-prompt-input", Input).value.strip()
-        base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+        if self._is_langsmith:
+            project = self.query_one("#auth-prompt-project", Input).value.strip()
+            resolved = self._resolve_langsmith_endpoint()
+            if resolved.error:
+                self._show_error(resolved.error)
+                return
+            base_url = resolved.endpoint
+        else:
+            base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+            # Match the CLI `--base-url` guard: never pair the key with a
+            # non-http(s) endpoint. Validate only a *changed* value, though: the
+            # field is pre-filled with the stored base URL, so rotating just the
+            # key must not be blocked by a legacy non-http(s) endpoint (the CLI
+            # never validated base URLs before this feature). A new or edited
+            # value must still be http(s).
+            if (
+                base_url
+                and base_url != self._existing_base_url
+                and not is_http_url(base_url)
+            ):
+                self._show_error("Base URL must be an http(s) URL.")
+                return
+            project = ""
         if not cleaned:
+            if self._allow_empty_submit:
+                # Optional prompts (e.g. the Tavily onboarding step) treat an
+                # empty submit as an intentional skip. We deliberately reuse
+                # `CANCELLED` rather than add a `SKIPPED` outcome: every caller
+                # that allows empty submit wants identical "did not save"
+                # handling for skip and Escape, so the distinction would be
+                # dead weight. Revisit if a caller ever needs to tell a
+                # deliberate decline from an accidental dismissal.
+                self.dismiss(AuthResult.CANCELLED)
+                return
             self._show_error("API key cannot be empty.")
             return
         try:
             outcome = auth_store.set_stored_key(
-                self._provider, cleaned, base_url=base_url or None
+                self._provider,
+                cleaned,
+                base_url=base_url or None,
+                project=project or None,
             )
         except (ValueError, RuntimeError, OSError) as exc:
             # `auth_store` exception messages never include the secret value,
@@ -882,6 +1283,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             # chmod failures are security regressions the user must see —
             # `logger.warning` alone is invisible inside a Textual session.
             self.app.notify(warning, severity="warning", markup=False)
+        if self._is_langsmith:
+            apply_stored_langsmith_auth(replace_project=True)
         clear_caches()
         self.dismiss(AuthResult.SAVED)
 
@@ -1012,7 +1415,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -1020,16 +1423,26 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self) -> None:
-        """Initialize the manager with an empty install-on-select registry."""
+    def __init__(self, *, initial_provider: str | None = None) -> None:
+        """Initialize the manager with an empty install-on-select registry.
+
+        Args:
+            initial_provider: Provider whose row should start highlighted —
+                set when reopening after an install-on-select so the cursor
+                lands on the just-installed provider ready for a key, rather
+                than resetting to the top of the list.
+        """
         super().__init__()
         # Uninstalled known providers mapped to the extra that installs them,
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
         self._install_extras: dict[str, str] = {}
         # Set when the user confirms installing a provider's extra; the app
-        # reads this off the screen after dismissal to install then reopen.
+        # reads these off the screen after dismissal to install then reopen
+        # the manager with the just-installed provider highlighted.
         self.pending_install_extra: str | None = None
+        self.pending_install_provider: str | None = None
+        self._initial_provider = initial_provider
 
     def compose(self) -> ComposeResult:
         """Compose the manager.
@@ -1085,11 +1498,29 @@ class AuthManagerScreen(ModalScreen[None]):
         )
 
     def on_mount(self) -> None:
-        """Apply ASCII border when needed."""
+        """Apply ASCII border and highlight the initial provider when set."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
+        self._highlight_initial_provider()
+
+    def _highlight_initial_provider(self) -> None:
+        """Move the cursor to `initial_provider`'s row if it is listed.
+
+        Used when the manager reopens after an install-on-select so the cursor
+        lands on the just-installed provider (ready for a key) instead of
+        resetting to the top of the list.
+        """
+        if self._initial_provider is None:
+            return
+        option_list = self.query_one("#auth-manager-options", OptionList)
+        try:
+            index = option_list.get_option_index(self._initial_provider)
+        except OptionDoesNotExist:
+            return
+        option_list.highlighted = index
+        option_list.scroll_to_highlight()
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301 - Textual handler
         """Open style-embedded hyperlinks (the title `Docs` link)."""
@@ -1157,11 +1588,13 @@ class AuthManagerScreen(ModalScreen[None]):
         def _on_confirm(proceed: bool | None) -> None:
             if proceed:
                 self.pending_install_extra = extra
+                self.pending_install_provider = provider
                 self.dismiss(None)
             else:
-                # Declined or dismissed: clear any pending extra so a reused
+                # Declined or dismissed: clear any pending request so a reused
                 # screen never carries a stale install request, and stay put.
                 self.pending_install_extra = None
+                self.pending_install_provider = None
 
         self.app.push_screen(
             InstallProviderConfirmScreen(provider, extra),
@@ -1294,23 +1727,32 @@ class AuthManagerScreen(ModalScreen[None]):
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
-        providers = sorted(shown | set(self._install_extras))
+        # Resolve each manageable entry's auth status once and reuse it for
+        # both ordering and badge rendering. `_auth_status_for` reads the
+        # credential file, so resolving it separately in the sort key and in
+        # `_format_label` would read `auth.json` twice per row (and, on a
+        # corrupt store, log the same warning twice). A single pass halves both.
+        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
+        status_by_key = {key: _auth_status_for(key) for key in shown | services}
+
+        # Float entries that already have a credential configured to the top so
+        # the keys a user is actively using are easiest to find; everything else
+        # keeps alphabetical order (the `key` tiebreaker). Uninstalled
+        # install-on-select entries are listed afterwards (alphabetically) since
+        # selecting them installs a package rather than managing a key.
+        def sort_key(key: str) -> tuple[int, str]:
+            configured = status_by_key[key].state is ProviderAuthState.CONFIGURED
+            return (0 if configured else 1, key)
+
+        manageable = sorted(status_by_key, key=sort_key)
+        extra_providers = sorted(self._install_extras)
         options = [
-            Option(
-                self._format_label(
-                    provider, installed=provider not in self._install_extras
-                ),
-                id=provider,
-            )
-            for provider in providers
+            Option(self._format_label(key, status=status_by_key[key]), id=key)
+            for key in manageable
         ]
-        # Append non-model services (e.g. Tavily web search) after the model
-        # providers. These are always shown — their key is configurable here
-        # regardless of whether the backing package is installed — so users can
-        # enter it the same way they enter a model-provider key.
         options.extend(
-            Option(self._format_label(service), id=service)
-            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
+            Option(self._format_label(provider, installed=False), id=provider)
+            for provider in extra_providers
         )
         return options, warning
 
@@ -1344,7 +1786,12 @@ class AuthManagerScreen(ModalScreen[None]):
         return uninstalled
 
     @staticmethod
-    def _format_label(provider: str, *, installed: bool = True) -> Content:
+    def _format_label(
+        provider: str,
+        *,
+        installed: bool = True,
+        status: ProviderAuthStatus | None = None,
+    ) -> Content:
         """Build a `Content` label for `provider` showing its credential source.
 
         Args:
@@ -1352,22 +1799,23 @@ class AuthManagerScreen(ModalScreen[None]):
             installed: Whether the provider's integration package is installed.
                 Uninstalled providers render dimmed with a `[not installed]`
                 marker since selecting them prompts an install, not a key.
+            status: Precomputed auth status to render. Pass this when the
+                caller already resolved it to avoid a duplicate credential-file
+                read; resolved on demand when omitted. Ignored for uninstalled
+                providers, which render no badge.
 
         Returns:
             A composed `Content` with the provider label and a status badge.
         """
-        name = _provider_display_name(provider)
+        name = provider_display_name(provider)
         if not installed:
             return Content.assemble(
                 Content.styled(name, "dim"),
                 "  ",
                 Content.styled("[not installed]", "dim"),
             )
-        status = (
-            get_service_auth_status(provider)
-            if is_service(provider)
-            else get_provider_auth_status(provider)
-        )
+        if status is None:
+            status = _auth_status_for(provider)
         badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=name),

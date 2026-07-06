@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -29,6 +30,7 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     ModelConfig,
     ModelProfileEntry,
+    ModelSpec,
     ProviderAuthState,
     ProviderAuthStatus,
     clear_default_model,
@@ -42,6 +44,17 @@ from deepagents_code.model_config import (
 
 logger = logging.getLogger(__name__)
 
+_MODEL_LIST_MAX_HEIGHT = 16
+"""Upper bound (in cells) for the model selector list.
+
+Keep in sync with the `max-height: 16` in the `.model-list` CSS below; Textual
+CSS cannot reference Python constants, so the static cap and the runtime
+`_fit_model_list` clamp must agree.
+"""
+
+_MODEL_LIST_MIN_HEIGHT = 1
+"""Floor (in cells) so the model selector list never collapses to zero."""
+
 _RECENT_SECTION_LABEL = "Recent"
 """Header label for the MRU pseudo-provider section pinned at the top of `/model`.
 
@@ -51,74 +64,73 @@ from the per-provider sections below.
 """
 
 
-_RECOMMENDED_MODELS: frozenset[str] = frozenset(
-    {
-        "anthropic:claude-opus-4-6",
-        "anthropic:claude-opus-4-7",
-        "anthropic:claude-sonnet-4-6",
-        "baseten:deepseek-ai/DeepSeek-V4-Pro",
-        "baseten:moonshotai/Kimi-K2.6",
-        "baseten:moonshotai/Kimi-K2.7-Code",
-        "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-        "baseten:zai-org/GLM-5",
-        "baseten:zai-org/GLM-5.2",
-        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-        "fireworks:accounts/fireworks/models/glm-5p1",
-        "fireworks:accounts/fireworks/models/glm-5p2",
-        "fireworks:accounts/fireworks/models/kimi-k2p6",
-        "fireworks:accounts/fireworks/models/kimi-k2p7-code",
-        "fireworks:accounts/fireworks/models/minimax-m2p7",
-        "fireworks:accounts/fireworks/models/minimax-m3",
-        "fireworks:accounts/fireworks/models/qwen3p6-plus",
-        "fireworks:accounts/fireworks/models/qwen3p7-plus",
-        "google_genai:gemini-3-flash-preview",
-        "google_genai:gemini-3.1-pro-preview",
-        "ollama:deepseek-v4-flash:cloud",
-        "ollama:deepseek-v4-pro:cloud",
-        "ollama:glm-5.1:cloud",
-        "ollama:kimi-k2.6:cloud",
-        "ollama:minimax-m2.7:cloud",
-        "openai:gpt-5.4",
-        "openai:gpt-5.4-mini",
-        "openai:gpt-5.4-pro",
-        "openai:gpt-5.5",
-        "openai:gpt-5.5-pro",
-        "openai_codex:gpt-5.2",
-        "openai_codex:gpt-5.3-codex",
-        "openai_codex:gpt-5.4",
-        "openai_codex:gpt-5.4-mini",
-        "openai_codex:gpt-5.5",
-        "openrouter:anthropic/claude-opus-4.6",
-        "openrouter:anthropic/claude-opus-4.7",
-        "openrouter:anthropic/claude-opus-4.7-fast",
-        "openrouter:anthropic/claude-sonnet-4.6",
-        "openrouter:deepseek/deepseek-v4-flash",
-        "openrouter:deepseek/deepseek-v4-flash:free",
-        "openrouter:deepseek/deepseek-v4-pro",
-        "openrouter:google/gemini-3-flash-preview",
-        "openrouter:google/gemini-3.1-pro-preview",
-        "openrouter:minimax/minimax-m2.7",
-        "openrouter:moonshotai/kimi-k2.6",
-        "openrouter:moonshotai/kimi-k2.7-code",
-        "openrouter:openai/gpt-5.4",
-        "openrouter:openai/gpt-5.4-mini",
-        "openrouter:openai/gpt-5.4-pro",
-        "openrouter:openai/gpt-5.5",
-        "openrouter:openai/gpt-5.5-pro",
-        "openrouter:openrouter/fusion",
-        "openrouter:qwen/qwen3.7-plus",
-        "openrouter:z-ai/glm-5",
-        "openrouter:z-ai/glm-5.1",
-        "openrouter:z-ai/glm-5.2",
-    }
-)
-"""Hand-curated frontier-tier models promoted across the UI.
+_RECOMMENDED_MODELS: dict[str, str] = {
+    "anthropic:claude-opus-4-7": "Claude Opus 4.7",
+    "anthropic:claude-opus-4-8": "Claude Opus 4.8",
+    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
+    "baseten:moonshotai/Kimi-K2.7-Code": "Kimi K2.7 Code",
+    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
+    "baseten:zai-org/GLM-5.2": "GLM 5.2",
+    "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
+    "fireworks:accounts/fireworks/models/kimi-k2p7-code": "Kimi K2.7 Code",
+    "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
+    "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
+    "google_genai:gemini-3.5-flash": "Gemini 3.5 Flash",
+    "google_genai:gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
+    "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
+    "ollama:glm-5.2:cloud": "GLM 5.2",
+    "ollama:kimi-k2.7-code:cloud": "Kimi K2.7 Code",
+    "ollama:minimax-m3:cloud": "MiniMax-M3",
+    "openai:gpt-5.4": "GPT-5.4",
+    "openai:gpt-5.4-mini": "GPT-5.4 mini",
+    "openai:gpt-5.4-pro": "GPT-5.4 Pro",
+    "openai:gpt-5.5": "GPT-5.5",
+    "openai:gpt-5.5-pro": "GPT-5.5 Pro",
+    "openai_codex:gpt-5.2": "GPT-5.2",
+    "openai_codex:gpt-5.3-codex": "GPT-5.3 Codex",
+    "openai_codex:gpt-5.4": "GPT-5.4",
+    "openai_codex:gpt-5.4-mini": "GPT-5.4 mini",
+    "openai_codex:gpt-5.5": "GPT-5.5",
+    "openrouter:anthropic/claude-opus-4.6": "Claude Opus 4.6",
+    "openrouter:anthropic/claude-opus-4.7": "Claude Opus 4.7",
+    "openrouter:anthropic/claude-opus-4.7-fast": "Claude Opus 4.7 Fast",
+    "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
+    "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
+    "openrouter:deepseek/deepseek-v4-flash": "DeepSeek V4 Flash",
+    "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
+    "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "openrouter:google/gemini-3.5-flash": "Gemini 3.5 Flash",
+    "openrouter:google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+    "openrouter:moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
+    "openrouter:openai/gpt-5.4": "GPT-5.4",
+    "openrouter:openai/gpt-5.4-mini": "GPT-5.4 mini",
+    "openrouter:openai/gpt-5.4-pro": "GPT-5.4 Pro",
+    "openrouter:openai/gpt-5.5": "GPT-5.5",
+    "openrouter:openai/gpt-5.5-pro": "GPT-5.5 Pro",
+    "openrouter:openrouter/fusion": "OpenRouter Fusion",
+    "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
+    "openrouter:z-ai/glm-5.2": "GLM 5.2",
+}
+"""Hand-curated frontier-tier models promoted across the UI, mapped to a
+human-readable display name.
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
-"Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
-providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
-listed under each provider intentionally so the user can pick whichever
-provider they have credentials for.
+"Recommended only" toggle (Ctrl+R). Membership tests and iteration operate on
+the spec keys; the names are a display fallback for `_get_model_display_name`
+when a provider package (and thus its profile `name`) is not installed — the
+common case for uninstalled recommendations and onboarding, where the raw
+model id (e.g. `accounts/fireworks/models/kimi-k2p7-code`) would otherwise
+show. When a profile is available its upstream `name` wins, so these stay a
+safety net rather than a second source of truth.
+
+Same model IDs may appear under multiple providers (e.g. Kimi K2.7 Code via
+`baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
+provider intentionally so the user can pick whichever provider they have
+credentials for.
 """
 
 
@@ -155,6 +167,7 @@ class ModelOption(Static):
         *,
         auth_status: ProviderAuthStatus | None = None,
         classes: str = "",
+        show_provider: bool = True,
     ) -> None:
         """Initialize a model option.
 
@@ -166,10 +179,18 @@ class ModelOption(Static):
             index: The index of this option in the filtered list.
             auth_status: Provider auth/readiness status.
             classes: CSS classes for styling.
+            show_provider: Whether the row appends a dim `(provider)` tag after
+                the model name. `True` for the cross-provider "Recent" section,
+                which has no provider header to disambiguate the same model
+                offered by multiple providers; `False` for provider-grouped
+                rows where the header already names the provider. Persisted on
+                the widget so incremental relabels in `_move_selection`
+                reproduce the same display.
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
         self.index = index
+        self.show_provider = show_provider
         self.auth_status = auth_status or ProviderAuthStatus(
             state=ProviderAuthState.UNKNOWN,
             provider=provider,
@@ -251,9 +272,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen > Vertical {
-        width: 80;
+        width: 76;
         max-width: 90%;
-        height: 80%;
+        height: auto;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -288,8 +309,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-list {
-        height: 1fr;
-        min-height: 5;
+        height: auto;
+        min-height: 1;
+        max-height: 16;  /* keep in sync with `_MODEL_LIST_MAX_HEIGHT` */
         scrollbar-gutter: stable;
         background: $background;
     }
@@ -331,7 +353,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-selector-help {
-        height: 1;
+        height: auto;  /* keep auto so the standard footer wraps; see _help_text */
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -441,9 +463,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+R toggle and the Esc hint;
-        Escape stays bound but is not advertised. Standard mode shows
-        "Esc cancel".
+        Curated/onboarding mode omits the Ctrl+S and Ctrl+R hints. Escape stays
+        bound but is left off the hint line — modal dismissal via Escape is
+        conventional, and advertising it would only lengthen an already-wrapping
+        line. In standard mode the full line exceeds the modal width, so the
+        help `Static` is sized to grow (auto height) and wraps to two rows
+        rather than clipping the trailing hints.
 
         Returns:
             The bullet-separated help line.
@@ -451,11 +476,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         glyphs = get_glyphs()
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Tab autocomplete",
             "Enter select",
-            "Ctrl+S set default",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+R recommended", "Esc cancel"))
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -473,6 +498,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if model_spec == current_spec:
                 return i
         return 0
+
+    def _initial_selected_index(self) -> int:
+        """Return the default highlighted row for the current selector mode."""
+        if self._curated:
+            return 0
+        return self._find_current_model_index()
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -526,6 +557,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
         *,
         include_uninstalled: bool = True,
+        include_recent: bool = True,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -539,8 +571,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 integration isn't installed, added as greyed-out
                 install-required rows; (2) the provider is installed but its
                 upstream profiles omit the model, added as normal selectable
-                rows. Onboarding sets this `False` because it has a dedicated
-                dependency-install step.
+                rows.
+            include_recent: When `True`, load the recent-models MRU so the
+                pinned "Recent" section can render. Onboarding sets this
+                `False`: first-run users have never picked a model, and the
+                startup default-fallback resolution writes its auto-detected
+                pick into the MRU, which would otherwise surface as a bogus
+                "Recent" entry the user never chose.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -562,10 +599,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
 
             # Seeded from the discovered models; a recommended spec already
-            # surfaced here is skipped below. Recommended specs are unique (a
-            # frozenset iterated once), so this entry guard is the only dedup
-            # needed and the set never has to grow inside the loop.
+            # surfaced here is skipped below. Recommended specs are unique (dict
+            # keys iterated once), so this entry guard is the only dedup needed
+            # and the set never has to grow inside the loop.
             existing_specs = {spec for spec, _ in all_models}
+            installed_recommended: list[tuple[str, str]] = []
+            uninstalled_recommended: list[tuple[str, str]] = []
             for spec in sorted(_RECOMMENDED_MODELS):
                 if spec in existing_specs:
                     continue
@@ -594,15 +633,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     # or filtered out). Add it as a normal selectable row so the
                     # hardcoded recommendation isn't silently dropped when the
                     # profile list lags.
-                    all_models.append((spec, provider))
+                    installed_recommended.append((spec, provider))
                     continue
                 if extra is None or provider_installed:
                     continue
                 install_extras[provider] = extra
-                all_models.append((spec, provider))
+                uninstalled_recommended.append((spec, provider))
+            all_models.extend(installed_recommended)
+            all_models.extend(uninstalled_recommended)
 
         profiles = get_model_profiles(cli_override=cli_override)
-        recent_specs = load_recent_models()
+        recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
             config.default_model,
@@ -678,6 +719,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             colors = theme.get_theme_colors(self)
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", colors.success)
+        self.call_after_refresh(self._fit_model_list)
 
         # Focus the filter input immediately so the user can start typing
         # while model data loads.
@@ -689,7 +731,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             data = await asyncio.to_thread(
                 self._load_model_data,
                 self._cli_profile_override,
-                include_uninstalled=not self._curated,
+                include_uninstalled=True,
+                include_recent=not self._curated,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -717,7 +760,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._install_extras = data.install_extras
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
-        self._selected_index = self._find_current_model_index()
+        self._selected_index = self._initial_selected_index()
         self._loaded = True
 
         # Re-apply any filter text the user typed while data was loading
@@ -726,6 +769,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._update_display()
         self._update_footer()
+
+    def on_resize(self) -> None:
+        """Refit the model list when terminal dimensions change."""
+        self.call_after_refresh(self._fit_model_list)
+
+    def _fit_model_list(self) -> None:
+        """Cap the model list so modal controls stay visible."""
+        try:
+            container = self.query_one(Vertical)
+        except NoMatches:
+            # This runs deferred via `call_after_refresh`/`on_resize`; the
+            # screen may have been popped before it fires (e.g. a resize racing
+            # dismissal). Sizing is cosmetic, so skip quietly but leave a
+            # breadcrumb rather than letting it surface in the event loop.
+            logger.debug(
+                "Skipping model-list refit; screen not mounted",
+                exc_info=True,
+            )
+            return
+        # The screen is still mounted, so `.model-list` (always composed) must
+        # exist; a missing body here is a structural regression, not the
+        # teardown race, so let `NoMatches` surface rather than silently
+        # rendering an uncapped list.
+        body = self.query_one(".model-list", VerticalScroll)
+        non_body_height = max(0, container.region.height - body.region.height)
+        available_height = self.size.height - non_body_height
+        max_height = max(
+            _MODEL_LIST_MIN_HEIGHT,
+            min(_MODEL_LIST_MAX_HEIGHT, available_height),
+        )
+        current = body.styles.max_height
+        if current is not None and current.cells == max_height:
+            return
+        body.styles.max_height = max_height
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models as user types.
@@ -771,17 +848,44 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         query = self._filter_text.strip()
         if not query:
             self._filtered_models = list(self._all_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         tokens = query.split()
         search_models = self._all_models if self._curated else self._unfiltered_models
 
+        # Match against what the user actually sees, not just the raw spec: the
+        # friendly model name and provider label are folded into the search
+        # haystack so e.g. "Opus 4.8" finds `anthropic:claude-opus-4-8` (whose
+        # spec, with hyphens, the "4.8" token can't subsequence-match) and
+        # "OpenAI Codex" finds the codex rows. The spec stays in the haystack so
+        # existing muscle-memory queries keep working.
+        from deepagents_code.widgets.auth import provider_display_name
+
+        config = ModelConfig.load()
+        provider_labels: dict[str, str] = {}
+
+        # Resolve the display labels up front, *outside* the try below. That
+        # fallback exists for `Matcher` choking on edge-case input; folding
+        # label resolution into it would misattribute an error from
+        # `_get_model_display_name`/`provider_display_name` to the matcher and
+        # silently drop the user's filter. Any failure here should surface, not
+        # masquerade as "no matches".
+        haystacks: list[tuple[str, str, str]] = []
+        for spec, provider in search_models:
+            label = provider_labels.get(provider)
+            if label is None:
+                label = provider_display_name(provider, config)
+                provider_labels[provider] = label
+            haystacks.append(
+                (spec, provider, f"{spec} {self._get_model_display_name(spec)} {label}")
+            )
+
         try:
             matchers = [Matcher(token, case_sensitive=False) for token in tokens]
             scored: list[tuple[float, str, str]] = []
-            for spec, provider in search_models:
-                scores = [m.match(spec) for m in matchers]
+            for spec, provider, haystack in haystacks:
+                scores = [m.match(haystack) for m in matchers]
                 if all(s > 0 for s in scores):
                     scored.append((min(scores), spec, provider))
         except Exception:
@@ -792,7 +896,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 exc_info=True,
             )
             self._filtered_models = list(search_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         self._filtered_models = [
@@ -849,6 +953,46 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return i
         return first_match or 0
 
+    # Lower ranks render first: providers the user can use right now lead,
+    # then providers whose readiness is unknown, then providers needing a
+    # missing credential, then ones that aren't even installed. A missing
+    # credential sits above not-installed since fixing it is just an auth
+    # prompt away.
+    _PROVIDER_AVAILABLE_RANK = 0
+    _PROVIDER_UNKNOWN_RANK = 1
+    _PROVIDER_MISSING_RANK = 2
+    _PROVIDER_UNINSTALLED_RANK = 3
+
+    def _provider_availability_rank(
+        self,
+        provider: str,
+        auth_status: ProviderAuthStatus,
+    ) -> int:
+        """Return a sort rank that floats usable providers to the top.
+
+        Args:
+            provider: Provider name being ranked.
+            auth_status: The provider's resolved auth/readiness status.
+
+        Returns:
+            A rank where lower values sort earlier: ready-to-use providers
+                first, then unknown, then missing-credential, then
+                not-installed providers.
+        """
+        if provider in self._install_extras:
+            return self._PROVIDER_UNINSTALLED_RANK
+        state = auth_status.state
+        if state in {
+            ProviderAuthState.CONFIGURED,
+            ProviderAuthState.NOT_REQUIRED,
+            ProviderAuthState.IMPLICIT,
+            ProviderAuthState.MANAGED,
+        }:
+            return self._PROVIDER_AVAILABLE_RANK
+        if state is ProviderAuthState.UNKNOWN:
+            return self._PROVIDER_UNKNOWN_RANK
+        return self._PROVIDER_MISSING_RANK
+
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
 
@@ -887,6 +1031,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     empty_content = Content.styled("No matching models", "dim")
             await self._options_container.mount(Static(empty_content))
             self._update_footer()
+            self.call_after_refresh(self._fit_model_list)
             return
 
         has_filter = bool(self._filter_text.strip())
@@ -914,6 +1059,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in source_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
+
+        # Resolve provider auth upfront so it can both drive the
+        # availability-first ordering below and feed the widget-building loop.
+        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
+
+        # In the default (unfiltered) view, float providers the user can
+        # actually use to the top so a usable model is reachable without
+        # scrolling or searching. Providers needing missing credentials or a
+        # package install sink to the bottom. A search already orders by match
+        # score (installed providers first), so leave that ordering untouched.
+        if not has_filter:
+            ordered_providers = sorted(
+                by_provider,
+                key=lambda p: self._provider_availability_rank(p, auth_statuses[p]),
+            )
+            by_provider = {p: by_provider[p] for p in ordered_providers}
 
         # Rebuild _filtered_models to match the rendered order (recents first,
         # then provider-grouped). Without this, _filtered_models stays in
@@ -944,11 +1105,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current_spec = None
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
-
-        # Resolve provider auth upfront so the widget-building loop
-        # stays focused on layout
-        auth_providers = {provider for _, provider in self._filtered_models}
-        auth_statuses = {p: get_provider_auth_status(p) for p in auth_providers}
 
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
@@ -994,9 +1150,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     selected_widget = widget
                 flat_index += 1
 
+        # Resolve friendly provider labels via the shared helper so headers
+        # match the `/auth` and install UIs (e.g. `openai_codex` renders as
+        # "OpenAI Codex (ChatGPT login)"). Load config once; the helper reads a
+        # user-configured `display_name` before the built-in map.
+        from deepagents_code.widgets.auth import provider_display_name
+
+        config = ModelConfig.load()
+
         for provider, model_entries in by_provider.items():
             # Provider header; auth/readiness indicator appended only when non-empty.
             auth_status = auth_statuses[provider]
+            provider_label = provider_display_name(provider, config)
             if provider in self._install_extras:
                 auth_indicator = self._install_indicator()
             else:
@@ -1004,13 +1169,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if auth_indicator:
                 header_content = Content.from_markup(
                     "[bold]$provider[/bold] [dim]$auth[/dim]",
-                    provider=provider,
+                    provider=provider_label,
                     auth=auth_indicator,
                 )
             else:
                 header_content = Content.from_markup(
                     "[bold]$provider[/bold]",
-                    provider=provider,
+                    provider=provider_label,
                 )
             all_widgets.append(Static(header_content, classes="model-provider-header"))
 
@@ -1025,7 +1190,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     classes += " model-option-current"
 
                 label = self._build_option_label(
-                    model_spec, provider, auth_status, selected=is_selected
+                    model_spec,
+                    provider,
+                    auth_status,
+                    selected=is_selected,
+                    show_provider=False,
                 )
                 widget = ModelOption(
                     label=label,
@@ -1034,6 +1203,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     index=flat_index,
                     auth_status=auth_status,
                     classes=classes,
+                    show_provider=False,
                 )
                 all_widgets.append(widget)
                 self._option_widgets.append(widget)
@@ -1056,6 +1226,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 selected_widget.scroll_visible(animate=False)
 
         self._update_footer()
+        self.call_after_refresh(self._fit_model_list)
 
     @staticmethod
     def _format_auth_indicator(
@@ -1086,8 +1257,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         auth_status: ProviderAuthStatus,
         *,
         selected: bool,
+        show_provider: bool = True,
     ) -> Content:
         """Build a model-option label from the current screen state.
+
+        Every row shows the model's human-readable name (via
+        `_get_model_display_name`). The cross-provider "Recent" section
+        (`show_provider=True`) additionally appends a dim `(provider)` tag,
+        since it has no provider header to disambiguate the same model offered
+        by multiple providers.
 
         Centralizes the per-row flag derivation (current/default/status/
         `install_required`) shared by the full rebuild in `_update_display`
@@ -1102,10 +1280,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 install-required set.
             auth_status: Provider auth/readiness status for the row.
             selected: Whether this row is the highlighted one.
+            show_provider: Whether to append the dim `(provider)` tag — `True`
+                for Recent rows, `False` for provider-grouped rows. The tag
+                uses the compact brand label (`provider_short_name`).
 
         Returns:
             Styled `Content` label.
         """
+        provider_label: str | None = None
+        if show_provider:
+            from deepagents_code.widgets.auth import provider_short_name
+
+            provider_label = provider_short_name(provider)
         return self._format_option_label(
             model_spec,
             selected=selected,
@@ -1114,6 +1300,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             is_default=model_spec == self._default_spec,
             status=self._get_model_status(model_spec),
             install_required=provider in self._install_extras,
+            display_name=self._get_model_display_name(model_spec),
+            provider_label=provider_label,
         )
 
     @staticmethod
@@ -1126,6 +1314,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         is_default: bool = False,
         status: str | None = None,
         install_required: bool = False,
+        display_name: str | None = None,
+        provider_label: str | None = None,
     ) -> Content:
         """Build the display label for a model option.
 
@@ -1141,6 +1331,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             install_required: Whether the provider's integration package is not
                 installed; renders the spec dimmed since selecting it prompts
                 an install rather than switching immediately.
+            display_name: Text to show in place of the full `model_spec`. When
+                `None`, the full spec is shown. Both the Recent and
+                provider-grouped rows pass the model's human-readable name (see
+                `_get_model_display_name`).
+            provider_label: When set (and `display_name` is given), appends a
+                dim ` (provider)` tag after the name — used by the
+                cross-provider Recent section, which has no provider header to
+                disambiguate the same model across providers. `None` for
+                provider-grouped rows. Ignored when `display_name` is `None`,
+                since the raw spec already embeds the provider.
 
         Returns:
             Styled Content label.
@@ -1148,19 +1348,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         colors = theme.get_theme_colors()
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
+        display = model_spec if display_name is None else display_name
         # When selected, skip the inline primary color — CSS already flips the
         # row to ($primary bg, $background fg). Keep `bold` so the default
         # emphasis survives both states.
         if install_required and not selected:
-            spec = Content.styled(model_spec, "dim")
+            spec = Content.styled(display, "dim")
         elif auth_status.blocks_start:
-            spec = Content.styled(model_spec, colors.warning)
+            spec = Content.styled(display, colors.warning)
         elif is_default and selected:
-            spec = Content.styled(model_spec, "bold")
+            spec = Content.styled(display, "bold")
         elif is_default:
-            spec = Content.styled(model_spec, f"bold {colors.primary}")
+            spec = Content.styled(display, f"bold {colors.primary}")
         else:
-            spec = Content(model_spec)
+            spec = Content(display)
+        # Dim provider tag disambiguates Recent rows (no provider header).
+        # Styled like `(current)` — always dim, so it survives row selection.
+        # Requires a friendly `display_name`: tagging the raw spec (which
+        # already embeds the provider) would print the provider twice.
+        if provider_label and display_name is not None:
+            provider_tag = Content.styled(f" ({provider_label})", "dim")
+        else:
+            provider_tag = Content("")
         suffix = Content.styled(" (current)", "dim") if current else Content("")
         if is_default and selected:
             default_suffix = Content.styled(" (default)", "bold")
@@ -1174,7 +1383,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             status_suffix = Content.styled(f" ({status})", colors.warning)
         else:
             status_suffix = Content("")
-        return Content.assemble(cursor, spec, suffix, default_suffix, status_suffix)
+        return Content.assemble(
+            cursor, spec, provider_tag, suffix, default_suffix, status_suffix
+        )
 
     @staticmethod
     def _format_footer(
@@ -1309,6 +1520,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return None
         return profile.get("status")
 
+    def _get_model_display_name(self, model_spec: str) -> str:
+        """Resolve the friendly display name for a model spec.
+
+        Used by every row (provider-grouped and the cross-provider Recent
+        section) and folded into the search haystack. Prefers the profile's
+        human-readable `name` (e.g. `'Claude Sonnet 5'`), which reads better
+        than the raw model id. When no profile is loaded — the case for
+        uninstalled recommendations and onboarding — falls back to the
+        hardcoded name in `_RECOMMENDED_MODELS`, then the model portion of the
+        spec, then the spec itself.
+
+        Args:
+            model_spec: The `provider:model` string.
+
+        Returns:
+            The display name for the row.
+        """
+        entry = self._profiles.get(model_spec)
+        if entry:
+            profile = entry.get("profile")
+            # `profile` originates from provider packages, so guard its type
+            # rather than trusting the schema before `.get`.
+            if isinstance(profile, dict):
+                name = profile.get("name")
+                if isinstance(name, str) and name:
+                    return name
+        recommended = _RECOMMENDED_MODELS.get(model_spec)
+        if recommended:
+            return recommended
+        parsed = ModelSpec.try_parse(model_spec)
+        # `parsed.model` can be empty for a malformed spec like `provider:`;
+        # fall back to the raw spec rather than rendering a blank row.
+        return parsed.model if parsed and parsed.model else model_spec
+
     def _update_footer(self) -> None:
         """Update the detail footer for the currently highlighted model."""
         footer = self.query_one("#model-detail-footer", Static)
@@ -1348,6 +1593,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 old_widget.provider,
                 old_widget.auth_status,
                 selected=False,
+                show_provider=old_widget.show_provider,
             )
         )
 
@@ -1360,6 +1606,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 new_widget.provider,
                 new_widget.auth_status,
                 selected=True,
+                show_provider=new_widget.show_provider,
             )
         )
 
@@ -1466,18 +1713,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._dismiss_with_result((model_spec, provider))
             return
 
-        # Onboarding (`_curated`) runs its own dependency-install step and never
-        # surfaces uninstalled providers, so skip install routing there.
-        if not self._curated:
-            from deepagents_code.config_manifest import (
-                is_provider_package_installed,
-                provider_install_extra,
-            )
+        from deepagents_code.config_manifest import (
+            is_provider_package_installed,
+            provider_install_extra,
+        )
 
-            extra = provider_install_extra(provider)
-            if extra is not None and not is_provider_package_installed(provider):
-                self._prompt_install_provider(model_spec, provider, extra)
+        extra = provider_install_extra(provider)
+        if extra is not None and not is_provider_package_installed(provider):
+            if self._curated:
+                # Onboarding installs first, then prompts for credentials from the
+                # launch flow, matching the dependency screen's auto-install copy.
+                self._dismiss_with_result((model_spec, provider))
                 return
+            self._prompt_install_provider(model_spec, provider, extra)
+            return
 
         status = get_provider_auth_status(provider)
         if not status.blocks_start:

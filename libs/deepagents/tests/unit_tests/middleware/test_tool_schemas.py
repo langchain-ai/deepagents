@@ -25,6 +25,7 @@ class TestFilesystemToolSchemas:
             "read_file": ["file_path", "offset", "limit"],
             "write_file": ["file_path", "content"],
             "edit_file": ["file_path", "old_string", "new_string", "replace_all"],
+            "delete": ["file_path"],
             "glob": ["pattern", "path"],
             "grep": ["pattern", "path", "glob", "output_mode"],
             "execute": ["command"],

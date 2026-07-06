@@ -135,12 +135,88 @@ def _terminal_row_count(console: "Console", text: str) -> int:
     return max(1, len(console.render_lines(Text(text), console.options)))
 
 
-def _confirm_launch_after_restart(console: "Console", version: str) -> None:
-    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+def _should_check_teardown_thread(
+    thread_id: str | None,
+    *,
+    request_count: int,
+    resume_thread: str | None,
+) -> bool:
+    """Return whether teardown should query for checkpointed thread content.
+
+    Any session that owns a thread may have persisted a checkpoint, so the only
+    gate is whether a thread exists. `request_count` and `resume_thread` are
+    accepted and ignored: an interrupted first turn can checkpoint before any
+    usage metadata is recorded, so they are not a reliable proxy. They remain in
+    the signature so callers need not change if the gate later grows selective.
+    """
+    del request_count, resume_thread
+    return bool(thread_id)
+
+
+def _render_teardown_thread_hints(
+    console: "Console",
+    thread_id: str,
+    *,
+    return_code: int,
+) -> None:
+    """Print the LangSmith link and resume hint for a checkpointed thread.
+
+    Both hints share a single `thread_exists` lookup to avoid spinning up a
+    second event loop and aiosqlite connection during teardown. Every failure is
+    logged at debug and swallowed: teardown convenience output must never crash
+    the exit path.
+
+    Args:
+        console: Console to print the hints to.
+        thread_id: Thread whose checkpoints back the hints.
+        return_code: Process exit code; the resume hint is shown only on a clean
+            exit (`0`).
+    """
+    from rich.style import Style
+    from rich.text import Text
+
+    from deepagents_code.config import build_langsmith_thread_url
+    from deepagents_code.sessions import thread_exists
+
+    try:
+        thread_has_checkpoints = asyncio.run(thread_exists(thread_id))
+    except Exception:
+        logger.debug(
+            "Could not check thread existence on teardown",
+            exc_info=True,
+        )
+        return
+
+    if not thread_has_checkpoints:
+        return
+
+    try:
+        thread_url = build_langsmith_thread_url(thread_id)
+        if thread_url:
+            console.print()
+            ls_hint = Text("View this thread in LangSmith: ", style="dim")
+            ls_hint.append(thread_url, style=Style(dim=True, link=thread_url))
+            console.print(ls_hint)
+    except Exception:
+        logger.debug(
+            "Could not display LangSmith thread URL on teardown",
+            exc_info=True,
+        )
+
+    if return_code == 0:
+        console.print()
+        console.print("[dim]Resume this thread with:[/dim]")
+        hint = Text("dcode -r ", style="cyan")
+        hint.append(str(thread_id), style="cyan")
+        console.print(hint)
+
+
+def _confirm_update_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as a stable update status.
 
     The `Updated to v{version}. Launching...` line is printed by the previous
     generation right before `os.execv`; this runs in the re-exec'd process to
-    retroactively confirm the launch once the new version is actually running.
+    clear the transient action once the new version is actually running.
 
     The in-place rewrite is attempted only on a real terminal: `os.execv` does
     nothing between that print and this process's first output, so the cursor
@@ -173,7 +249,7 @@ def _confirm_launch_after_restart(console: "Console", version: str) -> None:
                 (ControlType.ERASE_IN_LINE, 2),
             )
         )
-    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+    console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
 def _run_startup_auto_update(console: "Console") -> None:
@@ -204,6 +280,7 @@ def _run_startup_auto_update(console: "Console") -> None:
         is_update_check_enabled,
         mark_auto_update_default_acknowledged,
         perform_upgrade,
+        release_requires_prereleases,
         should_announce_auto_update_default,
         upgrade_command,
     )
@@ -219,16 +296,16 @@ def _run_startup_auto_update(console: "Console") -> None:
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
         if restarted_for is not None and is_installed_version_at_least(restarted_for):
             # The re-exec landed on the upgraded version, so the prior
-            # "Launching..." line is now accurate as "Launched.".
+            # "Launching..." line can be replaced with a stable completed status.
             try:
-                _confirm_launch_after_restart(console, restarted_for)
+                _confirm_update_after_restart(console, restarted_for)
             except Exception:
                 # The upgrade already succeeded; this rewrite is purely
                 # cosmetic. Swallow rendering glitches with their own guard so
                 # the outer fail-soft handler does not misreport a successful
                 # upgrade as "Auto-update failed". The prior "Launching..."
                 # line simply stays.
-                logger.debug("Post-restart launch confirmation failed", exc_info=True)
+                logger.debug("Post-restart update confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
@@ -243,7 +320,11 @@ def _run_startup_auto_update(console: "Console") -> None:
             # reports as available: the install did not change the running
             # version. Bail out instead of upgrading and restarting forever
             # (this runs before the TUI, so there is no in-app way to stop it).
-            cmd = upgrade_command()
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] v{latest} still reports as "
                 "available after an automatic update; skipping auto-update to "
@@ -295,7 +376,9 @@ def _run_startup_auto_update(console: "Console") -> None:
             highlight=False,
             markup=False,
         )
-        success, output = asyncio.run(perform_upgrade(log_path=log_path))
+        success, output = asyncio.run(
+            perform_upgrade(log_path=log_path, target_version=latest)
+        )
         if success:
             # If a stale `dcode` is earlier on PATH, the auto-restart would
             # re-exec into the old binary and the user would silently keep
@@ -345,7 +428,11 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
-        cmd = upgrade_command()
+        update_needs_prereleases = release_requires_prereleases(latest)
+        cmd = upgrade_command(
+            include_prereleases=True if update_needs_prereleases else None,
+            version=latest if update_needs_prereleases else None,
+        )
         detail = f": {escape(output[:200])}" if output else ""
         console.print(
             f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -491,15 +578,103 @@ def _parse_interpreter_tools_flag(
     return names
 
 
-def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
-    """Warn that `--interpreter-tools` is a no-op without `--interpreter`.
+def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
+    """Return whether the JS interpreter should run for these CLI args.
 
-    The PTC allowlist applies only when the interpreter middleware is enabled,
-    and on the CLI that gate is the `--interpreter` flag alone (`args.interpreter`).
-    `[interpreter]` config is not consulted: `config.toml`'s `enable_interpreter`
-    does not currently enable the middleware on this path, so a missing
-    `--interpreter` always means the flag has no effect. If that ever changes,
-    this check must consider config to avoid a false-positive warning.
+    Delegates to `_resolve_enable_interpreter` so the CLI pre-flight gate and the
+    stored `ServerConfig` share one resolution rule and cannot drift. The default
+    comes from `[interpreter].enable_interpreter` in local mode and is disabled
+    for remote sandboxes, where `CodeInterpreterMiddleware` is unsupported;
+    explicit `--interpreter`/`--no-interpreter` overrides the default.
+
+    `args.sandbox` is already normalized by `parse_args` (the bare-flag sentinel
+    is resolved to a provider name), so the resolver sees the concrete value.
+    """
+    from deepagents_code._server_config import _resolve_enable_interpreter
+
+    return _resolve_enable_interpreter(args.interpreter, args.sandbox)
+
+
+def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
+    """Warn that a remote sandbox suppressed the otherwise-default interpreter.
+
+    With `js_eval` on by default in local mode, a `--sandbox` run silently drops
+    it (the middleware is unsupported under a remote sandbox). This prints to
+    stderr on the non-interactive (`-n`) path; the interactive TUI surfaces the
+    same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_disabled_by_sandbox`).
+
+    Keyed on the raw `args.interpreter` tri-state so an explicit
+    `--no-interpreter` opt-out stays silent (the predicate only fires for the
+    unset default).
+    """
+    from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
+    from deepagents_code.config import settings
+
+    if not _interpreter_suppressed_by_sandbox(
+        enable_interpreter=args.interpreter,
+        sandbox_type=args.sandbox,
+        local_default=settings.enable_interpreter,
+    ):
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] JS interpreter (`js_eval`) is unavailable "
+        "under a remote sandbox; it runs in local mode only."
+    )
+
+
+def _resolve_rubric_text(rubric: str | None) -> str | None:
+    """Resolve the rubric from `--rubric` into one string.
+
+    `--rubric` accepts literal text, or `@path` to read a file. File paths
+    may be absolute, relative to the `dcode` process working directory, or
+    `~`-expanded home paths.
+
+    Args:
+        rubric: Value of `--rubric` (literal text or `@path`), or `None`.
+
+    Returns:
+        The resolved rubric text, or `None` when the flag was not supplied.
+
+    Raises:
+        ValueError: If the rubric is empty, or a referenced file is missing,
+            unreadable, or empty.
+    """
+    if rubric is None:
+        return None
+
+    # An `@`-prefixed value is always read as a file path. The path may be
+    # absolute, relative to the `dcode` process working directory, or `~`-based.
+    # There is no way to pass a literal rubric that begins with `@` (put such
+    # text in a file).
+    if rubric.startswith("@"):
+        path = rubric[1:]
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            # `UnicodeError` (e.g. `UnicodeDecodeError`) subclasses `ValueError`,
+            # not `OSError`. Catch it here so a binary/non-UTF-8 file yields the
+            # framed "Could not read rubric file" message instead of a raw codec
+            # error.
+            msg = f"Could not read rubric file {path!r}: {exc}."
+            raise ValueError(msg) from exc
+        if not text.strip():
+            msg = f"Rubric file {path!r} is empty."
+            raise ValueError(msg)
+        return text.strip()
+
+    if not rubric.strip():
+        msg = "--rubric must not be empty."
+        raise ValueError(msg)
+    return rubric.strip()
+
+
+def _warn_if_interpreter_tools_without_interpreter(
+    args: argparse.Namespace, *, enable_interpreter: bool
+) -> None:
+    """Warn that `--interpreter-tools` is a no-op without the interpreter.
 
     This drives the non-interactive (`-n`) path and prints to stderr. The
     interactive TUI surfaces the same advisory as a startup notification (see
@@ -510,13 +685,13 @@ def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> 
     """
     if args.interpreter_tools is None:
         return
-    if args.interpreter:
+    if enable_interpreter:
         return
     from rich.console import Console as _Console
 
     _Console(stderr=True).print(
         "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
-        "unless --interpreter is set."
+        "when the interpreter is disabled."
     )
 
 
@@ -695,12 +870,14 @@ def _auto_install_ripgrep_cli(
         missing_tools: Tool names reported missing by `check_optional_tools`.
 
     Returns:
-        `missing_tools` with `"ripgrep"` removed once a usable managed binary
-        is on `PATH`, otherwise the list unchanged.
+        `missing_tools` with `"ripgrep"` removed once a usable `rg` is
+        resolved — the managed binary (with `BIN_DIR` prepended to `PATH`) or a
+        system `rg` already on `PATH` — otherwise the list unchanged.
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
         ensure_ripgrep,
+        managed_rg_path,
         prepend_managed_bin_to_path,
     )
 
@@ -727,7 +904,8 @@ def _auto_install_ripgrep_cli(
     if installed is None:
         return missing_tools
 
-    prepend_managed_bin_to_path()
+    if installed == managed_rg_path():
+        prepend_managed_bin_to_path()
     return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
@@ -792,11 +970,7 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
         return PendingNotification(
             key="dep:tavily",
             title="Web search disabled",
-            body=(
-                "No Tavily API key is set, so web search is disabled.\n\n"
-                "Enter a key to store it (takes effect next launch), or get one "
-                "at https://tavily.com"
-            ),
+            body=("Add a Tavily API key to enable web search."),
             actions=(
                 NotificationAction(
                     ActionId.ENTER_API_KEY, "Enter API key", primary=True
@@ -910,6 +1084,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
+    "tools": ("tools_command", "show_tools_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -933,8 +1108,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
-    when no subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
+    commands when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1212,6 +1387,31 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(doctor_parser)
 
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="Manage managed external tools (e.g. ripgrep)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_help")),
+    )
+    add_json_output_arg(tools_parser)
+    tools_sub = tools_parser.add_subparsers(dest="tools_command")
+
+    tools_install = tools_sub.add_parser(
+        "install",
+        help="Install or repair the managed ripgrep binary",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_install_help")),
+    )
+    add_json_output_arg(tools_install)
+
+    tools_list = tools_sub.add_parser(
+        "list",
+        help="List the tools available to the agent",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_list_help")),
+    )
+    add_json_output_arg(tools_list)
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -1361,6 +1561,39 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--goal",
+        dest="goal",
+        metavar="TEXT",
+        help="Goal objective to turn into acceptance criteria. Opens a review "
+        "prompt on interactive launch, then runs the accepted goal as the first "
+        "task.",
+    )
+    parser.add_argument(
+        "--rubric",
+        dest="rubric",
+        metavar="TEXT|@PATH",
+        help="Acceptance criteria the agent self-evaluates against, looping "
+        "until satisfied. Accepts literal text or '@path' to read a file "
+        "(relative to the current working directory; '~' supported). "
+        "Requires -n or piped stdin.",
+    )
+    parser.add_argument(
+        "--rubric-model",
+        dest="rubric_model",
+        metavar="MODEL",
+        help="Model the rubric grader uses (e.g. anthropic:claude-sonnet-4-6). "
+        "Defaults to the main agent model.",
+    )
+    parser.add_argument(
+        "--rubric-max-iterations",
+        dest="rubric_max_iterations",
+        type=positive_int,
+        metavar="N",
+        help="Override grader iterations per rubric attempt before stopping "
+        "(must be >= 1; defaults to the SDK setting).",
+    )
+
+    parser.add_argument(
         "--stdin",
         action="store_true",
         help="Read input from stdin explicitly (instead of auto-detection)",
@@ -1441,9 +1674,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--interpreter",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Enable the JS interpreter (`js_eval`) middleware on the main agent. "
-        "Local mode only; requires the `quickjs` optional extra.",
+        "Enabled by default when not using a sandbox; use --no-interpreter to disable.",
     )
     parser.add_argument(
         "--interpreter-tools",
@@ -1451,7 +1685,7 @@ def parse_args() -> argparse.Namespace:
         metavar="VALUE",
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
         "list of tool names (which may include the 'safe' preset, e.g. "
-        "'safe,task'). Default is no PTC (pure REPL).",
+        "'safe,task'). Default is 'safe' (read-only file tools).",
     )
 
     parser.add_argument(
@@ -1472,7 +1706,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--install",
         metavar="NAME",
-        help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+        help="Install an optional extra (e.g. daytona, fireworks), then exit",
     )
     parser.add_argument(
         "--package",
@@ -1618,11 +1852,13 @@ async def run_textual_cli_async(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    initial_goal: str | None = None,
     startup_cmd: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
+    interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
 ) -> "AppResult":
@@ -1659,6 +1895,8 @@ async def run_textual_cli_async(
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         initial_skill: Optional skill name to invoke when the session starts.
+        initial_goal: Optional goal objective to draft criteria for when the
+            session starts.
         startup_cmd: Shell command to run at startup before the first prompt.
 
             Output is rendered in the transcript; non-zero exits warn but
@@ -1667,11 +1905,16 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
-            the main agent. Local-mode only.
+            the main agent. `None` defers to the sandbox-aware/config default.
+        interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
+            forwarded so the app can tell an explicit opt-out from a
+            sandbox-suppressed default when surfacing the disabled-by-sandbox
+            advisory.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
@@ -1774,6 +2017,7 @@ async def run_textual_cli_async(
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
+            initial_goal=initial_goal,
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
@@ -1781,6 +2025,7 @@ async def run_textual_cli_async(
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
             model_explicitly_set=model_name is not None,
+            interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
         )
     except Exception as e:
@@ -1820,7 +2065,8 @@ async def _run_acp_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
     Returns:
         Exit code for ACP mode.
@@ -2115,12 +2361,20 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt.
 
+    Servers already resolved by the user's `enabled_project_servers` /
+    `disabled_project_servers` lists are shown for transparency but not
+    prompted for (enabled ones load regardless; disabled ones never load).
+    `None` is returned when that leaves nothing to decide. If the user's own
+    allow/deny policy cannot be read, returns `False` (fail closed) rather than
+    prompting under an unknown deny list.
+
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project servers, `False` to deny, or `None`
-            when no project servers exist.
+        `True` to allow project servers, `False` to deny (including when the
+            user's trust policy could not be read), or `None` when there are no
+            project servers whose fate this prompt decides.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2185,20 +2439,85 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
         return True
 
-    # Interactive prompt
+    # Partition by the user's own allow/deny lists (read only from home config,
+    # never the repo — the same boundary the loader enforces). Enabled servers
+    # load regardless of the answer here and disabled ones never load, so the
+    # prompt must not *ask* about them. It still *shows* them, though, so the
+    # user sees what their config decided — notably a repo redefining an
+    # allowlisted name, which binds by name rather than by fingerprint.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
     from rich.console import Console as _Console
+    from rich.markup import escape
+
+    prompt_console = _Console(stderr=True)
+    prompt_servers: list[tuple[str, str, str]] = []
+    preapproved: list[tuple[str, str, str]] = []
+    blocked: list[tuple[str, str, str]] = []
+    for name, kind, summary in all_servers:
+        # Disabled first: reject precedence (a name in both lists is disabled).
+        if name in trust_lists.disabled:
+            blocked.append((name, kind, summary))
+        elif name in trust_lists.enabled:
+            preapproved.append((name, kind, summary))
+        else:
+            prompt_servers.append((name, kind, summary))
+
+    def _print_auto_resolved() -> None:
+        """List servers the config already decided, without asking about them."""
+        if not preapproved and not blocked:
+            return
+        prompt_console.print()
+        prompt_console.print(
+            "[dim]Resolved by your config (not prompted):[/dim]", highlight=False
+        )
+        for name, kind, summary in preapproved:
+            prompt_console.print(
+                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
+                f"(enabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+        for name, kind, summary in blocked:
+            prompt_console.print(
+                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
+                f"(disabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+
+    if trust_lists.read_error is not None:
+        # The user's allow/deny policy could not be read. Fail closed here too
+        # (matching the loader, which forces the config untrusted) instead of
+        # prompting and possibly persisting fingerprint trust under an unknown
+        # deny list. Any env-enabled names still load — the loader re-applies the
+        # lists downstream — but nothing is approved via this prompt.
+        prompt_console.print(
+            f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
+            "project MCP servers as untrusted.[/yellow]",
+            highlight=False,
+        )
+        _print_auto_resolved()
+        return False
+
+    if not prompt_servers:
+        # Nothing left to decide interactively, but surface what the lists
+        # resolved so a load driven purely by config is never fully silent.
+        _print_auto_resolved()
+        return None
 
     docs_url = (
         "https://docs.langchain.com/oss/python/deepagents/code/"
         "mcp-tools#project-level-trust"
     )
-    prompt_console = _Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, kind, summary in all_servers:
-        prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
+    for name, kind, summary in prompt_servers:
+        prompt_console.print(
+            f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+    _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
         f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
@@ -2223,11 +2542,13 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
 
 def _verify_interpreter_or_exit() -> None:
-    """Run the `--interpreter` pre-flight check; print and exit on failure.
+    """Run the interpreter pre-flight check; print and exit on failure.
 
     Called before spawning the langgraph dev server subprocess so a missing
-    `langchain-quickjs` extra surfaces a one-line install hint instead of an
-    opaque "Server process exited with code N" downstream.
+    `langchain-quickjs` dependency surfaces a one-line, actionable hint instead
+    of an opaque "Server process exited with code N" downstream. Gated on the
+    resolved interpreter state (`_resolve_interpreter_enabled`), not the
+    `--interpreter` flag alone, since the interpreter is now on by default.
     """
     from deepagents_code.extras_info import verify_interpreter_deps
 
@@ -2292,6 +2613,11 @@ def cli_main() -> None:
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))
+
+        if command == "tools":
+            from deepagents_code.tools_commands import run_tools_command
+
+            sys.exit(run_tools_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
@@ -2372,7 +2698,7 @@ def cli_main() -> None:
             except ImportError as exc:
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install -U deepagents-code "
+                    "Install with: uv tool install --reinstall -U deepagents-code "
                     "--with deepagents-acp\n"
                 )
                 sys.stderr.write(msg)
@@ -2462,6 +2788,75 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        # `--goal` conflicts with every rubric flag, not just `--rubric`.
+        # `--rubric-model`/`--rubric-max-iterations` also require `-n` (see the
+        # non-interactive guard below), so without this check `--goal
+        # --rubric-model X` would slip past here and hit a contradictory "add
+        # -n" error — and adding `-n` then trips the interactive-only `--goal`
+        # guard. Reject the combination up front instead.
+        if getattr(args, "goal", None) is not None and any(
+            getattr(args, attr, None) is not None
+            for attr in ("rubric", "rubric_model", "rubric_max_iterations")
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal is mutually exclusive with "
+                "--rubric/--rubric-model/--rubric-max-iterations. Use --goal to "
+                "generate criteria interactively, or --rubric (with -n) to "
+                "provide them directly."
+            )
+            sys.exit(2)
+
+        goal_text = getattr(args, "goal", None)
+        if goal_text is not None and not goal_text.strip():
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal must not be empty."
+            )
+            sys.exit(2)
+        if goal_text is not None and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal is only supported in "
+                "interactive mode for now.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
+            )
+            sys.exit(2)
+        if goal_text is not None and (
+            getattr(args, "initial_prompt", None) is not None
+            or getattr(args, "initial_skill", None)
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal cannot be combined with "
+                "-m/--message or --skill.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
+            )
+            sys.exit(2)
+
+        non_interactive_rubric_set = any(
+            getattr(args, attr, None) is not None
+            for attr in (
+                "rubric",
+                "rubric_model",
+                "rubric_max_iterations",
+            )
+        )
+        if non_interactive_rubric_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
+                "--rubric-max-iterations require "
+                "--non-interactive (-n) or piped stdin\n"
+                "  dcode -n 'implement X' --rubric 'tests pass'"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -2507,6 +2902,7 @@ def cli_main() -> None:
                     is_update_available,
                     perform_upgrade,
                     prerelease_upgrade_supported,
+                    release_requires_prereleases,
                     upgrade_command,
                 )
 
@@ -2551,6 +2947,20 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                upgrade_include_prereleases = include_prereleases
+                pin_upgrade_version: str | None = None
+                if include_prereleases is None and release_requires_prereleases(latest):
+                    upgrade_include_prereleases = True
+                    pin_upgrade_version = latest
+                if upgrade_include_prereleases is True:
+                    supported, reason = prerelease_upgrade_supported()
+                    if not supported:
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            f"{reason or _PRERELEASE_UNSUPPORTED_MESSAGE}"
+                        )
+                        sys.exit(1)
+
                 release_age = format_release_age_parenthetical(latest)
                 installed_age = format_installed_age_suffix(cli_version)
                 console.print(
@@ -2572,12 +2982,16 @@ def cli_main() -> None:
                     perform_upgrade(
                         log_path=log_path,
                         include_prereleases=include_prereleases,
+                        target_version=latest,
                     )
                 )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
-                    cmd = upgrade_command(include_prereleases=include_prereleases)
+                    cmd = upgrade_command(
+                        include_prereleases=upgrade_include_prereleases,
+                        version=pin_upgrade_version,
+                    )
                     detail = f": {escape(output[:200])}" if output else ""
                     console.print(
                         f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -2722,11 +3136,17 @@ def cli_main() -> None:
             from rich.markup import escape
 
             from deepagents_code.config import _is_editable_install
-            from deepagents_code.extras_info import KNOWN_EXTRAS
+            from deepagents_code.extras_info import (
+                KNOWN_EXTRAS,
+                ExtrasIntrospectionError,
+            )
             from deepagents_code.update_check import (
+                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
+                install_extra_recovery_command,
+                install_extras_command,
                 is_valid_extra_name,
                 perform_install_extra,
             )
@@ -2799,10 +3219,24 @@ def cli_main() -> None:
                 # Tail the last 200 chars — uv resolver prints the resolved
                 # error at the end, not the beginning.
                 detail = f": {output[-200:]}" if output else ""
+                try:
+                    manual_cmd = install_extra_recovery_command(extra)
+                except (
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                    ValueError,
+                ):
+                    logger.warning(
+                        "--install recovery command failed (install reported failure)",
+                        exc_info=True,
+                    )
+                    # Keep the install-script command bound above; fall back to a
+                    # bare extras command only if that was never set.
+                    manual_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
+                    f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2813,9 +3247,19 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
-                fallback_cmd = (
-                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
-                )
+                # This is the catch-all for any unexpected install failure, so
+                # the recovery-hint guard is intentionally broad too: it must
+                # never raise a second error over the original one. `manual_cmd`
+                # may be unset here (the failure could predate its assignment),
+                # so fall back to a bare extras command.
+                try:
+                    fallback_cmd = install_extra_recovery_command(extra)
+                except Exception:  # best-effort hint, never re-raise here
+                    logger.warning(
+                        "--install recovery command failed (unexpected error)",
+                        exc_info=True,
+                    )
+                    fallback_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"
@@ -3061,7 +3505,8 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
-            if getattr(args, "interpreter", False):
+            enable_interpreter = _resolve_interpreter_enabled(args)
+            if enable_interpreter:
                 _verify_interpreter_or_exit()
 
             # Non-interactive mode - execute single task and exit
@@ -3070,7 +3515,18 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
-            _warn_if_interpreter_tools_without_interpreter(args)
+            _warn_if_interpreter_tools_without_interpreter(
+                args, enable_interpreter=enable_interpreter
+            )
+            _warn_if_interpreter_disabled_by_sandbox(args)
+
+            try:
+                rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
+            except ValueError as exc:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
+                sys.exit(2)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -3093,9 +3549,14 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                            enable_interpreter=getattr(args, "interpreter", False),
+                            enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
+                            rubric=rubric_text,
+                            rubric_model=getattr(args, "rubric_model", None),
+                            rubric_max_iterations=getattr(
+                                args, "rubric_max_iterations", None
+                            ),
                         ),
                         timeout=timeout,
                     )
@@ -3124,16 +3585,9 @@ def cli_main() -> None:
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
-            from rich.style import Style
             from rich.text import Text
 
-            from deepagents_code.config import (
-                build_langsmith_thread_url,
-            )
-            from deepagents_code.sessions import (
-                generate_thread_id,
-                thread_exists,
-            )
+            from deepagents_code.sessions import generate_thread_id
 
             # Instead of resolving thread_id here with synchronous asyncio.run()
             # DB calls, pass the raw resume request to the TUI and let it
@@ -3155,7 +3609,8 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
-            if getattr(args, "interpreter", False):
+            enable_interpreter = _resolve_interpreter_enabled(args)
+            if enable_interpreter:
                 _verify_interpreter_or_exit()
 
             # Check project MCP trust before launching TUI
@@ -3191,11 +3646,13 @@ def cli_main() -> None:
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
+                        initial_goal=getattr(args, "goal", None),
                         startup_cmd=getattr(args, "startup_cmd", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
-                        enable_interpreter=getattr(args, "interpreter", False),
+                        enable_interpreter=enable_interpreter,
+                        interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                     )
                 )
@@ -3211,32 +3668,18 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link for threads with checkpointed
-            # content (same table that backs the `/threads` listing).
-            if thread_id:
-                try:
-                    thread_url = build_langsmith_thread_url(thread_id)
-                    if thread_url and asyncio.run(thread_exists(thread_id)):
-                        console.print()
-                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                        ls_hint.append(
-                            thread_url,
-                            style=Style(dim=True, link=thread_url),
-                        )
-                        console.print(ls_hint)
-                except Exception:
-                    logger.debug(
-                        "Could not display LangSmith thread URL on teardown",
-                        exc_info=True,
-                    )
-
-            # Show resume hint on exit for threads with checkpointed content.
-            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
-                console.print()
-                console.print("[dim]Resume this thread with:[/dim]")
-                hint = Text("dcode -r ", style="cyan")
-                hint.append(str(thread_id), style="cyan")
-                console.print(hint)
+            # Show LangSmith thread link and resume hint for threads with
+            # checkpointed content. The `thread_id is not None` check narrows the
+            # type to `str` for the helper; `_should_check_teardown_thread` gates
+            # whether the teardown lookup runs at all.
+            if thread_id is not None and _should_check_teardown_thread(
+                thread_id,
+                request_count=result.session_stats.request_count,
+                resume_thread=args.resume_thread,
+            ):
+                _render_teardown_thread_hints(
+                    console, thread_id, return_code=return_code
+                )
 
             # Warn about available update on exit
             try:

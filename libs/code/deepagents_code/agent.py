@@ -39,6 +39,7 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents import SystemPromptConfig
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -1741,14 +1742,19 @@ def create_cli_agent(
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         shell_middleware_added = True
 
-    # Get or use custom system prompt
+    # Get or use custom system prompt (overwrite base prompt)
+    resolved_system_prompt: str | SystemPromptConfig
     if system_prompt is None:
-        system_prompt = get_system_prompt(
-            assistant_id=assistant_id,
-            sandbox_type=sandbox_type,
-            interactive=interactive,
-            cwd=effective_cwd,
-        )
+        resolved_system_prompt = {
+            "base": get_system_prompt(
+                assistant_id=assistant_id,
+                sandbox_type=sandbox_type,
+                interactive=interactive,
+                cwd=effective_cwd,
+            )
+        }
+    else:
+        resolved_system_prompt = system_prompt
 
     # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
@@ -1820,7 +1826,7 @@ def create_cli_agent(
     ]
     agent = create_deep_agent(
         model=model,
-        system_prompt=system_prompt,
+        system_prompt=resolved_system_prompt,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

@@ -9905,7 +9905,18 @@ class DeepAgentsApp(App):
             return None
 
         if not await asyncio.to_thread(trust_skill_dir, target_dir):
+            # The modal told the user this location would be remembered for
+            # future sessions. Persisting failed (read-only/full `.state`), so
+            # surface that: we honor the approval this session, but they will be
+            # asked again next launch. Logging alone would silently break that
+            # promise.
             logger.warning("Could not persist skill trust for %s", target_dir)
+            self.notify(
+                "Approved for this session, but the decision could not be "
+                "saved — you may be asked again next time.",
+                severity="warning",
+                markup=False,
+            )
 
         target_path = Path(target_dir)
         for roots in (allowed_roots, self._skill_allowed_roots):
@@ -9917,7 +9928,24 @@ class DeepAgentsApp(App):
 
         try:
             content = await asyncio.to_thread(_retry)
-        except (OSError, PermissionError):
+        except PermissionError:
+            # Containment failed *after* the target dir was allowlisted, so the
+            # skill path must now resolve somewhere else — a symlink swap during
+            # the prompt window. Refuse and flag it distinctly from a plain read
+            # error. (PermissionError is an OSError subclass, so this must come
+            # first.)
+            logger.warning(
+                "Skill %r resolved outside the approved directory on retry "
+                "(target may have changed since approval); refusing",
+                skill_name,
+                exc_info=True,
+            )
+            await mount_error(
+                f"Could not load skill: {skill_name}. Its location changed "
+                "after you approved it, so it was not read.",
+            )
+            return None
+        except OSError:
             logger.warning(
                 "Retry load failed for skill %r after trust",
                 skill_name,

@@ -1,6 +1,7 @@
 """Tests for the skill directory trust store."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -148,3 +149,131 @@ class TestSkillTrustStore:
         assert trust_skill_dir(target)
         assert (tmp_path / "skill_trust.json").exists()
         assert is_skill_dir_trusted(target)
+
+
+class TestSkillTrustStoreRobustness:
+    """Durability and honesty guarantees, mirroring `test_mcp_trust.py`."""
+
+    def test_save_failure_returns_false(self, tmp_path: Path) -> None:
+        """An unwritable store path returns False instead of raising."""
+        # Parent is a regular file, so mkdir(parents=True) fails with an OSError
+        # subclass that _save_store must catch and report as a failed write.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        store = blocker / "skill_trust.json"
+        assert trust_skill_dir(tmp_path, store_path=store) is False
+
+    def test_trust_heals_malformed_dirs_value(self, tmp_path: Path) -> None:
+        """A non-dict `dirs` value is replaced, not crashed on or appended to."""
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        store.write_text(json.dumps({"version": 1, "dirs": []}))
+        target = tmp_path / "shared"
+        target.mkdir()
+        assert trust_skill_dir(target, store_path=store)
+        assert is_skill_dir_trusted(target, store_path=store)
+
+    def test_revoke_preserves_other_entries_and_version(self, tmp_path: Path) -> None:
+        """Revoking one dir leaves siblings intact and re-stamps the version."""
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        a = tmp_path / "a"
+        a.mkdir()
+        b = tmp_path / "b"
+        b.mkdir()
+        trust_skill_dir(a, store_path=store)
+        trust_skill_dir(b, store_path=store)
+        assert revoke_skill_dir_trust(a, store_path=store)
+        assert not is_skill_dir_trusted(a, store_path=store)
+        assert is_skill_dir_trusted(b, store_path=store)
+        assert json.loads(store.read_text(encoding="utf-8"))["version"] == 1
+
+    def test_on_disk_shape(self, tmp_path: Path) -> None:
+        """The store is a versioned JSON object mapping dirs to metadata."""
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        target = tmp_path / "shared"
+        target.mkdir()
+        trust_skill_dir(target, store_path=store)
+        data = json.loads(store.read_text(encoding="utf-8"))
+        assert data["version"] == 1
+        assert str(target.resolve()) in data["dirs"]
+        assert "trusted_at" in data["dirs"][str(target.resolve())]
+
+    def test_trust_does_not_clobber_on_unreadable_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A transient read error aborts the write instead of erasing entries.
+
+        The read/modify/write must not rebuild the store from `{}` on a
+        transient `OSError`; doing so would drop every prior approval.
+        """
+        import deepagents_code.skills.trust as trust_mod
+
+        store = tmp_path / "skill_trust.json"
+        first = tmp_path / "first"
+        first.mkdir()
+        trust_skill_dir(first, store_path=store)
+        before = store.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(
+            trust_mod, "_load_store", MagicMock(side_effect=OSError("transient"))
+        )
+        second = tmp_path / "second"
+        second.mkdir()
+        assert trust_skill_dir(second, store_path=store) is False
+        # The original store is untouched — the existing approval survives.
+        assert store.read_text(encoding="utf-8") == before
+
+    def test_list_strict_surfaces_unreadable_store(self, tmp_path: Path) -> None:
+        """`strict=True` re-raises on a corrupt store; the default degrades."""
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        store.write_text("{not valid json")
+        # Enforcement/default path stays fail-closed (empty).
+        assert list_trusted_skill_dirs(store_path=store) == []
+        # Audit path opts into surfacing the error.
+        with pytest.raises(json.JSONDecodeError):
+            list_trusted_skill_dirs(store_path=store, strict=True)
+
+    def test_list_strict_missing_store_is_empty_not_error(self, tmp_path: Path) -> None:
+        """A missing store is first-run state, not an error, even under strict."""
+        store = tmp_path / "skill_trust.json"
+        assert list_trusted_skill_dirs(store_path=store, strict=True) == []
+
+    def test_load_survives_unresolvable_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One entry that fails to resolve is dropped, not fatal to discovery."""
+        import json
+
+        store = tmp_path / "skill_trust.json"
+        good = tmp_path / "good"
+        good.mkdir()
+        boom = tmp_path / "boom"
+        store.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "dirs": {
+                        str(good): {"trusted_at": "t"},
+                        str(boom): {"trusted_at": "t"},
+                    },
+                }
+            )
+        )
+
+        real_resolve = Path.resolve
+
+        def flaky_resolve(self: Path, strict: bool = False) -> Path:
+            if self == boom:
+                msg = "ELOOP"
+                raise OSError(msg)
+            return real_resolve(self, strict)
+
+        monkeypatch.setattr(Path, "resolve", flaky_resolve)
+        assert load_trusted_skill_dirs(store_path=store) == [good]

@@ -52,20 +52,41 @@ def _normalize(target_dir: Path | str) -> str:
     return str(Path(target_dir).expanduser().resolve())
 
 
-def _load_store(store_path: Path) -> dict[str, Any]:
+def _load_store(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
     """Read the JSON trust store file.
 
+    Args:
+        store_path: Path to the trust store file.
+        strict: When `True`, a store that exists but cannot be read or parsed
+            re-raises instead of degrading to `{}`. Read/modify/write callers
+            pass `strict=True` so a transient read error aborts the write
+            rather than silently rebuilding the store from an empty dict (which
+            would clobber every prior approval). The audit path passes it too so
+            it can report an unreadable store instead of claiming nothing is
+            trusted. Enforcement callers leave it `False` to stay fail-closed.
+
     Returns:
-        Parsed JSON data, or an empty dict when the file is missing,
-        unreadable, or corrupt. A corrupt store degrades to "nothing
-        trusted" so a bad file can't crash startup — the next write
-        rewrites it cleanly.
+        Parsed JSON data, or an empty dict when the file is missing, or (only
+        when `strict` is `False`) when it is unreadable or corrupt. A corrupt
+        store degrades to "nothing trusted" so a bad file can't crash startup —
+        the next write rewrites it cleanly.
+
+    Raises:
+        OSError: When `strict` and an existing store cannot be read.
+        json.JSONDecodeError: When `strict` and an existing store is not valid
+            JSON.
+        ValueError: When `strict` and the store's top-level value is not a JSON
+            object.
     """
+    # A missing store is a normal first-run state, never an error — return
+    # empty even under `strict` so callers don't have to special-case it.
+    if not store_path.exists():
+        return {}
     try:
-        if not store_path.exists():
-            return {}
         data = json.loads(store_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
+        if strict:
+            raise
         # A corrupt store silently drops every prior approval and forces a
         # re-prompt, so log at WARNING (not DEBUG) to leave a breadcrumb for
         # the otherwise-unexplained re-prompt.
@@ -74,6 +95,8 @@ def _load_store(store_path: Path) -> dict[str, Any]:
         )
         return {}
     except OSError as exc:
+        if strict:
+            raise
         logger.warning(
             "Could not read skill trust store %s; treating as empty: %s",
             store_path,
@@ -81,6 +104,9 @@ def _load_store(store_path: Path) -> dict[str, Any]:
         )
         return {}
     if not isinstance(data, dict):
+        if strict:
+            msg = f"Skill trust store {store_path} is not a JSON object"
+            raise ValueError(msg)
         logger.warning(
             "Skill trust store %s is not a JSON object; ignoring", store_path
         )
@@ -117,9 +143,14 @@ def _save_store(data: dict[str, Any], store_path: Path) -> bool:
     return True
 
 
-def _read_dirs(store_path: Path) -> dict[str, Any]:
-    """Return the `dirs` mapping from the store, or an empty dict."""
-    dirs = _load_store(store_path).get("dirs", {})
+def _read_dirs(store_path: Path, *, strict: bool = False) -> dict[str, Any]:
+    """Return the `dirs` mapping from the store, or an empty dict.
+
+    Args:
+        store_path: Path to the trust store file.
+        strict: Propagated to `_load_store`; see its docstring.
+    """
+    dirs = _load_store(store_path, strict=strict).get("dirs", {})
     return dirs if isinstance(dirs, dict) else {}
 
 
@@ -161,7 +192,18 @@ def trust_skill_dir(
     if store_path is None:
         store_path = _default_store_path()
 
-    data = _load_store(store_path)
+    # Read strictly: if an existing store can't be read, abort rather than
+    # rebuild it from `{}` and overwrite (which would drop every prior
+    # approval). A transient read error should re-prompt next time, not
+    # silently erase the store.
+    try:
+        data = _load_store(store_path, strict=True)
+    except (OSError, ValueError):
+        logger.exception(
+            "Refusing to persist skill trust: could not read existing store %s",
+            store_path,
+        )
+        return False
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
         dirs = {}
@@ -189,7 +231,16 @@ def revoke_skill_dir_trust(
     if store_path is None:
         store_path = _default_store_path()
 
-    data = _load_store(store_path)
+    # Read strictly so a transient read error aborts (returns False) rather
+    # than rebuilding from `{}` and dropping the other entries on the next save.
+    try:
+        data = _load_store(store_path, strict=True)
+    except (OSError, ValueError):
+        logger.exception(
+            "Refusing to revoke skill trust: could not read existing store %s",
+            store_path,
+        )
+        return False
     dirs = data.get("dirs")
     if not isinstance(dirs, dict):
         return True
@@ -224,19 +275,32 @@ def clear_trusted_skill_dirs(*, store_path: Path | None = None) -> bool:
     return _save_store({"version": _STORAGE_VERSION, "dirs": {}}, store_path)
 
 
-def list_trusted_skill_dirs(*, store_path: Path | None = None) -> list[str]:
+def list_trusted_skill_dirs(
+    *,
+    store_path: Path | None = None,
+    strict: bool = False,
+) -> list[str]:
     """Return the sorted list of trusted skill directory paths.
 
     Args:
         store_path: Path to the trust store file. Defaults to
             `~/.deepagents/.state/skill_trust.json`.
+        strict: When `True`, an existing-but-unreadable store re-raises instead
+            of degrading to an empty list. The audit command (`skills trust
+            list`) passes `strict=True` so it can report an error rather than
+            falsely printing "No trusted skill directories" while entries the
+            user cannot then see or revoke sit in an unreadable file.
 
     Returns:
         Sorted absolute directory paths previously trusted.
+
+        When `strict`, an existing-but-unreadable or corrupt store propagates
+        the underlying error (`OSError` / `json.JSONDecodeError` / `ValueError`)
+        from `_load_store` instead of returning a list.
     """
     if store_path is None:
         store_path = _default_store_path()
-    return sorted(_read_dirs(store_path))
+    return sorted(_read_dirs(store_path, strict=strict))
 
 
 def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
@@ -263,7 +327,20 @@ def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
     verified: list[Path] = []
     for entry in list_trusted_skill_dirs(store_path=store_path):
         stored = Path(entry)
-        if stored.resolve() == stored:
+        try:
+            resolves_to_self = stored.resolve() == stored
+        except OSError:
+            # A single unresolvable entry (e.g. a symlink cycle introduced under
+            # the stored path) must not abort discovery of every other skill.
+            # Drop it like the swap case below.
+            logger.warning(
+                "Trusted skill directory %s could not be resolved; "
+                "ignoring the trust entry.",
+                entry,
+                exc_info=True,
+            )
+            continue
+        if resolves_to_self:
             verified.append(stored)
         else:
             logger.warning(

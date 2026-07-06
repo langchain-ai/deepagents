@@ -1336,3 +1336,213 @@ class TestDeleteArgparsing:
         # rather than falling through to show_skills_help()
         joined = "\n".join(output)
         assert "not found" in joined.lower()
+
+
+class TestSkillsTrustCommand:
+    """Unit tests for `_trust` and its dispatch in `execute_skills_command`."""
+
+    @staticmethod
+    def _capture() -> tuple[list[str], "object"]:
+        output: list[str] = []
+
+        def capture_print(*args_p: object, **_: object) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        return output, capture_print
+
+    def test_list_populated(self) -> None:
+        """`list` prints each trusted directory."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                return_value=["/shared/a", "/shared/b"],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        joined = "\n".join(output)
+        assert "/shared/a" in joined
+        assert "/shared/b" in joined
+
+    def test_list_empty(self) -> None:
+        """`list` on an empty store reports that nothing is trusted."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                return_value=[],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "no trusted skill directories" in "\n".join(output).lower()
+
+    def test_ls_alias_behaves_like_list(self) -> None:
+        """`ls` is an alias for `list`."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="ls")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                return_value=["/shared/a"],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "/shared/a" in "\n".join(output)
+
+    def test_list_json_output(self) -> None:
+        """`list --output json` emits the standard envelope shape."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list", output_format="json")
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                return_value=["/shared/a"],
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust list"
+        assert result["data"] == ["/shared/a"]
+
+    def test_list_unreadable_store_errors_and_exits(self) -> None:
+        """An unreadable store surfaces an error and exits non-zero.
+
+        It must never silently print "No trusted skill directories" while
+        entries the user cannot see or revoke sit in the file.
+        """
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dirs",
+                side_effect=OSError("permission denied"),
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1
+        joined = "\n".join(output).lower()
+        assert "could not read" in joined
+        assert "no trusted skill directories" not in joined
+
+    def test_revoke_success(self) -> None:
+        """A successful revoke confirms the removed directory."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=True,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "revoked" in "\n".join(output).lower()
+
+    def test_revoke_failure_exits(self) -> None:
+        """A failed revoke reports an error and exits non-zero."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=False,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1
+        assert "could not revoke" in "\n".join(output).lower()
+
+    def test_clear_success(self) -> None:
+        """A successful clear confirms removal."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=True,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "cleared" in "\n".join(output).lower()
+
+    def test_clear_failure_exits(self) -> None:
+        """A failed clear reports an error and exits non-zero."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear")
+        _output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=False,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1
+
+    def test_no_subcommand_shows_help(self) -> None:
+        """`trust` with no subcommand shows the trust help."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command=None)
+        with patch("deepagents_code.ui.show_skills_trust_help") as mock_help:
+            _trust(args)
+
+        mock_help.assert_called_once()
+
+    def test_execute_dispatches_trust_before_agent_validation(self) -> None:
+        """`trust` is routed without an `--agent`, ahead of agent validation."""
+        args = argparse.Namespace(skills_command="trust", trust_command="list")
+        with patch("deepagents_code.skills.commands._trust") as mock_trust:
+            execute_skills_command(args)
+
+        mock_trust.assert_called_once_with(args)

@@ -860,8 +860,11 @@ def _trust(args: argparse.Namespace) -> None:
         args: Parsed arguments with a `trust_command` attribute.
 
     Raises:
-        SystemExit: If trust entries cannot be revoked or cleared.
+        SystemExit: If the trust store cannot be read, or trust entries cannot
+            be revoked or cleared.
     """
+    from rich.markup import escape
+
     from deepagents_code.config import console, get_glyphs
     from deepagents_code.skills.trust import (
         clear_trusted_skill_dirs,
@@ -874,7 +877,17 @@ def _trust(args: argparse.Namespace) -> None:
     checkmark = get_glyphs().checkmark
 
     if command in {"list", "ls"}:
-        dirs = list_trusted_skill_dirs()
+        # Read strictly so an unreadable store surfaces as an error instead of
+        # falsely reporting "No trusted skill directories" — the whole point of
+        # the audit command is to show what is trusted so it can be revoked.
+        try:
+            dirs = list_trusted_skill_dirs(strict=True)
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not read the skill trust "
+                f"store: {escape(str(exc))}"
+            )
+            raise SystemExit(1) from exc
         if output_format == "json":
             from deepagents_code.output import write_json
 
@@ -894,17 +907,19 @@ def _trust(args: argparse.Namespace) -> None:
             "\n[bold]Trusted skill directories:[/bold]\n", style=theme.PRIMARY
         )
         for path in dirs:
-            console.print(f"  {path}")
+            console.print(f"  {escape(str(path))}")
         console.print()
     elif command == "revoke":
         target = args.dir
         if revoke_skill_dir_trust(target):
             console.print(
-                f"{checkmark} Revoked trust for: {target}", style=theme.PRIMARY
+                f"{checkmark} Revoked trust for: {escape(str(target))}",
+                style=theme.PRIMARY,
             )
         else:
             console.print(
-                f"[bold red]Error:[/bold red] Could not revoke trust for: {target}"
+                "[bold red]Error:[/bold red] Could not revoke trust for: "
+                f"{escape(str(target))}"
             )
             raise SystemExit(1)
     elif command == "clear":

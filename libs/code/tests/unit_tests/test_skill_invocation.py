@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,9 +14,6 @@ from deepagents_code.command_registry import (
     parse_skill_command,
 )
 from deepagents_code.skills.load import load_skill_content
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestLoadSkillContent:
@@ -269,6 +266,7 @@ def _make_app() -> MagicMock:
     app._assistant_id = "agent"
     app._discovered_skills = []
     app._skill_allowed_roots = []
+    app._skill_trust_denied = set()
     mounted_messages: list[object] = []
     app._mounted_messages = mounted_messages
 
@@ -278,7 +276,14 @@ def _make_app() -> MagicMock:
     app._mount_message = AsyncMock(side_effect=capture_mount)
     app._handle_user_message = AsyncMock()
     app._send_to_agent = AsyncMock()
+    # Default to deny so the containment error surfaces unless a test opts into
+    # approval by overriding the return value.
+    app._push_screen_wait = AsyncMock(return_value=False)
+    app.notify = MagicMock()
     app._invoke_skill = DeepAgentsApp._invoke_skill.__get__(app)
+    app._prompt_skill_trust_and_retry = (
+        DeepAgentsApp._prompt_skill_trust_and_retry.__get__(app)
+    )
     app._handle_skill_command = DeepAgentsApp._handle_skill_command.__get__(app)
     app._discover_skills_and_roots = DeepAgentsApp._discover_skills_and_roots.__get__(
         app
@@ -598,3 +603,143 @@ class TestHandleSkillCommand:
         # Cache should be backfilled with fresh discovery results
         assert len(app._discovered_skills) == 1
         assert app._discovered_skills[0]["name"] == "new-skill"
+
+
+class TestPromptSkillTrustAndRetry:
+    """Cover the in-the-moment trust prompt routed to on containment failure.
+
+    All tests use a cache-hit (`_discovered_skills` pre-populated) so only the
+    load + trust-prompt path runs, and drive it end-to-end through
+    `_invoke_skill`. `_push_screen_wait` defaults to deny in `_make_app`; tests
+    that approve override its return value. The first `load_skill_content` call
+    raises the containment `PermissionError`; the second is the post-approval
+    retry.
+    """
+
+    _CONTAINMENT_ERROR = PermissionError(
+        "Skill path /tmp/evil resolves outside all allowed skill directories."
+    )
+
+    @staticmethod
+    def _target_dir() -> str:
+        """Resolved parent dir of the fake skill's SKILL.md (the trust key)."""
+        return str(Path(_fake_skill()["path"]).resolve().parent)  # ty: ignore
+
+    def _cache_hit_app(self) -> MagicMock:
+        app = _make_app()
+        app._discovered_skills = [_fake_skill()]
+        return app
+
+    async def test_allow_persists_and_retries(self) -> None:
+        """Approving trusts the dir, extends the allowlist, and reads the skill."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, "# Instructions\nDo stuff"],
+            ),
+            patch(
+                "deepagents_code.skills.trust.trust_skill_dir", return_value=True
+            ) as mock_trust,
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        mock_trust.assert_called_once_with(self._target_dir())
+        app._send_to_agent.assert_awaited_once()
+        assert "# Instructions" in app._send_to_agent.call_args[0][0]
+        # The approved directory joins the in-session containment allowlist.
+        assert Path(self._target_dir()) in app._skill_allowed_roots
+
+    async def test_allow_extends_allowlist_exactly_once(self) -> None:
+        """The approved dir is appended once, not duplicated across the two lists."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, "# Body"],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert app._skill_allowed_roots.count(Path(self._target_dir())) == 1
+
+    async def test_deny_shows_error_and_remembers(self) -> None:
+        """Denying surfaces the original error and suppresses re-prompts."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=False)
+        with patch(
+            "deepagents_code.skills.load.load_skill_content",
+            side_effect=self._CONTAINMENT_ERROR,
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("resolves outside" in t for t in _app_message_texts(app))
+        assert self._target_dir() in app._skill_trust_denied
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_prior_deny_does_not_reprompt(self) -> None:
+        """A dir denied earlier this session errors without a second prompt."""
+        app = self._cache_hit_app()
+        app._skill_trust_denied.add(self._target_dir())
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with patch(
+            "deepagents_code.skills.load.load_skill_content",
+            side_effect=self._CONTAINMENT_ERROR,
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        app._push_screen_wait.assert_not_awaited()
+        assert any("resolves outside" in t for t in _app_message_texts(app))
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_retry_permission_error_flags_location_change(self) -> None:
+        """A retry containment failure (symlink swap) shows a distinct message."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, self._CONTAINMENT_ERROR],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("location changed" in t.lower() for t in _app_message_texts(app))
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_retry_returns_none_shows_read_error(self) -> None:
+        """A readable-but-empty retry result shows the read-failure message."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, None],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        assert any("could not read" in t.lower() for t in _app_message_texts(app))
+        app._send_to_agent.assert_not_awaited()
+
+    async def test_persist_failure_still_allows_but_notifies(self) -> None:
+        """When the trust store can't be written, we read this session and warn."""
+        app = self._cache_hit_app()
+        app._push_screen_wait = AsyncMock(return_value=True)
+        with (
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                side_effect=[self._CONTAINMENT_ERROR, "# Body"],
+            ),
+            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=False),
+        ):
+            await app._handle_skill_command("/skill:test-skill")
+
+        app.notify.assert_called_once()
+        assert app.notify.call_args.kwargs.get("severity") == "warning"
+        app._send_to_agent.assert_awaited_once()

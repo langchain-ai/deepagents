@@ -1,0 +1,14 @@
+libs/code/deepagents_code/skills/trust.py
+  h_9f69767fa5fabf 66-67,69,82,85,128-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b4cf59f71836e52d50afa3e5c06fa4dec145f5f1",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

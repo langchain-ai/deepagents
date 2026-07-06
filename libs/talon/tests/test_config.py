@@ -35,6 +35,17 @@ def test_from_env_creates_assistant_home(tmp_path: Path) -> None:
     assert config.inbound_media_dir.stat().st_mode & 0o777 == 0o700
 
 
+def test_from_env_defaults_to_deepagents_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "assistant-1"})
+
+    assert config.home == tmp_path / ".deepagents" / "assistant-1"
+
+
 def test_from_env_keeps_langsmith_env(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {

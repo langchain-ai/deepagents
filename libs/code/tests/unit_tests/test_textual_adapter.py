@@ -24,12 +24,12 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
 )
 from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
-from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
-from deepagents_code.non_interactive import (
+from deepagents_code.client.non_interactive import (
     StreamState,
     _process_ai_message,
     _process_message_chunk,
 )
+from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
     SessionStats,
@@ -43,7 +43,7 @@ from deepagents_code.textual_adapter import (
     format_token_count,
     print_usage_table,
 )
-from deepagents_code.widgets.messages import (
+from deepagents_code.tui.widgets.messages import (
     AppMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -742,7 +742,7 @@ class TestInterruptCleanupTokenPersist:
         Locks in the deletion of the old `_persist_context_tokens` `RemoteAgent`
         short-circuit so a future refactor cannot silently re-introduce it.
         """
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         captured: list[dict[str, Any]] = []
 
@@ -6174,7 +6174,7 @@ def _run_headless_surface(
     ai_msg.content_blocks = tool_call_blocks
 
     with patch(
-        "deepagents_code.non_interactive.dispatch_hook_fire_and_forget",
+        "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget",
         side_effect=_capture,
     ):
         _process_ai_message(ai_msg, state, console)

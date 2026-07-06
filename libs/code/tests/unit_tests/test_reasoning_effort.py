@@ -21,8 +21,8 @@ from deepagents_code.reasoning_effort import (
     supported_efforts_for_model,
     without_effort_model_params,
 )
-from deepagents_code.widgets.effort_selector import EffortSelectorScreen
-from deepagents_code.widgets.messages import ErrorMessage
+from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+from deepagents_code.tui.widgets.messages import ErrorMessage
 
 
 @pytest.fixture(autouse=True)

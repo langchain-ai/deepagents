@@ -1702,6 +1702,9 @@ def create_cli_agent(
             )
             raise ValueError(msg)
         # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
+        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
+            suppress_langchain_beta_warning,
+        )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
         ptc_names = _resolve_ptc_option(
@@ -1713,16 +1716,20 @@ def create_cli_agent(
         ptc_option: PTCOption | None = (
             cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
         )
-        agent_middleware.append(
-            CodeInterpreterMiddleware(
-                tool_name="js_eval",
-                timeout=settings.interpreter_timeout_seconds,
-                memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                max_ptc_calls=settings.interpreter_max_ptc_calls,
-                max_result_chars=settings.interpreter_max_result_chars,
-                ptc=ptc_option,
+        # `CodeInterpreterMiddleware` is decorated `@beta()`, which emits a
+        # `LangChainBetaWarning` on every instantiation. We intentionally use it
+        # and the warning is not actionable for users, so suppress it.
+        with suppress_langchain_beta_warning():
+            agent_middleware.append(
+                CodeInterpreterMiddleware(
+                    tool_name="js_eval",
+                    timeout=settings.interpreter_timeout_seconds,
+                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=settings.interpreter_max_ptc_calls,
+                    max_result_chars=settings.interpreter_max_result_chars,
+                    ptc=ptc_option,
+                )
             )
-        )
 
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):

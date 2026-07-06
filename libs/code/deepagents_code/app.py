@@ -9630,6 +9630,28 @@ class DeepAgentsApp(App):
                 theme_reload_ok = False
                 logger.warning("Failed to reload user themes", exc_info=True)
 
+            # Re-resolve and apply the theme preference so a per-terminal or
+            # global default saved by another session is picked up. This
+            # re-syncs to on-disk config using the same resolution as startup
+            # (env -> [ui.terminal_themes][TERM_PROGRAM] -> [ui].theme ->
+            # default), which intentionally overrides an unsaved in-session
+            # `/theme` choice. Guarded on the registry reload succeeding since
+            # the target theme must be registered before it can be applied.
+            theme_switched_to: str | None = None
+            if theme_reload_ok:
+                try:
+                    new_theme = _load_theme_preference()
+                    if new_theme != self.theme and new_theme in theme.get_registry():
+                        self.theme = new_theme
+                        self.sync_terminal_background()
+                        self.refresh_css(animate=False)
+                        theme_switched_to = new_theme
+                except Exception:
+                    logger.warning(
+                        "Failed to re-apply theme preference on reload",
+                        exc_info=True,
+                    )
+
             # Re-discover skills so autocomplete reflects any new/removed
             # skills. Run via the same exclusive-group worker used at
             # startup so any in-flight startup discovery is cancelled
@@ -9655,6 +9677,10 @@ class DeepAgentsApp(App):
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
+                if theme_switched_to is not None:
+                    entry = theme.get_registry().get(theme_switched_to)
+                    label = entry.label if entry is not None else theme_switched_to
+                    report += f"\nSwitched theme to {label}."
             else:
                 report += (
                     "\nTheme registry reload failed. Check config.toml for errors."

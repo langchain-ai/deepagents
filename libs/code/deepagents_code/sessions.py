@@ -1011,10 +1011,19 @@ def _reduce_message_write_rows(
             continue
         deltas_by_thread.setdefault(tid, []).append(delta)
 
-    return {
-        tid: _count_messages_from_deltas(deltas)
-        for tid, deltas in deltas_by_thread.items()
-    }
+    counts: dict[str, int] = {}
+    for tid, deltas in deltas_by_thread.items():
+        try:
+            counts[tid] = _count_messages_from_deltas(deltas)
+        except Exception:
+            # Keep one malformed thread from failing the whole `threads list`
+            # load: skip it (its count is simply absent) rather than propagating.
+            logger.warning(
+                "Failed to count messages for thread %s; omitting its count",
+                tid,
+                exc_info=True,
+            )
+    return counts
 
 
 def _count_messages_from_deltas(deltas: list[Any]) -> int:
@@ -1027,9 +1036,12 @@ def _count_messages_from_deltas(deltas: list[Any]) -> int:
     ID, and clears collapse to the post-clear tail).
 
     Slow path: a specific `RemoveMessage` (delete-by-ID) or any reducer error
-    falls back to the exact sequential fold, because batch and incremental
-    `add_messages` can disagree on the surviving set when deletes target IDs
-    that come and go across deltas. Such deletes are rare in linear dcode
+    falls back to the exact sequential fold as a conservative measure. A
+    delete-by-ID concatenated into the single `buffer` can make batch
+    `add_messages` raise (the target ID may be absent at that buffer position),
+    and we do not rely on unproven count-equivalence of batched removal. In
+    practice the two folds still agree on the count for these histories; the
+    sequential fold simply guarantees it. Such deletes are rare in linear dcode
     histories, so the common case stays on the fast path.
 
     Returns:

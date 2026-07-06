@@ -2711,11 +2711,14 @@ class TestLoadMessageCountsFromWritesBatch:
         # The good write still counts; the corrupt one is skipped.
         assert results == {"t1": 1}
 
-    async def test_large_append_history_counts_quickly(self) -> None:
-        """A long append-only history folds in one pass without quadratic cost.
+    async def test_large_append_history_counts_correctly(self) -> None:
+        """A long append-only history counts correctly via the one-pass fold.
 
-        Regression for the `threads list` slowdown: the previous incremental
-        fold was O(n^2) and a thread with thousands of writes took seconds.
+        Correctness-at-scale check for the `threads list` speedup. Note this
+        does not guard against a perf regression on its own: the old O(n^2)
+        fold returns the same count (just slowly), so a revert to the quadratic
+        path would still pass. Wall-clock assertions are too flaky for CI; a
+        codspeed benchmark would be the real regression guard.
         """
         serde = JsonPlusSerializer()
 
@@ -2787,6 +2790,24 @@ class TestCountMessagesFromDeltas:
         ]
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
 
+    def test_duplicate_id_within_one_delta_counts_once(self) -> None:
+        """Two messages sharing an ID in one delta collapse to a single count.
+
+        Pins the case excluded from the property test: batch and sequential
+        `add_messages` may order/identify differently, but the *count* the
+        counter reports is the same (both dedup by ID), so the fast path is
+        safe here and needs no exact-fold routing.
+        """
+        from langchain_core.messages import AIMessage
+
+        deltas = [
+            [AIMessage(content="draft", id="d1"), AIMessage(content="final", id="d1")]
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
+            deltas
+        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+
     def test_specific_remove_matches_incremental_fold(self) -> None:
         """A delete-by-ID routes through the exact fold and matches it."""
         from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
@@ -2805,8 +2826,10 @@ class TestCountMessagesFromDeltas:
 
         Covers the realistic shapes the counter sees (unique-ID appends,
         streaming updates that reuse an ID, compaction clears, and snapshot
-        overwrites) without the pathological duplicate-ID-within-one-delta case
-        that batch `add_messages` handles differently.
+        overwrites). Excludes duplicate-ID-within-one-delta, whose batch-vs-
+        sequential *ordering/identity* equivalence we haven't characterized;
+        the counts still match there (see
+        `test_duplicate_id_within_one_delta_counts_once`).
         """
         import random
 

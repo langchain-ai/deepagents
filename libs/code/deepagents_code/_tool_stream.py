@@ -4,7 +4,7 @@ Both execution surfaces reassemble the same streamed tool-call state and fire
 the same `tool.use` / `tool.result` / `tool.error` hook payloads:
 
 - the interactive Textual TUI (`deepagents_code.textual_adapter`), and
-- the headless runner (`deepagents_code.non_interactive`).
+- the headless runner (`deepagents_code.client.non_interactive`).
 
 This module holds the single implementation of the buffering, argument parsing,
 and payload-shape logic, so the two surfaces cannot drift *in those layers*. The

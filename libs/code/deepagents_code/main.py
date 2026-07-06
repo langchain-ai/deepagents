@@ -3510,7 +3510,7 @@ def cli_main() -> None:
                 _verify_interpreter_or_exit()
 
             # Non-interactive mode - execute single task and exit
-            from deepagents_code.non_interactive import run_non_interactive
+            from deepagents_code.client.non_interactive import run_non_interactive
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)

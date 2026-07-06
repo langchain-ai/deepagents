@@ -343,13 +343,13 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
-    from deepagents_code.remote_client import RemoteAgent
     from deepagents_code.resume_state import GoalStatus
-    from deepagents_code.server import ServerProcess
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.textual_adapter import TextualUIAdapter
     from deepagents_code.widgets.approval import ApprovalMenu
@@ -1565,7 +1565,7 @@ def _build_agent_error_body(
         A `Content` with a clickable docs link for `PermissionDeniedError`;
             otherwise the plain `text`.
     """
-    from deepagents_code.remote_client import agent_error_type
+    from deepagents_code.client.remote_client import agent_error_type
 
     if agent_error_type(exc) != "PermissionDeniedError":
         return text
@@ -2830,7 +2830,7 @@ class DeepAgentsApp(App):
         Returns:
             The `RemoteAgent` instance, or `None` for local agents.
         """
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         return self._agent if isinstance(self._agent, RemoteAgent) else None
 
@@ -3871,7 +3871,9 @@ class DeepAgentsApp(App):
         # grep would stay on the slow Python fallback until a restart.
         await self._ensure_managed_ripgrep()
 
-        from deepagents_code.server_manager import start_server_and_get_agent
+        from deepagents_code.client.launch.server_manager import (
+            start_server_and_get_agent,
+        )
 
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
@@ -10630,7 +10632,7 @@ class DeepAgentsApp(App):
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
-                from deepagents_code.remote_client import format_agent_exception
+                from deepagents_code.client.remote_client import format_agent_exception
 
                 error_text = f"Agent error: {format_agent_exception(e)}"
             except Exception:
@@ -13308,7 +13310,7 @@ class DeepAgentsApp(App):
             agent_name: The name of the agent to switch to.
         """
         from deepagents_code._env_vars import SERVER_ENV_PREFIX
-        from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
 
         def _build_agent(url: str) -> Any:  # noqa: ANN401  # see docstring
             """Build a new `RemoteAgent` typed as `Any`.
@@ -15428,8 +15430,8 @@ class DeepAgentsApp(App):
                 self.post_message(self.ServerStartFailed(error=exc))
                 return False
 
+            from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
             from deepagents_code.main import _preload_session_mcp_server_info
-            from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
 
             mcp_info = None
             try:
@@ -15764,8 +15766,10 @@ class DeepAgentsApp(App):
             self._switch_process_cwd(cwd)
             return "continue"
 
+        from deepagents_code.client.launch.server_manager import (
+            start_server_and_get_agent,
+        )
         from deepagents_code.main import _preload_session_mcp_server_info
-        from deepagents_code.server_manager import start_server_and_get_agent
 
         previous_cwd = Path(self._cwd)
         previous_agent = self._agent

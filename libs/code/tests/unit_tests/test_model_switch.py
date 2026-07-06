@@ -13,6 +13,7 @@ from deepagents_code.app import (
     _extract_model_params_flag,
     _format_model_params,
 )
+from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.config import settings
 from deepagents_code.model_config import (
     ModelSpec,
@@ -21,7 +22,6 @@ from deepagents_code.model_config import (
     ProviderAuthStatus,
     clear_caches,
 )
-from deepagents_code.remote_client import RemoteAgent
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.widgets.status import StatusBar
 

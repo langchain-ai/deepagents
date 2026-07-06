@@ -23,9 +23,7 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
 )
-from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
-from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.non_interactive import (
+from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
     InFlightToolCall,
@@ -43,6 +41,8 @@ from deepagents_code.non_interactive import (
     _start_langsmith_thread_url_lookup,
     run_non_interactive,
 )
+from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
+from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.tool_display import format_tool_message_content
 
 
@@ -75,7 +75,7 @@ class TestMakeHitlDecision:
 
     def test_shell_without_allow_list_rejected(self, console: Console) -> None:
         """Shell commands should be rejected when no allow-list is configured."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = None
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "rm -rf /"}}, console
@@ -85,7 +85,7 @@ class TestMakeHitlDecision:
 
     def test_shell_allowed_command_approved(self, console: Console) -> None:
         """Shell commands in the allow-list should be approved."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat", "grep"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "ls -la"}}, console
@@ -94,7 +94,7 @@ class TestMakeHitlDecision:
 
     def test_shell_disallowed_command_rejected(self, console: Console) -> None:
         """Shell commands not in the allow-list should be rejected."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat", "grep"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "rm -rf /"}}, console
@@ -107,7 +107,7 @@ class TestMakeHitlDecision:
         self, console: Console
     ) -> None:
         """Rejection message should list the allowed commands."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "cat"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "whoami"}}, console
@@ -122,7 +122,7 @@ class TestMakeHitlDecision:
 
     def test_shell_piped_command_allowed(self, console: Console) -> None:
         """Piped shell commands where all segments are allowed should pass."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls", "grep"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "ls | grep test"}}, console
@@ -133,7 +133,7 @@ class TestMakeHitlDecision:
         self, console: Console
     ) -> None:
         """Piped commands with a disallowed segment should be rejected."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "ls | rm file"}}, console
@@ -142,7 +142,7 @@ class TestMakeHitlDecision:
 
     def test_shell_dangerous_pattern_rejected(self, console: Console) -> None:
         """Dangerous patterns rejected even if base command is allowed."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "ls $(whoami)"}}, console
@@ -151,7 +151,7 @@ class TestMakeHitlDecision:
 
     def test_shell_with_allow_all_approved(self, console: Console) -> None:
         """Shell commands should be approved when SHELL_ALLOW_ALL is set."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = SHELL_ALLOW_ALL
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "rm -rf /"}}, console
@@ -160,7 +160,7 @@ class TestMakeHitlDecision:
 
     def test_execute_tool_gated_by_allow_list(self, console: Console) -> None:
         """The `execute` shell tool is gated by the allow-list."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
                 {"name": "execute", "args": {"command": "rm -rf /"}}, console
@@ -200,7 +200,7 @@ class TestBuildNonInteractiveHeader:
 
     def test_includes_agent_id(self) -> None:
         """Header should contain the agent identifier."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             header = _build_non_interactive_header("my-agent", "abc123")
         assert "Agent: my-agent" in header.plain
@@ -209,28 +209,28 @@ class TestBuildNonInteractiveHeader:
 
     def test_default_agent_label(self) -> None:
         """Header should show '(default)' for the default agent name."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             header = _build_non_interactive_header("agent", "abc123")
         assert "Agent: agent (default)" in header.plain
 
     def test_includes_model_name(self) -> None:
         """Header should display model name when available."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = "gpt-5"
             header = _build_non_interactive_header("agent", "abc123")
         assert "Model: gpt-5" in header.plain
 
     def test_omits_model_when_none(self) -> None:
         """Header should not include model section when model_name is None."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             header = _build_non_interactive_header("agent", "abc123")
         assert "Model:" not in header.plain
 
     def test_includes_thread_id(self) -> None:
         """Header should contain the thread ID."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             header = _build_non_interactive_header("agent", "deadbeef")
         assert "Thread: deadbeef" in header.plain
@@ -238,10 +238,10 @@ class TestBuildNonInteractiveHeader:
     def test_thread_clickable_when_url_available(self) -> None:
         """Thread ID should be a hyperlink when LangSmith URL is available."""
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc123"
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=url,
             ):
                 header = _build_non_interactive_header(
@@ -260,10 +260,10 @@ class TestBuildNonInteractiveHeader:
 
     def test_default_header_does_not_lookup_langsmith(self) -> None:
         """Header should skip LangSmith lookup unless explicitly enabled."""
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = None
             with patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
             ) as mock_build_url:
                 _build_non_interactive_header("agent", "abc123")
 
@@ -281,7 +281,7 @@ class TestSandboxTypeForwarding:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -289,18 +289,18 @@ class TestSandboxTypeForwarding:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
@@ -326,7 +326,7 @@ class TestSandboxTypeForwarding:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -334,18 +334,18 @@ class TestSandboxTypeForwarding:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
@@ -385,11 +385,11 @@ class TestQuietMode:
 
         with (
             patch(
-                "deepagents_code.non_interactive.Console",
+                "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
             ) as mock_console_cls,
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -397,18 +397,18 @@ class TestQuietMode:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -443,7 +443,7 @@ class TestQuietMode:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -451,18 +451,18 @@ class TestQuietMode:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -553,7 +553,7 @@ class TestNoStreamMode:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -561,18 +561,18 @@ class TestNoStreamMode:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -622,7 +622,7 @@ class TestNoStreamMode:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -630,18 +630,18 @@ class TestNoStreamMode:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -681,11 +681,11 @@ class TestFastFollowLangsmithLink:
 
         with (
             patch(
-                "deepagents_code.non_interactive.Console",
+                "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
             ),
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -693,18 +693,18 @@ class TestFastFollowLangsmithLink:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive._start_langsmith_thread_url_lookup",
+                "deepagents_code.client.non_interactive._start_langsmith_thread_url_lookup",
                 return_value=ready_state,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -734,11 +734,11 @@ class TestFastFollowLangsmithLink:
 
         with (
             patch(
-                "deepagents_code.non_interactive.Console",
+                "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
             ),
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -746,18 +746,18 @@ class TestFastFollowLangsmithLink:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive._start_langsmith_thread_url_lookup",
+                "deepagents_code.client.non_interactive._start_langsmith_thread_url_lookup",
                 return_value=pending_state,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -785,11 +785,11 @@ class TestFastFollowLangsmithLink:
 
         with (
             patch(
-                "deepagents_code.non_interactive.Console",
+                "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
             ),
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -797,18 +797,18 @@ class TestFastFollowLangsmithLink:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive._start_langsmith_thread_url_lookup",
+                "deepagents_code.client.non_interactive._start_langsmith_thread_url_lookup",
                 return_value=done_no_url,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -832,11 +832,11 @@ class TestFastFollowLangsmithLink:
 
         with (
             patch(
-                "deepagents_code.non_interactive.Console",
+                "deepagents_code.client.non_interactive.Console",
                 return_value=MagicMock(spec=Console),
             ),
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -844,17 +844,17 @@ class TestFastFollowLangsmithLink:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive._start_langsmith_thread_url_lookup",
+                "deepagents_code.client.non_interactive._start_langsmith_thread_url_lookup",
             ) as mock_lookup,
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -875,7 +875,7 @@ class TestStartLangsmithThreadUrlLookup:
         """Should populate state.url when build succeeds."""
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid"
         with patch(
-            "deepagents_code.non_interactive.build_langsmith_thread_url",
+            "deepagents_code.client.non_interactive.build_langsmith_thread_url",
             return_value=url,
         ):
             state = _start_langsmith_thread_url_lookup("tid")
@@ -885,7 +885,7 @@ class TestStartLangsmithThreadUrlLookup:
     def test_signals_done_on_exception(self) -> None:
         """Should signal done and leave url as None when build raises."""
         with patch(
-            "deepagents_code.non_interactive.build_langsmith_thread_url",
+            "deepagents_code.client.non_interactive.build_langsmith_thread_url",
             side_effect=RuntimeError("boom"),
         ):
             state = _start_langsmith_thread_url_lookup("tid")
@@ -895,7 +895,7 @@ class TestStartLangsmithThreadUrlLookup:
     def test_signals_done_when_url_is_none(self) -> None:
         """Should signal done when build returns None."""
         with patch(
-            "deepagents_code.non_interactive.build_langsmith_thread_url",
+            "deepagents_code.client.non_interactive.build_langsmith_thread_url",
             return_value=None,
         ):
             state = _start_langsmith_thread_url_lookup("tid")
@@ -951,7 +951,7 @@ class TestShellAllowListDecisionLogic:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -959,18 +959,18 @@ class TestShellAllowListDecisionLogic:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
@@ -997,7 +997,7 @@ class TestNonInteractivePrompt:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1005,18 +1005,18 @@ class TestNonInteractivePrompt:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
@@ -1048,7 +1048,7 @@ class TestNonInteractivePrompt:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1056,14 +1056,14 @@ class TestNonInteractivePrompt:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
@@ -1075,7 +1075,7 @@ class TestNonInteractivePrompt:
                 return_value="# Instructions\nDo stuff",
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -1103,7 +1103,7 @@ class TestNonInteractivePrompt:
         """Missing headless skill should fail before the server starts."""
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1111,14 +1111,14 @@ class TestNonInteractivePrompt:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
                 "deepagents_code.skills.invocation.discover_skills_and_roots",
                 return_value=([], []),
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
             ) as mock_start_server,
         ):
@@ -1154,7 +1154,7 @@ class TestNonInteractivePrompt:
         }
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1162,7 +1162,7 @@ class TestNonInteractivePrompt:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.settings",
+                "deepagents_code.client.non_interactive.settings",
             ) as mock_settings,
             patch(
                 "deepagents_code.skills.invocation.discover_skills_and_roots",
@@ -1176,7 +1176,7 @@ class TestNonInteractivePrompt:
                 ),
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
             ) as mock_start_server,
         ):
@@ -1230,7 +1230,8 @@ class TestMaxTurns:
         config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
         ):
             await _run_agent_loop(
                 agent,
@@ -1254,12 +1255,15 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive._HITL_REQUEST_ADAPTER"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
@@ -1287,12 +1291,15 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive._HITL_REQUEST_ADAPTER"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
@@ -1326,14 +1333,17 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive._HITL_REQUEST_ADAPTER"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
             ) as mock_adapter,
-            patch("deepagents_code.non_interactive._MAX_HITL_ITERATIONS", 2),
+            patch("deepagents_code.client.non_interactive._MAX_HITL_ITERATIONS", 2),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.model_name = ""
@@ -1364,14 +1374,17 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive._HITL_REQUEST_ADAPTER"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
             ) as mock_adapter,
-            patch("deepagents_code.non_interactive._MAX_HITL_ITERATIONS", 1),
+            patch("deepagents_code.client.non_interactive._MAX_HITL_ITERATIONS", 1),
         ):
             mock_settings.shell_allow_list = None
             mock_settings.model_name = ""
@@ -1397,7 +1410,7 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1405,20 +1418,20 @@ class TestMaxTurns:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new_callable=AsyncMock,
             ) as mock_loop,
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -1440,7 +1453,7 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1448,20 +1461,20 @@ class TestMaxTurns:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new_callable=AsyncMock,
             ) as mock_loop,
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -1490,12 +1503,15 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive._HITL_REQUEST_ADAPTER"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._HITL_REQUEST_ADAPTER"
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
@@ -1528,7 +1544,7 @@ class TestMaxTurns:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1536,20 +1552,20 @@ class TestMaxTurns:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new=fake_run_agent_loop,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(looping_agent, mock_server_proc, None),
             ),
@@ -1783,7 +1799,7 @@ class TestProcessAiMessageStats:
                 "total_tokens": 150,
             },
         )
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
             _process_ai_message(message, state, console)
@@ -1802,7 +1818,7 @@ class TestProcessAiMessageStats:
                 "total_tokens": 150,
             },
         )
-        with patch("deepagents_code.non_interactive.settings") as mock_settings:
+        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
             _process_ai_message(message, state, console)
@@ -1899,10 +1915,10 @@ class TestMakeStdioEncodingSafe:
 
         with (
             patch(
-                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+                "deepagents_code.client.non_interactive._make_stdio_encoding_safe",
             ) as mock_helper,
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(),
                     model_name="test-model",
@@ -1910,16 +1926,16 @@ class TestMakeStdioEncodingSafe:
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
@@ -1957,7 +1973,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -1993,7 +2009,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2036,7 +2052,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2069,7 +2085,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2099,7 +2115,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2116,7 +2132,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2145,7 +2161,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
 
@@ -2182,7 +2198,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(first_msg, state, console)
             _process_ai_message(second_msg, state, console)
@@ -2227,7 +2243,7 @@ class TestProcessAIMessageHooks:
         console = Console(file=stream, force_terminal=False, color_system=None)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(ai_msg, state, console)
             _process_ai_message(ai_msg, state, console)
@@ -2293,7 +2309,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(malformed, state, console)
             _process_ai_message(good, state, console)
@@ -2350,7 +2366,7 @@ class TestProcessAIMessageHooks:
         console = Console(quiet=True)
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(malformed, state, console)
             _process_ai_message(good, state, console)
@@ -2389,7 +2405,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2424,7 +2440,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2461,7 +2477,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2493,7 +2509,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2528,7 +2544,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2564,11 +2580,11 @@ class TestProcessMessageChunkHooks:
 
         with (
             patch(
-                "deepagents_code.non_interactive.format_tool_message_content",
+                "deepagents_code.client.non_interactive.format_tool_message_content",
                 side_effect=boom,
             ),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
@@ -2605,7 +2621,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2637,9 +2653,9 @@ class TestProcessMessageChunkHooks:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
-            caplog.at_level("WARNING", logger="deepagents_code.non_interactive"),
+            caplog.at_level("WARNING", logger="deepagents_code.client.non_interactive"),
         ):
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2661,7 +2677,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker = MagicMock()
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((ai_msg, {}), state, console, file_op_tracker)
 
@@ -2687,7 +2703,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
@@ -2722,7 +2738,7 @@ class TestProcessMessageChunkHooks:
 
         with (
             patch(
-                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
             caplog.at_level("WARNING", logger="deepagents_code._tool_stream"),
         ):
@@ -2770,7 +2786,7 @@ class TestProcessMessageChunkHooks:
         file_op_tracker.complete_with_message.return_value = None
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _process_ai_message(malformed, state, console)
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
@@ -2810,7 +2826,7 @@ class TestOrphanedToolResultHooks:
         }
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _dispatch_orphaned_tool_result_hooks(
                 state, "Stream ended before tool result"
@@ -2844,7 +2860,7 @@ class TestOrphanedToolResultHooks:
         }
 
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _dispatch_orphaned_tool_result_hooks(
                 state, "Stream ended before tool result"
@@ -2862,7 +2878,7 @@ class TestOrphanedToolResultHooks:
         """A clean run (every id already drained) dispatches nothing."""
         state = StreamState()
         with patch(
-            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             _dispatch_orphaned_tool_result_hooks(state, "x")
         mock_dispatch.assert_not_called()
@@ -2887,12 +2903,13 @@ class TestOrphanedToolResultHooks:
             raise RuntimeError(msg)
 
         with (
-            patch("deepagents_code.non_interactive._stream_agent", new=boom),
+            patch("deepagents_code.client.non_interactive._stream_agent", new=boom),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
             pytest.raises(RuntimeError, match="provider blew up"),
         ):
@@ -2948,12 +2965,15 @@ class TestOrphanedToolResultHooks:
             state.tool_call_buffers["k2"] = idless_parsed
 
         with (
-            patch("deepagents_code.non_interactive._stream_agent", new=seed),
+            patch("deepagents_code.client.non_interactive._stream_agent", new=seed),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
             ),
-            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
-            caplog.at_level("INFO", logger="deepagents_code.non_interactive"),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            caplog.at_level("INFO", logger="deepagents_code.client.non_interactive"),
         ):
             await _run_agent_loop(
                 MagicMock(),
@@ -3025,12 +3045,16 @@ class TestRunAgentLoopHITLReject:
         file_op_tracker.complete_with_message.return_value = None
 
         with (
-            patch("deepagents_code.non_interactive._stream_agent", new=staged_stream),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
             ),
             patch(
-                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             await _run_agent_loop(
@@ -3085,30 +3109,30 @@ class TestDrainWiring:
 
         with (
             patch(
-                "deepagents_code.non_interactive._make_stdio_encoding_safe",
+                "deepagents_code.client.non_interactive._make_stdio_encoding_safe",
             ),
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(), model_name="test-model", provider="test"
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
             patch(
-                "deepagents_code.non_interactive.drain_pending_hooks",
+                "deepagents_code.client.non_interactive.drain_pending_hooks",
                 new_callable=AsyncMock,
             ) as mock_drain,
         ):
@@ -3128,32 +3152,32 @@ class TestDrainWiring:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(), model_name="test-model", provider="test"
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new_callable=AsyncMock,
                 side_effect=OSError("boom"),
             ),
             patch(
-                "deepagents_code.non_interactive.drain_pending_hooks",
+                "deepagents_code.client.non_interactive.drain_pending_hooks",
                 new_callable=AsyncMock,
             ) as mock_drain,
         ):
@@ -3178,32 +3202,32 @@ class TestDrainWiring:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(), model_name="test-model", provider="test"
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new_callable=AsyncMock,
                 side_effect=KeyboardInterrupt,
             ),
             patch(
-                "deepagents_code.non_interactive.drain_pending_hooks",
+                "deepagents_code.client.non_interactive.drain_pending_hooks",
                 new_callable=AsyncMock,
             ) as mock_drain,
         ):
@@ -3223,32 +3247,32 @@ class TestDrainWiring:
 
         with (
             patch(
-                "deepagents_code.non_interactive.create_model",
+                "deepagents_code.client.non_interactive.create_model",
                 return_value=ModelResult(
                     model=MagicMock(), model_name="test-model", provider="test"
                 ),
             ),
             patch(
-                "deepagents_code.non_interactive.generate_thread_id",
+                "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
             ),
-            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
             patch(
-                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
             patch(
-                "deepagents_code.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ),
             patch(
-                "deepagents_code.non_interactive._run_agent_loop",
+                "deepagents_code.client.non_interactive._run_agent_loop",
                 new_callable=AsyncMock,
                 side_effect=HITLIterationLimitError("Exceeded 1 agentic turns."),
             ),
             patch(
-                "deepagents_code.non_interactive.drain_pending_hooks",
+                "deepagents_code.client.non_interactive.drain_pending_hooks",
                 new_callable=AsyncMock,
             ) as mock_drain,
         ):

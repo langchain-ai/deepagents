@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import tempfile
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
@@ -27,14 +26,14 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.mcp_tools import MCPSessionManager
-    from deepagents_code.remote_client import RemoteAgent
-    from deepagents_code.server import ServerProcess
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code.client.launch.server import _EPHEMERAL_PORT
 from deepagents_code.project_utils import ProjectContext
-from deepagents_code.server import _EPHEMERAL_PORT
 
 logger = logging.getLogger(__name__)
 _DISTRIBUTION_NAME = "deepagents-code"
@@ -90,28 +89,26 @@ def _capture_project_context() -> ProjectContext | None:
 def _scaffold_workspace(work_dir: Path) -> None:
     """Prepare the server working directory with all required files.
 
-    Copies the server graph entry point into *work_dir* and generates
-    the auxiliary files (checkpointer module, `pyproject.toml`,
-    `langgraph.json`) that `langgraph dev` needs to boot.
+    Generates the auxiliary files (checkpointer module, `pyproject.toml`,
+    `langgraph.json`) that `langgraph dev` needs to boot. The generated
+    graph reference imports the installed `deepagents_code` package directly.
 
     Args:
         work_dir: Temporary directory that will become the server's cwd.
     """
-    from deepagents_code.server import generate_langgraph_json
-
-    server_graph_src = Path(__file__).parent / "server_graph.py"
-    server_graph_dst = work_dir / "server_graph.py"
-    shutil.copy2(server_graph_src, server_graph_dst)
+    from deepagents_code.client.launch.server import generate_langgraph_json
 
     _write_checkpointer(work_dir)
     _write_pyproject(work_dir)
 
-    # Relative paths resolve against the subprocess cwd, which
-    # ServerProcess.start() sets to work_dir (server.py). Using absolute paths
-    # here breaks Windows because importlib treats backslash paths as module names.
+    # `graph_ref` is a dotted import of the installed `deepagents_code` package,
+    # but `checkpointer_path` stays cwd-relative: checkpointer.py is generated
+    # fresh into work_dir (which `ServerProcess.start()` sets as the subprocess
+    # cwd) and is not an importable package module. Don't "unify" these — a
+    # dotted ref for the checkpointer would fail to resolve.
     generate_langgraph_json(
         work_dir,
-        graph_ref="./server_graph.py:make_graph",
+        graph_ref="deepagents_code.server_graph:make_graph",
         checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 
@@ -144,7 +141,7 @@ async def create_checkpointer():
     """Yield an AsyncSqliteSaver connected to the app's sessions DB.
 
     The database path is read from the `{db_path_var}` env var
-    (set by the the app before server startup) rather than hard-coded, so
+    (set by the app before server startup) rather than hard-coded, so
     the checkpointer module works without code generation.
     """
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -185,6 +182,28 @@ build-backend = "hatchling.build"
     (work_dir / "pyproject.toml").write_text(content)
 
 
+def _default_package_project_root() -> Path | None:
+    """Return the project root that contains the top-level package.
+
+    Returns:
+        The directory above `deepagents_code` — the editable project root in
+            source checkouts and `site-packages` for installed wheels — or
+            `None` when the package location cannot be determined (e.g. a frozen
+            or zipimport build where `__file__` is unset). Returning `None`
+            (rather than guessing `Path.cwd()`) lets the caller fall back to
+            the installed distribution version instead of pointing at whatever
+            unrelated project happens to sit in the launch directory.
+    """
+    import deepagents_code
+
+    # `getattr` with a default: `__file__` is unset on frozen/zipimport builds
+    # and namespace packages, so it is not guaranteed to exist at runtime.
+    package_init = getattr(deepagents_code, "__file__", None)
+    if package_init is None:
+        return None
+    return Path(package_init).resolve().parent.parent
+
+
 def _runtime_package_dependency(package_root: Path | None = None) -> str:
     """Return the dependency spec for the app package in the server runtime.
 
@@ -199,8 +218,8 @@ def _runtime_package_dependency(package_root: Path | None = None) -> str:
     Returns:
         Requirement string for the generated runtime `pyproject.toml`.
     """
-    root = package_root or Path(__file__).parent.parent
-    if (root / "pyproject.toml").is_file():
+    root = package_root or _default_package_project_root()
+    if root is not None and (root / "pyproject.toml").is_file():
         return f"{_DISTRIBUTION_NAME} @ {root.as_uri()}"
 
     try:
@@ -336,8 +355,8 @@ async def start_server_and_get_agent(
             missing, or references contradictory transport fields. Raised
             from the pre-flight validator before any subprocess is spawned.
     """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
-    from deepagents_code.remote_client import RemoteAgent
-    from deepagents_code.server import ServerProcess
+    from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.remote_client import RemoteAgent
 
     project_context = _capture_project_context()
 

@@ -40,6 +40,18 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
+from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+    ToolCallBufferKey,
+    ToolStatus,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -50,10 +62,15 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.hooks import dispatch_hook, dispatch_hook_fire_and_forget
+from deepagents_code.hooks import (
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+    drain_pending_hooks,
+)
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.textual_adapter import SessionStats, print_usage_table
+from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
     detect_dangerous_unicode,
@@ -230,6 +247,24 @@ async def _terminate_startup_process(proc: Process) -> None:
         )
 
 
+@dataclass(frozen=True)
+class InFlightToolCall:
+    """A tool call whose `tool.use` has fired but whose result has not arrived.
+
+    Bundling the name and args into one record keeps them structurally in
+    lock-step: a single `dict[str, InFlightToolCall]` cannot represent an id with
+    args but no name (or vice versa), which two parallel dicts could. That
+    removes the desync failure mode where an orphaned drain would emit a
+    `tool.error` with an empty `tool_name`.
+    """
+
+    name: str
+    """The tool name, carried so an orphaned call can be closed with a name."""
+
+    args: dict[str, Any]
+    """The parsed tool-call arguments, for correlating the matching result."""
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
@@ -249,11 +284,30 @@ class StreamState:
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
-    tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = field(
         default_factory=dict
     )
-    """Maps a tool-call index or ID to its name/ID metadata for in-progress
-    tool calls."""
+    """Maps a tool-call index or ID to its in-progress buffer: name, ID,
+    accumulated argument fragments, and the display latch."""
+
+    in_flight_tool_calls: dict[str, InFlightToolCall] = field(default_factory=dict)
+    """Maps in-flight tool-call IDs (those whose `tool.use` has fired) to their
+    name and parsed arguments, so the matching `tool.result` can be correlated.
+    Entries are removed when the result arrives; any still present when the
+    stream aborts are closed by `_dispatch_orphaned_tool_result_hooks`. One
+    record per id keeps name and args structurally in lock-step (see
+    `InFlightToolCall`)."""
+
+    displayed_tool_call_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs whose non-interactive call line has already been printed."""
+
+    emitted_tool_use_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs for which a `tool.use` has been dispatched.
+
+    Monotonic: never cleared within a run, so `tool.use` fires at most once per
+    id even if a call's arg chunks are redelivered after its result (mirrors the
+    TUI's `displayed_tool_ids`). Result correlation and the orphan drain use the
+    separate `in_flight_tool_calls`, which *is* cleared per result."""
 
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
     """Maps interrupt IDs to their validated HITL requests that are awaiting
@@ -412,28 +466,77 @@ def _process_ai_message(
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
+            chunk_args = block.get("args")
 
-            if chunk_index is not None:
-                buffer_key: int | str = chunk_index
-            elif chunk_id is not None:
-                buffer_key = chunk_id
-            else:
-                buffer_key = f"unknown-{len(state.tool_call_buffers)}"
+            buffer_key = tool_call_buffer_key(
+                chunk_index, chunk_id, len(state.tool_call_buffers)
+            )
+            buffer = state.tool_call_buffers.setdefault(buffer_key, ToolCallBuffer())
+            buffer.ingest(name=chunk_name, tool_id=chunk_id, args=chunk_args)
 
-            if buffer_key not in state.tool_call_buffers:
-                state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
-            if chunk_name:
-                state.tool_call_buffers[buffer_key]["name"] = chunk_name
+            buffer_name = buffer.name
+            buffer_id = buffer.tool_id
+            already_displayed = (
+                isinstance(buffer_id, str)
+                and buffer_id in state.displayed_tool_call_ids
+            )
+            if (
+                isinstance(buffer_name, str)
+                and not buffer.displayed
+                and not already_displayed
+            ):
                 if state.spinner:
                     state.spinner.stop()
-                if state.quiet:
-                    continue
-                if state.full_response:
-                    _write_newline()
-                console.print(
-                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
-                    highlight=False,
+                if not state.quiet:
+                    if state.full_response:
+                        _write_newline()
+                    console.print(
+                        f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
+                        highlight=False,
+                    )
+                buffer.displayed = True
+                if isinstance(buffer_id, str):
+                    state.displayed_tool_call_ids.add(buffer_id)
+            elif isinstance(buffer_id, str) and buffer.displayed:
+                state.displayed_tool_call_ids.add(buffer_id)
+
+            # Gate tool.use on a resolved tool id so this surface matches the
+            # interactive one, which dispatches at widget-mount time in
+            # `textual_adapter.execute_task_textual`. Both gate on a resolved
+            # tool-call id and fire at most once per id via a monotonic id set
+            # (`emitted_tool_use_ids` here, `displayed_tool_ids` there) that is
+            # never cleared within the run — see the "fire-once-per-id" clause of
+            # the parity contract in `_tool_stream`. Gating on the monotonic set
+            # rather than `in_flight_tool_calls` (which is cleared per result)
+            # means a redelivery of a completed call's arg chunks does not
+            # re-fire `tool.use` and spawn a spurious orphan.
+            parsed_args = buffer.parse_args()
+            if (
+                isinstance(buffer_name, str)
+                and buffer_id is not None
+                and parsed_args is not None
+                and buffer_id not in state.emitted_tool_use_ids
+            ):
+                dispatch_hook_fire_and_forget(
+                    "tool.use",
+                    build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
+                state.emitted_tool_use_ids.add(buffer_id)
+                state.in_flight_tool_calls[buffer_id] = InFlightToolCall(
+                    buffer_name, parsed_args
+                )
+            if (
+                isinstance(buffer_id, str)
+                and parsed_args is not None
+                and buffer_id in state.emitted_tool_use_ids
+            ):
+                # Drop the buffer so a later turn that reuses this streaming
+                # index (indices restart per message, per LangChain streaming
+                # semantics) starts fresh rather than reusing this call's state.
+                # This also clears a redelivered completed call's recreated
+                # buffer, whose `tool.use` is already suppressed by the
+                # monotonic `emitted_tool_use_ids`.
+                state.tool_call_buffers.pop(buffer_key, None)
 
 
 def _process_message_chunk(
@@ -471,6 +574,32 @@ def _process_message_chunk(
     if isinstance(message_obj, AIMessage):
         _process_ai_message(message_obj, state, console)
     elif isinstance(message_obj, ToolMessage):
+        tool_id = getattr(message_obj, "tool_call_id", None)
+        correlated_tool_name = ""
+        # Args come from the matching tool.use. They default to {} when the call
+        # had no id to correlate on, or no tool.use fired (e.g. its args never
+        # parsed). The seam is intentional — without a correlated id we cannot
+        # pair them — but log the correlation miss so a lost pairing is not
+        # completely silent.
+        if isinstance(tool_id, str):
+            in_flight = state.in_flight_tool_calls.pop(tool_id, None)
+            tool_args = in_flight.args if in_flight is not None else None
+            correlated_tool_name = in_flight.name if in_flight is not None else ""
+            state.displayed_tool_call_ids.discard(tool_id)
+            if tool_args is None:
+                # Warning, not info/debug: a real-id result with no matching
+                # tool.use means a hook consumer sees a `tool.result` with empty
+                # args for a tool that actually executed (its args never parsed) —
+                # degraded audit fidelity worth surfacing at default log levels,
+                # consistent with the rest of this feature's severity philosophy.
+                logger.warning(
+                    "tool.result for %s has no correlated tool.use args; "
+                    "sending empty tool_args",
+                    tool_id,
+                )
+                tool_args = {}
+        else:
+            tool_args = {}
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
             if state.spinner:
@@ -480,6 +609,51 @@ def _process_message_chunk(
                     f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
                     highlight=False,
                 )
+        tool_name = getattr(message_obj, "name", "")
+        if not tool_name:
+            tool_name = correlated_tool_name
+        # Normalize to the two-value hook domain, fail-closed: an unexpected
+        # provider status is logged and treated as an error (see
+        # `normalize_tool_status`) rather than silently reported as success.
+        tool_status: ToolStatus = normalize_tool_status(
+            getattr(message_obj, "status", "success"), tool_name
+        )
+        # Format the content the same way the interactive surface does so
+        # `tool_output` is identical across surfaces for list/structured content
+        # (e.g. multimodal or MCP tools returning content blocks) rather than a
+        # raw Python list repr here vs. extracted text there. Truncation to
+        # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
+        # Guard formatting so a formatter error can't skip the tool.result
+        # dispatch below; on failure use a sentinel (see the except) rather than
+        # re-touching the offending content, so the dispatch stays unconditional.
+        try:
+            tool_content = format_tool_message_content(message_obj.content)
+            tool_output = str(tool_content) if tool_content else ""
+        except Exception:
+            # Guard formatting *and* the str() coercion together: a pathological
+            # __str__ must not re-raise past the fallback and skip the
+            # tool.result dispatch below. Use a sentinel rather than re-touching
+            # the offending content, so the dispatch stays unconditional.
+            logger.exception("Failed to format tool output")
+            tool_output = UNRENDERABLE_TOOL_OUTPUT
+        # Headless always dispatches tool.result for every ToolMessage — there
+        # are no widgets to skip. The TUI handles ToolMessages in three branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path and
+        # an `else` for unmounted tools both dispatch (mirroring this
+        # always-dispatch behavior), while the `completed_tool_result_ids` branch
+        # suppresses a duplicate rather than dispatching. See the parity contract
+        # in `_tool_stream` for the full guarantee.
+        if tool_status == "error":
+            dispatch_hook_fire_and_forget(
+                "tool.error",
+                build_tool_error_payload(tool_name),
+            )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                tool_name, tool_id, tool_args, tool_status, tool_output
+            ),
+        )
         if state.spinner:
             state.spinner.start()
 
@@ -773,6 +947,45 @@ async def _stream_agent(
             state.spinner.stop()
 
 
+def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
+    """Close out `tool.use` events that never received a `ToolMessage`.
+
+    On a normally-completing run every `tool.use` is followed by a `ToolMessage`
+    that drains `in_flight_tool_calls`, so this is a no-op. When the stream is
+    aborted mid-flight (e.g. a provider error between the tool call and its
+    result), any id still present had its `tool.use` dispatched with no terminal
+    event; emit `tool.error` + a `tool_status="error"` `tool.result` for each so
+    the headless surface upholds the same "every `tool.use` is closed" guarantee
+    as the TUI's `_dispatch_terminal_tool_result_hooks`.
+
+    Args:
+        state: The stream state whose in-flight tool maps are drained.
+        tool_output: Terminal output recorded on each synthesized `tool.result`.
+    """
+    if state.in_flight_tool_calls:
+        # A non-empty in-flight map here means real tool results were lost to a
+        # mid-stream abort (a clean run drains every id via its result). Surface
+        # it at warning — matching the TUI's backstop for the same class — so an
+        # operator can tell a clean run from one that synthesized error closes,
+        # rather than the drain being silent (degraded audit fidelity).
+        logger.warning(
+            "Stream ended with %d in-flight tool call(s) that never received a "
+            "result; closing each with a synthetic tool.error/tool.result",
+            len(state.in_flight_tool_calls),
+        )
+    for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
+        dispatch_hook_fire_and_forget(
+            "tool.error", build_tool_error_payload(in_flight.name)
+        )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                in_flight.name, tool_id, in_flight.args, "error", tool_output
+            ),
+        )
+    state.in_flight_tool_calls.clear()
+
+
 async def _run_agent_loop(
     agent: Any,  # noqa: ANN401
     message: str,
@@ -846,40 +1059,85 @@ async def _run_agent_loop(
 
     start_time = time.monotonic()
 
-    # Initial stream
-    await _stream_agent(
-        agent, stream_input, config, state, console, file_op_tracker, context
-    )
-
-    # The internal default applies when --max-turns is omitted, guarding
-    # against unbounded runaway loops in scripts that forgot to set one.
-    effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
-
-    # The initial stream above counts as turn 1; each HITL resume is a further
-    # turn. Raise before starting a resume that would exceed the budget so the
-    # user-facing count matches the flag's semantics.
-    turns = 1
-    while state.interrupt_occurred:
-        if turns >= effective_limit:
-            limit_source = (
-                f"--max-turns {max_turns}"
-                if max_turns is not None
-                else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
-            )
-            msg = (
-                f"Exceeded {effective_limit} agentic turns ({limit_source}). "
-                "The agent may be stuck retrying rejected commands. "
-                "Increase --max-turns or break the task into smaller steps."
-            )
-            raise HITLIterationLimitError(msg)
-        turns += 1
-        state.interrupt_occurred = False
-        state.hitl_response.clear()
-        _process_hitl_interrupts(state, console)
-        stream_input = Command(resume=state.hitl_response)
+    try:
+        # Initial stream
         await _stream_agent(
             agent, stream_input, config, state, console, file_op_tracker, context
         )
+
+        # The internal default applies when --max-turns is omitted, guarding
+        # against unbounded runaway loops in scripts that forgot to set one.
+        effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
+
+        # The initial stream above counts as turn 1; each HITL resume is a
+        # further turn. Raise before starting a resume that would exceed the
+        # budget so the user-facing count matches the flag's semantics.
+        turns = 1
+        while state.interrupt_occurred:
+            if turns >= effective_limit:
+                limit_source = (
+                    f"--max-turns {max_turns}"
+                    if max_turns is not None
+                    else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
+                )
+                msg = (
+                    f"Exceeded {effective_limit} agentic turns ({limit_source}). "
+                    "The agent may be stuck retrying rejected commands. "
+                    "Increase --max-turns or break the task into smaller steps."
+                )
+                raise HITLIterationLimitError(msg)
+            turns += 1
+            state.interrupt_occurred = False
+            state.hitl_response.clear()
+            _process_hitl_interrupts(state, console)
+            stream_input = Command(resume=state.hitl_response)
+            await _stream_agent(
+                agent, stream_input, config, state, console, file_op_tracker, context
+            )
+    finally:
+        # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
+        # aborted by a provider error mid-tool. On a clean run every id was
+        # already drained by its result, so this is a no-op. Guarded so a
+        # dispatch problem can never mask the exception propagating from the
+        # stream (this runs on the error path too).
+        try:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+        except Exception:
+            logger.warning(
+                "Orphaned tool.result drain failed unexpectedly", exc_info=True
+            )
+        # Surface any buffered tool call whose args never parsed: it never
+        # entered `in_flight_tool_calls` (so the orphan drain above skips it) and
+        # would otherwise be dropped with `state` at scope exit with no trace.
+        # Info, not warning — some of these may still have executed (their
+        # `tool.result` fired with `{}` args and logged a correlation miss); this
+        # only asserts the args never parsed. Guarded so a logging failure can
+        # never mask an exception propagating from the stream.
+        try:
+            # Two distinct reasons a buffered call never fired tool.use — args
+            # that never parsed, and args that parsed but carried no id (so
+            # tool.use was gated out). The classification is shared with the TUI
+            # via `count_unemitted_tool_calls`; each surface logs its own lines.
+            unemitted = count_unemitted_tool_calls(state.tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed but "
+                    "carried no tool-call id; no tool.use was emitted for them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
 
     wall_time = time.monotonic() - start_time
 
@@ -1379,3 +1637,15 @@ async def run_non_interactive(
         return 1
     else:
         return 0
+    finally:
+        # Fire-and-forget hooks (tool.use/tool.result) run as background tasks;
+        # await them here so the final tool.result is not cancelled when
+        # asyncio.run tears the loop down. Never return from this block — that
+        # would swallow the exit code determined above. drain_pending_hooks is
+        # documented never to raise, but guard it anyway (mirroring app.py's
+        # shutdown drain) so a future contract break can't replace the exit code
+        # with an exception escaping the finally.
+        try:
+            await drain_pending_hooks()
+        except Exception:
+            logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)

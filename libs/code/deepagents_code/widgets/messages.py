@@ -1353,6 +1353,13 @@ class ToolCallMessage(Vertical):
         Args:
             result: Tool output/result to display
         """
+        if self._status in {"rejected", "skipped"}:
+            # A rejected tool (or one skipped due to a sibling rejection) never
+            # legitimately becomes successful. A resumed turn can still stream a
+            # synthetic ToolMessage for such a tool (see the reasoned-reject path
+            # in `textual_adapter`); ignore it so the row keeps its terminal
+            # rejected/skipped state instead of flipping.
+            return
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
@@ -1401,6 +1408,13 @@ class ToolCallMessage(Vertical):
         Args:
             error: Error message
         """
+        if self._status in {"rejected", "skipped"}:
+            # A rejected/skipped tool never legitimately errors. A resumed turn
+            # can stream a synthetic error ToolMessage for a reasoned-reject tool
+            # (see `textual_adapter`); ignore it so the row keeps its rejected
+            # state rather than flipping to "Error" (which also left the stale
+            # `rejected` CSS class alongside `error`).
+            return
         self._stop_animation()
         self._status = "error"
         # For shell commands, prepend the full command so users can see what failed
@@ -2634,6 +2648,17 @@ class ToolCallMessage(Vertical):
     def tool_name(self) -> str:
         """Public read-only accessor for the underlying tool name."""
         return self._tool_name
+
+    @property
+    def args(self) -> dict[str, Any]:
+        """Public read-only accessor for the parsed tool-call arguments.
+
+        Returns a shallow copy so a consumer (e.g. a hook payload built from
+        `args`) cannot rebind the widget's top-level keys by reference. Nested
+        mutable values are shared, not deep-copied, so callers must treat them as
+        read-only and must not deep-mutate a returned nested value.
+        """
+        return dict(self._args)
 
     @property
     def is_success(self) -> bool:

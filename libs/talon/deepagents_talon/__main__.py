@@ -139,7 +139,7 @@ async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int
 
 async def _run_mcp_login(args: argparse.Namespace) -> int:
     try:
-        module = importlib.import_module("deepagents_code.mcp_commands")
+        module = importlib.import_module("deepagents_code.client.commands.mcp")
     except ImportError:
         print(  # noqa: T201
             "MCP login requires deepagents-code to be installed in this environment.",

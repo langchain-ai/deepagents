@@ -13,13 +13,13 @@ from rich.console import Console
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
+from deepagents_code.client.commands.tools import _truncate, run_tools_command
 from deepagents_code.tool_catalog import (
     ToolCatalog,
     ToolEntry,
     ToolGroup,
     UnavailableServer,
 )
-from deepagents_code.tools_commands import _truncate, run_tools_command
 
 
 def _run_text(args: argparse.Namespace, *, width: int = 200) -> tuple[int, str]:

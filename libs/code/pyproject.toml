@@ -270,7 +270,13 @@ ignore-var-parameters = true
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
 ]
-"tests/unit_tests/test_mcp_{auth,commands,tools}.py" = [
+"tests/unit_tests/test_mcp_{auth,tools}.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
+]
+"tests/unit_tests/client/commands/test_mcp.py" = [
     "ANN202",   # Missing return type on private test helper — common for mocks
     "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
     "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins

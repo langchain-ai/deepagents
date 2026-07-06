@@ -1737,6 +1737,7 @@ class TestResolveAndLoadMcpTools:
         mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Project remote MCP entries do not reach the loader without trust.
@@ -1765,6 +1766,14 @@ class TestResolveAndLoadMcpTools:
         mock_discover.return_value = [project_cfg]
         mock_classify.return_value = ([], [project_cfg])
         mock_load.return_value = ([], None, [])
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv(
+            "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
+        )
         caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
 
         tools, _manager, _infos = await resolve_and_load_mcp_tools(

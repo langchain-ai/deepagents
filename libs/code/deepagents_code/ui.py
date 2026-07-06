@@ -735,6 +735,10 @@ def show_auth_help() -> None:
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
     console.print("  --project NAME        With `set langsmith`, set the trace project")
+    console.print(
+        "  --base-url URL        With `set`, pair an endpoint with the key "
+        "(langsmith accepts us|eu)"
+    )
     console.print("  -h, --help            Show this help message")
     console.print()
     console.print(
@@ -751,6 +755,7 @@ def show_auth_help() -> None:
     console.print(
         "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
     )
+    console.print("  echo $LANGSMITH_API_KEY | dcode auth set langsmith --base-url eu")
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")

@@ -1,0 +1,23 @@
+libs/deepagents/tests/unit_tests/middleware/test_skills_middleware.py
+  s_39e93aa4f58666::t_666d8fac8f6146 472,491,512-575
+  s_39e93aa4f58666::t_5245b5b18a29cf 576-577
+libs/deepagents/deepagents/middleware/skills.py
+  s_39e93aa4f58666::t_7824eaa319ee91 353,356-357,360,363-368
+  s_39e93aa4f58666::t_f39d0ae7781871 441
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "38abeb163bc01e996a146ae3886f303fbb4846d6",
+  "prompts": {},
+  "sessions": {
+    "s_39e93aa4f58666": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b2d74a8-5b14-4622-8712-980ea60224cb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

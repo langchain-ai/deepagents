@@ -50,6 +50,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _ChatScroll,
     _display_model_label,
     _extra_is_ready,
     _parse_rubric_max_iterations,
@@ -10840,6 +10841,20 @@ class TestTerminalBackgroundSync:
 class TestExitGracefulWorkerHandoff:
     """Verify `exit()` defers teardown for an in-flight agent worker."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_background_hooks(self) -> Iterator[None]:
+        """Isolate the module-global hook task set across tests.
+
+        These tests read the real `has_pending_hooks()`; a stray undone task
+        left in `_background_tasks` by an earlier test would otherwise push
+        `test_synchronous_when_worker_finished` onto the graceful path and flake.
+        """
+        import deepagents_code.hooks as hooks_mod
+
+        hooks_mod._background_tasks.clear()
+        yield
+        hooks_mod._background_tasks.clear()
+
     async def test_defers_when_agent_worker_unfinished(self) -> None:
         """A running, unfinished worker arms a deferred graceful exit."""
         app = DeepAgentsApp()
@@ -10997,6 +11012,131 @@ class TestExitGracefulWorkerHandoff:
                 super_exit.assert_called_once()
             assert app._graceful_exit_task is None
             worker.wait.assert_not_awaited()
+
+    async def test_drains_pending_hooks_before_exit_without_worker(self) -> None:
+        """Pending fire-and-forget hooks defer teardown until they drain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+
+                await app._graceful_exit_task
+
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_after_waiting_for_agent(self) -> None:
+        """Both the agent-worker wait and the hook drain run before teardown.
+
+        Covers the combined path: an in-flight agent worker AND pending hooks
+        must each be awaited inside the single graceful-exit task before the
+        event loop tears down.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_when_worker_wait_fails(self) -> None:
+        """The hook drain still runs when the agent-worker wait errors.
+
+        The drain sits in its own try/except after the worker-wait block, so a
+        worker that fails to persist must not skip draining pending hooks — the
+        final tool.result would otherwise be dropped whenever shutdown coincides
+        with a worker error.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=RuntimeError("boom"))
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_hook_drain_timeout_is_bounded_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung hook drain is bounded by the graceful-exit budget and logged.
+
+        A slow/hanging hook subprocess must not stall an interactive quit; the
+        drain is wrapped in `asyncio.wait_for`, so teardown proceeds after the
+        timeout and the possibly-dropped final tool.result is announced rather
+        than the UI silently hanging.
+        """
+
+        async def hang() -> None:
+            await asyncio.Event().wait()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=hang),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "Hook drain did not finish" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
@@ -19773,6 +19913,320 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:
+    """Return a `query_one` stand-in that raises for the welcome banner only.
+
+    Non-banner selectors delegate to the app's real `query_one`, so unrelated
+    lookups in the code under test keep working while the banner lookup fails.
+
+    Args:
+        app: App whose `query_one` is being replaced.
+        exc: Exception to raise when the welcome banner is queried.
+
+    Returns:
+        A callable suitable for `patch.object(app, "query_one", side_effect=...)`.
+    """
+    real_query_one = app.query_one
+
+    def _query_one(selector: str, *args: object, **kwargs: object) -> Widget:
+        if selector == "#welcome-banner":
+            raise exc
+        return real_query_one(selector, *args, **kwargs)
+
+    return _query_one
+
+
+class _ChatScrollTestApp(App[None]):
+    """Small app for exercising chat scroll anchoring."""
+
+    CSS = """
+    #chat {
+        height: 5;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        """Compose a short transcript in the chat scroll."""
+        with _ChatScroll(id="chat"):
+            yield Static("welcome", id="welcome")
+            yield Static("message", id="message")
+
+
+class TestChatScrollAnchoring:
+    """Regression coverage for welcome banner positioning."""
+
+    async def test_anchor_keeps_short_content_top_aligned(self) -> None:
+        """Bottom-follow should not bottom-align content shorter than the viewport."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+            chat.release_anchor()
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_anchor_engages_after_content_overflows(self) -> None:
+        """Deferred bottom-follow should engage once chat content overflows."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_engages_immediately_when_already_scrollable(self) -> None:
+        """Resuming into an overflowing transcript anchors to the bottom at once."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            # Content already overflows before we opt into bottom-follow (the
+            # thread-resume case), so anchor() must engage without deferral.
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            assert chat.max_scroll_y > 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_resets_to_top_when_content_shrinks(self) -> None:
+        """Content shrinking below the viewport releases the bottom anchor."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            tall = Static("\n".join(f"line {i}" for i in range(20)))
+            await chat.mount(tall)
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            # Removing the overflow (e.g. /clear) must not leave the banner
+            # bottom-pinned in a near-empty chat.
+            await tall.remove()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert not chat.is_anchored
+            assert chat.scroll_y == 0
+
+    async def test_release_anchor_stops_following_bottom(self) -> None:
+        """After release_anchor, streamed content must not snap to the bottom."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+            # The user scrolls up: release bottom-follow and move off the end
+            # (Textual re-anchors automatically while parked at the bottom).
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+
+            # More content streams in. Textual keeps `_anchored` set as standing
+            # intent after a release, so the behavioral signal is the scroll
+            # position: it must stay where the user left it, not snap to the new
+            # bottom.
+            await chat.mount(Static("\n".join(f"tail {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == 0
+
+    async def test_anchor_reengages_after_release_when_scrollable(self) -> None:
+        """A fresh anchor() after a manual scroll re-arms bottom-follow.
+
+        The app calls anchor() on every content-producing turn, so releasing
+        (user scrolls up) then re-anchoring must reset `_anchor_released` and
+        re-engage because content already overflows.
+        """
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.release_anchor()
+            chat.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+            assert chat.scroll_y == 0
+
+            chat.anchor()
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+
+    async def test_anchor_false_disables_bottom_follow(self) -> None:
+        """anchor(False) disarms bottom-follow and delegates to the base class."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+            assert chat.is_anchored
+
+            chat.anchor(False)
+            await pilot.pause()
+
+            assert not chat._follow_bottom_when_scrollable
+            assert not chat.is_anchored
+
+
+class TestWelcomeBannerLiveUpdates:
+    """The banner starts top-aligned and mirrors live model/cwd changes.
+
+    These bind the PR's user-visible behaviors at the app<->widget seam: the
+    empty chat must not bottom-anchor at startup, and `/model` / cwd switches
+    must reach the banner (not just the status bar).
+    """
+
+    async def test_startup_leaves_chat_top_aligned(self) -> None:
+        """An empty chat keeps the welcome banner pinned to the top (unanchored)."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one("#chat", _ChatScroll)
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_sync_status_model_updates_banner(self) -> None:
+        """`_sync_status_model` pushes the active model into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_MODEL
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_MODEL: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                with patch("deepagents_code.config.settings") as mock_settings:
+                    mock_settings.model_provider = "openai"
+                    mock_settings.model_name = "gpt-5.5"
+                    app._sync_status_model()
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "openai:gpt-5.5" in banner._build_banner().plain
+
+    async def test_apply_cwd_updates_banner(self) -> None:
+        """`_apply_cwd_to_ui` pushes the working directory into the welcome banner."""
+        from deepagents_code._env_vars import SPLASH_SHOW_CWD
+        from deepagents_code.widgets.welcome import WelcomeBanner
+
+        with patch.dict(os.environ, {SPLASH_SHOW_CWD: "1"}):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+            async with app.run_test() as pilot:
+                app._apply_cwd_to_ui(Path("/work/proj"))
+                await pilot.pause()
+                banner = app.query_one("#welcome-banner", WelcomeBanner)
+                assert "/work/proj" in banner._build_banner().plain
+
+    async def test_sync_status_model_swallows_screen_stack_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `ScreenStackError` during banner lookup is absorbed at debug level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, ScreenStackError("empty")),
+                ),
+                caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                # Must not propagate — the guard exists precisely for this.
+                app._sync_status_model()
+        assert "Screen stack empty during model sync" in caplog.text
+
+    async def test_sync_status_model_warns_when_banner_missing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `NoMatches` on the persistent banner is surfaced at warning level."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch("deepagents_code.config.settings") as mock_settings,
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                mock_settings.model_provider = "openai"
+                mock_settings.model_name = "gpt-5.5"
+                app._sync_status_model()
+        assert "Welcome banner not found during model sync" in caplog.text
+
+    async def test_apply_cwd_survives_missing_banner(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`_apply_cwd_to_ui` still updates cwd state when the banner lookup fails."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "query_one",
+                    side_effect=_banner_query_raiser(app, NoMatches("gone")),
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+            ):
+                # Must not propagate; cwd state is set before the banner update.
+                app._apply_cwd_to_ui(Path("/work/proj"))
+            assert app._cwd == "/work/proj"
+        assert "Welcome banner not found during cwd sync" in caplog.text
 
 
 class TestStatusBarConnectionMirroring:

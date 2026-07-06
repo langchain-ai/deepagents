@@ -1,6 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -23,13 +23,22 @@ from deepagents_code.widgets.model_selector import ModelSelectorScreen
 
 
 @pytest.fixture(autouse=True)
-def _seed_provider_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _seed_provider_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterator[None]:
     """Seed credentials so dismissal tests aren't blocked by missing keys.
 
     The selector now opens an auth prompt when the highlighted provider
     has no key. Most tests in this file just want to assert dismissal
     behavior, so we seed env vars for the providers their fixtures use
     and redirect the credential store into a clean temp dir.
+
+    Also redirects `DEFAULT_CONFIG_PATH` to a (nonexistent) temp file and
+    clears the process-wide config cache. The selector now resolves provider
+    labels via `ModelConfig.load()`, which defaults to the developer's real
+    `~/.deepagents/config.toml`; a local `display_name`/`short_name` override
+    would otherwise flip label assertions. This keeps the suite hermetic.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -40,6 +49,15 @@ def _seed_provider_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
     )
+    from deepagents_code import model_config
+
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    # The cache is a module global that monkeypatch can't undo; clear it before
+    # and after so neither a prior test's real config nor this fixture's empty
+    # config leaks across tests.
+    model_config.clear_caches()
+    yield
+    model_config.clear_caches()
 
 
 _FILTER_TEST_MODELS: list[tuple[str, str]] = [
@@ -547,6 +565,94 @@ class TestRecentModelsSection:
                 for h in screen.query(".model-provider-header").results(Static)
             ]
             assert not any("Recent" in h for h in headers)
+
+    async def test_provider_header_uses_friendly_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Provider headers render the friendly label, not the raw config key."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"openai_codex": ["gpt-5.5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
+            assert not any("openai_codex" in h for h in headers)
+
+    async def test_recent_row_shows_name_and_provider_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Recent rows show the friendly name plus a brand `(provider)` tag."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"openai": ["gpt-5.5"]},
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            recent = screen._option_widgets[0]
+            assert recent.model_spec == "openai:gpt-5.5"
+            assert recent.show_provider
+            text = str(recent.content)
+            assert "GPT-5.5" in text
+            # No brand override for openai: falls back to the display name.
+            assert "(OpenAI)" in text
+            assert "openai:gpt-5.5" not in text
+
+    async def test_recent_row_uses_short_brand_over_verbose_display_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Recent tag uses the compact brand, not the verbose auth label."""
+        from deepagents_code.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"openai_codex": ["gpt-5.5"]},
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["openai_codex:gpt-5.5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            recent = screen._option_widgets[0]
+            assert recent.model_spec == "openai_codex:gpt-5.5"
+            text = str(recent.content)
+            assert "(OpenAI Codex)" in text
+            # The verbose auth label must not leak into the compact tag.
+            assert "ChatGPT login" not in text
 
     async def test_recent_entries_appear_in_provider_section_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1224,6 +1330,69 @@ class TestModelSelectorFuzzyMatching:
             f"'claude sonnet' should match claude-sonnet models. Got: {specs}"
         )
 
+    def test_fuzzy_matches_friendly_name_dotted_version(self) -> None:
+        """A dotted version in the friendly name matches where the spec can't.
+
+        `anthropic:claude-opus-4-7` hyphenates its version, so the "4.7" token
+        cannot subsequence-match the spec. The friendly name "Claude Opus 4.7"
+        (from the recommended list) supplies the dotted form.
+        """
+        screen = _model_selector_for_filtering()
+        screen._filter_text = "opus 4.7"
+        screen._update_filtered_list()
+
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert "anthropic:claude-opus-4-7" in specs, (
+            f"friendly name should let 'opus 4.7' match. Got: {specs}"
+        )
+
+    def test_fuzzy_dotted_version_needs_friendly_name(self) -> None:
+        """Negative control: without the friendly name, "4.7" can't match the spec.
+
+        Pins that the previous test passes because of the folded-in name, not
+        some incidental spec match — guarding the friendly-name search feature.
+        """
+        screen = _model_selector_for_filtering()
+
+        # Neutralize the friendly name (return the hyphenated model portion, as
+        # the raw spec already carries) so "4.7" has no dotted form to match.
+        screen._get_model_display_name = (  # ty: ignore[invalid-assignment]
+            lambda spec: spec.split(":", 1)[-1]
+        )
+        screen._filter_text = "opus 4.7"
+        screen._update_filtered_list()
+
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert "anthropic:claude-opus-4-7" not in specs
+
+    def test_fuzzy_matches_provider_friendly_label(self) -> None:
+        """The provider display label — not just the key — is searchable.
+
+        Searches "chatgpt", which appears in neither the spec
+        (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
+        provider key (`openai_codex`) — only in the resolved display label
+        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        branch of the haystack is doing the work; there is no other source for
+        it. Guards against the label term being silently dropped.
+        """
+        screen = _model_selector_for_filtering()
+        # Inject a codex row locally rather than mutate the shared fixture that
+        # other filter tests count on.
+        codex = ("openai_codex:gpt-5.2", "openai_codex")
+        for models in (
+            screen._unfiltered_models,
+            screen._all_models,
+            screen._filtered_models,
+        ):
+            models.append(codex)
+        screen._filter_text = "chatgpt"
+        screen._update_filtered_list()
+
+        specs = [spec for spec, _ in screen._filtered_models]
+        assert specs == ["openai_codex:gpt-5.2"], (
+            f"'chatgpt' should match only via the provider label. Got: {specs}"
+        )
+
     async def test_tab_noop_when_no_matches(self) -> None:
         """Tab should do nothing when filter matches no models."""
         app = ModelSelectorTestApp()
@@ -1845,6 +2014,70 @@ class TestFormatOptionLabel:
         # Not dimmed when selected; the missing-creds warning color applies.
         assert DARK_COLORS.warning in label.markup
 
+    def test_uses_display_name_when_provided(self) -> None:
+        """Provider-grouped rows render the profile name, not the full spec."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
+            display_name="Claude Sonnet 4.5",
+        )
+        assert "Claude Sonnet 4.5" in label.plain
+        assert "anthropic:claude-sonnet-4-5" not in label.plain
+
+    def test_shows_full_spec_when_no_display_name(self) -> None:
+        """With no display_name the full spec is shown (static-method default)."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
+        )
+        assert "anthropic:claude-sonnet-4-5" in label.plain
+
+    def test_appends_provider_tag_for_recent(self) -> None:
+        """Recent rows show the name plus a `(provider)` tag, not the raw spec."""
+        label = ModelSelectorScreen._format_option_label(
+            "openai:gpt-5.5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                source=ProviderAuthSource.ENV,
+            ),
+            display_name="GPT-5.5",
+            provider_label="openai",
+        )
+        assert "GPT-5.5" in label.plain
+        assert "(openai)" in label.plain
+        assert "openai:gpt-5.5" not in label.plain
+
+    def test_no_provider_tag_without_label(self) -> None:
+        """Provider-grouped rows omit the `(provider)` tag."""
+        label = ModelSelectorScreen._format_option_label(
+            "openai:gpt-5.5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                source=ProviderAuthSource.ENV,
+            ),
+            display_name="GPT-5.5",
+        )
+        assert "GPT-5.5" in label.plain
+        assert "(openai)" not in label.plain
+
 
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""
@@ -1985,6 +2218,101 @@ class TestGetModelStatus:
             ),
         }
         assert screen._get_model_status("anthropic:model") is None
+
+
+class TestGetModelDisplayName:
+    """Tests for _get_model_display_name resolution."""
+
+    def test_returns_profile_name_when_present(self) -> None:
+        """The human-readable profile name wins over the raw model id."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:claude-sonnet-4-5": ModelProfileEntry(
+                profile={"name": "Claude Sonnet 4.5"},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert (
+            screen._get_model_display_name("anthropic:claude-sonnet-4-5")
+            == "Claude Sonnet 4.5"
+        )
+
+    def test_falls_back_to_model_id_when_no_name(self) -> None:
+        """A profile without a `name` key falls back to the model portion."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "anthropic:claude-sonnet-4-5": ModelProfileEntry(
+                profile={"max_input_tokens": 200000},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert (
+            screen._get_model_display_name("anthropic:claude-sonnet-4-5")
+            == "claude-sonnet-4-5"
+        )
+
+    def test_uses_recommended_name_when_no_profile(self) -> None:
+        """Uninstalled recommendations use the hardcoded name, not the raw id."""
+        from deepagents_code.widgets import model_selector
+
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        assert spec in model_selector._RECOMMENDED_MODELS
+        assert screen._get_model_display_name(spec) == "Kimi K2.7 Code"
+
+    def test_profile_name_wins_over_recommended_name(self) -> None:
+        """A loaded profile's `name` takes precedence over the hardcoded one."""
+        from deepagents_code.widgets import model_selector
+
+        spec = "openai:gpt-5.5"
+        assert spec in model_selector._RECOMMENDED_MODELS
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            spec: ModelProfileEntry(
+                profile={"name": "GPT-5.5 (from profile)"},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert screen._get_model_display_name(spec) == "GPT-5.5 (from profile)"
+
+    def test_falls_back_to_model_id_when_not_recommended(self) -> None:
+        """A non-recommended spec absent from profiles falls back to the model."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        assert (
+            screen._get_model_display_name("openai:some-unlisted-model")
+            == "some-unlisted-model"
+        )
+
+    def test_ignores_empty_name(self) -> None:
+        """An empty `name` string falls back rather than rendering blank."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {
+            "openai:some-unlisted-model": ModelProfileEntry(
+                profile={"name": ""},
+                overridden_keys=frozenset(),
+            ),
+        }
+        assert (
+            screen._get_model_display_name("openai:some-unlisted-model")
+            == "some-unlisted-model"
+        )
+
+    def test_preserves_colon_in_model_id_fallback(self) -> None:
+        """Only the leading `provider:` is stripped in the fallback path."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        assert (
+            screen._get_model_display_name("ollama:some-model:cloud")
+            == "some-model:cloud"
+        )
+
+    def test_returns_bare_spec_unchanged(self) -> None:
+        """A spec without a `provider:` prefix is returned as-is."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        assert screen._get_model_display_name("gpt-5.5") == "gpt-5.5"
 
 
 class TestModelDetailFooter:
@@ -2289,7 +2617,7 @@ class TestModelSelectorInstallRouting:
         monkeypatch.setattr(
             model_selector,
             "_RECOMMENDED_MODELS",
-            frozenset({installed_spec, uninstalled_spec}),
+            {installed_spec: "GLM 5.2", uninstalled_spec: "DeepSeek V4 Pro"},
         )
         monkeypatch.setattr(
             model_selector,
@@ -2744,7 +3072,17 @@ enabled = false
             # Recents render first; index 0 is the Recent-section install row.
             recent_install = screen._option_widgets[0]
             assert recent_install.model_spec == install_spec
-            assert "dim" in recent_install.content.markup
+            # Check the model NAME's dim specifically: the Recent row always
+            # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
+            # search can't tell install-required dimming from the tag. The name
+            # is wrapped in `[dim]...` only when install-required and unselected.
+            name_dim = "[dim]Kimi K2.7 Code"
+            # The provider tag disambiguates the cross-provider Recent row and
+            # must survive `_move_selection`'s incremental relabel — which
+            # re-derives the label from the widget's persisted `show_provider`.
+            provider_tag = "(Baseten)"
+            assert name_dim in recent_install.content.markup
+            assert provider_tag in recent_install.content.markup
             # `_update_display` keeps the openai row highlighted (rendered
             # order: recent install, openai, provider-group install).
             assert screen._selected_index == 1
@@ -2753,9 +3091,12 @@ enabled = false
             screen._move_selection(-1)
             await pilot.pause()
             assert screen._selected_index == 0
-            assert "dim" not in recent_install.content.markup
+            assert name_dim not in recent_install.content.markup
+            # The tag persists regardless of selection (it's the relabel path).
+            assert provider_tag in recent_install.content.markup
             screen._move_selection(1)
             await pilot.pause()
             assert screen._selected_index == 1
 
-            assert "dim" in recent_install.content.markup
+            assert name_dim in recent_install.content.markup
+            assert provider_tag in recent_install.content.markup

@@ -99,7 +99,7 @@ Always structure your response with headings.
         assert "1. Write clearly" in result["system_prompt"]
 
     def test_parse_subagent_missing_name(self, tmp_path: Path) -> None:
-        """Test that subagent without name is rejected."""
+        """Test that subagent without name is rejected without a fallback."""
         subagent_file = tmp_path / "invalid.md"
         subagent_file.write_text("""---
 description: Missing name field
@@ -109,6 +109,69 @@ Content
 """)
 
         assert _parse_subagent_file(subagent_file) is None
+
+    def test_parse_subagent_uses_fallback_name(self, tmp_path: Path) -> None:
+        """Test that fallback name is used when frontmatter omits name."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+description: Missing name field
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="helper")
+
+        assert result is not None
+        assert result["name"] == "helper"
+        assert result["description"] == "Missing name field"
+
+    def test_parse_subagent_frontmatter_name_overrides_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that an explicit frontmatter name wins over the fallback."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+name: explicit
+description: Has explicit name
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="folder")
+
+        assert result is not None
+        assert result["name"] == "explicit"
+
+    @pytest.mark.parametrize(
+        "name_line",
+        [
+            'name: ""',  # present-but-empty string
+            'name: "   "',  # present-but-whitespace-only
+            "name:",  # present-but-null
+            "name: 123",  # present-but-non-string
+        ],
+    )
+    def test_parse_subagent_invalid_name_not_rescued_by_fallback(
+        self, tmp_path: Path, name_line: str
+    ) -> None:
+        """Test that a present-but-invalid name is rejected despite a fallback.
+
+        The fallback only applies when `name` is omitted entirely; an explicit
+        empty/whitespace-only/null/non-string value must fail loudly rather than
+        silently resolving to the folder name.
+        """
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text(f"""---
+{name_line}
+description: Has invalid name
+---
+
+Content
+""")
+
+        assert _parse_subagent_file(subagent_file, fallback_name="helper") is None
 
     def test_parse_subagent_missing_description(self, tmp_path: Path) -> None:
         """Test that subagent without description is rejected."""
@@ -228,6 +291,27 @@ class TestLoadSubagentsFromDir:
         assert "researcher" in result
         assert result["researcher"]["source"] == "user"
 
+    def test_load_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test loading a subagent whose frontmatter omits name."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "helper"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Helpful assistant
+---
+
+Content
+""")
+
+        result = _load_subagents_from_dir(agents_dir, "user")
+
+        assert len(result) == 1
+        assert "helper" in result
+        assert result["helper"]["name"] == "helper"
+        assert result["helper"]["description"] == "Helpful assistant"
+
     def test_load_multiple_subagents(self, tmp_path: Path) -> None:
         """Test loading multiple subagents."""
         agents_dir = tmp_path / "agents"
@@ -315,6 +399,26 @@ class TestListSubagents:
         (folder / "AGENTS.md").write_text(
             make_subagent_content("researcher", "Research assistant")
         )
+
+        result = list_subagents(user_agents_dir=user_dir)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "researcher"
+        assert result[0]["source"] == "user"
+
+    def test_list_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that the folder-name fallback surfaces through list_subagents."""
+        user_dir = tmp_path / "user_agents"
+        folder = user_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Research assistant
+---
+
+You are a research assistant.
+""")
 
         result = list_subagents(user_agents_dir=user_dir)
 
@@ -578,6 +682,34 @@ class TestDiagnostics:
         assert len(result) == 1
         assert "name collision" in caplog.text
         assert "researcher" in caplog.text
+
+    def test_warns_on_collision_between_fallback_and_frontmatter_name(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A folder-name fallback colliding with an explicit name is flagged."""
+        agents_dir = tmp_path / "agents"
+        # This folder omits `name`, so it resolves to its folder name "helper".
+        fallback_folder = agents_dir / "helper"
+        fallback_folder.mkdir(parents=True)
+        (fallback_folder / "AGENTS.md").write_text("""---
+description: Resolves to folder name
+---
+
+Content
+""")
+        # This folder declares name="helper" explicitly, colliding with the above.
+        explicit_folder = agents_dir / "other"
+        explicit_folder.mkdir(parents=True)
+        (explicit_folder / "AGENTS.md").write_text(
+            make_subagent_content("helper", "Declares name explicitly")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert len(result) == 1
+        assert "name collision" in caplog.text
+        assert "helper" in caplog.text
 
     def test_no_warning_for_valid_or_unrelated_entries(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

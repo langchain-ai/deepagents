@@ -44,8 +44,8 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
 A goal or rubric is only present if one was set earlier in this conversation.
-If none was set, do not call these tools — they return nothing useful, and you
-should judge for yourself when the work is done.
+If none was set, do not call these tools — they only report that nothing is
+active, and you should judge for yourself when the work is done.
 
 When a rubric is active, use `get_rubric` to inspect the acceptance criteria
 before deciding whether the work is complete.

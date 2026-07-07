@@ -17,10 +17,10 @@ does not over-correct into never consulting the tools when a rubric *is* active.
 
 Seeding note: the goal channels (`_goal_objective`, ...) are `PrivateStateAttr`
 and are not part of the public graph input in this isolated `create_agent`
-harness (only `messages` / `rubric` are exposed). The active-context hillclimb
-test therefore seeds the public `rubric` input — the same channel
-`RubricMiddleware` grades — to make a rubric active, rather than trying to seed
-a goal directly.
+harness (only the public `messages` / `rubric` inputs are exposed). The
+active-context hillclimb test therefore seeds the public `rubric` input — the
+same channel `RubricMiddleware` reads in the full `dcode` stack — to make a
+rubric active, rather than trying to seed a goal directly.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from langchain_core.tools import tool
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
+    final_text_min_length,
     run_agent,
     tool_call,
     tool_not_called,
@@ -100,11 +101,12 @@ def _make_agent(
 def test_no_goal_trivial_task_skips_goal_tools(model: BaseChatModel) -> None:
     """Trivial one-shot task with no goal/rubric must not touch the goal tools.
 
-    No goal or rubric is set, so `get_rubric` / `get_goal` would only return an
-    inactive snapshot. A model that reflexively "inspects acceptance criteria
-    before deciding whether work is complete" fires them anyway — this test
-    hard-fails in that regime. It is the case the current copy fails and the
-    rewritten, precondition-gated copy should pass.
+    No goal or rubric is set, so `get_rubric` / `get_goal` would only report an
+    inactive snapshot. The pre-rewrite prompt told the model to inspect
+    acceptance criteria before finishing, which drove reflexive `get_rubric` /
+    `get_goal` calls even when nothing was set; this test is the regression gate
+    ensuring the precondition-gated prompt does not slide back into that
+    behavior.
     """
     agent = _make_agent(model)
     run_agent(
@@ -128,8 +130,10 @@ def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
 
     Over-eagerness is not just a trivial-task artifact: even when the agent
     legitimately calls domain tools, it should not reach for `get_rubric` /
-    `get_goal` when nothing was ever set. The agent looks up two populations
-    and reports which city is larger; the goal tools must stay untouched.
+    `get_goal` when nothing was ever set. The population lookup gives the agent
+    genuine multi-step work; the `tool_not_called` gates are the assertion under
+    test. The final-text check is a light on-topic guard (both cities are named
+    in the query, so it is not a correctness gate on which city is larger).
     """
     agent = _make_agent(model, tools=[lookup_population])
     run_agent(
@@ -161,10 +165,13 @@ def test_active_rubric_may_be_consulted(model: BaseChatModel) -> None:
 
     This guards against the rewrite over-correcting into "never call these
     tools." A rubric is seeded via the public `rubric` input (the channel
-    `RubricMiddleware` grades), so `get_rubric` returns active criteria. The
-    hard requirement is only that the substantive answer lands; whether the
-    model consults `get_rubric` is logged as an efficiency signal, since
-    "should use" is inherently noisier than "should not."
+    `RubricMiddleware` reads in the full `dcode` stack), so `get_rubric` returns
+    active criteria. The hard requirement is only that a substantive ranking
+    lands — the three city names plus a floor on answer length, mirroring
+    `test_langchain_middleware_todo.py`'s guard against a terse wrap-up that
+    omits the ranking. Whether the model consults `get_rubric` is logged as an
+    efficiency signal, since "should use" is inherently noisier than "should
+    not."
     """
     agent = _make_agent(model, tools=[lookup_population, lookup_area_km2])
     run_agent(
@@ -187,5 +194,6 @@ def test_active_rubric_may_be_consulted(model: BaseChatModel) -> None:
             final_text_contains("tokyo", case_insensitive=True),
             final_text_contains("delhi", case_insensitive=True),
             final_text_contains("shanghai", case_insensitive=True),
+            final_text_min_length(80),
         ),
     )

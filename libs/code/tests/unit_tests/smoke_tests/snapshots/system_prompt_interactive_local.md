@@ -381,10 +381,15 @@ Available subagent types:
 
 ## Goal and Rubric Tools
 
-Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
-complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
-Use `update_goal` only when you have evidence that the goal is complete or blocked.
+A goal or rubric is only present if one was set earlier in this conversation.
+If none was set, do not call these tools — they only report that nothing is
+active, and you should judge for yourself when the work is done.
+
+When a rubric is active, use `get_rubric` to inspect the acceptance criteria
+before deciding whether the work is complete.
+When a goal is active, use `get_goal` to inspect its objective and status.
+Use `update_goal` only when a goal is active and you have evidence it is complete
+or blocked.
 
 ## `ask_user`
 

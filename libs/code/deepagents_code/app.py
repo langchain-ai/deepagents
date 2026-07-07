@@ -11694,6 +11694,21 @@ class DeepAgentsApp(App):
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)
 
+    def _restore_interrupted_message_to_input(self, message: UserMessage) -> None:
+        """Return an interrupted prompt to the chat input when it is empty.
+
+        Mirrors the queued-message pop behavior: when ESC interrupts the
+        in-flight turn and the chat input holds no draft, the interrupted
+        prompt is moved back into the input so it can be edited and
+        resubmitted. If a draft is already present it is left untouched so
+        typed text is never clobbered.
+        """
+        chat_input = self._chat_input
+        if chat_input is None or chat_input.value.strip():
+            return
+        chat_input.set_value_at_end(message.content)
+        self.notify("Message restored to input", timeout=2)
+
     def _cleanup_external_event_source_sync(self) -> None:
         """Synchronously close the external event listener and unlink its socket.
 
@@ -12003,7 +12018,8 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
-        8. If agent is running, interrupt it
+        8. If agent is running, interrupt it (restoring the interrupted prompt
+           to the chat input when it is empty)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -12079,6 +12095,9 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             if self._active_user_message is not None:
                 self._active_user_message.set_cancelled()
+                self._restore_interrupted_message_to_input(
+                    self._active_user_message,
+                )
             self._cancel_worker(self._agent_worker)
             return
 

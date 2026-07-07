@@ -266,6 +266,11 @@ class UserMessage(Static):
         super().__init__(**kwargs)
         self._content = content
 
+    @property
+    def content(self) -> str:
+        """The original, untruncated message text as the user submitted it."""
+        return self._content
+
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")

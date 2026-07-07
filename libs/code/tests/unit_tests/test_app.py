@@ -3423,6 +3423,48 @@ class TestMessageQueue:
                     "Queued message discarded (input not empty)", timeout=3
                 )
 
+    async def test_escape_restores_interrupted_message_to_empty_input(self) -> None:
+        """Interrupting the agent returns the prompt to an empty chat input."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            active = UserMessage("do the thing")
+            app._active_user_message = active
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == "do the thing"
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
+            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+
+    async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
+        """A non-empty draft is preserved when the agent is interrupted."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            app._active_user_message = UserMessage("in flight")
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = "draft text"
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == "draft text"
+            worker.cancel.assert_called_once()
+            mock_notify.assert_not_called()
+
     async def test_escape_pop_single_then_interrupt(self) -> None:
         """Single queued message is popped, then next ESC interrupts agent."""
         app = DeepAgentsApp()

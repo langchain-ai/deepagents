@@ -627,11 +627,7 @@ class MessageStore:
 
     def get_protected_messages(self) -> list[MessageData]:
         """Return protected messages that still exist in source history."""
-        return [
-            msg
-            for msg in self._messages
-            if msg.id in self._protected_message_ids
-        ]
+        return [msg for msg in self._messages if msg.id in self._protected_message_ids]
 
     def window_exceeded(self) -> bool:
         """Check if the visible window exceeds the maximum size.

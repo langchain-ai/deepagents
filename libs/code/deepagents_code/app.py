@@ -5752,10 +5752,12 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.debug("Skipping hydrate-below check: #chat container not found")
             return
+        _start, end = self._message_store.get_visible_range()
+        bottom_spacer_top = self._message_store.range_height(0, end)
         if self._message_store.should_hydrate_below(
             chat.scroll_y,
             chat.size.height,
-            chat.virtual_size.height,
+            bottom_spacer_top,
         ):
             self.call_later(self._hydrate_messages_below)
 

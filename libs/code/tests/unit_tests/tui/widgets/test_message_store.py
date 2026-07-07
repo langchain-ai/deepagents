@@ -538,6 +538,28 @@ class TestMessageStore:
             scroll_position=800, viewport_height=100, content_height=1000
         )
 
+    def test_should_hydrate_below_uses_bottom_spacer_top(self):
+        """Hydration should start near mounted rows, not virtual transcript end."""
+        store = MessageStore()
+        for i in range(100):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 20
+        store._visible_end = 30
+
+        bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
+        assert store.should_hydrate_below(
+            scroll_position=bottom_spacer_top - 150,
+            viewport_height=100,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+        assert not store.should_hydrate_below(
+            scroll_position=bottom_spacer_top - 400,
+            viewport_height=100,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+
     def test_visible_range(self):
         """Test getting visible range."""
         store = MessageStore()

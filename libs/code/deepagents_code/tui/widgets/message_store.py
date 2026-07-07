@@ -821,24 +821,27 @@ class MessageStore:
         return distance_from_bottom > threshold
 
     def should_hydrate_below(
-        self, scroll_position: float, viewport_height: int, content_height: int
+        self,
+        scroll_position: float,
+        viewport_height: int,
+        bottom_spacer_top: int,
     ) -> bool:
         """Check if we should hydrate messages below the current view.
 
         Args:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
-            content_height: Total height of all content.
+            bottom_spacer_top: Estimated row where the bottom spacer begins.
 
         Returns:
-            True if user is scrolling near the bottom and newer messages are
-            represented only by the bottom spacer.
+            True if the viewport is near the bottom spacer.
         """
         if not self.has_messages_below:
             return False
-        distance_from_bottom = content_height - scroll_position - viewport_height
+        viewport_bottom = scroll_position + viewport_height
+        distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
         threshold = viewport_height * 2
-        return distance_from_bottom < threshold
+        return distance_from_bottom_spacer < threshold
 
     def clear(self) -> None:
         """Clear all messages."""

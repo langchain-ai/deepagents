@@ -10,7 +10,7 @@ import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
 from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
-from deepagents_code.remote_client import (
+from deepagents_code.client.remote_client import (
     RemoteAgent,
     _convert_ai_message,
     _convert_human_message,
@@ -557,6 +557,19 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
+    async def test_forwards_as_node(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"}, as_node="model")
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        update_args = mock_graph.aupdate_state.await_args
+        assert update_args is not None
+        assert update_args.kwargs["as_node"] == "model"
+
     async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         with pytest.raises(ValueError, match="thread_id"):
@@ -721,7 +734,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
             update_side_effect=[_conflict_error(), None],
         )
 
-        with patch("deepagents_code.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01):
+        with patch(
+            "deepagents_code.client.remote_client._RUN_CANCEL_WAIT_SECONDS", 0.01
+        ):
             await agent.aupdate_state(_config(), {"messages": []})
 
         assert mock_graph.aupdate_state.await_count == 2
@@ -858,7 +873,7 @@ class TestRemoteAgentStore:
         agent._graph = graph
 
         with (
-            caplog.at_level("DEBUG", logger="deepagents_code.remote_client"),
+            caplog.at_level("DEBUG", logger="deepagents_code.client.remote_client"),
             pytest.raises(RuntimeError, match="boom"),
         ):
             await agent.aput_store_item(("ns",), "key", {"auto_approve": True})

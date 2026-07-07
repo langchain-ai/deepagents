@@ -58,7 +58,7 @@ class TestDynamicSystemPromptCache:
         request = ModelRequest(
             model=GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
             messages=[HumanMessage(content="hi")],
-            tools=[],
+            tools=list(mw.tools),
         )
 
         await mw.awrap_model_call(request, handler)

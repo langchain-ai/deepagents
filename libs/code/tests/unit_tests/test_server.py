@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code.server import (
+from deepagents_code.client.launch.server import (
     ServerProcess,
     _find_free_port,
     _port_in_use,
@@ -142,15 +142,22 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
             patch(
-                "deepagents_code.server._find_free_port", return_value=43210
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
             ) as find_free,
-            patch("deepagents_code.server._port_in_use") as in_use,
+            patch("deepagents_code.client.launch.server._port_in_use") as in_use,
         ):
             await server.start()
 
@@ -166,13 +173,21 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
-            patch("deepagents_code.server._port_in_use", return_value=False) as in_use,
-            patch("deepagents_code.server._find_free_port") as find_free,
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ) as in_use,
+            patch("deepagents_code.client.launch.server._find_free_port") as find_free,
         ):
             await server.start()
 
@@ -188,14 +203,23 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
-            patch("deepagents_code.server._port_in_use", return_value=True) as in_use,
             patch(
-                "deepagents_code.server._find_free_port", return_value=43210
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=True
+            ) as in_use,
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
             ) as find_free,
         ):
             await server.start()
@@ -293,8 +317,12 @@ class TestWaitForServerHealthy:
 
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
+            patch(
+                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
+            ),
+            patch(
+                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
+            ),
             pytest.raises(RuntimeError, match="did not become healthy"),
         ):
             await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
@@ -310,8 +338,12 @@ class TestWaitForServerHealthy:
 
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
+            patch(
+                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_LOCAL", 0
+            ),
+            patch(
+                "deepagents_code.client.launch.server._HEALTH_POLL_INTERVAL_REMOTE", 0
+            ),
             pytest.raises(RuntimeError, match="last status: 503"),
         ):
             await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
@@ -404,14 +436,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(side_effect=RuntimeError("boom")),
             ),
             pytest.raises(RuntimeError, match="boom"),
@@ -446,14 +484,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -533,14 +577,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -570,14 +620,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -614,15 +670,23 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
-            patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -657,15 +721,23 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
-            patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -721,6 +793,119 @@ class TestServerProcess:
 
         assert stop_thread_id is not None
         assert stop_thread_id != loop_thread_id
+
+    async def test_persistent_env_applies_to_later_restarts(
+        self, tmp_path: Path
+    ) -> None:
+        """Persistent env overrides should apply without restaging."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        first_process = MagicMock()
+        first_process.pid = 1234
+        first_process.poll.return_value = None
+        second_process = MagicMock()
+        second_process.pid = 5678
+        second_process.poll.return_value = None
+
+        first_log_file = MagicMock()
+        first_log_file.name = str(tmp_path / "server-1.log")
+        second_log_file = MagicMock()
+        second_log_file.name = str(tmp_path / "server-2.log")
+
+        env_key = "DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS"
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server.persist_env(**{env_key: "12"})
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                side_effect=[first_log_file, second_log_file],
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=[first_process, second_process],
+            ) as popen,
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+            assert server._env_overrides == {}
+
+            await server.restart()
+
+        first_env = popen.call_args_list[0].kwargs["env"]
+        second_env = popen.call_args_list[1].kwargs["env"]
+        assert first_env[env_key] == "12"
+        assert second_env[env_key] == "12"
+        assert server._env_overrides == {}
+
+    async def test_one_shot_override_wins_over_persisted(self, tmp_path: Path) -> None:
+        """A one-shot `update_env` must override a persisted default on restart.
+
+        Regression: persisting a value (via `persist_env`) and then staging a
+        different value (via `update_env`) before a restart must launch the
+        subprocess with the freshly staged value, not the stale persisted one.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        first_process = MagicMock()
+        first_process.pid = 1234
+        first_process.poll.return_value = None
+        second_process = MagicMock()
+        second_process.pid = 5678
+        second_process.poll.return_value = None
+        first_log_file = MagicMock()
+        first_log_file.name = str(tmp_path / "server-1.log")
+        second_log_file = MagicMock()
+        second_log_file.name = str(tmp_path / "server-2.log")
+
+        env_key = "DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS"
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server.persist_env(**{env_key: "10"})
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                side_effect=[first_log_file, second_log_file],
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=[first_process, second_process],
+            ) as popen,
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+            # Stage a different value for the next restart only.
+            server.update_env(**{env_key: "12"})
+            await server.restart()
+
+        # The restart that applies the staged override must use it, not the
+        # persisted default it temporarily supersedes.
+        second_env = popen.call_args_list[1].kwargs["env"]
+        assert second_env[env_key] == "12"
 
     async def test_restart_rollback_on_failure(self, tmp_path: Path) -> None:
         """Env overrides are rolled back when restart fails."""

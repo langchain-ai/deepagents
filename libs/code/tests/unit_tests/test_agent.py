@@ -24,6 +24,7 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _create_rubric_grader_tools,
     _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
@@ -1957,6 +1958,45 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == user_project
 
+    def test_project_context_restores_user_shell_langsmith_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The shell env is routed through `restore_user_tracing_api_keys`.
+
+        Guards the wiring in `create_cli_agent`'s local-shell branch: the env
+        handed to `LocalShellBackend` must carry the caller's original
+        `LANGSMITH_API_KEY` (the agent's in-process override reverted) and must
+        drop a key the caller never set. Removing the restore call regresses
+        both assertions, catching the exact key leak the restore prevents.
+        """
+        import deepagents_code.config as config_mod
+
+        original_done = config_mod._bootstrap_state.done
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        # Simulate a completed bootstrap: the caller had their own LANGSMITH key
+        # (since overridden in-process) and never set a LANGCHAIN key.
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc_agent_override")
+        config_mod._bootstrap_state.original_tracing_api_keys = {
+            "LANGSMITH_API_KEY": "lsv2_user_original",
+            "LANGCHAIN_API_KEY": None,
+        }
+        # Guard the seeded snapshot against an incidental bootstrap run.
+        config_mod._bootstrap_state.done = True
+
+        try:
+            mock_shell, _ = self._build_shell_agent(
+                monkeypatch, tmp_path, user_langchain_project=None
+            )
+            env = mock_shell.call_args.kwargs["env"]
+            # The caller's own key is restored, not the agent's override.
+            assert env["LANGSMITH_API_KEY"] == "lsv2_user_original"
+            # A key the caller never set is dropped, not leaked.
+            assert "LANGCHAIN_API_KEY" not in env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path
     ) -> None:
@@ -3179,6 +3219,114 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc = False
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
+
+    def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                rubric_model="custom-grader-model",
+                rubric_max_iterations=5,
+            )
+
+        _, kwargs = mock_create.call_args
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert len(rubrics) == 1
+        assert rubrics[0]._model == "custom-grader-model"
+        assert rubrics[0].max_iterations == 5
+        assert "use the `read_file` tool" in rubrics[0]._system_prompt
+        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert "max_iterations" not in kwargs
+
+    def test_rubric_grader_read_tool_only_reads_large_results(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        large_results = FilesystemBackend(
+            root_dir=tmp_path / "large",
+            virtual_mode=True,
+        )
+        project = FilesystemBackend(
+            root_dir=tmp_path / "project",
+            virtual_mode=False,
+        )
+        backend = CompositeBackend(
+            default=project,
+            routes={"/large_tool_results/": large_results},
+        )
+        backend.upload_files(
+            [("/large_tool_results/tool-call-id", b"first\nsecond\nthird")]
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        allowed = read_tool.func(
+            file_path="/large_tool_results/tool-call-id",
+            runtime=runtime,
+            limit=2,
+        )
+        denied = read_tool.func(
+            file_path="/Users/mason/.ssh/id_rsa",
+            runtime=runtime,
+        )
+
+        assert "1\tfirst" in allowed.content
+        assert "2\tsecond" in allowed.content
+        assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware

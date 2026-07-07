@@ -89,8 +89,11 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LANGCHAIN_API_KEY",
         "LANGSMITH_TRACING",
         "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
         "LANGSMITH_PROJECT",
         "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+        "DEEPAGENTS_CODE_LANGSMITH_REDACT",
         "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
         "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
         "DEEPAGENTS_CODE_LANGSMITH_TRACING",
@@ -311,7 +314,7 @@ def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries that persist across test runs and branch switches.
     """
     monkeypatch.setattr(
-        "deepagents_code.widgets.chat_input._default_history_path",
+        "deepagents_code.tui.widgets.chat_input._default_history_path",
         lambda: tmp_path / "history.jsonl",
     )
 

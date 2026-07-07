@@ -120,6 +120,8 @@ jobs:
             const prerelease = process.env.PIN_PRERELEASE === 'true';
             const sdkVersion = process.env.SDK_VERSION;
             const pkgPin = process.env.PKG_PIN;
+            const pkgPinReleaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${encodeURIComponent(`deepagents==${pkgPin}`)}`;
+            const pkgPinLink = `[deepagents==${pkgPin}](${pkgPinReleaseUrl})`;
 
             if (!sdkVersion || !pkgPin) {
               core.setFailed(
@@ -140,11 +142,11 @@ jobs:
                 '> | | Version |',
                 '> |---|---|',
                 `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
-                `> | ${pkgLabel} pin (\`${pkgPyproject}\`) | \`${pkgPin}\` |`,
+                `> | ${pkgLabel} pin (\`${pkgPyproject}\`) | ${pkgPinLink} |`,
                 '>',
                 `> **To fix:** update \`${pkgPyproject}\` to pin \`deepagents==${sdkVersion}\`, then run \`cd ${pkgLockdir} && uv lock\` and commit the lockfile update.`,
                 '>',
-                `> **To bypass:** if you intentionally need to pin an older SDK version, add the \`${sdkPinBypassLabel}\` label before merging so the auto-dispatched release skips this check, or re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled after a failure. Ensure the ${pkgLabel} package does not contain any code that depends on functionality introduced after \`deepagents==${pkgPin}\` — otherwise the published package will fail at runtime.`,
+                `> **To bypass:** if you intentionally need to pin an older SDK version, add the \`${sdkPinBypassLabel}\` label before merging so the auto-dispatched release skips this check, or re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled after a failure. Ensure the ${pkgLabel} package does not contain any code that depends on functionality introduced after ${pkgPinLink} — otherwise the published package will fail at runtime.`,
                 '>',
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
               ].join('\n');
@@ -153,7 +155,7 @@ jobs:
               body = [
                 marker,
                 '> [!WARNING]',
-                `> **Prerelease SDK pin** — ${pkgLabel} currently pins \`deepagents==${pkgPin}\`, which is a prerelease.`,
+                `> **Prerelease SDK pin** — ${pkgLabel} currently pins ${pkgPinLink}, which is a prerelease.`,
                 '>',
                 '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
               ].join('\n');

@@ -1,5 +1,6 @@
 """Tests for check_sdk_pin pin/version comparison."""
 
+import re
 import shutil
 import subprocess
 import sys
@@ -220,3 +221,42 @@ def test_script_exits_2_on_unsupported_version(tmp_path) -> None:
     )
     assert result.returncode == 2
     assert "Could not determine SDK pin status" in result.stdout
+
+
+def test_workflow_warning_comments_link_pin_release() -> None:
+    """SDK pin warning comments link the pinned version to its GitHub release.
+
+    Asserts the *contract*, not the exact source spelling: a release-tag URL is
+    built for the `deepagents==<pin>` tag (the scheme GitHub releases actually
+    use — a wrong scheme would 404), the pin is rendered as a markdown link, and
+    that link is interpolated into the warning bodies rather than only defined.
+    The comment logic lives in a `github-script` block embedded in YAML, so it
+    is not importable from pytest; matching the workflow text is the only
+    in-harness option, but these checks tolerate reformatting and renames.
+    """
+    workflow = Path(__file__).parents[1] / "workflows" / "check_sdk_pin.yml"
+    text = workflow.read_text()
+
+    # Release URL targets the `deepagents==<pin>` tag, URL-encoded so `==`
+    # survives as a path segment. The tag scheme is load-bearing: get it wrong
+    # and every rendered link 404s.
+    url_match = re.search(
+        r"releases/tag/\$\{encodeURIComponent\(`deepagents==\$\{(\w+)\}`\)\}",
+        text,
+    )
+    assert url_match, "release URL must encode the `deepagents==<pin>` tag"
+    pin_var = url_match.group(1)
+
+    # The pin is rendered as a markdown link wrapping that release URL.
+    link_match = re.search(
+        rf"const (\w+) = `\[deepagents==\$\{{{pin_var}}}\]\(\$\{{\w+}}\)`;",
+        text,
+    )
+    assert link_match, "pin must render as a markdown link to its release"
+    link_var = link_match.group(1)
+
+    # The link reaches the warning bodies (stale-pin table + prerelease
+    # sentence), not just its own definition line.
+    assert text.count(f"${{{link_var}}}") >= 2, (
+        "pin release link must be interpolated into the warning comment bodies"
+    )

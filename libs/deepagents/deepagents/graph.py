@@ -8,11 +8,17 @@ subagent, and summarization middleware.
 import logging
 from collections.abc import Callable, Sequence
 from importlib import import_module
-from typing import Annotated, Any, Required, cast
+from typing import Annotated, Any, Required, TypedDict, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, InputAgentState, OutputAgentState, ResponseT
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    InputAgentState,
+    OutputAgentState,
+    ResponseT,
+    StateT_co,
+)
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -111,37 +117,93 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default base system prompt for every deep agent (`BASE`).
+"""Default base system prompt for every deep agent.
 
-The final system prompt sent to the model is composed from up to four
-named parts:
+The final system prompt sent to the model is assembled, in order, from:
 
-- `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
-    `SystemMessage`); when unset, no `USER` segment is included.
-- `BASE` — this constant.
-- `CUSTOM` — `HarnessProfile.base_system_prompt`. When set on a matching
-    profile, replaces `BASE` outright; when unset, `BASE` is used.
-- `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
-    matching profile, appended last; when unset, no `SUFFIX` segment is
-    included.
+1. `prefix` — caller text placed before the base (the `system_prompt=`
+    argument, or its `prefix` key). Always first, so caller instructions
+    take precedence.
+2. `base` — this constant by default; replaced by the `system_prompt`
+    config's `base` key, or (when that key is absent) by
+    `HarnessProfile.base_system_prompt`. Setting `base` to `None` drops it.
+3. `suffix` — caller text placed after the base (the `system_prompt`
+    config's `suffix` key).
+4. `HarnessProfile.system_prompt_suffix` — model-tuning guidance appended
+    last.
 
-The order is always `USER` -> (`BASE` or `CUSTOM`) -> `SUFFIX`, joined by
-blank lines (`\\n\\n`). Two invariants follow:
+Parts are joined by blank lines (`\\n\\n`). When any part is a
+`SystemMessage`, the result is a `SystemMessage` whose `content_blocks`
+concatenate each part's blocks (with `\\n\\n` text separators), preserving
+any `cache_control` markers.
 
-1. `USER` is always at the front, so caller instructions take precedence
-    over SDK and profile content regardless of which model is selected.
-2. `SUFFIX` is always at the end, so model-tuning guidance sits closest
-    to the conversation history (where the model attends most).
-
-When `USER` is a `SystemMessage`, the right-hand assembly is appended as
-an additional text content block onto the message's existing
-`content_blocks` list, preserving any `cache_control` markers the caller
-set.
-
-See `create_deep_agent`'s `system_prompt` parameter or
-[Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
-for the full assembly order.
+See `create_deep_agent`'s `system_prompt` parameter and
+[`SystemPromptConfig`][deepagents.SystemPromptConfig].
 """
+
+
+class SystemPromptConfig(TypedDict, total=False):
+    """Structured `system_prompt` for `create_deep_agent`.
+
+    All keys are optional. Each accepts a `str` or a `SystemMessage` (to
+    carry explicit `cache_control` markers).
+    """
+
+    prefix: str | SystemMessage | None
+    """Text placed before the base prompt."""
+
+    base: str | SystemMessage | None
+    """Replacement for the built-in base prompt.
+
+    Omit the key to keep the built-in base (or the active
+    `HarnessProfile.base_system_prompt`). Set it to `None` to drop the base
+    entirely, leaving only `prefix`, `suffix`, and middleware-contributed
+    content.
+    """
+
+    suffix: str | SystemMessage | None
+    """Text placed after the base prompt."""
+
+
+_PROMPT_SEPARATOR = "\n\n"
+
+
+def _assemble_prompt_parts(parts: list[str | SystemMessage]) -> str | SystemMessage:
+    r"""Join prompt parts into a single `str` or `SystemMessage`.
+
+    All-`str` parts join with blank lines. If any part is a `SystemMessage`,
+    the result is a `SystemMessage` whose `content_blocks` concatenate each
+    part's blocks with `\\n\\n` separators, preserving `cache_control` markers.
+    """
+    if not parts:
+        return ""
+    if all(isinstance(part, str) for part in parts):
+        return _PROMPT_SEPARATOR.join(cast("list[str]", parts))
+    blocks: list[Any] = []
+    for i, part in enumerate(parts):
+        if i:
+            blocks.append({"type": "text", "text": _PROMPT_SEPARATOR})
+        if isinstance(part, SystemMessage):
+            blocks.extend(part.content_blocks)
+        else:
+            blocks.append({"type": "text", "text": part})
+    return SystemMessage(content_blocks=blocks)
+
+
+def _normalize_system_prompt(
+    system_prompt: str | SystemMessage | SystemPromptConfig | None,
+) -> SystemPromptConfig:
+    """Coerce the `system_prompt` argument into a `SystemPromptConfig`.
+
+    `None` becomes an empty config; a bare `str`/`SystemMessage` becomes a
+    `prefix` (matching the pre-config behavior of placing caller text before
+    the base); a config dict is returned unchanged.
+    """
+    if system_prompt is None:
+        return {}
+    if isinstance(system_prompt, (str, SystemMessage)):
+        return {"prefix": system_prompt}
+    return system_prompt
 
 
 def _build_default_model() -> ChatAnthropic:
@@ -227,6 +289,43 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+def _apply_custom_middleware(
+    base: list[AgentMiddleware[Any, Any, Any]],
+    custom: Sequence[AgentMiddleware[Any, Any, Any]],
+    *,
+    core_names: set[str] | None = None,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Merge custom middleware into the base stack by name.
+
+    - If its `.name` matches a name still present in `base`: replace in-place,
+      preserving stack order.
+    - Otherwise: a brand-new entry lands after the last `core_names` member (so it
+      precedes the profile/prompt-caching/memory tail), or at the end when
+      `core_names` is unset.
+    """
+    if not custom:
+        return list(base)
+    current_names = {m.name for m in base}
+    replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
+    to_append: list[AgentMiddleware[Any, Any, Any]] = []
+    for m in custom:
+        if m.name in current_names:
+            replacements[m.name] = m
+        else:
+            to_append.append(m)
+    result = list(base)
+    for i, m in enumerate(result):
+        if m.name in replacements:
+            result[i] = replacements[m.name]
+    if to_append and core_names is not None:
+        # Land new middleware after the last core entry, ahead of the tail.
+        pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
+        result[pos:pos] = to_append
+    else:
+        result.extend(to_append)
+    return result
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
@@ -261,8 +360,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
-    system_prompt: str | SystemMessage | None = None,
-    middleware: Sequence[AgentMiddleware] = (),
+    system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
+    middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -330,23 +429,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             To drop a built-in tool, register a
             [`HarnessProfile`][deepagents.HarnessProfile] with
             `excluded_tools`.
-        system_prompt: Custom system instructions placed at the front of
-            the system prompt sent to the model.
+        system_prompt: Custom system instructions.
 
-            Whatever you pass here always sits before the SDK's default
-            deep-agent prompt and any model-tuning suffix from a
-            registered `HarnessProfile`. With `system_prompt=None`, the
-            SDK default is used on its own (plus the profile suffix
-            when one applies). Sections are joined by a blank line.
+            A `str` or `SystemMessage` is placed at the front of the system
+            prompt, before the SDK's default base prompt and any model-tuning
+            suffix from a registered `HarnessProfile` (`system_prompt=None`
+            uses the default base on its own).
 
-            Passing a `SystemMessage` instead of a string preserves any
-            `cache_control` markers on the message's content blocks —
-            useful for placing explicit Anthropic prompt-cache
-            breakpoints. The same ordering applies (caller's blocks
-            first, SDK content appended as an additional text block).
+            For more control, pass a
+            [`SystemPromptConfig`][deepagents.SystemPromptConfig] with any of:
 
-            See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
-            for the full case-by-case breakdown.
+            - `prefix`: text before the base (same as passing a bare string).
+            - `base`: replace the built-in base prompt; omit the key to keep
+                it, or set it to `None` to drop the base entirely.
+            - `suffix`: text after the base (before any profile suffix).
+
+            The assembly order is `prefix` -> `base` -> `suffix` ->
+            profile suffix, joined by blank lines. Any part may be a
+            `SystemMessage` to preserve `cache_control` markers; the result is
+            then a `SystemMessage` whose content blocks are concatenated.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 
@@ -653,12 +754,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
-
+            # Core names captured before the tail so new spec middleware splices in ahead of it.
+            _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-            if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             _append_prompt_caching_middleware(subagent_middleware)
 
@@ -675,6 +774,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            subagent_middleware = _apply_custom_middleware(
+                subagent_middleware,
+                spec.get("middleware", []),
+                core_names=_subagent_core_names,
+            )
+            subagent_middleware = _apply_excluded_middleware(
+                subagent_middleware,
+                _subagent_profile,
+                matched_classes=_subagent_matched_classes,
+                matched_names=_subagent_matched_names,
+            )
             _verify_excluded_middleware_coverage(
                 _subagent_profile,
                 _subagent_matched_classes,
@@ -682,6 +792,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
+            if _subagent_profile.excluded_tools:
+                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -731,17 +843,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
-        # Strip excluded tools after all tool-injecting middleware has run
-        if _profile.excluded_tools:
-            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         _append_prompt_caching_middleware(gp_middleware)
-
+        _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
+        # Inherit only middleware that overrides a default GP slot (including excluded
+        # ones) without carrying over middleware that's specific to the main agent.
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
+        gp_middleware = _apply_excluded_middleware(
+            gp_middleware,
+            _profile,
+            matched_classes=_main_matched_classes,
+            matched_names=_main_matched_names,
+        )
+        # Tool exclusion runs last so excluded tool names are stripped after all
+        # tool-injecting middleware has run.
+        if _profile.excluded_tools:
+            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -808,14 +931,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
-    if middleware:
-        deepagent_middleware.extend(middleware)
-    # Harness-profile middleware goes between user middleware and memory so
+    # Names of the core stack, captured before the tail is appended so new user
+    # middleware can splice in ahead of the profile/prompt-caching/memory tail.
+    _main_core_names = {m.name for m in deepagent_middleware}
+    # Harness-profile middleware goes between core middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    if _profile.excluded_tools:
-        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     _append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
@@ -839,6 +961,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], core_names=_main_core_names)
+    deepagent_middleware = _apply_excluded_middleware(
+        deepagent_middleware,
+        _profile,
+        matched_classes=_main_matched_classes,
+        matched_names=_main_matched_names,
+    )
+    # Tool exclusion runs after custom middleware so excluded tool names are
+    # stripped last and cannot be restored by a custom wrap_model_call.
+    if _profile.excluded_tools:
+        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
@@ -854,13 +987,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    base_prompt = _apply_profile_prompt(_profile, BASE_AGENT_PROMPT)
-    if system_prompt is None:
-        final_system_prompt: str | SystemMessage = base_prompt
-    elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
-    else:
-        final_system_prompt = system_prompt + "\n\n" + base_prompt
+    # Assemble the main-agent prompt: prefix -> base -> suffix -> profile suffix.
+    # The config's `base` (when the key is present) overrides the profile base;
+    # otherwise the profile base, then BASE_AGENT_PROMPT, is used.
+    cfg = _normalize_system_prompt(system_prompt)
+    prompt_parts: list[str | SystemMessage] = []
+    prefix = cfg.get("prefix")
+    if prefix is not None:
+        prompt_parts.append(prefix)
+    profile_base = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
+    base = cfg.get("base", profile_base)
+    if base is not None:
+        prompt_parts.append(base)
+    suffix = cfg.get("suffix")
+    if suffix is not None:
+        prompt_parts.append(suffix)
+    if _profile.system_prompt_suffix is not None:
+        prompt_parts.append(_profile.system_prompt_suffix)
+    final_system_prompt: str | SystemMessage = _assemble_prompt_parts(prompt_parts)
 
     return create_agent(
         model,

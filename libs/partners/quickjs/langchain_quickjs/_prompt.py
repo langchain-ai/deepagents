@@ -364,7 +364,8 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
     return (
         "Execute JavaScript in a sandboxed REPL. "
         f"{state_line} No filesystem, network, or real clock. "
-        "Synchronous only — top-level `await` will not resolve."
+        "Top-level `await` is supported; a final-expression Promise resolves "
+        "before the call returns."
     )
 
 

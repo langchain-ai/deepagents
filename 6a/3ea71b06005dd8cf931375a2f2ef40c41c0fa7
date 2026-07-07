@@ -1,0 +1,40 @@
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_9bf3fc7d3d8394::t_529f7648916e97 542-544
+libs/deepagents/deepagents/backends/utils.py
+  s_9bf3fc7d3d8394::t_5a41b3b6077872 426-428,436-440
+  s_9bf3fc7d3d8394::t_20f9bd86c75f81 395-407
+libs/deepagents/tests/unit_tests/backends/test_utils.py
+  s_9bf3fc7d3d8394::t_37df40b4fdeed8 494-520
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  s_9bf3fc7d3d8394::t_3414322b2b6e62 279-299
+libs/deepagents/tests/unit_tests/backends/test_langsmith_sandbox.py
+  s_9bf3fc7d3d8394::t_87d55e28cbe4dc 376-428
+libs/deepagents/deepagents/backends/langsmith.py
+  s_9bf3fc7d3d8394::t_184ccbb67e011d 209,218-230
+libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  s_9bf3fc7d3d8394::t_87ae367fa91809 1356-1416
+  s_9bf3fc7d3d8394::t_620520c1e638de 39
+  s_9bf3fc7d3d8394::t_6fa7aca5f2d790 289-323
+libs/deepagents/deepagents/backends/sandbox.py
+  s_9bf3fc7d3d8394::t_05cfe731f8f9b1 474-479
+  s_9bf3fc7d3d8394::t_7122c34b256b51 412-414
+  s_9bf3fc7d3d8394::t_bb522a99de83a8 443-451
+libs/deepagents/tests/unit_tests/test_middleware.py
+  s_9bf3fc7d3d8394::t_fdb215d66a70ac 1401-1416
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6a3ea71b06005dd8cf931375a2f2ef40c41c0fa7",
+  "prompts": {},
+  "sessions": {
+    "s_9bf3fc7d3d8394": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc0d08f7-5b03-44df-b200-f85c24c6c511",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

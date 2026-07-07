@@ -254,8 +254,8 @@ Content
     assert result is None
 
 
-def test_parse_skill_metadata_description_truncation() -> None:
-    """Test _parse_skill_metadata truncates long descriptions."""
+def test_parse_skill_metadata_description_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """Test _parse_skill_metadata truncates long descriptions with an actionable warning."""
     long_description = "A" * (MAX_SKILL_DESCRIPTION_LENGTH + 100)
     content = f"""---
 name: test-skill
@@ -265,9 +265,15 @@ description: {long_description}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert len(result["description"]) == MAX_SKILL_DESCRIPTION_LENGTH
+    message = caplog.text
+    assert "/skills/test/SKILL.md" in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH + 100) in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH) in message
+    assert "'description'" in message
 
 
 def test_parse_skill_metadata_too_large() -> None:
@@ -302,7 +308,7 @@ Content
     assert result["compatibility"] is None  # Empty string should become None
 
 
-def test_parse_skill_metadata_compatibility_max_length() -> None:
+def test_parse_skill_metadata_compatibility_max_length(caplog: pytest.LogCaptureFixture) -> None:
     """Test _parse_skill_metadata truncates compatibility exceeding 500 chars.
 
     Per Agent Skills spec, compatibility field must be max 500 characters.
@@ -317,10 +323,16 @@ compatibility: {long_compat}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert result["compatibility"] is not None
     assert len(result["compatibility"]) == MAX_SKILL_COMPATIBILITY_LENGTH
+    message = caplog.text
+    assert "/skills/test-skill/SKILL.md" in message
+    assert "600" in message
+    assert str(MAX_SKILL_COMPATIBILITY_LENGTH) in message
+    assert "'compatibility'" in message
 
 
 def test_parse_skill_metadata_whitespace_only_description() -> None:
@@ -468,7 +480,8 @@ def test_validate_metadata_valid_dict_passthrough() -> None:
     assert result == {"author": "acme"}
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list() -> None:
+    """Test _parse_skill_metadata accepts a YAML list of tool names."""
     content = """---
 name: test-skill
 description: A test skill
@@ -483,10 +496,11 @@ Content
 
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
-    assert result["allowed_tools"] == []
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
 
 
-def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_ignored() -> None:
+def test_parse_skill_metadata_allowed_tools_yaml_list_non_strings_skipped() -> None:
+    """Test _parse_skill_metadata skips non-string and blank YAML list items."""
     content = """---
 name: test-skill
 description: A test skill
@@ -497,6 +511,72 @@ allowed-tools:
   -
   - "  "
   - Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_yaml_list_trims_items() -> None:
+    """Test _parse_skill_metadata strips surrounding whitespace from kept items."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools:
+  - "  Read  "
+  - "Write"
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_empty_list() -> None:
+    """Test _parse_skill_metadata handles an empty YAML list."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: []
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == []
+
+
+def test_parse_skill_metadata_allowed_tools_comma_separated_string() -> None:
+    """Test _parse_skill_metadata splits a comma-separated string of tool names."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: Bash,Read,Write
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["allowed_tools"] == ["Bash", "Read", "Write"]
+
+
+def test_parse_skill_metadata_allowed_tools_scalar_ignored() -> None:
+    """Test _parse_skill_metadata ignores a non-string, non-list scalar value."""
+    content = """---
+name: test-skill
+description: A test skill
+allowed-tools: 42
 ---
 
 Content

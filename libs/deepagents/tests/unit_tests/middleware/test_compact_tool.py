@@ -411,8 +411,8 @@ class TestCompactErrorHandling:
         assert "Compaction failed" in msg.content
         assert "_summarization_event" not in result.update
 
-    def test_backend_resolve_failure_returns_error_tool_message(self) -> None:
-        """Backend factory failure should return an error ToolMessage."""
+    def test_offload_failure_returns_error_tool_message(self) -> None:
+        """Offload failure should return an error ToolMessage."""
         mw = _make_middleware()
         messages = _make_messages(10)
         runtime = _make_runtime(messages)
@@ -426,8 +426,8 @@ class TestCompactErrorHandling:
             ),
             patch.object(mw._summarization, "_create_summary", return_value="Summary."),
             patch.object(
-                mw,
-                "_resolve_backend",
+                mw._summarization,
+                "_offload_to_backend",
                 side_effect=ConnectionError("sandbox unreachable"),
             ),
         ):
@@ -472,18 +472,30 @@ class TestMalformedEvent:
         assert result[0] is summary_msg
 
 
-class TestResolveBackend:
-    """Test backend resolution for tool context."""
+class TestCompactBackendUsage:
+    """Test backend use for compact offloading."""
 
-    def test_static_backend(self) -> None:
-        """Should return the backend instance."""
+    def test_static_backend_is_passed_to_offload(self) -> None:
+        """Should pass the configured backend instance to offload."""
         backend = StateBackend()
-        summ = SummarizationMiddleware(
-            model=_make_mock_model(),
-            backend=backend,
-        )
-        mw = SummarizationToolMiddleware(summ)
-        assert mw._resolve_backend() is backend
+        mw = _make_middleware(backend=backend)
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None) as offload,
+        ):
+            mw._run_compact(runtime)
+
+        offload.assert_called_once()
+        assert offload.call_args.args[0] is backend
 
 
 class TestComputeStateCutoff:

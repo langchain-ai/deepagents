@@ -1835,10 +1835,6 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
-    def _resolve_backend(self) -> BackendProtocol:
-        """Return the backend instance."""
-        return self._summarization._backend
-
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.
 
@@ -2043,8 +2039,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
-            backend = self._resolve_backend()
-            file_path = s._offload_to_backend(backend, to_summarize)
+            file_path = s._offload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
@@ -2077,8 +2072,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
-            backend = self._resolve_backend()
-            file_path = await s._aoffload_to_backend(backend, to_summarize)
+            file_path = await s._aoffload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)

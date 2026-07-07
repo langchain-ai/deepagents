@@ -206,8 +206,7 @@ class LangSmithSandbox(BaseSandbox):
 
         page = lines[offset : offset + limit]
         content = "\n".join(page)
-        end_line = offset + len(page)
-        next_offset = end_line if end_line < total_lines else None
+        returned_lines = len(page)
 
         # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
         # large pages don't reintroduce the transport-size symptom this
@@ -216,7 +215,19 @@ class LangSmithSandbox(BaseSandbox):
         msg_bytes = TRUNCATION_MSG.encode("utf-8")
         effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
         if len(encoded) > effective_limit:
-            content = encoded[:effective_limit].decode("utf-8", errors="ignore") + TRUNCATION_MSG
+            truncated = encoded[:effective_limit].decode("utf-8", errors="ignore")
+            # The byte cap can drop whole lines from the page and cut the final
+            # rendered line mid-way. Advance the resume offset only past lines
+            # that were fully rendered (each is followed by its "\n"), so a
+            # re-read from `next_offset` never silently skips unshown lines; the
+            # partial boundary line is re-read from its start. Fall back to 1
+            # when even the first line overflows the cap, to guarantee forward
+            # progress instead of re-reading the same truncated page.
+            returned_lines = truncated.count("\n") or 1
+            content = truncated + TRUNCATION_MSG
+
+        end_line = offset + returned_lines
+        next_offset = end_line if end_line < total_lines else None
 
         return ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),

@@ -392,6 +392,19 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
 
 
 def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
+    """Clone `file_data` with replaced content, preserving timestamps when present.
+
+    Unlike `update_file_data`, this carries `created_at`/`modified_at` through
+    verbatim rather than restamping `modified_at`, since slicing a read window
+    does not mutate the underlying file.
+
+    Args:
+        file_data: Source `FileData` whose encoding and timestamps are copied.
+        content: Replacement content for the returned copy.
+
+    Returns:
+        A new `FileData` with `content` set and metadata carried over.
+    """
     sliced_fd = FileData(
         content=content,
         encoding=file_data.get("encoding", "utf-8"),
@@ -410,8 +423,9 @@ def slice_read_response(
 ) -> ReadResult:
     """Slice file data to the requested line range without formatting.
 
-    Returns raw text for the requested window. Line-number formatting
-    is applied downstream by the middleware layer.
+    The returned `ReadResult` carries the raw (unformatted) window in
+    `file_data`; line-number formatting is applied downstream by the
+    middleware layer.
 
     Args:
         file_data: `FileData` dict.
@@ -419,8 +433,11 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        `ReadResult` with sliced raw content and pagination metadata, or
-            `error` set when the offset exceeds the file length.
+        `ReadResult` with the sliced raw content and pagination metadata
+            (`total_lines`, `start_line`, `end_line`, `next_offset`). The
+            pagination fields are left unset for empty or whitespace-only
+            content. `error` is set instead when the offset exceeds the file
+            length.
     """
     content = file_data_to_string(file_data)
 

@@ -373,6 +373,59 @@ def test_read_truncates_at_max_output_bytes() -> None:
     assert len(content.encode("utf-8")) <= MAX_OUTPUT_BYTES
 
 
+def test_read_pagination_metadata_partial_window() -> None:
+    """A partial window reports its 1-indexed range and the next 0-indexed offset."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
+
+    result = sb.read("/app/test.txt", offset=1, limit=2)
+
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
+def test_read_pagination_metadata_final_window_has_no_next_offset() -> None:
+    """A window reaching EOF reports `next_offset=None`."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2"
+
+    result = sb.read("/app/test.txt", offset=2, limit=10)
+
+    assert result.total_lines == 3
+    assert result.start_line == 3
+    assert result.end_line == 3
+    assert result.next_offset is None
+
+
+def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
+    """A byte-capped page must not advance `next_offset` past lines it dropped.
+
+    Regression: `end_line`/`next_offset` were derived from the full page before
+    the `MAX_OUTPUT_BYTES` cap trimmed trailing lines, so a re-read from
+    `next_offset` silently skipped the dropped lines.
+    """
+    sb, mock_sdk = _make_sandbox()
+    line = "x" * 100_000
+    # Eight ~100 KB lines: a single 8-line page far exceeds the 500 KB cap, so
+    # the byte cap drops the tail. `next_offset` must point at the first line
+    # not fully rendered, well short of the 8-line window's end.
+    mock_sdk.read.return_value = ("\n".join([line] * 8)).encode("utf-8")
+
+    result = sb.read("/app/big.txt", offset=0, limit=8)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.total_lines == 8
+    assert result.start_line == 1
+    assert result.next_offset is not None
+    # Resume offset is the count of fully rendered lines, not the full window.
+    assert result.end_line == result.next_offset
+    assert 0 < result.next_offset < 8
+
+
 def test_read_binary_at_exact_max_size_succeeds() -> None:
     sb, mock_sdk = _make_sandbox()
     raw = b"\x00" * MAX_BINARY_BYTES

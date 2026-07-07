@@ -1398,6 +1398,22 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("     3\tthree\n     4\tfour\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
 
+    def test_read_file_single_line_window_uses_singular_read_unit(self):
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree\nfour\nfive",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == ("     1\tone\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""
         backend, _ = _make_backend()

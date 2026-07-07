@@ -491,6 +491,33 @@ class TestSliceReadResponse:
         assert result.end_line == 3
         assert result.next_offset == 3
 
+    def test_empty_content_returns_result_without_pagination(self) -> None:
+        """Empty files short-circuit to a success result with no pagination metadata."""
+        result = slice_read_response(self._file(""), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_whitespace_only_content_returns_result_without_pagination(self) -> None:
+        """Whitespace-only content takes the empty branch and is returned verbatim."""
+        result = slice_read_response(self._file("   \n\t\n"), offset=0, limit=100)
+        assert result.error is None
+        assert self._content(result) == "   \n\t\n"
+        assert result.total_lines is None
+
+    def test_preserves_timestamps_on_sliced_result(self) -> None:
+        """The sliced copy carries `created_at`/`modified_at` through unchanged."""
+        file_data = FileData(content="a\nb\nc\nd\n", encoding="utf-8")
+        file_data["created_at"] = "t0"
+        file_data["modified_at"] = "t1"
+        result = slice_read_response(file_data, offset=1, limit=2)
+        assert result.file_data is not None
+        assert result.file_data.get("created_at") == "t0"
+        assert result.file_data.get("modified_at") == "t1"
+
     def test_offset_beyond_file_returns_error_result(self) -> None:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
         assert result.error is not None

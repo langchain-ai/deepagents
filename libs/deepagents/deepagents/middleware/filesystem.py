@@ -539,6 +539,9 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
     end_line = read_result.end_line
     if total_lines is None or start_line is None or end_line is None or end_line >= total_lines:
         return ""
+    # Backends set `next_offset` to a concrete offset whenever `end_line <
+    # total_lines` (the partial-window case gated above), so it is non-None
+    # here; the fallback only guards a malformed `ReadResult`.
     next_offset = read_result.next_offset if read_result.next_offset is not None else end_line
     remaining = total_lines - end_line
     read_count = end_line - start_line + 1

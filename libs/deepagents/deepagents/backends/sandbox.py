@@ -409,6 +409,9 @@ try:
             line_count += 1
             if line_count <= offset:
                 continue
+            # Once the page is full (or byte-capped) keep iterating instead of
+            # breaking: the loop must reach EOF so `line_count` holds the true
+            # total, which feeds `total_lines` and the `next_offset` bound.
             if truncated or returned_lines >= limit:
                 continue
 
@@ -423,7 +426,6 @@ try:
                     if prefix:
                         parts.append(prefix)
                         current_bytes += len(prefix.encode('utf-8'))
-                        returned_lines += 1
                 continue
 
             parts.append(piece)
@@ -437,6 +439,15 @@ try:
     text = ''.join(parts)
     if truncated:
         text += TRUNCATION_MSG
+
+    # A byte cap can cut the final rendered line mid-way; that partial line is
+    # deliberately not counted toward `returned_lines` (see the truncation
+    # branch), so `next_offset` resumes at its start and its tail is re-read.
+    # If even the first requested line overflows the cap no full line was
+    # returned: advance by one so the read still makes progress instead of
+    # looping on the same page (that line's tail is unreadable via line offsets).
+    if truncated and returned_lines == 0:
+        returned_lines = 1
 
     end_line = offset + returned_lines
     next_offset = end_line if end_line < line_count else None
@@ -460,8 +471,12 @@ avoiding full-file transfer for paginated text reads. The path is
 base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
 (safe because they come from internal code, not user input).
 
-Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
-success or `{{"error": ...}}` on failure.
+Output: single-line JSON. On success (text): `{{"encoding", "content",
+"total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
+and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
+next unread line (`null` once the file is fully read). On success (binary):
+`{{"encoding": "base64", "content": ...}}` without pagination keys. On failure:
+`{{"error": ...}}`.
 """
 
 

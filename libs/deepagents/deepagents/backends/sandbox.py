@@ -95,17 +95,17 @@ pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 # (glob filtering is irrelevant for a single-file search).
 if os.path.isdir(search_path):
     os.chdir(search_path)
-    # A leading `/` would make `glob.glob` treat the pattern as an
+    # A leading slash would make glob.glob treat the pattern as an
     # absolute filesystem path, searching outside the search root (e.g.
-    # `/*.py` after `chdir('/workspace')` would match `/top.py` on
-    # the host, not `/workspace/top.py`). Strip it so anchored globs
-    # stay relative to the search root, matching the `FilesystemBackend`
-    # semantics where `/` anchors to the root, not the filesystem.
+    # /*.py after chdir('/workspace') would match /top.py on
+    # the host, not /workspace/top.py). Strip it so anchored globs
+    # stay relative to the search root, matching the FilesystemBackend
+    # semantics where slash anchors to the root, not the filesystem.
     rel_glob = glob_pat.lstrip('/')
     rel_files = sorted(glob.glob(rel_glob, recursive=True))
     # Open the glob-relative path (cwd is the search root) but report the
     # path prefixed with the search root, so GrepResult.path matches the
-    # `<root>/<match>` form that `grep -r` emits on the --include route.
+    # root/match form that grep -r emits on the --include route.
     targets = [(rel, os.path.join(search_path, rel)) for rel in rel_files]
 else:
     targets = [(search_path, search_path)]
@@ -337,7 +337,7 @@ script reads them, performs the replacement on the source file (which never
 leaves the sandbox), and cleans up the temp files.
 
 Output: single-line JSON with `{{"count": N}}` on success or
-`{{"error": ...}}` on failure.  Same success contract as
+`{{"error": ...}}` on failure. Same success contract as
 `_EDIT_COMMAND_TEMPLATE`; additionally produces
 `{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
 files cannot be read.
@@ -410,8 +410,8 @@ try:
             if line_count <= offset:
                 continue
             # Once the page is full (or byte-capped) keep iterating instead of
-            # breaking: the loop must reach EOF so `line_count` holds the true
-            # total, which feeds `total_lines` and the `next_offset` bound.
+            # breaking: the loop must reach EOF so line_count holds the true
+            # total, which feeds total_lines and the next_offset bound.
             if truncated or returned_lines >= limit:
                 continue
 
@@ -441,8 +441,8 @@ try:
         text += TRUNCATION_MSG
 
     # A byte cap can cut the final rendered line mid-way; that partial line is
-    # deliberately not counted toward `returned_lines` (see the truncation
-    # branch), so `next_offset` resumes at its start and its tail is re-read.
+    # deliberately not counted toward returned_lines (see the truncation
+    # branch), so next_offset resumes at its start and its tail is re-read.
     # If even the first requested line overflows the cap no full line was
     # returned: advance by one so the read still makes progress instead of
     # looping on the same page (that line's tail is unreadable via line offsets).

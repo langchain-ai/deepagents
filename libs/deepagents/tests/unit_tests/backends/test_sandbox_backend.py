@@ -1333,6 +1333,24 @@ def test_build_read_cmd_classifies_mkv_as_video() -> None:
     assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="/bin/sh is unavailable on Windows")
+def test_build_read_cmd_shell_outputs_single_json_document(tmp_path: Path) -> None:
+    """The generated sandbox command must not append prose after the JSON result."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree")
+
+    proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+        ["/bin/sh", "-c", _build_read_cmd(str(target), 0, 100)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    result = json.loads(proc.stdout.strip())
+    assert result["content"] == "one\ntwo\nthree"
+    assert result["total_lines"] == 3
+
+
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
     """Corruption inside the prefix must still route to base64 (not swallowed)."""
     target = tmp_path / "midbad.dat"

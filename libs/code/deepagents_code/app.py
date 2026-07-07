@@ -169,6 +169,15 @@ message subtree (O(mounted widgets)), whereas flipping the leaf footers
 restyles only the footers.
 """
 
+_MESSAGE_SPACER_CLASS = "message-virtual-spacer"
+"""CSS class for transcript virtualization spacer rows."""
+
+_MESSAGE_TOP_SPACER_ID = "message-top-spacer"
+"""DOM id for the spacer representing source messages above the mounted window."""
+
+_MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
+"""DOM id for the spacer representing source messages below the mounted window."""
+
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
     {MessageType.APP, MessageType.SUMMARIZATION}
 )
@@ -334,10 +343,10 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import MouseUp, Paste
+    from textual.events import MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
-    from textual.scrollbar import ScrollUp
+    from textual.scrollbar import ScrollDown, ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
@@ -2669,6 +2678,9 @@ class DeepAgentsApp(App):
         self._message_store = MessageStore()
         """Message virtualization store."""
 
+        self._message_measure_width: int | None = None
+        """Chat width used for cached message height hints."""
+
         self._deferred_actions: list[DeferredAction] = []
         """Deferred actions executed after the current busy state resolves."""
 
@@ -2938,6 +2950,7 @@ class DeepAgentsApp(App):
         gc.freeze()
 
         chat = self.query_one("#chat", VerticalScroll)
+        self._message_measure_width = chat.size.width
         # Don't establish bottom-follow intent at startup. `_ChatScroll.anchor()`
         # defers the real anchor until content overflows, but not calling it at
         # all keeps the welcome banner pinned to the top of an empty chat (like
@@ -3267,6 +3280,7 @@ class DeepAgentsApp(App):
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             sync_message_content=self._sync_message_content,
+            sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
@@ -5568,6 +5582,27 @@ class DeepAgentsApp(App):
         """Handle scroll up to check if we need to hydrate older messages."""
         self._check_hydration_needed()
 
+    def on_scroll_down(self, _event: ScrollDown) -> None:
+        """Handle scroll down to hydrate newer messages below the window."""
+        self._check_hydration_below_needed()
+
+    def on_resize(self, _event: Resize) -> None:
+        """Scale cached message heights when terminal width changes."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+        width = chat.size.width
+        previous = self._message_measure_width
+        if previous is None or previous <= 0:
+            self._message_measure_width = width
+            return
+        if width <= 0 or width == previous:
+            return
+        self._message_store.invalidate_height_hints(scale=previous / width)
+        self._message_measure_width = width
+        self._sync_transcript_spacers()
+
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
         if self._status_bar:
@@ -5708,6 +5743,22 @@ class DeepAgentsApp(App):
         if self._message_store.should_hydrate_above(scroll_y, viewport_height):
             self.call_later(self._hydrate_messages_above)
 
+    def _check_hydration_below_needed(self) -> None:
+        """Check if newer messages should be mounted below the current window."""
+        if not self._message_store.has_messages_below:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            logger.debug("Skipping hydrate-below check: #chat container not found")
+            return
+        if self._message_store.should_hydrate_below(
+            chat.scroll_y,
+            chat.size.height,
+            chat.virtual_size.height,
+        ):
+            self.call_later(self._hydrate_messages_below)
+
     async def _hydrate_messages_above(self) -> None:
         """Hydrate older messages when user scrolls near the top.
 
@@ -5728,15 +5779,14 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.debug("Skipping hydration: #messages not found")
             return
+        await self._ensure_transcript_spacers(messages_container)
 
         to_hydrate = self._message_store.get_messages_to_hydrate()
         if not to_hydrate:
             return
 
         old_scroll_y = chat.scroll_y
-        first_child = (
-            messages_container.children[0] if messages_container.children else None
-        )
+        first_child = self._first_transcript_child(messages_container)
 
         # Build widgets in chronological order, then mount in reverse so
         # each is inserted before the previous first_child, resulting in
@@ -5760,17 +5810,22 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 if first_child:
+                    nodes: list[Widget] = [widget]
                     if footer is not None:
-                        await messages_container.mount(footer, before=first_child)
-                        await messages_container.mount(widget, before=footer)
-                    else:
-                        await messages_container.mount(widget, before=first_child)
+                        nodes.append(footer)
+                    await self._mount_transcript_nodes(
+                        messages_container,
+                        nodes,
+                        before=first_child,
+                    )
                 else:
-                    await messages_container.mount(widget)
+                    nodes = [widget]
                     if footer is not None:
-                        await messages_container.mount(footer)
+                        nodes.append(footer)
+                    await self._mount_transcript_nodes(messages_container, nodes)
                 first_child = widget
                 hydrated_count += 1
+                self._schedule_message_height_measurement(msg_data.id)
                 # Render Markdown content for hydrated assistant messages
                 if isinstance(widget, AssistantMessage) and msg_data.content:
                     await widget.set_content(msg_data.content)
@@ -5784,17 +5839,68 @@ class DeepAgentsApp(App):
         # Only update store for the number we actually mounted
         if hydrated_count > 0:
             self._message_store.mark_hydrated(hydrated_count)
+            await self._prune_messages_below_window(messages_container)
+            self._sync_transcript_spacers(messages_container)
 
         # Adjust scroll position to maintain the user's view.
-        # Widget heights aren't known until after layout, so we use a
-        # heuristic. A more accurate approach would measure actual heights
-        # via call_after_refresh.
-        estimated_height_per_message = 5  # terminal rows, rough estimate
-        added_height = hydrated_count * estimated_height_per_message
+        # Newly mounted widgets are measured after layout; use the current
+        # source estimates immediately so the anchor stays close on this frame.
+        added_height = sum(
+            self._message_store.estimate_height(msg)
+            for msg in to_hydrate[:hydrated_count]
+        )
         chat.scroll_y = old_scroll_y + added_height
 
         # Collapse any completed tool runs brought in above the window so
         # hydrated history matches the live transcript.
+        await self._regroup_completed_tools()
+
+    async def _hydrate_messages_below(self) -> None:
+        """Hydrate newer messages when scrolling down toward the tail."""
+        if not self._message_store.has_messages_below:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping hydrate below: chat/messages container not found")
+            return
+        await self._ensure_transcript_spacers(messages_container)
+
+        to_hydrate = self._message_store.get_messages_to_hydrate_below()
+        if not to_hydrate:
+            return
+
+        old_scroll_y = chat.scroll_y
+        hydrated_count = 0
+        for msg_data in to_hydrate:
+            try:
+                widget = msg_data.to_widget()
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                nodes = [widget]
+                if footer is not None:
+                    nodes.append(footer)
+                await self._mount_transcript_nodes(messages_container, nodes)
+                hydrated_count += 1
+                self._schedule_message_height_measurement(msg_data.id)
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
+            except Exception:
+                logger.warning(
+                    "Failed to mount below-window widget %s",
+                    msg_data.id,
+                    exc_info=True,
+                )
+
+        if hydrated_count == 0:
+            return
+
+        self._message_store.mark_hydrated_below(hydrated_count)
+        await self._prune_old_messages()
+        self._sync_transcript_spacers(messages_container)
+        chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
@@ -5814,14 +5920,23 @@ class DeepAgentsApp(App):
         if not container.is_attached:
             return
         anchor: Widget | None = None
+        is_transcript_widget = not (
+            isinstance(widget, LoadingWidget | QueuedUserMessage)
+            or widget.has_class(_MESSAGE_SPACER_CLASS)
+        )
+        if is_transcript_widget and widget.id != _MESSAGE_BOTTOM_SPACER_ID:
+            with suppress(NoMatches):
+                anchor = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}")
+
         spinner = self._loading_widget
         if (
-            widget is not spinner
+            anchor is None
+            and widget is not spinner
             and spinner is not None
             and spinner.parent is container
         ):
             anchor = spinner
-        else:
+        if anchor is None:
             first_queued = self._queued_widgets[0] if self._queued_widgets else None
             if first_queued is not None and first_queued.parent is container:
                 anchor = first_queued
@@ -5836,6 +5951,126 @@ class DeepAgentsApp(App):
             else:
                 return
         await container.mount(widget)
+
+    @staticmethod
+    def _is_virtual_spacer(widget: Widget) -> bool:
+        """Return whether `widget` is a transcript spacer."""
+        return widget.has_class(_MESSAGE_SPACER_CLASS)
+
+    def _first_transcript_child(self, container: Container) -> Widget | None:
+        """Return the first mounted transcript child after spacer rows."""
+        for child in container.children:
+            if self._is_virtual_spacer(child):
+                continue
+            if isinstance(child, LoadingWidget | QueuedUserMessage):
+                continue
+            return child
+        return None
+
+    @staticmethod
+    def _bottom_spacer(container: Container) -> Static | None:
+        """Return the bottom transcript spacer if it is mounted."""
+        with suppress(NoMatches):
+            return container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+        return None
+
+    async def _mount_transcript_nodes(
+        self,
+        container: Container,
+        nodes: list[Widget],
+        *,
+        before: Widget | None = None,
+    ) -> None:
+        """Mount transcript nodes before an anchor or the bottom spacer."""
+        if not nodes:
+            return
+        anchor = before or self._bottom_spacer(container)
+        if anchor is None:
+            await container.mount(*nodes)
+        else:
+            await container.mount(*nodes, before=anchor)
+
+    async def _ensure_transcript_spacers(self, container: Container) -> None:
+        """Mount spacer rows that preserve full transcript scroll geometry."""
+        if not container.is_attached:
+            return
+
+        if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
+            top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
+            first = container.children[0] if container.children else None
+            if first is None:
+                await container.mount(top)
+            else:
+                await container.mount(top, before=first)
+
+        if not container.query(f"#{_MESSAGE_BOTTOM_SPACER_ID}"):
+            bottom = Static(
+                "",
+                id=_MESSAGE_BOTTOM_SPACER_ID,
+                classes=_MESSAGE_SPACER_CLASS,
+            )
+            anchor = self._loading_widget
+            if anchor is None or anchor.parent is not container:
+                anchor = next(
+                    (
+                        queued
+                        for queued in self._queued_widgets
+                        if queued.parent is container
+                    ),
+                    None,
+                )
+            if anchor is None:
+                await container.mount(bottom)
+            else:
+                await container.mount(bottom, before=anchor)
+
+        self._sync_transcript_spacers(container)
+
+    @staticmethod
+    def _set_spacer_height(widget: Static, height: int) -> None:
+        """Set spacer height in terminal rows."""
+        rows = max(0, height)
+        widget.styles.height = rows
+        widget.display = rows > 0
+
+    def _sync_transcript_spacers(self, container: Container | None = None) -> None:
+        """Update spacer rows from the current `MessageStore` visible range."""
+        if container is None:
+            try:
+                container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+        try:
+            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
+            bottom = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+        except NoMatches:
+            return
+        start, end = self._message_store.get_visible_range()
+        self._set_spacer_height(top, self._message_store.range_height(0, start))
+        self._set_spacer_height(
+            bottom,
+            self._message_store.range_height(end, self._message_store.total_count),
+        )
+
+    def _schedule_message_height_measurement(self, message_id: str) -> None:
+        """Measure a message after Textual lays it out."""
+        self.call_after_refresh(self._measure_message_height, message_id)
+
+    def _measure_message_height(self, message_id: str) -> None:
+        """Cache the mounted row height for spacer estimates."""
+        try:
+            messages = self.query_one("#messages", Container)
+            widget = messages.query_one(f"#{message_id}")
+        except NoMatches:
+            return
+        height = max(1, widget.region.height)
+        footer_id = _message_timestamp_footer_id(message_id)
+        with suppress(NoMatches):
+            footer = messages.query_one(f"#{footer_id}")
+            if footer.display:
+                height += max(1, footer.region.height)
+        if self._message_store.set_height_hint(message_id, height):
+            self._sync_transcript_spacers(messages)
 
     async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
         """Mount an `AppMessage` that is not tracked by the message store.
@@ -11118,6 +11353,7 @@ class DeepAgentsApp(App):
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
+            await self._ensure_transcript_spacers(messages_container)
 
             # 3. Reconcile against existing state before loading the store.
             # Mounting a widget whose ID already exists raises `DuplicateIds`,
@@ -11185,7 +11421,7 @@ class DeepAgentsApp(App):
                 if footer is not None:
                     nodes.append(footer)
             if nodes:
-                await messages_container.mount(*nodes)
+                await self._mount_transcript_nodes(messages_container, nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
@@ -11205,6 +11441,9 @@ class DeepAgentsApp(App):
                             history_thread_id,
                             error,
                         )
+            for _widget, msg_data in mounted:
+                self._schedule_message_height_measurement(msg_data.id)
+            self._sync_transcript_spacers(messages_container)
 
             # 9. Add footer immediately and resolve link asynchronously
             thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
@@ -11396,6 +11635,8 @@ class DeepAgentsApp(App):
                 pass
             return
 
+        await self._ensure_transcript_spacers(messages)
+
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
         # then snapping shut. A groupable tool joins (or opens) the current
@@ -11450,6 +11691,9 @@ class DeepAgentsApp(App):
                 elif is_diff:
                     self._active_tool_group.add_collapsible(widget)
 
+        self._schedule_message_height_measurement(message_data.id)
+        self._sync_transcript_spacers(messages)
+
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
 
@@ -11499,6 +11743,7 @@ class DeepAgentsApp(App):
 
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
             # Drop any group summaries whose members were all pruned away so a
             # stray collapsed line never lingers above the window. Only reachable
             # when something was actually pruned this pass.
@@ -11511,6 +11756,39 @@ class DeepAgentsApp(App):
                             "Failed to remove orphaned tool group summary",
                             exc_info=True,
                         )
+
+    async def _prune_messages_below_window(
+        self, messages_container: Container | None = None
+    ) -> None:
+        """Prune newest mounted widgets when scrolling into older history."""
+        to_prune = self._message_store.get_messages_to_prune_below()
+        if not to_prune:
+            return
+        if messages_container is None:
+            try:
+                messages_container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+
+        pruned_ids: list[str] = []
+        for msg_data in to_prune:
+            try:
+                widget = messages_container.query_one(f"#{msg_data.id}")
+                footer_id = _message_timestamp_footer_id(msg_data.id)
+                with suppress(NoMatches):
+                    footer = messages_container.query_one(f"#{footer_id}")
+                    await footer.remove()
+                await widget.remove()
+                pruned_ids.append(msg_data.id)
+            except NoMatches:
+                logger.debug(
+                    "Widget %s not found during bottom pruning, skipping",
+                    msg_data.id,
+                )
+
+        if pruned_ids:
+            self._message_store.mark_pruned_below(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
 
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""
@@ -11630,6 +11908,31 @@ class DeepAgentsApp(App):
             content=content,
             is_streaming=False,
         )
+
+    def _sync_tool_message_state(self, widget: ToolCallMessage) -> None:
+        """Sync mutable tool widget state back to `MessageStore`."""
+        if not widget.id:
+            return
+        try:
+            data = MessageData.from_widget(widget)
+        except Exception:
+            logger.warning(
+                "Failed to serialize tool widget %s",
+                widget.id,
+                exc_info=True,
+            )
+            return
+        self._message_store.update_message(
+            widget.id,
+            tool_status=data.tool_status,
+            tool_output=data.tool_output,
+            tool_expanded=data.tool_expanded,
+            tool_reject_reason=data.tool_reject_reason,
+        )
+        if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
+            self._message_store.protect_message(widget.id)
+        else:
+            self._message_store.unprotect_message(widget.id)
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

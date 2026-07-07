@@ -723,6 +723,60 @@ class TestVirtualizationFlow:
         assert retrieved.content == "Updated content"
         assert retrieved.is_streaming is False
 
+    def test_height_hints_drive_prefix_and_window_estimates(self):
+        """Height hints should be used for prefix and viewport windows."""
+        store = MessageStore()
+        for i in range(5):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        assert store.prefix_height(2) == 10
+
+        store.set_height_hint("id-0", 3)
+        store.set_height_hint("id-1", 7)
+
+        assert store.prefix_height(2) == 10
+        assert store.range_height(0, 3) == 15
+        window = store.get_window_for_viewport(
+            scroll_y=8,
+            viewport_height=5,
+            overscan=0,
+        )
+        assert window.start <= 1
+        assert window.end > window.start
+        assert window.top_height == store.range_height(0, window.start)
+        assert window.bottom_height == store.range_height(window.end, store.total_count)
+
+    def test_height_hints_scale_and_clear(self):
+        """Width reflow can scale or clear cached height hints."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="msg", id="id-1"))
+        store.set_height_hint("id-1", 10)
+
+        store.invalidate_height_hints(scale=0.5)
+        msg = store.get_message("id-1")
+        assert msg is not None
+        assert msg.height_hint == 5
+
+        store.invalidate_height_hints()
+        assert msg.height_hint is None
+
+    def test_protected_messages_block_top_and_bottom_pruning(self):
+        """Live messages should not be pruned from either edge."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 3
+        for i in range(6):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+
+        store.protect_message("id-0")
+        assert store.get_messages_to_prune() == []
+        store.unprotect_message("id-0")
+
+        store.protect_message("id-5")
+        assert store.get_messages_to_prune_below() == []
+
 
 class TestBulkLoad:
     """Tests for MessageStore.bulk_load."""

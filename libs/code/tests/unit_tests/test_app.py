@@ -65,12 +65,14 @@ from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
 )
+from deepagents_code.tui.widgets.message_store import ToolStatus
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     ErrorMessage,
     QueuedUserMessage,
     SummarizationMessage,
+    ToolCallMessage,
     UserMessage,
 )
 
@@ -8306,6 +8308,91 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-0", UserMessage)
             assert children[children.index(anchor) + 1] is footer
+
+    async def test_restored_history_uses_top_spacer_for_archived_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Long restored threads keep source rows above the mounted tail."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID, _ThreadHistoryPayload
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content=f"m{index}",
+                        id=f"spacer-{index}",
+                    )
+                    for index in range(5)
+                ],
+                0,
+                "",
+            )
+
+            await app._load_thread_history(
+                thread_id="t-spacer", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            assert app._message_store.total_count >= 5
+            assert app._message_store.has_messages_above
+            top = app.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
+            assert top.display is True
+            with pytest.raises(NoMatches):
+                app.query_one("#spacer-0", UserMessage)
+            assert app.query_one("#spacer-4", UserMessage)
+
+    async def test_tool_state_sync_updates_store_and_protection(self) -> None:
+        """Mutable tool widget state should be canonical in MessageStore."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage("execute", {"command": "echo hi"}, id="tool-sync")
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_running()
+            app._sync_tool_message_state(tool)
+            stored = app._message_store.get_message("tool-sync")
+            assert stored is not None
+            assert stored.tool_status == ToolStatus.RUNNING
+            assert app._message_store.is_protected("tool-sync")
+
+            tool.set_success("done")
+            app._sync_tool_message_state(tool)
+            assert stored.tool_status == ToolStatus.SUCCESS
+            assert stored.tool_output == "done"
+            assert not app._message_store.is_protected("tool-sync")
+
+    async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
+        """Rows mounted while the spinner is active stay above the bottom spacer."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("first", id="order-user-1"))
+            await app._set_spinner("Thinking")
+            await app._mount_message(AssistantMessage("reply", id="order-agent-1"))
+            # Reasserting the spinner used to move it below the bottom spacer;
+            # later user rows then mounted above old assistant rows.
+            await app._set_spinner("Thinking")
+            await app._set_spinner(None)
+            await app._mount_message(UserMessage("second", id="order-user-2"))
+            await pilot.pause()
+
+            messages = app.query_one("#messages", Container)
+            ordered_ids = [
+                child.id
+                for child in messages.children
+                if child.id in {"order-user-1", "order-agent-1", "order-user-2"}
+            ]
+            assert ordered_ids == ["order-user-1", "order-agent-1", "order-user-2"]
 
     async def test_mount_message_adds_footer_when_enabled(self) -> None:
         """New messages receive a footer while timestamps are enabled."""

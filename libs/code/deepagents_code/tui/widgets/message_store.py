@@ -23,12 +23,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HEIGHT_HINT = 5
+"""Estimated terminal rows for a message whose rendered height is unknown."""
+
+MIN_HEIGHT_HINT = 1
+"""Smallest useful row estimate for spacer and prefix-height math."""
+
+
+@dataclass(frozen=True, slots=True)
+class MessageWindow:
+    """Projected message range and spacer heights for transcript virtualization."""
+
+    start: int
+    end: int
+    top_height: int
+    bottom_height: int
+
+
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {
         "content",
         "tool_status",
         "tool_output",
         "tool_expanded",
+        "tool_reject_reason",
         "skill_expanded",
         "is_streaming",
         "height_hint",
@@ -417,7 +435,7 @@ class MessageStore:
             Provides enough buffer to avoid visible loading pauses.
     """
 
-    WINDOW_SIZE: int = 50
+    WINDOW_SIZE: int = 200
     HYDRATE_BUFFER: int = 15
 
     def __init__(self) -> None:
@@ -433,8 +451,11 @@ class MessageStore:
         self._visible_start: int = 0
         self._visible_end: int = 0
 
-        # Track active streaming message - never archive this
+        self._protected_message_ids: set[str] = set()
+        """Message IDs that must stay mounted while they are still live."""
+
         self._active_message_id: str | None = None
+        """Backward-compatible single active assistant ID."""
 
     @property
     def total_count(self) -> int:
@@ -561,7 +582,11 @@ class MessageStore:
         Args:
             message_id: The ID of the active message, or None to clear.
         """
+        if self._active_message_id is not None:
+            self._protected_message_ids.discard(self._active_message_id)
         self._active_message_id = message_id
+        if message_id is not None:
+            self._protected_message_ids.add(message_id)
 
     def is_active(self, message_id: str) -> bool:
         """Check if a message is the active streaming message.
@@ -573,6 +598,40 @@ class MessageStore:
             True if this is the active message.
         """
         return message_id == self._active_message_id
+
+    def protect_message(self, message_id: str) -> None:
+        """Keep a live message mounted during window updates.
+
+        Args:
+            message_id: Message ID to protect.
+        """
+        self._protected_message_ids.add(message_id)
+
+    def unprotect_message(self, message_id: str) -> None:
+        """Allow a finalized message to be virtualized normally.
+
+        Args:
+            message_id: Message ID to stop protecting.
+        """
+        self._protected_message_ids.discard(message_id)
+        if self._active_message_id == message_id:
+            self._active_message_id = None
+
+    def is_protected(self, message_id: str) -> bool:
+        """Check whether a message is protected from virtualization.
+
+        Returns:
+            Whether the message is protected.
+        """
+        return message_id in self._protected_message_ids
+
+    def get_protected_messages(self) -> list[MessageData]:
+        """Return protected messages that still exist in source history."""
+        return [
+            msg
+            for msg in self._messages
+            if msg.id in self._protected_message_ids
+        ]
 
     def window_exceeded(self) -> bool:
         """Check if the visible window exceeds the maximum size.
@@ -608,11 +667,39 @@ class MessageStore:
         while len(to_prune) < count and idx < self._visible_end:
             msg = self._messages[idx]
             # Stop at the active message to keep the window contiguous
-            if msg.id == self._active_message_id:
+            if msg.id in self._protected_message_ids:
                 break
             to_prune.append(msg)
             idx += 1
 
+        return to_prune
+
+    def get_messages_to_prune_below(
+        self, count: int | None = None
+    ) -> list[MessageData]:
+        """Get newest visible messages that should be pruned below the viewport.
+
+        Args:
+            count: Number of messages to prune, or enough to return to
+                `WINDOW_SIZE` when omitted.
+
+        Returns:
+            Messages to remove from the bottom of the visible window.
+        """
+        if count is None:
+            count = max(0, self.visible_count - self.WINDOW_SIZE)
+        if count <= 0:
+            return []
+
+        to_prune: list[MessageData] = []
+        idx = self._visible_end - 1
+        while len(to_prune) < count and idx >= self._visible_start:
+            msg = self._messages[idx]
+            if msg.id in self._protected_message_ids:
+                break
+            to_prune.append(msg)
+            idx -= 1
+        to_prune.reverse()
         return to_prune
 
     def mark_pruned(self, message_ids: list[str]) -> None:
@@ -630,6 +717,19 @@ class MessageStore:
             and self._messages[self._visible_start].id in pruned_set
         ):
             self._visible_start += 1
+
+    def mark_pruned_below(self, message_ids: list[str]) -> None:
+        """Mark bottom-window messages as pruned.
+
+        Args:
+            message_ids: IDs removed from the bottom of the mounted window.
+        """
+        pruned_set = set(message_ids)
+        while (
+            self._visible_end > self._visible_start
+            and self._messages[self._visible_end - 1].id in pruned_set
+        ):
+            self._visible_end -= 1
 
     def get_messages_to_hydrate(self, count: int | None = None) -> list[MessageData]:
         """Get messages above the visible window to hydrate.
@@ -656,6 +756,25 @@ class MessageStore:
             count: Number of messages that were hydrated.
         """
         self._visible_start = max(0, self._visible_start - count)
+
+    def get_messages_to_hydrate_below(
+        self, count: int | None = None
+    ) -> list[MessageData]:
+        """Get messages below the visible window to hydrate.
+
+        Returns:
+            Messages below the mounted window.
+        """
+        if count is None:
+            count = self.HYDRATE_BUFFER
+        if self._visible_end >= len(self._messages):
+            return []
+        hydrate_end = min(len(self._messages), self._visible_end + count)
+        return self._messages[self._visible_end : hydrate_end]
+
+    def mark_hydrated_below(self, count: int) -> None:
+        """Mark that messages below were hydrated."""
+        self._visible_end = min(len(self._messages), self._visible_end + count)
 
     def should_hydrate_above(
         self, scroll_position: float, viewport_height: int
@@ -701,12 +820,33 @@ class MessageStore:
         threshold = viewport_height * 3
         return distance_from_bottom > threshold
 
+    def should_hydrate_below(
+        self, scroll_position: float, viewport_height: int, content_height: int
+    ) -> bool:
+        """Check if we should hydrate messages below the current view.
+
+        Args:
+            scroll_position: Current scroll Y position.
+            viewport_height: Height of the viewport.
+            content_height: Total height of all content.
+
+        Returns:
+            True if user is scrolling near the bottom and newer messages are
+            represented only by the bottom spacer.
+        """
+        if not self.has_messages_below:
+            return False
+        distance_from_bottom = content_height - scroll_position - viewport_height
+        threshold = viewport_height * 2
+        return distance_from_bottom < threshold
+
     def clear(self) -> None:
         """Clear all messages."""
         self._messages.clear()
         self._index.clear()
         self._visible_start = 0
         self._visible_end = 0
+        self._protected_message_ids.clear()
         self._active_message_id = None
 
     def get_visible_range(self) -> tuple[int, int]:
@@ -732,3 +872,119 @@ class MessageStore:
             List of visible message data.
         """
         return self._messages[self._visible_start : self._visible_end]
+
+    def set_height_hint(self, message_id: str, rows: int) -> bool:
+        """Update a measured message height.
+
+        Args:
+            message_id: Message ID to update.
+            rows: Rendered height in terminal rows.
+
+        Returns:
+            Whether the message existed and was updated.
+        """
+        return self.update_message(
+            message_id,
+            height_hint=max(MIN_HEIGHT_HINT, rows),
+        )
+
+    def invalidate_height_hints(self, *, scale: float | None = None) -> None:
+        """Invalidate or scale cached height hints after terminal reflow.
+
+        Args:
+            scale: Optional multiplier used when terminal width changes. When
+                omitted, all cached hints are cleared.
+        """
+        for msg in self._messages:
+            if msg.height_hint is None:
+                continue
+            if scale is None:
+                msg.height_hint = None
+            else:
+                msg.height_hint = max(MIN_HEIGHT_HINT, round(msg.height_hint * scale))
+
+    @staticmethod
+    def estimate_height(message: MessageData) -> int:
+        """Return the best available row estimate for a message."""
+        if message.height_hint is None:
+            return DEFAULT_HEIGHT_HINT
+        return max(MIN_HEIGHT_HINT, message.height_hint)
+
+    def prefix_height(self, end: int) -> int:
+        """Estimate rows before `end`.
+
+        Args:
+            end: Exclusive message index.
+
+        Returns:
+            Estimated row count before `end`.
+        """
+        bounded = max(0, min(end, len(self._messages)))
+        return sum(self.estimate_height(msg) for msg in self._messages[:bounded])
+
+    def range_height(self, start: int, end: int) -> int:
+        """Estimate rows in `[start:end]`.
+
+        Returns:
+            Estimated row count in the range.
+        """
+        bounded_start = max(0, min(start, len(self._messages)))
+        bounded_end = max(bounded_start, min(end, len(self._messages)))
+        return sum(
+            self.estimate_height(msg)
+            for msg in self._messages[bounded_start:bounded_end]
+        )
+
+    @property
+    def total_estimated_height(self) -> int:
+        """Estimated height of the full source transcript."""
+        return self.range_height(0, len(self._messages))
+
+    def get_window_for_viewport(
+        self,
+        *,
+        scroll_y: float,
+        viewport_height: int,
+        overscan: int,
+    ) -> MessageWindow:
+        """Calculate the source window that should cover the viewport.
+
+        Args:
+            scroll_y: Current scroll offset in terminal rows.
+            viewport_height: Visible chat height.
+            overscan: Extra rows to render above and below the viewport.
+
+        Returns:
+            Window range plus top/bottom spacer estimates.
+        """
+        total = len(self._messages)
+        if total == 0:
+            return MessageWindow(0, 0, 0, 0)
+
+        top_target = max(0, int(scroll_y) - overscan)
+        bottom_target = max(top_target, int(scroll_y) + viewport_height + overscan)
+
+        start = 0
+        offset = 0
+        while start < total:
+            height = self.estimate_height(self._messages[start])
+            if offset + height > top_target:
+                break
+            offset += height
+            start += 1
+
+        end = start
+        covered = offset
+        while end < total and covered < bottom_target:
+            covered += self.estimate_height(self._messages[end])
+            end += 1
+
+        if end - start < min(self.WINDOW_SIZE, total):
+            while end < total and end - start < self.WINDOW_SIZE:
+                end += 1
+            while start > 0 and end - start < self.WINDOW_SIZE:
+                start -= 1
+
+        top_height = self.range_height(0, start)
+        bottom_height = self.range_height(end, total)
+        return MessageWindow(start, end, top_height, bottom_height)

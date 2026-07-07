@@ -10,6 +10,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
+    _DEFAULT_READ_LIMIT,
     _EMPTY_TOOL_PLACEHOLDER,
     _HARNESS_PROFILE_SUFFIX_MARKER,
     ChatNVIDIAMessageCompatibilityMiddleware,
@@ -23,6 +24,7 @@ from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     NemotronTextToolCallParser,
     NemotronToolCallShim,
     ReadFileContinuationNoticeMiddleware,
+    _tool_name_is_domain,
     _tool_name_is_mutation,
     register,
 )
@@ -63,6 +65,10 @@ def _request(name: str, args: dict[str, object]) -> ToolCallRequest:
     )
 
 
+def _numbered_lines(count: int) -> str:
+    return "\n".join(f"{index}\tline {index}" for index in range(count))
+
+
 def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
     """Nemotron's common `path` arg should be remapped before tool execution."""
     middleware = NemotronToolCallShim()
@@ -76,7 +82,7 @@ def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
 
     assert isinstance(result, ToolMessage)
     assert result.content == _EMPTY_TOOL_PLACEHOLDER
-    assert captured[0].tool_call["args"] == {"file_path": "/big.txt", "limit": 2000}
+    assert captured[0].tool_call["args"] == {"file_path": "/big.txt", "limit": _DEFAULT_READ_LIMIT}
 
 
 def test_tool_call_shim_does_not_delete_existing_files(tmp_path: Path) -> None:
@@ -123,6 +129,28 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     assert isinstance(result, ToolMessage)
     assert "read_file returned 3 lines starting at offset 9" in result.content
     assert "offset=12" in result.content
+
+
+def test_read_file_continuation_notice_uses_shim_default_limit() -> None:
+    """The continuation notice should describe the same limit sent to `read_file`."""
+    shim = NemotronToolCallShim()
+    notice = ReadFileContinuationNoticeMiddleware()
+
+    def handler(request: ToolCallRequest) -> ToolMessage:
+        assert request.tool_call["args"]["limit"] == _DEFAULT_READ_LIMIT
+        return ToolMessage(
+            content=_numbered_lines(_DEFAULT_READ_LIMIT),
+            tool_call_id="call_1",
+        )
+
+    result = shim.wrap_tool_call(
+        _request("read_file", {"file_path": "/big.txt"}),
+        lambda request: notice.wrap_tool_call(request, handler),
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert f"read_file returned {_DEFAULT_READ_LIMIT} lines starting at offset 0" in result.content
+    assert f"offset={_DEFAULT_READ_LIMIT}" in result.content
 
 
 class FakeRateLimitError(Exception):
@@ -238,6 +266,24 @@ def test_progress_budget_accepts_profile_specific_limits() -> None:
     assert result.response_metadata["nemotron_progress_budget_reason"] == "2 model turns"
 
 
+def test_progress_budget_counts_active_turn_only() -> None:
+    """Old checkpoint history should not consume the current turn's step budget."""
+    middleware = NemotronProgressBudgetMiddleware(max_model_calls=2)
+    old_messages: list[object] = [HumanMessage("old task")]
+    old_messages.extend(AIMessage(content=f"old response {index}") for index in range(20))
+    current_messages = [HumanMessage("new task"), AIMessage(content="working")]
+    messages = [*old_messages, *current_messages]
+    request = SimpleNamespace(state={"messages": messages}, messages=messages)
+
+    def handler(request: object) -> AIMessage:  # noqa: ARG001
+        return AIMessage(content="continued")
+
+    result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(result, AIMessage)
+    assert result.content == "continued"
+
+
 def test_domain_tool_preference_triggers_for_non_file_domain_request() -> None:
     """Initial non-file questions should prefer task tools over filesystem tools."""
     messages = [HumanMessage("Which service has the most firing alerts?")]
@@ -287,6 +333,13 @@ def test_mutation_detection_uses_action_tokens_not_vendor_names() -> None:
     assert _tool_name_is_mutation("postChannelMessage")
     assert _tool_name_is_mutation("create_issue")
     assert _tool_name_is_mutation("revoke_access")
+    assert _tool_name_is_mutation("charge_card")
+    assert not _tool_name_is_domain("delete")
+    assert not _tool_name_is_mutation("delete")
+    assert not _tool_name_is_mutation("get_charge")
+    assert not _tool_name_is_mutation("get_post")
+    assert not _tool_name_is_mutation("get_transfer")
+    assert not _tool_name_is_mutation("search_archive")
     assert not _tool_name_is_mutation("github_lookup_issue")
     assert not _tool_name_is_mutation("postal_code_lookup")
     assert not _tool_name_is_mutation("write_file")
@@ -832,9 +885,9 @@ def test_register_adds_ultra3_profiles_for_supported_providers() -> None:
             assert [entry.name for entry in middleware] == [
                 "NemotronProgressBudgetMiddleware",
                 "NemotronPolicyNudgeMiddleware",
+                "NemotronToolCallShim",
                 "ReadFileContinuationNoticeMiddleware",
                 "ToolRetryMiddleware",
-                "NemotronToolCallShim",
                 "ModelRateLimitRetryMiddleware",
                 "ChatNVIDIAMessageCompatibilityMiddleware",
                 "NemotronReasoningTagCleanupMiddleware",

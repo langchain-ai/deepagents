@@ -63,8 +63,7 @@ chat-model client.
 _FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "glob", "grep")
 _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
 _EMPTY_TOOL_PLACEHOLDER = "(empty tool result)"
-_DEFAULT_READ_LIMIT = 2000
-_READ_NOTICE_DEFAULT_LIMIT = 100
+_DEFAULT_READ_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429
 
 
@@ -156,9 +155,9 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             offset = 0
         try:
-            limit = int(args.get("limit") or _READ_NOTICE_DEFAULT_LIMIT)
+            limit = int(args.get("limit") or _DEFAULT_READ_LIMIT)
         except (TypeError, ValueError):
-            limit = _READ_NOTICE_DEFAULT_LIMIT
+            limit = _DEFAULT_READ_LIMIT
 
         n_lines = sum(1 for row in content.split("\n") if "\t" in row and row.split("\t", 1)[0].strip().isdigit())
         if n_lines < limit:
@@ -317,13 +316,27 @@ _MUTATION_TOOL_VERBS = frozenset(
         "write",
     }
 )
+_READ_ONLY_TOOL_PREFIXES = frozenset(
+    {
+        "count",
+        "describe",
+        "fetch",
+        "find",
+        "get",
+        "list",
+        "lookup",
+        "read",
+        "retrieve",
+        "search",
+    }
+)
 # This list mirrors Deep Agents built-in tool names so model-level heuristics do
 # not treat framework scaffolding as application/domain tools.
 _BUILTIN_NON_DOMAIN_TOOLS: frozenset[str] = frozenset(
     {
         *_FILESYSTEM_TOOLS,
         "compact_conversation",
-        "eval",
+        "delete",
         "execute",
         "task",
         "write_todos",
@@ -783,7 +796,12 @@ def _tool_name_is_mutation(name: str) -> bool:
     if not _tool_name_is_domain(name):
         return False
     tokens = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|\d+", name.replace("_", " "))
-    return any(token.lower() in _MUTATION_TOOL_VERBS for token in tokens)
+    if not tokens:
+        return False
+    lowered = [token.lower() for token in tokens]
+    if lowered[0] in _READ_ONLY_TOOL_PREFIXES:
+        return False
+    return any(token in _MUTATION_TOOL_VERBS for token in lowered)
 
 
 def _tool_name_is_domain(name: str) -> bool:
@@ -1005,7 +1023,7 @@ class NemotronProgressBudgetMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest[Any]], ModelCallResult],
     ) -> ModelCallResult:
         """Short-circuit before another model call if progress budgets are exhausted."""
-        messages = self._messages(request)
+        messages = _messages_since_last_user(self._messages(request))
         reason = self._exceeded_reason(messages)
         if reason is not None:
             return self._fallback(messages, reason)
@@ -1017,7 +1035,7 @@ class NemotronProgressBudgetMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelCallResult]],
     ) -> ModelCallResult:
         """Async variant of `wrap_model_call`."""
-        messages = self._messages(request)
+        messages = _messages_since_last_user(self._messages(request))
         reason = self._exceeded_reason(messages)
         if reason is not None:
             return self._fallback(messages, reason)
@@ -1761,6 +1779,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
     return [
         NemotronProgressBudgetMiddleware(),
         NemotronPolicyNudgeMiddleware(),
+        NemotronToolCallShim(),
         ReadFileContinuationNoticeMiddleware(),
         ToolRetryMiddleware(
             max_retries=1,
@@ -1771,7 +1790,6 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
             max_delay=0.0,
             jitter=False,
         ),
-        NemotronToolCallShim(),
         ModelRateLimitRetryMiddleware(),
         ChatNVIDIAMessageCompatibilityMiddleware(),
         NemotronReasoningTagCleanupMiddleware(),

@@ -5,7 +5,6 @@ import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -30,8 +29,7 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
-from deepagents_code.textual_adapter import (
-    ModelStats,
+from deepagents_code.tui.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
@@ -40,8 +38,6 @@ from deepagents_code.textual_adapter import (
     _is_summarization_chunk,
     _read_mentioned_file,
     execute_task_textual,
-    format_token_count,
-    print_usage_table,
 )
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -195,7 +191,7 @@ class TestTextualUIAdapterInit:
         adapter._current_tool_messages = {"call-1": tool_widget}
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             adapter.finalize_pending_tools_with_error("Agent error: boom")
 
@@ -252,7 +248,7 @@ class TestInterruptCleanup:
         config = {"configurable": {"thread_id": "t-1"}}
 
         with patch(
-            "deepagents_code.textual_adapter.time.monotonic", return_value=101.0
+            "deepagents_code.tui.textual_adapter.time.monotonic", return_value=101.0
         ):
             await _handle_interrupt_cleanup(
                 adapter=adapter,
@@ -303,7 +299,7 @@ class TestInterruptCleanup:
         agent = SimpleNamespace(aupdate_state=AsyncMock())
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await _handle_interrupt_cleanup(
                 adapter=adapter,
@@ -367,7 +363,7 @@ class TestInterruptCleanup:
             order.append(f"dispatch:{event}")
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
             side_effect=_record_dispatch,
         ):
             await _handle_interrupt_cleanup(
@@ -1199,7 +1195,7 @@ class TestFormatRubricEvent:
         CI; `test_ascii_mode_degrades_to_ascii_glyphs` covers the ASCII path.
         """
         with patch(
-            "deepagents_code.textual_adapter.get_glyphs",
+            "deepagents_code.tui.textual_adapter.get_glyphs",
             return_value=UNICODE_GLYPHS,
         ):
             yield
@@ -1309,7 +1305,7 @@ class TestFormatRubricEvent:
     def test_ascii_mode_degrades_to_ascii_glyphs(self) -> None:
         """In ASCII mode the transcript glyphs must degrade, not stay Unicode."""
         with patch(
-            "deepagents_code.textual_adapter.get_glyphs",
+            "deepagents_code.tui.textual_adapter.get_glyphs",
             return_value=ASCII_GLYPHS,
         ):
             start = _format_rubric_event(
@@ -2627,7 +2623,8 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         fake_msg = AsyncMock()
         fake_msg.id = "asst-test"
         with patch(
-            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            return_value=fake_msg,
         ):
             await execute_task_textual(
                 user_input="hi",
@@ -2651,9 +2648,9 @@ class TestExecuteTaskTextualTextThenToolSpinner:
 
         After a tool cycle completes, the tool_call handler pops the previous
         AssistantMessage from `assistant_message_by_namespace`, so the next
-        text chunk mounts a fresh widget. The new re-anchor call at
-        `textual_adapter.py:780-784` must fire for that second text burst so
-        the spinner stays visible between it and any follow-up tool call.
+        text chunk mounts a fresh widget. The re-anchor call must fire for that
+        second text burst so the spinner stays visible between it and any
+        follow-up tool call.
         """
         statuses: list[str | None] = []
 
@@ -2678,7 +2675,8 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         fake_msg = AsyncMock()
         fake_msg.id = "asst-test"
         with patch(
-            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            return_value=fake_msg,
         ):
             await execute_task_textual(
                 user_input="hi",
@@ -2689,9 +2687,9 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             )
 
         # Expected Thinking calls:
-        #   1. Before astream (line 517)
-        #   2. After first AssistantMessage mount (re-anchor, line 784)
-        #   3. After tool result (line 705)
+        #   1. Before astream
+        #   2. After first AssistantMessage mount (re-anchor)
+        #   3. After tool result
         #   4. After second AssistantMessage mount (re-anchor again)
         thinking_count = sum(1 for s in statuses if s == "Thinking")
         assert thinking_count >= 4, (
@@ -2729,7 +2727,8 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         fake_msg = AsyncMock()
         fake_msg.id = "asst-test"
         with patch(
-            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+            "deepagents_code.tui.textual_adapter.AssistantMessage",
+            return_value=fake_msg,
         ):
             await execute_task_textual(
                 user_input="hi",
@@ -2810,11 +2809,11 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.AssistantMessage",
+                "deepagents_code.tui.textual_adapter.AssistantMessage",
                 side_effect=FakeAssistantMessage,
             ),
             patch(
-                "deepagents_code.textual_adapter.get_glyphs",
+                "deepagents_code.tui.textual_adapter.get_glyphs",
                 return_value=UNICODE_GLYPHS,
             ),
         ):
@@ -3564,7 +3563,7 @@ class TestExecuteTaskTextualAskUser:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -3947,240 +3946,6 @@ class TestDictIterationSafety:
 
 
 # ---------------------------------------------------------------------------
-# SessionStats tests
-# ---------------------------------------------------------------------------
-
-
-class TestSessionStats:
-    """Tests for `SessionStats` recording and merging."""
-
-    def test_record_request_named_model(self) -> None:
-        """record_request updates totals and per_model for a named model."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
-
-        assert stats.request_count == 1
-        assert stats.input_tokens == 100
-        assert stats.output_tokens == 50
-        assert ("", "gpt-4") in stats.per_model
-        assert stats.per_model["", "gpt-4"].request_count == 1
-        assert stats.per_model["", "gpt-4"].input_tokens == 100
-        assert stats.per_model["", "gpt-4"].output_tokens == 50
-
-    def test_record_request_empty_model(self) -> None:
-        """record_request with empty model skips per_model entry."""
-        stats = SessionStats()
-        stats.record_request("", 200, 80)
-
-        assert stats.request_count == 1
-        assert stats.input_tokens == 200
-        assert stats.output_tokens == 80
-        assert stats.per_model == {}
-
-    def test_record_request_multiple_models(self) -> None:
-        """Multiple models create separate per_model entries."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
-        stats.record_request("claude-opus-4-6", 200, 80)
-
-        assert stats.request_count == 2
-        assert stats.input_tokens == 300
-        assert stats.output_tokens == 130
-        assert len(stats.per_model) == 2
-        assert stats.per_model["", "gpt-4"].request_count == 1
-        assert stats.per_model["", "claude-opus-4-6"].request_count == 1
-
-    def test_record_request_splits_same_model_by_provider(self) -> None:
-        """Provider-specific model names should not collapse into one entry."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50, provider="openai")
-        stats.record_request("gpt-4", 200, 80, provider="azure")
-
-        assert len(stats.per_model) == 2
-        assert stats.per_model["openai", "gpt-4"].request_count == 1
-        assert stats.per_model["azure", "gpt-4"].request_count == 1
-
-    def test_merge(self) -> None:
-        """merge() folds another SessionStats into self."""
-        a = SessionStats(
-            request_count=1, input_tokens=100, output_tokens=50, wall_time_seconds=1.0
-        )
-        a.per_model["", "gpt-4"] = ModelStats(
-            request_count=1, input_tokens=100, output_tokens=50, model_name="gpt-4"
-        )
-
-        b = SessionStats(
-            request_count=2, input_tokens=300, output_tokens=120, wall_time_seconds=2.5
-        )
-        b.per_model["", "claude-opus-4-6"] = ModelStats(
-            request_count=2,
-            input_tokens=300,
-            output_tokens=120,
-            model_name="claude-opus-4-6",
-        )
-
-        a.merge(b)
-
-        assert a.request_count == 3
-        assert a.input_tokens == 400
-        assert a.output_tokens == 170
-        assert a.wall_time_seconds == pytest.approx(3.5)
-        assert len(a.per_model) == 2
-        assert a.per_model["", "claude-opus-4-6"].request_count == 2
-
-    def test_merge_overlapping_models(self) -> None:
-        """merge() combines per_model entries for the same model."""
-        a = SessionStats()
-        a.record_request("gpt-4", 100, 50)
-
-        b = SessionStats()
-        b.record_request("gpt-4", 200, 80)
-
-        a.merge(b)
-
-        assert a.request_count == 2
-        assert a.input_tokens == 300
-        assert a.output_tokens == 130
-        assert a.per_model["", "gpt-4"].request_count == 2
-        assert a.per_model["", "gpt-4"].input_tokens == 300
-        assert a.per_model["", "gpt-4"].output_tokens == 130
-
-    def test_merge_splits_same_model_by_provider(self) -> None:
-        """merge() preserves provider-specific entries for the same model."""
-        a = SessionStats()
-        a.record_request("gpt-4", 100, 50, provider="openai")
-
-        b = SessionStats()
-        b.record_request("gpt-4", 200, 80, provider="azure")
-
-        a.merge(b)
-
-        assert len(a.per_model) == 2
-        assert a.per_model["openai", "gpt-4"].input_tokens == 100
-        assert a.per_model["azure", "gpt-4"].input_tokens == 200
-
-
-# ---------------------------------------------------------------------------
-# format_token_count tests
-# ---------------------------------------------------------------------------
-
-
-class TestFormatTokenCount:
-    """Tests for `format_token_count` shared formatter."""
-
-    def test_small_count(self) -> None:
-        assert format_token_count(500) == "500"
-
-    def test_thousands(self) -> None:
-        assert format_token_count(12_500) == "12.5K"
-
-    def test_millions(self) -> None:
-        assert format_token_count(1_200_000) == "1.2M"
-
-    def test_exact_thousand(self) -> None:
-        assert format_token_count(1000) == "1.0K"
-
-    def test_zero(self) -> None:
-        assert format_token_count(0) == "0"
-
-
-# ---------------------------------------------------------------------------
-# print_usage_table tests
-# ---------------------------------------------------------------------------
-
-
-class TestPrintUsageTable:
-    """Tests for `print_usage_table` output."""
-
-    def test_no_model_called_skips_unknown_row(self) -> None:
-        """When no model was called, the table should not show 'unknown'."""
-        stats = SessionStats()
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=1.5, console=console)
-        output = buf.getvalue()
-        assert "unknown" not in output
-        assert "Usage Stats" not in output
-        assert "Agent active" in output
-
-    def test_single_model_shows_name(self) -> None:
-        """Single-model session should display the model name."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=2.0, console=console)
-        output = buf.getvalue()
-        assert "gpt-4" in output
-        assert "unknown" not in output
-
-    def test_shows_provider_name(self) -> None:
-        """The table should include the provider for each model."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50, provider="openai")
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=2.0, console=console)
-        output = buf.getvalue()
-        assert "Provider" in output
-        assert "openai" in output
-        assert "gpt-4" in output
-
-    def test_multi_model_shows_all_names_and_total(self) -> None:
-        """Multi-model session should show each model and a Total row."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
-        stats.record_request("claude-opus-4-6", 200, 80)
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=2.0, console=console)
-        output = buf.getvalue()
-        assert "gpt-4" in output
-        assert "claude-opus-4-6" in output
-        assert "Total" in output
-        assert "unknown" not in output
-
-    def test_same_model_with_different_providers_shows_separate_rows(self) -> None:
-        """Same-name models from different providers should render separately."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50, provider="openai")
-        stats.record_request("gpt-4", 200, 80, provider="azure")
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=2.0, console=console)
-        output = buf.getvalue()
-        assert "openai" in output
-        assert "azure" in output
-        assert "Total" in output
-        # Two distinct rows, not a collapsed one: each provider's per-row token
-        # counts must appear (100/50 and 200/80), alongside the 300/130 totals.
-        assert "100" in output
-        assert "50" in output
-        assert "200" in output
-        assert "80" in output
-
-    def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
-        """Token table should print but timing line should be absent."""
-        stats = SessionStats()
-        stats.record_request("gpt-4", 100, 50)
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=0.0, console=console)
-        output = buf.getvalue()
-        assert "gpt-4" in output
-        assert "Agent active" not in output
-
-    def test_no_requests_no_time_prints_nothing(self) -> None:
-        """Empty stats with negligible wall time should print nothing."""
-        stats = SessionStats()
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True)
-        print_usage_table(stats, wall_time=0.01, console=console)
-        output = buf.getvalue()
-        assert output.strip() == ""
-
-
-# ---------------------------------------------------------------------------
 # tool.use / tool.result hook dispatch (textual path)
 # ---------------------------------------------------------------------------
 
@@ -4214,7 +3979,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
             side_effect=record_dispatch,
         ) as mock_dispatch:
             await execute_task_textual(
@@ -4273,12 +4038,12 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook",
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
                 new_callable=AsyncMock,
                 side_effect=fail_if_tool_result,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             await execute_task_textual(
@@ -4339,11 +4104,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.format_tool_message_content",
+                "deepagents_code.tui.textual_adapter.format_tool_message_content",
                 side_effect=boom,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             await execute_task_textual(
@@ -4398,7 +4163,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -4469,7 +4234,7 @@ class TestToolHooksTextual:
         with (
             patch.object(ToolCallMessage, "set_success", flaky_set_success),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             await execute_task_textual(
@@ -4510,7 +4275,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -4571,9 +4336,9 @@ class TestToolHooksTextual:
         )
 
         with (
-            caplog.at_level("WARNING", logger="deepagents_code.textual_adapter"),
+            caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
         ):
             await execute_task_textual(
@@ -4646,10 +4411,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -4730,10 +4496,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -4817,10 +4584,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -4871,10 +4639,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -4945,10 +4714,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5020,10 +4790,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5111,10 +4882,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5241,7 +5013,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -5291,10 +5063,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5350,10 +5123,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5451,10 +5225,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5530,10 +5305,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5606,10 +5382,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5666,10 +5443,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5732,10 +5510,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5852,10 +5631,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5918,10 +5698,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -5986,10 +5767,11 @@ class TestToolHooksTextual:
 
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
         ):
             await execute_task_textual(
@@ -6033,7 +5815,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -6067,7 +5849,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -6113,7 +5895,7 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -6202,7 +5984,7 @@ async def _run_textual_surface(
         request_approval=_mock_approval,
     )
     with patch(
-        "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+        "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
         side_effect=_capture,
     ):
         await execute_task_textual(
@@ -6537,8 +6319,8 @@ class TestTextualEndOfStreamDiagnostics:
             _tool_chunk(name="g", args='{"b": 2}', chunk_id=None, index=1),
         ]
         with (
-            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
-            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.tui.textual_adapter"),
         ):
             await execute_task_textual(
                 user_input="hello",
@@ -6568,8 +6350,8 @@ class TestTextualEndOfStreamDiagnostics:
         # Args never close -> unparsed, no tool.use, buffer retained to the exit.
         chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
         with (
-            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
-            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.tui.textual_adapter"),
             pytest.raises(RuntimeError, match="boom"),
         ):
             await execute_task_textual(
@@ -6596,12 +6378,12 @@ class TestTextualEndOfStreamDiagnostics:
         )
         chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
         with (
-            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
             patch(
-                "deepagents_code.textual_adapter._handle_interrupt_cleanup",
+                "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
                 new_callable=AsyncMock,
             ),
-            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            caplog.at_level("INFO", logger="deepagents_code.tui.textual_adapter"),
         ):
             await execute_task_textual(
                 user_input="hello",
@@ -6645,7 +6427,7 @@ class TestTextualNonCleanExitTerminalHooks:
         )
         with (
             patch(
-                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
                 side_effect=record_dispatch,
             ),
             pytest.raises(RuntimeError, match="boom"),

@@ -3,7 +3,7 @@
 Both execution surfaces reassemble the same streamed tool-call state and fire
 the same `tool.use` / `tool.result` / `tool.error` hook payloads:
 
-- the interactive Textual TUI (`deepagents_code.textual_adapter`), and
+- the interactive Textual TUI (`deepagents_code.tui.textual_adapter`), and
 - the headless runner (`deepagents_code.client.non_interactive`).
 
 This module holds the single implementation of the buffering, argument parsing,

@@ -1980,7 +1980,7 @@ async def run_textual_cli_async(
     # Never pass auto_approve to the server — the interactive server must
     # always configure full HITL interrupts so that Shift+Tab can toggle
     # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in textual_adapter.py.
+    # session_state.auto_approve in `tui.textual_adapter`.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2334,7 +2334,7 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code.textual_adapter import SessionStats, print_usage_table
+    from deepagents_code._session_stats import SessionStats, print_usage_table
 
     if not isinstance(stats, SessionStats):
         return

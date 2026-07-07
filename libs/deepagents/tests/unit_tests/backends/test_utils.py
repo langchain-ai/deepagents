@@ -441,45 +441,57 @@ class TestSliceReadResponse:
     def _file(content: str) -> FileData:
         return FileData(content=content, encoding="utf-8")
 
+    @staticmethod
+    def _content(result: ReadResult) -> str:
+        assert result.file_data is not None
+        return result.file_data["content"]
+
     def test_preserves_trailing_newline_when_file_has_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar\n"), offset=0, limit=2000)
-        assert result == "foo\nbar\n"
+        assert self._content(result) == "foo\nbar\n"
 
     def test_preserves_no_trailing_newline_when_file_lacks_one(self) -> None:
         result = slice_read_response(self._file("foo\nbar"), offset=0, limit=2000)
-        assert result == "foo\nbar"
+        assert self._content(result) == "foo\nbar"
 
     def test_normalizes_crlf_to_lf(self) -> None:
         """State/Store callers may carry CRLF; downstream tooling assumes LF."""
         result = slice_read_response(self._file("foo\r\nbar\r\n"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_normalizes_bare_cr_to_lf(self) -> None:
         result = slice_read_response(self._file("foo\rbar\r"), offset=0, limit=2000)
-        assert isinstance(result, str)
-        assert "\r" not in result
-        assert result == "foo\nbar\n"
+        content = self._content(result)
+        assert "\r" not in content
+        assert content == "foo\nbar\n"
 
     def test_partial_window_keeps_terminator_on_internal_lines(self) -> None:
         """A window ending on a non-terminal line still ends with that line's terminator."""
         result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
-        assert result == "b\nc\n"
+        assert self._content(result) == "b\nc\n"
 
     def test_partial_window_normalizes_crlf(self) -> None:
         """An internal CRLF slice is LF-normalized even though only the window is rewritten."""
         result = slice_read_response(self._file("a\r\nb\r\nc\r\nd\r\n"), offset=1, limit=2)
-        assert result == "b\nc\n"
-        assert "\r" not in result
+        content = self._content(result)
+        assert content == "b\nc\n"
+        assert "\r" not in content
 
     def test_partial_window_ending_on_unterminated_last_line(self) -> None:
         """A window covering the last line keeps that line's missing-terminator state."""
         result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)
-        assert result == "c"
+        assert self._content(result) == "c"
+
+    def test_partial_window_includes_pagination_metadata(self) -> None:
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        assert result.total_lines == 4
+        assert result.start_line == 2
+        assert result.end_line == 3
+        assert result.next_offset == 3
 
     def test_offset_beyond_file_returns_error_result(self) -> None:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
-        assert isinstance(result, ReadResult)
         assert result.error is not None
         assert "exceeds file length" in result.error

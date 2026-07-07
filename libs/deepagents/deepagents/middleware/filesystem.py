@@ -532,6 +532,25 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
     return content
 
 
+def _remaining_lines_notice(read_result: ReadResult) -> str:
+    """Render the read pagination notice when the backend returned a partial window."""
+    total_lines = read_result.total_lines
+    start_line = read_result.start_line
+    end_line = read_result.end_line
+    if total_lines is None or start_line is None or end_line is None or end_line >= total_lines:
+        return ""
+    next_offset = read_result.next_offset if read_result.next_offset is not None else end_line
+    remaining = total_lines - end_line
+    read_count = end_line - start_line + 1
+    read_unit = "line" if read_count == 1 else "lines"
+    remaining_unit = "line" if remaining == 1 else "lines"
+    return (
+        f"\n\n[Read {read_count} {read_unit} "
+        f"(lines {start_line}-{end_line} of {total_lines} total). "
+        f"{remaining} {remaining_unit} remaining from offset {next_offset}.]"
+    )
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
 LINE_NUMBER_WIDTH = 6
@@ -1590,7 +1609,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            content = format_content_with_line_numbers(content, start_line=offset + 1)
+            content = format_content_with_line_numbers(content, start_line=read_result.start_line or offset + 1)
+            content += _remaining_lines_notice(read_result)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).

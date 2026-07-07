@@ -187,10 +187,18 @@ class ReadResult:
     Attributes:
         error: Error message on failure, None on success.
         file_data: FileData dict on success, None on failure.
+        total_lines: Total number of source lines in text files.
+        start_line: 1-indexed first source line returned in `file_data`.
+        end_line: 1-indexed last source line returned in `file_data`.
+        next_offset: 0-indexed offset for the next unread source line.
     """
 
     error: str | None = None
     file_data: FileData | None = None
+    total_lines: int | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    next_offset: int | None = None
 
 
 class _Unset:

@@ -200,11 +200,14 @@ class LangSmithSandbox(BaseSandbox):
         offset = int(offset)
         limit = int(limit)
 
-        if not lines or offset >= len(lines):
-            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({len(lines)} lines)")
+        total_lines = len(lines)
+        if not lines or offset >= total_lines:
+            return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
 
         page = lines[offset : offset + limit]
         content = "\n".join(page)
+        end_line = offset + len(page)
+        next_offset = end_line if end_line < total_lines else None
 
         # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
         # large pages don't reintroduce the transport-size symptom this
@@ -215,7 +218,13 @@ class LangSmithSandbox(BaseSandbox):
         if len(encoded) > effective_limit:
             content = encoded[:effective_limit].decode("utf-8", errors="ignore") + TRUNCATION_MSG
 
-        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
+        return ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=total_lines,
+            start_line=offset + 1,
+            end_line=end_line,
+            next_offset=next_offset,
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.

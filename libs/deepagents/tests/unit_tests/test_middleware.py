@@ -1318,8 +1318,8 @@ class TestFilesystemMiddleware:
         content = f"first line\n{long_line}\nthird line"
         file_data = create_file_data(content)
         sliced = slice_read_response(file_data, offset=0, limit=100)
-        assert isinstance(sliced, str)
-        result = format_content_with_line_numbers(sliced, start_line=1)
+        assert sliced.file_data is not None
+        result = format_content_with_line_numbers(sliced.file_data["content"], start_line=1)
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
         assert "     1\tfirst line" in lines[0]
@@ -1337,8 +1337,8 @@ class TestFilesystemMiddleware:
         content = f"line1\nline2\n{long_line}\nline4"
         file_data = create_file_data(content)
         sliced = slice_read_response(file_data, offset=2, limit=10)
-        assert isinstance(sliced, str)
-        result = format_content_with_line_numbers(sliced, start_line=3)
+        assert sliced.file_data is not None
+        result = format_content_with_line_numbers(sliced.file_data["content"], start_line=3)
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
         assert "     3\t" in lines[0]
@@ -1348,6 +1348,55 @@ class TestFilesystemMiddleware:
         assert "   3.2\t" in lines[2]
         assert lines[2].count("m") == 2000
         assert "     4\tline4" in lines[3]
+
+    def test_read_file_partial_window_includes_remaining_lines_notice(self):
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree\nfour\nfive",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == ("     1\tone\n     2\ttwo\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+
+    def test_read_file_full_window_omits_remaining_lines_notice(self):
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 10})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == "     1\tone\n     2\ttwo\n     3\tthree"
+        assert "remaining from offset" not in result.content
+
+    def test_read_file_offset_window_reports_source_line_range(self):
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree\nfour\nfive",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == ("     3\tthree\n     4\tfour\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""

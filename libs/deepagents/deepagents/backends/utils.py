@@ -391,11 +391,23 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     return result
 
 
+def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
+    sliced_fd = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        sliced_fd["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        sliced_fd["modified_at"] = file_data["modified_at"]
+    return sliced_fd
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
-) -> str | ReadResult:
+) -> ReadResult:
     """Slice file data to the requested line range without formatting.
 
     Returns raw text for the requested window. Line-number formatting
@@ -407,13 +419,13 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content string on success, or `ReadResult` with
+        `ReadResult` with sliced raw content and pagination metadata, or
             `error` set when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
 
     if not content or content.strip() == "":
-        return content
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
@@ -424,14 +436,23 @@ def slice_read_response(
     lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
+    total_lines = len(lines)
 
-    if start_idx >= len(lines):
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+    if start_idx >= total_lines:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    next_offset = end_idx if end_idx < total_lines else None
+    return ReadResult(
+        file_data=_copy_file_data_with_content(file_data, sliced),
+        total_lines=total_lines,
+        start_line=start_idx + 1,
+        end_line=end_idx,
+        next_offset=next_offset,
+    )
 
 
 def perform_string_replacement(

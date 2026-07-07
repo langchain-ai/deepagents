@@ -11225,6 +11225,62 @@ class TestSlashCommandBypass:
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
 
+    async def test_exit_keyword_exits_from_normal_mode(self) -> None:
+        """Plain exit should quit when submitted as normal input."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("  EXIT  ", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_bypasses_queue_when_agent_running(self) -> None:
+        """Plain exit should quit immediately even when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("exit", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_bypasses_thread_switching(self) -> None:
+        """Plain exit should quit even during a thread switch."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("exit", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_requires_exact_match(self) -> None:
+        """Other messages containing exit should still go to the agent."""
+        app = DeepAgentsApp()
+
+        with (
+            patch.object(app, "exit") as exit_mock,
+            patch.object(
+                app, "_handle_user_message", new_callable=AsyncMock
+            ) as handler,
+        ):
+            await app._process_message("exit now", "normal")
+
+        exit_mock.assert_not_called()
+        handler.assert_awaited_once_with("exit now")
+
     async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
         """/force-clear should process immediately when agent is running."""
         app = DeepAgentsApp()

@@ -6553,7 +6553,10 @@ class DeepAgentsApp(App):
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
-            await self._handle_user_message(value)
+            if self._is_exit_keyword(value, mode):
+                self.exit()
+            else:
+                await self._handle_user_message(value)
         else:
             # Fail safe: never default to the agent dispatch path on an
             # unrecognized mode, since that would silently leak `!!`/`!`
@@ -7296,6 +7299,11 @@ class DeepAgentsApp(App):
         self.push_screen(dependency_screen)
         return await result_future
 
+    @staticmethod
+    def _is_exit_keyword(value: str, mode: InputMode) -> bool:
+        """Return whether the submitted input is the plain `exit` command."""
+        return mode == "normal" and value.lower().strip() == "exit"
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -7364,9 +7372,12 @@ class DeepAgentsApp(App):
         # COMMANDS and so carry no bypass tier. Both must run even when the
         # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+        normalized = value.lower().strip()
 
-        if force_bypass or (
-            mode == "command" and value.lower().strip() in always_bypass
+        if (
+            force_bypass
+            or (mode == "command" and normalized in always_bypass)
+            or self._is_exit_keyword(value, mode)
         ):
             await self._process_message(value, mode)
             return

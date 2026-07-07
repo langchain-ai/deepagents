@@ -34,7 +34,6 @@ examples = [
     "langchain-openai>=1.3.3",
 ]
 test = [
-    "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",

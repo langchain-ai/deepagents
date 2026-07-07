@@ -28,9 +28,14 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.checkpoint.base import (
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+)
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
@@ -79,6 +84,21 @@ class FakeACPClient(Client):
         return RequestPermissionResponse(
             outcome=AllowedOutcome(outcome="selected", option_id=outcome)
         )
+
+
+class DelayedMemorySaver(MemorySaver):
+    """Simulate a persistent checkpointer whose async writes are not immediate."""
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        """Delay checkpoint visibility until the async write completes."""
+        await asyncio.sleep(0.05)
+        return await super().aput(config, checkpoint, metadata, new_versions)
 
 
 async def test_acp_agent_prompt_streams_text() -> None:
@@ -966,7 +986,7 @@ async def test_acp_agent_hitl_requests_permission_only_once() -> None:
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
 
 
-async def test_acp_agent_hitl_waits_for_persistent_interrupt_checkpoint(tmp_path) -> None:
+async def test_acp_agent_hitl_waits_for_interrupt_checkpoint() -> None:
     """Test that permission state is read after the interrupt stream closes."""
     model = GenericFakeChatModel(
         messages=iter(
@@ -987,24 +1007,20 @@ async def test_acp_agent_hitl_waits_for_persistent_interrupt_checkpoint(tmp_path
         ),
         stream_delimiter=None,
     )
-    async with AsyncSqliteSaver.from_conn_string(
-        str(tmp_path / "checkpoints.sqlite")
-    ) as checkpointer:
-        await checkpointer.setup()
-        graph = create_deep_agent(
-            model=model,
-            interrupt_on={"write_file": True},
-            checkpointer=checkpointer,
-        )
-        agent = AgentServerACP(agent=graph)
-        client = FakeACPClient(permission_outcomes=["approve"])
-        agent.on_connect(client)  # type: ignore[arg-type]
+    graph = create_deep_agent(
+        model=model,
+        interrupt_on={"write_file": True},
+        checkpointer=DelayedMemorySaver(),
+    )
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve"])
+    agent.on_connect(client)  # type: ignore[arg-type]
 
-        session = await agent.new_session(cwd="/tmp", mcp_servers=[])
-        response = await agent.prompt(
-            [TextContentBlock(type="text", text="Write a test file")],
-            session_id=session.session_id,
-        )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Write a test file")],
+        session_id=session.session_id,
+    )
 
     assert response.stop_reason == "end_turn"
     permission_requests = [e for e in client.events if e["type"] == "request_permission"]

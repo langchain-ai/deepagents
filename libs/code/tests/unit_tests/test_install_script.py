@@ -1493,6 +1493,7 @@ def _invoke_with_local_dcode_not_on_path(
         "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
         "UV_BIN": str(uv),
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        "SHELL": "/bin/zsh",
     }
     return subprocess.run(
         ["bash", str(SCRIPT)],

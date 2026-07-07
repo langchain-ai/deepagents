@@ -16,6 +16,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
@@ -353,50 +354,6 @@ class TestSummarizationMiddlewareInit:
         assert middleware._backend is backend
         assert middleware._history_path_prefix == "/conversation_history"
 
-    def test_init_with_backend_factory(self) -> None:
-        """Test initialization with a backend factory function."""
-        backend = MockBackend()
-        factory = lambda _rt: backend  # noqa: E731
-
-        middleware = SummarizationMiddleware(
-            model=make_mock_model(),
-            backend=factory,
-            trigger=("messages", 5),
-            keep=("messages", 3),
-        )
-
-        assert callable(middleware._backend)
-
-    def test_deprecated_history_path_prefix_warns_and_applies(self) -> None:
-        """Passing history_path_prefix emits a deprecation warning and is used."""
-        backend = MockBackend()
-        with pytest.warns(match="history_path_prefix"):
-            middleware = SummarizationMiddleware(
-                model=make_mock_model(),
-                backend=backend,
-                trigger=("messages", 5),
-                keep=("messages", 3),
-                history_path_prefix="/custom/history",
-            )
-
-        assert middleware._history_path_prefix == "/custom/history"
-        assert middleware._media_prefix == "/custom/history/media"
-
-    def test_deprecated_history_path_prefix_overrides_default(self) -> None:
-        """Deprecated history_path_prefix takes precedence over the default."""
-        backend = MockBackend()
-        with pytest.warns(match="history_path_prefix"):
-            middleware = SummarizationMiddleware(
-                model=make_mock_model(),
-                backend=backend,
-                trigger=("messages", 5),
-                keep=("messages", 3),
-                history_path_prefix="/overridden",
-            )
-
-        assert middleware._history_path_prefix == "/overridden"
-        assert middleware._history_path_prefix != "/conversation_history"
-
 
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""
@@ -582,24 +539,23 @@ class TestOffloadingBasic:
         # No raw base64 payload in the archive.
         assert b64 not in archive_write[1]
 
-    def test_offload_media_uses_deprecated_history_path_prefix(self) -> None:
-        """Media files are written under the final history prefix."""
-        backend = MockBackend()
+    def test_offload_media_uses_artifacts_root(self) -> None:
+        """Media files are written under the configured artifacts root."""
+        mock_backend = MockBackend()
+        backend = CompositeBackend(default=mock_backend, routes={}, artifacts_root="/custom")
         mock_model = make_mock_model()
 
-        with pytest.warns(match="history_path_prefix"):
-            middleware = SummarizationMiddleware(
-                model=mock_model,
-                backend=backend,
-                trigger=("messages", 5),
-                keep=("messages", 2),
-                history_path_prefix="/custom/history",
-            )
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
 
         raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         b64 = _base64.b64encode(raw_png).decode()
         expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
-        expected_path = f"/custom/history/media/{expected_key}.png"
+        expected_path = f"/custom/conversation_history/media/{expected_key}.png"
 
         messages: list[BaseMessage] = [
             HumanMessage(
@@ -614,12 +570,12 @@ class TestOffloadingBasic:
         with mock_get_config():
             call_wrap_model_call(middleware, state, runtime)
 
-        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/custom/history/media/")]
+        image_uploads = [(p, c) for p, c in mock_backend.write_calls if p.startswith("/custom/conversation_history/media/")]
         assert len(image_uploads) == 1
         assert image_uploads[0][0] == expected_path
 
-        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
-        assert archive_write[0] == "/custom/history/test-thread-123.md"
+        archive_write = next((p, c) for p, c in mock_backend.write_calls if p.endswith(".md"))
+        assert archive_write[0] == "/custom/conversation_history/test-thread-123.md"
         assert expected_path in archive_write[1]
 
     def test_offload_per_block_upload_failure(self) -> None:
@@ -1698,37 +1654,6 @@ class TestAsyncBehavior:
         assert result.command is not None
         assert result.command.update is not None
         assert modified_request is not None
-
-
-class TestBackendFactoryInvocation:
-    """Tests for backend factory invocation during summarization."""
-
-    def test_backend_factory_invoked_during_summarization(self) -> None:
-        """Test that backend factory is called with `ToolRuntime` during summarization."""
-        backend = MockBackend()
-        factory_called_with: list = []
-
-        def factory(tool_runtime: object) -> MockBackend:
-            factory_called_with.append(tool_runtime)
-            return backend
-
-        middleware = SummarizationMiddleware(
-            model=make_mock_model(),
-            backend=factory,
-            trigger=("messages", 5),
-            keep=("messages", 2),
-        )
-
-        messages = make_conversation_messages(num_old=6, num_recent=2)
-        state = cast("AgentState[Any]", {"messages": messages})
-        runtime = make_mock_runtime()
-
-        call_wrap_model_call(middleware, state, runtime)
-
-        # Factory should have been called once
-        assert len(factory_called_with) == 1
-        # Backend should have received write call
-        assert len(backend.write_calls) == 1
 
 
 class TestMarkdownFormatting:

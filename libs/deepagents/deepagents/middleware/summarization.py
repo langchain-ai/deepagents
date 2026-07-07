@@ -82,7 +82,9 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
-from langchain.tools import ToolRuntime
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
+)
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -91,9 +93,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
-from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
@@ -121,11 +121,9 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol, FileUploadResponse
+    from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -521,20 +519,19 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
         summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
-        **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
+            backend: Backend instance for persisting conversation history.
             trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
                 a dict combines thresholds with AND semantics, and a list combines items
                 with OR semantics.
@@ -574,20 +571,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
-        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
-        if _deprecated_history_prefix is not None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "The argument `history_path_prefix` is deprecated and "
-                    "will be removed in deepagents==0.7.0. Use "
-                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
-                    "instead."
-                ),
-                package="deepagents",
-            )
-
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -596,7 +579,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
-            **deprecated_kwargs,
         )
 
         # Whether the configured token counter accepts a `tools` kwarg. Resolved
@@ -613,8 +595,6 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self._history_path_prefix = f"{_root}/conversation_history"
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
 
-        if _deprecated_history_prefix is not None:
-            self._history_path_prefix = _deprecated_history_prefix
         self._media_prefix = f"{self._history_path_prefix}/media"
 
         # Parse truncate_args_settings
@@ -668,36 +648,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
-    def _get_backend(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
-
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return _resolve_backend(self._backend, tool_runtime)
+    def _get_backend(self) -> BackendProtocol:
+        """Return the backend instance."""
         return self._backend
 
     def _get_thread_id(self) -> str:
@@ -1444,7 +1396,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._get_backend()
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
@@ -1578,7 +1530,7 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
-        backend = self._get_backend(request.state, request.runtime)
+        backend = self._get_backend()
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
@@ -1653,7 +1605,7 @@ This is the name external callers should import and reference.
 
 def create_summarization_middleware(
     model: BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
@@ -1698,7 +1650,7 @@ def create_summarization_middleware(
         model: Resolved `BaseChatModel` instance.
 
             Use `resolve_model()` first if needed for model strings.
-        backend: Backend instance or factory for persisting conversation history.
+        backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
         trim_tokens_to_summarize: Max tokens to include when generating summary.
         token_counter: Function to count tokens in messages.
@@ -1730,7 +1682,7 @@ def create_summarization_middleware(
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
     *,
     system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
 ) -> SummarizationToolMiddleware:
@@ -1763,7 +1715,7 @@ def create_summarization_tool_middleware(
     Args:
         model: Chat model instance, or a model string
             (e.g. `"anthropic:claude-sonnet-4-6"`).
-        backend: Backend instance or factory for persisting conversation history.
+        backend: Backend instance for persisting conversation history.
         system_prompt: System-prompt fragment nudging the model to call
             `compact_conversation`. Pass `None` to skip appending the nudge.
 
@@ -1883,19 +1835,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
         self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        backend = self._summarization._backend
-        if callable(backend):
-            return _resolve_backend(backend, runtime)
-        return backend
+    def _resolve_backend(self) -> BackendProtocol:
+        """Return the backend instance."""
+        return self._summarization._backend
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.
@@ -2101,7 +2043,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
+            backend = self._resolve_backend()
             file_path = s._offload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
@@ -2135,7 +2077,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
+            backend = self._resolve_backend()
             file_path = await s._aoffload_to_backend(backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")

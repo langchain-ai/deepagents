@@ -13,10 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
-
-if TYPE_CHECKING:
-    from langchain_core.runnables.config import RunnableConfig
+from typing import Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -39,11 +36,9 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
-    BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -56,7 +51,6 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
-    _resolve_backend,
     _supports_delete,
     execute_accepts_timeout,
 )
@@ -1219,7 +1213,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         agent = create_agent(middleware=[FilesystemMiddleware()])
 
         # With hybrid storage (ephemeral + persistent /memories/)
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(
+            default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda rt: (rt.server_info.user.identity, "filesystem"))}
+        )
         agent = create_agent(middleware=[FilesystemMiddleware(backend=backend)])
 
         # With sandbox backend (supports execution)
@@ -1235,7 +1231,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES | None = None,
+        backend: BackendProtocol | None = None,
         system_prompt: str | None = None,
         custom_tool_descriptions: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
@@ -1247,8 +1243,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Initialize the filesystem middleware.
 
         Args:
-            backend: Backend for file storage and optional execution, or a factory callable.
-                Defaults to StateBackend if not provided.
+            backend: Backend for file storage and optional execution. Defaults to
+                StateBackend if not provided.
             system_prompt: Optional custom system prompt override.
             custom_tool_descriptions: Optional custom tool descriptions override.
             tool_token_limit_before_evict: Optional token limit before evicting a tool result to the filesystem.
@@ -1283,12 +1279,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
-        if (
-            _permissions
-            and isinstance(self.backend, BackendProtocol)
-            and supports_execution(self.backend)
-            and not _all_paths_scoped_to_routes(_permissions, self.backend)
-        ):
+        if callable(self.backend):
+            msg = (
+                "backend must be an initialized backend instance. Backend factories "
+                "and callable backends were removed in deepagents 0.7; pass "
+                "StateBackend(), CompositeBackend(...), or another BackendProtocol "
+                "instance instead."
+            )
+            raise TypeError(msg)
+        if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
                 "FilesystemMiddleware does not yet support permissions with backends that "
                 "provide command execution (SandboxBackendProtocol). Tool-level permissions "
@@ -1368,28 +1367,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._dynamic_system_prompt_cache[include_execution] = system_prompt
         return system_prompt
 
-    def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
-        """Get the resolved backend instance from backend or factory.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if callable(self.backend):
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.7.0",
-                message=(
-                    "Passing a callable (factory) as `backend` is deprecated "
-                    "and will be removed in deepagents==0.7.0. Pass a "
-                    "`BackendProtocol` instance directly instead "
-                    "(e.g. `StateBackend()`)."
-                ),
-                package="deepagents",
-            )
-            return _resolve_backend(self.backend, runtime)
+    def _get_backend(self, _runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
+        """Return the backend instance."""
         return self.backend
 
     def _create_ls_tool(self) -> BaseTool:
@@ -1504,32 +1483,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(  # noqa: PLR0911  # one branch per distinct read-result disposition
-            read_result: ReadResult | str,
+        def _handle_read_result(  # one branch per distinct read-result disposition
+            read_result: ReadResult,
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
             limit: int,
         ) -> ToolMessage | Command:
-            if isinstance(read_result, str):
-                warn_deprecated(
-                    since="0.5.0",
-                    removal="0.7.0",
-                    message=(
-                        "Returning a plain `str` from `backend.read()` is "
-                        "deprecated and will be removed in deepagents==0.7.0. "
-                        "Return a `ReadResult` instead."
-                    ),
-                    package="deepagents",
-                )
-                # Legacy backends already format with line numbers
-                return ToolMessage(
-                    content=_truncate(read_result, validated_path, line_limit=limit),
-                    name="read_file",
-                    tool_call_id=tool_call_id,
-                    status="success",
-                )
-
             if read_result.error:
                 return ToolMessage(
                     content=f"Error: {read_result.error}",
@@ -2773,34 +2733,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _get_backend_from_runtime(
         self,
-        state: AgentState[Any],
-        runtime: Runtime[ContextT],
+        _state: AgentState[Any],
+        _runtime: Runtime[ContextT],
     ) -> BackendProtocol:
-        """Resolve the backend from a bare `Runtime`.
-
-        Constructs a `ToolRuntime` from the `Runtime` to satisfy the backend
-        factory interface. Used by hooks like `before_agent` that receive
-        `Runtime` rather than `ToolRuntime`.
-
-        Args:
-            state: The current agent state.
-            runtime: The runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        if not callable(self.backend):
-            return self.backend
-        config = cast("RunnableConfig", getattr(runtime, "config", {}))
-        tool_runtime = ToolRuntime(
-            state=state,
-            context=runtime.context,
-            stream_writer=runtime.stream_writer,
-            store=runtime.store,
-            config=config,
-            tool_call_id=None,
-        )
-        return _resolve_backend(self.backend, tool_runtime)
+        """Return the backend instance from a bare `Runtime` hook."""
+        return self.backend
 
     def _check_eviction_needed(
         self,

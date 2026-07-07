@@ -1130,7 +1130,6 @@ def test_sandbox_write_returns_correct_result_on_success() -> None:
 
     assert result.error is None
     assert result.path == "/test/file.txt"
-    assert result.files_update is None
 
 
 def test_sandbox_edit_upload_returns_error_on_empty_upload_response() -> None:

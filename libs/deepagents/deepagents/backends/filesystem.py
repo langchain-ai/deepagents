@@ -12,7 +12,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
@@ -121,14 +120,14 @@ class FilesystemBackend(BackendProtocol):
             `virtual_mode=True` is primarily for virtual path semantics (for example with
             `CompositeBackend`). It can also provide path-based guardrails by blocking
             traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
-            provide sandboxing or process isolation. The default (`virtual_mode=False`)
-            provides no security even with `root_dir` set.
+            provide sandboxing or process isolation. Set `virtual_mode=False` only for
+            trusted local development workflows that require unrestricted host paths.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool | None = None,  # noqa: FBT001
+        virtual_mode: bool = True,  # noqa: FBT001, FBT002
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -138,8 +137,8 @@ class FilesystemBackend(BackendProtocol):
 
                 Defaults to the current working directory.
 
-                - When `virtual_mode=False` (default): Only affects relative path resolution.
-                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=True` (default): Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=False`: Only affects relative path resolution.
 
             virtual_mode: Enable virtual path mode.
 
@@ -147,11 +146,11 @@ class FilesystemBackend(BackendProtocol):
                 used with `CompositeBackend`, which strips route prefixes and forwards
                 normalized paths to the routed backend.
 
-                When `True`, all paths are treated as virtual paths anchored to
-                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
-                are verified to remain within `root_dir`.
+                When `True` (default), all paths are treated as virtual paths anchored
+                to `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved
+                paths are verified to remain within `root_dir`.
 
-                When `False` (default), absolute paths are used as-is and relative paths
+                When `False`, absolute paths are used as-is and relative paths
                 are resolved under `root_dir`. This provides no security against an agent
                 choosing paths outside `root_dir`.
 
@@ -165,24 +164,6 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
-        if virtual_mode is None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.6.0",
-                message=(
-                    "`FilesystemBackend` `virtual_mode` default will change "
-                    "in deepagents==0.6.0; please specify `virtual_mode` "
-                    "explicitly. Note: `virtual_mode` is for virtual path "
-                    "semantics (e.g., `CompositeBackend` routing) and "
-                    "optional path-based guardrails; it does not provide "
-                    "sandboxing or process isolation. Security note: leaving "
-                    "`virtual_mode=False` allows absolute paths and `'..'` "
-                    "to bypass `root_dir`. Consult the API reference for "
-                    "details."
-                ),
-                package="deepagents",
-            )
-            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 

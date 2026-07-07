@@ -11,7 +11,6 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
-from deepagents.backends.protocol import _resolve_backend
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.summarization import (
     SUMMARIZATION_SYSTEM_PROMPT,
@@ -477,51 +476,14 @@ class TestResolveBackend:
     """Test backend resolution for tool context."""
 
     def test_static_backend(self) -> None:
-        """Should return the backend directly when it's not callable."""
+        """Should return the backend instance."""
         backend = StateBackend()
         summ = SummarizationMiddleware(
             model=_make_mock_model(),
             backend=backend,
         )
         mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        assert mw._resolve_backend(runtime) is backend
-
-    def test_callable_backend(self) -> None:
-        """Should call the factory with the ToolRuntime."""
-        resolved = _make_mock_backend()
-        factory = MagicMock(return_value=resolved)
-        summ = SummarizationMiddleware(
-            model=_make_mock_model(),
-            backend=factory,
-        )
-        mw = SummarizationToolMiddleware(summ)
-        runtime = _make_runtime(_make_messages(1))
-        result = mw._resolve_backend(runtime)
-        assert result is resolved
-        factory.assert_called_once_with(runtime)
-
-
-class TestResolveBackendHelper:
-    """Direct tests for the module-level `_resolve_backend` helper.
-
-    The middleware wrappers guard with `callable()` before delegating, so these
-    cover both branches of the helper in isolation.
-    """
-
-    def test_returns_instance_unchanged(self) -> None:
-        """A `BackendProtocol` instance is returned as-is, not invoked."""
-        backend = StateBackend()
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(backend, runtime) is backend
-
-    def test_invokes_factory_with_runtime(self) -> None:
-        """A factory callable is invoked with the runtime."""
-        resolved = StateBackend()
-        factory = MagicMock(return_value=resolved)
-        runtime = _make_runtime(_make_messages(1))
-        assert _resolve_backend(factory, runtime) is resolved
-        factory.assert_called_once_with(runtime)
+        assert mw._resolve_backend() is backend
 
 
 class TestComputeStateCutoff:

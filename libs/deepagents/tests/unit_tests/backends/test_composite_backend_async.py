@@ -9,6 +9,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GrepResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -929,9 +930,9 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Invalid regex pattern error"
+            return GrepResult(error="Invalid regex pattern error")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -948,9 +949,9 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Backend error occurred"
+            return GrepResult(error="Backend error occurred")
 
-    error_backend = ErrorBackend()
+    error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
     state_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
 
     comp = CompositeBackend(default=state_backend, routes={"/errors/": error_backend})
@@ -967,9 +968,9 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
         async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
-            return "Default backend error"
+            return GrepResult(error="Default backend error")
 
-    error_default = ErrorDefaultBackend()
+    error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
     store_backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
     comp = CompositeBackend(default=error_default, routes={"/store/": store_backend})

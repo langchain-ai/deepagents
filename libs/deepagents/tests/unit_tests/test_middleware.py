@@ -45,7 +45,6 @@ from deepagents.middleware._message_eviction import (
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
-    NUM_CHARS_PER_TOKEN,
     SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
@@ -131,7 +130,7 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_with_composite_backend(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
@@ -144,7 +143,7 @@ class TestFilesystemMiddleware:
         assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_with_composite(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
@@ -158,7 +157,7 @@ class TestFilesystemMiddleware:
         assert ls_tool.description == "Custom ls tool description"
 
     def test_init_custom_tool_descriptions_with_composite(self):
-        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
+        backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, custom_tool_descriptions={"ls": "Custom ls tool description"})
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
@@ -168,12 +167,12 @@ class TestFilesystemMiddleware:
     def test_ls_shortterm(self):
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test2.txt": FileData(
-                content=["Goodbye world"],
+                content="Goodbye world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -194,22 +193,22 @@ class TestFilesystemMiddleware:
     def test_ls_shortterm_with_path(self):
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/test2.txt": FileData(
-                content=["Goodbye world"],
+                content="Goodbye world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -235,22 +234,22 @@ class TestFilesystemMiddleware:
         """Test that ls lists directories with trailing / for traversal."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/docs/readme.md": FileData(
-                content=["Documentation"],
+                content="Documentation",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -276,22 +275,22 @@ class TestFilesystemMiddleware:
     def test_glob_search_shortterm_simple_pattern(self):
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-02",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.py": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-03",
                 created_at="2021-01-01",
             ),
             "/pokemon/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-04",
                 created_at="2021-01-01",
             ),
@@ -312,17 +311,17 @@ class TestFilesystemMiddleware:
     def test_glob_search_shortterm_wildcard_pattern(self):
         files = {
             "/src/main.py": FileData(
-                content=["main code"],
+                content="main code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/src/utils/helper.py": FileData(
-                content=["helper code"],
+                content="helper code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test_main.py": FileData(
-                content=["test code"],
+                content="test code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -344,17 +343,17 @@ class TestFilesystemMiddleware:
     def test_glob_search_shortterm_with_path(self):
         files = {
             "/src/main.py": FileData(
-                content=["main code"],
+                content="main code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/src/utils/helper.py": FileData(
-                content=["helper code"],
+                content="helper code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test_main.py": FileData(
-                content=["test code"],
+                content="test code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -377,17 +376,17 @@ class TestFilesystemMiddleware:
     def test_glob_search_shortterm_brace_expansion(self):
         files = {
             "/test.py": FileData(
-                content=["code"],
+                content="code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.pyi": FileData(
-                content=["stubs"],
+                content="stubs",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.txt": FileData(
-                content=["text"],
+                content="text",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -409,7 +408,7 @@ class TestFilesystemMiddleware:
     def test_glob_search_shortterm_no_matches(self):
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -548,7 +547,7 @@ class TestFilesystemMiddleware:
         for i in range(2000):
             path = f"/very_long_file_name_to_increase_size_{i:04d}.txt"
             files[path] = FileData(
-                content=["content"],
+                content="content",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             )
@@ -574,17 +573,17 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_files_with_matches(self):
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/main.py": FileData(
-                content=["def main():", "    pass"],
+                content="def main():\n    pass",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/helper.txt": FileData(
-                content=["import json"],
+                content="import json",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -832,7 +831,7 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_content_mode(self):
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -854,12 +853,12 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_count_mode(self):
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/main.py": FileData(
-                content=["import json", "data = {}"],
+                content="import json\ndata = {}",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -880,12 +879,12 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_with_include(self):
         files = {
             "/test.py": FileData(
-                content=["import os"],
+                content="import os",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.txt": FileData(
-                content=["import nothing"],
+                content="import nothing",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -906,12 +905,12 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_with_path(self):
         files = {
             "/src/main.py": FileData(
-                content=["import os"],
+                content="import os",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test.py": FileData(
-                content=["import pytest"],
+                content="import pytest",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -933,7 +932,7 @@ class TestFilesystemMiddleware:
         """Test grep with literal pattern (not regex)."""
         files = {
             "/test.py": FileData(
-                content=["def hello():", "def world():", "x = 5"],
+                content="def hello():\ndef world():\nx = 5",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -956,7 +955,7 @@ class TestFilesystemMiddleware:
     def test_grep_search_shortterm_no_matches(self):
         files = {
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -976,7 +975,7 @@ class TestFilesystemMiddleware:
         """Test grep with special characters (literal search, not regex)."""
         files = {
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -997,7 +996,7 @@ class TestFilesystemMiddleware:
         """A no-match pattern that looks like regex gets a literal-search hint."""
         files = {
             "/test.py": FileData(
-                content=["def hello():"],
+                content="def hello():",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -1018,7 +1017,7 @@ class TestFilesystemMiddleware:
         """A plain literal no-match pattern does not get the regex hint."""
         files = {
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -1038,7 +1037,7 @@ class TestFilesystemMiddleware:
         """A regex-looking pattern that still matches literally shows no hint."""
         files = {
             "/test.py": FileData(
-                content=["a = b|c"],
+                content="a = b|c",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -1065,7 +1064,7 @@ class TestFilesystemMiddleware:
         """
         files = {
             "/secret.py": FileData(
-                content=["a = b|c"],
+                content="a = b|c",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -1454,7 +1453,7 @@ class TestFilesystemMiddleware:
 
         large_content = "z" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        existing_file = FileData(content=["existing"], created_at="2021-01-01", modified_at="2021-01-01")
+        existing_file = FileData(content="existing", created_at="2021-01-01", modified_at="2021-01-01")
         command = Command(update={"messages": [tool_message], "files": {"/existing.txt": existing_file}, "custom_key": "custom_value"})
         result = middleware._intercept_large_tool_result(command, runtime)
 
@@ -1682,11 +1681,10 @@ class TestFilesystemMiddleware:
 
         assert result == tool_message
 
-    @pytest.mark.parametrize("file_format", ["v1", "v2"])
-    def test_single_text_block_extracts_text_directly(self, file_format):
+    def test_single_text_block_extracts_text_directly(self):
         """Test that single text block extracts text content directly, not stringified structure."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_single")
 
@@ -1700,21 +1698,16 @@ class TestFilesystemMiddleware:
         item = mem_store.get(("filesystem",), "/large_tool_results/test_single")
         assert item is not None
         file_content = item.value["content"]
-        if file_format == "v1":
-            assert isinstance(file_content, list)
-            text = "\n".join(file_content)
-        else:
-            assert isinstance(file_content, str)
-            text = file_content
+        assert isinstance(file_content, str)
+        text = file_content
         # Should start with the actual text, not with "[{" which would indicate stringified dict
         assert text.startswith("Hello world!")
         assert not text.startswith("[{")
 
-    @pytest.mark.parametrize("file_format", ["v1", "v2"])
-    def test_multiple_text_blocks_joins_text(self, file_format):
+    def test_multiple_text_blocks_joins_text(self):
         """Test that multiple text blocks are joined, not stringified."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_multi")
 
@@ -1729,21 +1722,16 @@ class TestFilesystemMiddleware:
         item = mem_store.get(("filesystem",), "/large_tool_results/test_multi")
         assert item is not None
         file_content = item.value["content"]
-        if file_format == "v1":
-            assert isinstance(file_content, list)
-            text = "\n".join(file_content)
-        else:
-            assert isinstance(file_content, str)
-            text = file_content
+        assert isinstance(file_content, str)
+        text = file_content
         assert text.startswith("First block")
         assert "Second block" in text
         assert not text.startswith("[{")
 
-    @pytest.mark.parametrize("file_format", ["v1", "v2"])
-    def test_mixed_content_blocks_preserves_non_text(self, file_format):
+    def test_mixed_content_blocks_preserves_non_text(self):
         """Test that mixed content blocks (text + image) evict text but preserve image blocks."""
         mem_store = InMemoryStore()
-        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format)
+        be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
         middleware = FilesystemMiddleware(backend=be, tool_token_limit_before_evict=100)
         runtime = _runtime("test_mixed")
 
@@ -1758,8 +1746,7 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         item = mem_store.get(("filesystem",), "/large_tool_results/test_mixed")
         assert item is not None
-        file_content = item.value["content"]
-        text = "\n".join(file_content) if file_format == "v1" else file_content
+        text = item.value["content"]
         assert text.startswith("Some text")
 
         returned_content = result.content
@@ -1950,87 +1937,6 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.content == "Error: file_not_found"
-
-    def test_read_file_handles_str_from_backend(self):
-        """Test that read_file works when backend.read() returns a plain str."""
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "     1\tline one\n     2\tline two"
-
-        middleware = FilesystemMiddleware(backend=StrReadBackend())
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-read",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "line one" in result.content
-
-    def test_read_file_str_backend_line_limit_truncation(self):
-        """Legacy str backend respects the line-count limit."""
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "\n".join(f"{i:6d}\tline {i}" for i in range(1, 201))
-
-        middleware = FilesystemMiddleware(backend=StrReadBackend())
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-trunc",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/big.txt", "limit": 50, "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        output_lines = [ln for ln in result.content.splitlines() if ln.strip()]
-        assert len(output_lines) <= 50
-
-    def test_read_file_str_backend_token_truncation(self):
-        """Legacy str backend applies token-based truncation for huge content."""
-        token_limit = 500
-
-        class StrReadBackend(StateBackend):
-            def read(self, path, *, offset=0, limit=100):
-                return "x" * (NUM_CHARS_PER_TOKEN * token_limit + 1000)
-
-        middleware = FilesystemMiddleware(
-            backend=StrReadBackend(),
-            tool_token_limit_before_evict=token_limit,
-        )
-        state = FilesystemState(messages=[], files={})
-        runtime = ToolRuntime(
-            state=state,
-            context=None,
-            tool_call_id="str-tok",
-            store=None,
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-        with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
-            result = read_file_tool.invoke({"file_path": "/app/huge.txt", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "Output was truncated due to size limits" in result.content
-        assert len(result.content) <= NUM_CHARS_PER_TOKEN * token_limit
 
     def test_read_file_empty_file_returns_warning(self):
         """ReadResult with empty content returns the empty-content warning."""

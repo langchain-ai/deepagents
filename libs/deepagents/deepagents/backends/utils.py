@@ -15,7 +15,6 @@ from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -165,10 +164,6 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
 def _normalize_content(file_data: FileData) -> str:
     """Normalize file_data content to a plain string.
 
-    This is the single backwards-compatibility conversion point for the
-    legacy `list[str]` file format.  New code stores `content` as a
-    plain `str`; old data may still contain a list of lines.
-
     Args:
         file_data: `FileData` dict with `content` key.
 
@@ -176,18 +171,9 @@ def _normalize_content(file_data: FileData) -> str:
         Content as a single string.
     """
     content = file_data["content"]
-    if isinstance(content, list):
-        warn_deprecated(
-            since="0.5.0",
-            removal="0.7.0",
-            message=(
-                "`FileData` with `list[str]` content is deprecated and will "
-                "be removed in deepagents==0.7.0. Content should be stored "
-                "as a plain `str`."
-            ),
-            package="deepagents",
-        )
-        return "\n".join(content)
+    if not isinstance(content, str):
+        msg = "File content must be a string. Legacy list-based file content is not supported in deepagents 0.7."
+        raise TypeError(msg)
     return content
 
 
@@ -304,32 +290,6 @@ def _get_backend_read_file_type(path: str) -> FileType:
     if PurePosixPath(path).suffix.lower() in _VIDEO_EXTRA_EXTENSIONS:
         return "video"
     return _get_file_type(path)
-
-
-def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
-    r"""Convert a `FileData` dict to the legacy (v1) storage format.
-
-    The v1 format stores content as `list[str]` (lines split on `\\n`)
-    and omits the `encoding` field.  Use this when `file_format="v1"`
-    on a backend to preserve backwards compatibility with consumers that
-    expect `list[str]` content.
-
-    Args:
-        file_data: Modern (v2) `FileData` with `content: str` and `encoding`.
-
-    Returns:
-        Dict with `content` as `list[str]`, plus `created_at` /
-            `modified_at` timestamps.  No `encoding` key.
-    """
-    content = file_data["content"]
-    result: dict[str, Any] = {
-        "content": content.split("\n"),
-    }
-    if "created_at" in file_data:
-        result["created_at"] = file_data["created_at"]
-    if "modified_at" in file_data:
-        result["modified_at"] = file_data["modified_at"]
-    return result
 
 
 def file_data_to_string(file_data: FileData) -> str:

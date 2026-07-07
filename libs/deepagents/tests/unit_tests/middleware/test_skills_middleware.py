@@ -1535,13 +1535,7 @@ def test_skills_middleware_with_state_backend() -> None:
     assert len(middleware.sources) == 1
     assert middleware.sources[0] == "/skills/user"
 
-    runtime = SimpleNamespace(
-        context=None,
-        store=None,
-        stream_writer=lambda _: None,
-    )
-
-    backend = middleware._get_backend({"messages": [], "files": {}}, runtime, {})
+    backend = middleware._get_backend()
     assert isinstance(backend, StateBackend)
 
 

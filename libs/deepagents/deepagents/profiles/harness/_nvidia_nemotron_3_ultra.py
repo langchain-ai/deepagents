@@ -60,8 +60,8 @@ unchanged. Each key must match the provider and model identifier reported by the
 chat-model client.
 """
 
-_FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "glob", "grep")
-_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
+_FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
+_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file", "delete"})
 _EMPTY_TOOL_PLACEHOLDER = "(empty tool result)"
 _DEFAULT_READ_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429

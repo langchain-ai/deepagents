@@ -84,6 +84,10 @@ def test_tool_call_shim_repairs_file_path_args_and_empty_results() -> None:
     assert result.content == _EMPTY_TOOL_PLACEHOLDER
     assert captured[0].tool_call["args"] == {"file_path": "/big.txt", "limit": _DEFAULT_READ_LIMIT}
 
+    middleware.wrap_tool_call(_request("delete", {"path": "/big.txt"}), handler)
+
+    assert captured[1].tool_call["args"] == {"file_path": "/big.txt"}
+
 
 def test_tool_call_shim_does_not_delete_existing_files(tmp_path: Path) -> None:
     """The shim should not delete real files to recover from write errors."""

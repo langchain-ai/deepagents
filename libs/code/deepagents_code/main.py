@@ -2973,7 +2973,7 @@ def cli_main() -> None:
                     sys.exit(0)
                 log_path = create_update_log_path()
                 console.print(
-                    f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+                    f"Update log: {log_path} (tail -f to follow)",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3094,8 +3094,7 @@ def cli_main() -> None:
                 console.print(f"Installing package '{package}'...")
                 pkg_log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {pkg_log_path}\n"
-                    f"Tail progress: tail -f {pkg_log_path}",
+                    f"Install log: {pkg_log_path} (tail -f to follow)",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3205,7 +3204,7 @@ def cli_main() -> None:
                 console.print(f"Installing extra '{extra}'...")
                 log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {log_path}\nTail progress: tail -f {log_path}",
+                    f"Install log: {log_path} (tail -f to follow)",
                     style="dim",
                     highlight=False,
                     markup=False,

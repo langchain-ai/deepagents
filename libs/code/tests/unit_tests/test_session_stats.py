@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from io import StringIO
+
 import pytest
+from rich.console import Console
 
 from deepagents_code._session_stats import (
     ModelStats,
     SessionStats,
     format_token_count,
+    print_usage_table,
 )
 
 
@@ -185,3 +189,94 @@ class TestSessionStats:
         a.merge(b)
         assert a.request_count == 5
         assert a.input_tokens == 500
+
+
+class TestPrintUsageTable:
+    """Tests for `print_usage_table` output."""
+
+    def test_no_model_called_skips_unknown_row(self) -> None:
+        """When no model was called, the table should not show 'unknown'."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=1.5, console=console)
+        output = buf.getvalue()
+        assert "unknown" not in output
+        assert "Usage Stats" not in output
+        assert "Agent active" in output
+
+    def test_single_model_shows_name(self) -> None:
+        """Single-model session should display the model name."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "unknown" not in output
+
+    def test_shows_provider_name(self) -> None:
+        """The table should include the provider for each model."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "Provider" in output
+        assert "openai" in output
+        assert "gpt-4" in output
+
+    def test_multi_model_shows_all_names_and_total(self) -> None:
+        """Multi-model session should show each model and a Total row."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        stats.record_request("claude-opus-4-6", 200, 80)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "claude-opus-4-6" in output
+        assert "Total" in output
+        assert "unknown" not in output
+
+    def test_same_model_with_different_providers_shows_separate_rows(self) -> None:
+        """Same-name models from different providers should render separately."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        stats.record_request("gpt-4", 200, 80, provider="azure")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "openai" in output
+        assert "azure" in output
+        assert "Total" in output
+        # Two distinct rows, not a collapsed one: each provider's per-row token
+        # counts must appear (100/50 and 200/80), alongside the 300/130 totals.
+        assert "100" in output
+        assert "50" in output
+        assert "200" in output
+        assert "80" in output
+
+    def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
+        """Token table should print but timing line should be absent."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50)
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.0, console=console)
+        output = buf.getvalue()
+        assert "gpt-4" in output
+        assert "Agent active" not in output
+
+    def test_no_requests_no_time_prints_nothing(self) -> None:
+        """Empty stats with negligible wall time should print nothing."""
+        stats = SessionStats()
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=0.01, console=console)
+        output = buf.getvalue()
+        assert output.strip() == ""

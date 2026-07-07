@@ -114,7 +114,7 @@ class TestStartupPathBenchmarks:
 
         def do_import() -> None:
             _evict_modules()
-            import deepagents_code.textual_adapter
+            import deepagents_code.tui.textual_adapter
 
         benchmark(do_import)
 

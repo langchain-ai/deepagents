@@ -31,6 +31,7 @@ dependencies = [
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.6.1,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.2"]
+video = ["av>=17.0.0,<18.0.0", "pillow>=10.0.0,<13.0.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -59,9 +60,12 @@ test = [
   "langchain-openai",
   "twine",
   "build",
+  # Lazy-imported at runtime so the core package does
+  # not depend on them. ty still sees the import names and
+  # needs stubs, so we install them into the type-checker venv.
+  "av>=17.0.0,<18.0.0",
+  "pillow>=10.0.0,<13.0.0",
 ]
-
-
 [build-system]
 requires = ["setuptools>=82.0.1", "wheel"]
 build-backend = "setuptools.build_meta"

@@ -431,6 +431,102 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
+def test_grep_alternation_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when an `|` alternation grep misses, finding both literal terms.
+
+    `grep` matches literal text, so `cat|dog` is searched verbatim and misses.
+    A model that reaches for regex should be steered by the no-match hint into
+    running a separate literal search per term instead of burning calls on
+    regex variants. Either way it must end up reporting both matching files.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/pets/a.txt": "the cat sat\n",
+            "/pets/b.txt": "the dog ran\n",
+            "/pets/c.txt": "the bird flew\n",
+        },
+        query="Using grep, find which files mention either 'cat' or 'dog'. Answer with the matching file paths only.",
+        # 1st step (ideal): two literal greps, one per term.
+        # 2nd step: answer with the matching paths.
+        # A single `cat|dog` regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=2)
+        .success(
+            final_text_contains("/pets/a.txt"),
+            final_text_contains("/pets/b.txt"),
+            final_text_excludes("/pets/c.txt"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
+def test_grep_wildcard_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when a `.*` wildcard grep misses, locating the literal line.
+
+    A model may search `TODO.*cache`; literal grep treats `.*` verbatim and
+    misses. The no-match hint should steer it back to a plain literal search
+    (e.g. `TODO`) so it still finds and reports the file.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/src/app.py": "x = 1\n# TODO: add a cache layer here\n",
+            "/src/util.py": "y = 2\n",
+        },
+        query="Using grep, find which file has a TODO comment about a cache. Answer with the matching file path only.",
+        # 1st step (ideal): literal grep for 'TODO'.
+        # 2nd step: answer with the matching path.
+        # A `TODO.*cache` regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/src/app.py"),
+            final_text_excludes("/src/util.py"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
+def test_grep_escaped_metachar_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when an escaped-regex grep misses a literal filename.
+
+    A model may search `config\\.yaml`; literal grep matches the backslash
+    verbatim and misses `config.yaml`. The no-match hint should steer it back
+    to a plain literal search so it still finds and reports the file.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/svc/readme.md": "Edit config.yaml to set up the service.\n",
+            "/svc/notes.txt": "nothing relevant here\n",
+        },
+        query="Using grep, find which file mentions the config.yaml file. Answer with the matching file path only.",
+        # 1st step (ideal): literal grep for 'config.yaml'.
+        # 2nd step: answer with the matching path.
+        # A `config\\.yaml` escaped-regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/svc/readme.md"),
+            final_text_excludes("/svc/notes.txt"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
 def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     """Uses glob to list files matching a pattern."""
     agent = create_deep_agent(model=model)

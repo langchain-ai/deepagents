@@ -57,7 +57,7 @@ RUN mkdir -p /opt/whatsapp-bridge && \
     cd /opt/whatsapp-bridge && \
     npm install --omit=dev
 
-RUN cd libs/talon && uv sync --frozen --extra speech
+RUN cd libs/talon && uv sync --frozen --extra media
 
 WORKDIR /workspace
 

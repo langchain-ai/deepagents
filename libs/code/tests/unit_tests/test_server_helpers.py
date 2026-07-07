@@ -9,13 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from deepagents_code.agent import _apply_inherited_pythonpath
-from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS, _INHERITED_PYTHONPATH_ENV
-from deepagents_code.server import (
+from deepagents_code.client.launch.server import (
     _SERVER_ENV_DENYLIST,
     _build_server_cmd,
     _build_server_env,
     _scoped_env_overrides,
 )
+from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS, _INHERITED_PYTHONPATH_ENV
 
 
 class TestBuildServerCmd:

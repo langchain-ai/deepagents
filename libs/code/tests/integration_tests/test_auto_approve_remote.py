@@ -77,10 +77,13 @@ async def _run_auto_approve_write(
 
     from deepagents_code import model_config
     from deepagents_code.app import TextualSessionState
+    from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.config import create_model
-    from deepagents_code.server_manager import server_session
     from deepagents_code.sessions import generate_thread_id
-    from deepagents_code.textual_adapter import TextualUIAdapter, execute_task_textual
+    from deepagents_code.tui.textual_adapter import (
+        TextualUIAdapter,
+        execute_task_textual,
+    )
 
     config_path = home_dir / ".deepagents" / "config.toml"
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_DIR", config_path.parent)

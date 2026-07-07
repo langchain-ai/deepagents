@@ -6,6 +6,7 @@ temp files, persistent store for memories).
 """
 
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import cast
 
 from deepagents.backends.protocol import (
@@ -72,6 +73,59 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
             "path": f"{route_prefix[:-1]}{fi['path']}",
         },
     )
+
+
+def _glob_truncated(result: GlobResult | list[FileInfo]) -> bool:
+    """Read the `truncated` flag off a glob result, tolerating legacy list returns."""
+    return result.truncated if isinstance(result, GlobResult) else False
+
+
+GlobBackendResult = GlobResult | list[FileInfo]
+"""Result shape accepted by composite glob merge helpers.
+
+Composite glob supports both current `GlobResult` values and legacy
+`list[FileInfo]` backend returns.
+"""
+
+
+def _merge_glob_results(
+    default_result: GlobBackendResult,
+    routed_results: Sequence[tuple[str, GlobBackendResult]],
+) -> GlobResult:
+    """Merge the default backend's glob result with routed backends' results.
+
+    A backend error must not be swallowed as a partial success (mirrors the
+    grep merge path): the first error encountered — default first, then routes
+    in order — short-circuits and is surfaced instead of returning
+    default-only or partial matches. On success, `truncated` is OR-ed across
+    all sources and each routed match's path is remapped under its route prefix.
+
+    Args:
+        default_result: Result from the default backend (searched at the root).
+        routed_results: `(route_prefix, result)` pairs from each routed backend,
+            in route iteration order.
+
+    Returns:
+        A merged `GlobResult`, or the first erroring result unchanged.
+    """
+    results: list[FileInfo] = []
+    truncated = False
+
+    if isinstance(default_result, GlobResult) and default_result.error:
+        return default_result
+    default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
+    results.extend(default_matches or [])
+    truncated = truncated or _glob_truncated(default_result)
+
+    for route_prefix, sub_result in routed_results:
+        if isinstance(sub_result, GlobResult) and sub_result.error:
+            return sub_result
+        sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
+        results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+        truncated = truncated or _glob_truncated(sub_result)
+
+    results.sort(key=lambda x: x.get("path", ""))
+    return GlobResult(matches=results, truncated=truncated)
 
 
 def _route_for_path(
@@ -339,24 +393,30 @@ class CompositeBackend(BackendProtocol):
                 grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
-                return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
+                return GrepResult(
+                    matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])],
+                    truncated=grep_result.truncated,
+                )
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
+            truncated = False
             default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
+            truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
                 grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                truncated = truncated or grep_result.truncated
 
-            return GrepResult(matches=all_matches)
+            return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(self.default.grep(pattern, path, glob))
 
@@ -380,31 +440,40 @@ class CompositeBackend(BackendProtocol):
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
                 if grep_result.error:
                     return grep_result
-                return GrepResult(matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])])
+                return GrepResult(
+                    matches=[_remap_grep_path(m, route_prefix) for m in (grep_result.matches or [])],
+                    truncated=grep_result.truncated,
+                )
 
         # If path is None or "/", search default and all routed backends and merge
         # Otherwise, search only the default backend
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
+            truncated = False
             default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
+            truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
                 grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
+                truncated = truncated or grep_result.truncated
 
-            return GrepResult(matches=all_matches)
+            return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Find files matching a glob pattern, routing by path prefix."""
-        results: list[FileInfo] = []
+        """Find files matching a glob pattern, routing by path prefix.
 
+        Routes to backends based on path: a routed path searches that route,
+        `"/"` or `None` searches every backend, and a non-route path searches
+        only the default backend.
+        """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
                 default=self.default,
@@ -416,27 +485,34 @@ class CompositeBackend(BackendProtocol):
                 matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
                 if isinstance(glob_result, GlobResult) and glob_result.error:
                     return glob_result
-                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+                return GlobResult(
+                    matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
+                    truncated=_glob_truncated(glob_result),
+                )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = self.default.glob(pattern, path)
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
+        # If path is None or "/", search default and all routed backends and merge.
+        # Otherwise, search only the default backend.
+        if path is None or path == "/":
+            default_result = self.default.glob(pattern, path)
+            if isinstance(default_result, GlobResult) and default_result.error:
+                return _merge_glob_results(default_result, ())
 
-        for route_prefix, backend in self.routes.items():
-            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = backend.glob(route_pattern, "/")
-            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            routed_results: list[tuple[str, GlobBackendResult]] = []
+            for route_prefix, backend in self.routes.items():
+                sub_result = backend.glob(_strip_route_from_pattern(pattern, route_prefix), "/")
+                routed_results.append((route_prefix, sub_result))
+                if isinstance(sub_result, GlobResult) and sub_result.error:
+                    return _merge_glob_results(default_result, routed_results)
 
-        # Deterministic ordering
-        results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results)
+            return _merge_glob_results(default_result, routed_results)
+
+        return self.default.glob(pattern, path)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Async version of glob."""
-        results: list[FileInfo] = []
+        """Async version of glob.
 
+        See `glob()` for detailed documentation on routing behavior and parameters.
+        """
         if path is not None:
             backend, backend_path, route_prefix = _route_for_path(
                 default=self.default,
@@ -448,22 +524,28 @@ class CompositeBackend(BackendProtocol):
                 matches = glob_result.matches if isinstance(glob_result, GlobResult) else glob_result
                 if isinstance(glob_result, GlobResult) and glob_result.error:
                     return glob_result
-                return GlobResult(matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])])
+                return GlobResult(
+                    matches=[_remap_file_info_path(fi, route_prefix) for fi in (matches or [])],
+                    truncated=_glob_truncated(glob_result),
+                )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
-        default_result = await self.default.aglob(pattern, path)
-        default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
-        results.extend(default_matches or [])
+        # If path is None or "/", search default and all routed backends and merge.
+        # Otherwise, search only the default backend.
+        if path is None or path == "/":
+            default_result = await self.default.aglob(pattern, path)
+            if isinstance(default_result, GlobResult) and default_result.error:
+                return _merge_glob_results(default_result, ())
 
-        for route_prefix, backend in self.routes.items():
-            route_pattern = _strip_route_from_pattern(pattern, route_prefix)
-            sub_result = await backend.aglob(route_pattern, "/")
-            sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
-            results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
+            routed_results: list[tuple[str, GlobBackendResult]] = []
+            for route_prefix, backend in self.routes.items():
+                sub_result = await backend.aglob(_strip_route_from_pattern(pattern, route_prefix), "/")
+                routed_results.append((route_prefix, sub_result))
+                if isinstance(sub_result, GlobResult) and sub_result.error:
+                    return _merge_glob_results(default_result, routed_results)
 
-        # Deterministic ordering
-        results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results)
+            return _merge_glob_results(default_result, routed_results)
+
+        return await self.default.aglob(pattern, path)
 
     def write(
         self,

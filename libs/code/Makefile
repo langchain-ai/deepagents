@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage commands-catalog commands-catalog-check check bootstrap
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage commands-catalog commands-catalog-check check bootstrap update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -16,7 +16,11 @@ TEST_FILE ?= tests/unit_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 COV_ARGS ?= --cov=deepagents_code --cov-report=term-missing
+SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
 PYTEST_EXTRA ?=
+
+update-snapshots: ## Update smoke test snapshots
+	uv run --group test pytest -vvv --disable-socket --allow-unix-socket --update-snapshots $(SMOKE_TESTS)
 
 test: ## Run unit tests
 test tests:

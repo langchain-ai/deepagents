@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_file_type
+from deepagents.backends.utils import _get_backend_read_file_type
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox
@@ -172,7 +172,7 @@ class LangSmithSandbox(BaseSandbox):
         # Route by extension first, mirroring _READ_COMMAND_TEMPLATE: anything
         # not classified as text goes straight to base64 without a decode
         # attempt.
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return _binary_read_result(file_path, raw)
 
         try:

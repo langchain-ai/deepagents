@@ -69,6 +69,9 @@ call to PyPI; older payloads trigger a fresh fetch. Set conservatively at
 INSTALLED_AGE_NOTICE_DAYS = 7
 """Minimum installed-version age before update notices call it out explicitly."""
 
+INSTALLED_STALE_NOTICE_DAYS = 14
+"""Minimum installed-version age (days) before the stale-install banner shows."""
+
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
 
@@ -707,6 +710,48 @@ def format_installed_age_suffix(version: str | None) -> str:
         return ""
     unit = "day" if days == 1 else "days"
     return f" ({days} {unit} old)"
+
+
+def installed_days_old() -> int | None:
+    """Return whole days since the installed version's release, or `None`.
+
+    Cache-only (`get_release_time`), so it never blocks on the network.
+    Returns `None` when the release time is unknown (cold cache or an
+    unparseable timestamp). Best-effort: any unexpected error degrades to
+    `None` rather than propagating, since this runs on the startup path.
+    """
+    try:
+        return _days_old_from_iso(get_release_time(__version__))
+    except Exception:
+        logger.debug("Failed to compute installed version age", exc_info=True)
+        return None
+
+
+def is_installation_stale() -> bool:
+    """Return whether an older installed version should warn about updating.
+
+    `True` only when a fresh cache says an update is available and the installed
+    version's release is at least `INSTALLED_STALE_NOTICE_DAYS` old. Returns
+    `False` for editable/dev installs (release age is meaningless there), when
+    update checks are disabled (the opt-out silences this too), and when the age
+    or update answer is unknown.
+
+    Best-effort: any unexpected error degrades to `False` rather than
+    propagating, so this cosmetic check can never abort TUI startup.
+    """
+    from deepagents_code.config import _is_editable_install
+
+    try:
+        if _is_editable_install() or not is_update_check_enabled():
+            return False
+        available, _ = get_cached_update_available()
+        if not available:
+            return False
+        days = installed_days_old()
+    except Exception:
+        logger.debug("Failed to determine installation staleness", exc_info=True)
+        return False
+    return days is not None and days >= INSTALLED_STALE_NOTICE_DAYS
 
 
 def get_sdk_release_time(

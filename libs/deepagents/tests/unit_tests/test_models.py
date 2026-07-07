@@ -31,6 +31,11 @@ from deepagents.profiles.harness.harness_profiles import (
     _merge_middleware,
     _merge_profiles,
 )
+from deepagents.profiles.provider._nvidia import (
+    _NVIDIA_APP_ORIGIN,
+    _NVIDIA_BILLING_ORIGIN_HEADER,
+    _nvidia_attribution_kwargs,
+)
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_ALLOW_AZURE_ENV,
     _OPENROUTER_APP_TITLE,
@@ -101,6 +106,19 @@ class TestResolveModel:
             app_url=_OPENROUTER_APP_URL,
             app_title=_OPENROUTER_APP_TITLE,
             openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+        assert result is mock.return_value
+
+    def test_nvidia_prefix_sets_billing_origin(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        mock.assert_called_once_with(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            default_headers={
+                _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+            },
         )
         assert result is mock.return_value
 
@@ -1148,6 +1166,10 @@ class TestBuiltInProfiles:
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
+    def test_nvidia_provider_profile_has_attribution_factory(self) -> None:
+        profile = get_provider_profile("nvidia:nvidia/nemotron-3-super-120b-a12b")
+        assert profile.init_kwargs_factory is _nvidia_attribution_kwargs
+
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
 
@@ -1786,6 +1808,26 @@ class TestResolveModelWithProviderProfiles:
         mock_check.assert_called_once()
         _, kwargs = mock.call_args
         assert "app_url" in kwargs or "app_title" in kwargs
+
+    def test_nvidia_runs_attribution_factory(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
+
+        _, kwargs = mock.call_args
+        assert kwargs["default_headers"] == {
+            _NVIDIA_BILLING_ORIGIN_HEADER: _NVIDIA_APP_ORIGIN,
+        }
+
+    def test_nvidia_caller_headers_override_attribution_default(self) -> None:
+        custom_headers = {_NVIDIA_BILLING_ORIGIN_HEADER: "CustomHarness"}
+
+        kwargs = apply_provider_profile(
+            "nvidia:nvidia/nemotron-3-super-120b-a12b",
+            {"default_headers": custom_headers},
+        )
+
+        assert kwargs["default_headers"] is custom_headers
 
     def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:

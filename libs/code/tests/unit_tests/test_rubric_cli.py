@@ -18,12 +18,12 @@ if TYPE_CHECKING:
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-from deepagents_code.main import _resolve_rubric_text
-from deepagents_code.non_interactive import (
+from deepagents_code.client.non_interactive import (
     StreamState,
     _build_non_interactive_header,
     _process_rubric_event,
 )
+from deepagents_code.main import _resolve_rubric_text
 
 
 class TestResolveRubricText:

@@ -314,7 +314,7 @@ def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     entries that persist across test runs and branch switches.
     """
     monkeypatch.setattr(
-        "deepagents_code.widgets.chat_input._default_history_path",
+        "deepagents_code.tui.widgets.chat_input._default_history_path",
         lambda: tmp_path / "history.jsonl",
     )
 

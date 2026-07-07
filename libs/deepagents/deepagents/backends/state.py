@@ -24,7 +24,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    _get_backend_read_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
@@ -231,7 +231,7 @@ class StateBackend(BackendProtocol):
         if file_data is None:
             return ReadResult(error=f"File '{file_path}' not found")
 
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)

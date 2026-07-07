@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 MANUAL_EXTRA_COMMAND = (
     "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
@@ -1090,7 +1090,7 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
             # failure a half-replaced on-disk tree causes after a self-upgrade.
             patch.dict(
                 sys.modules,
-                {"deepagents_code.widgets.restart_prompt": None},
+                {"deepagents_code.tui.widgets.restart_prompt": None},
             ),
             patch.object(app, "_push_screen_wait", new=push),
             patch.object(
@@ -1114,22 +1114,22 @@ def test_ensure_restart_prompt_loaded_caches_module() -> None:
     mutated tree. Dropping the resident copy first forces a real import.
     """
     with patch.dict(sys.modules):
-        sys.modules.pop("deepagents_code.widgets.restart_prompt", None)
+        sys.modules.pop("deepagents_code.tui.widgets.restart_prompt", None)
         DeepAgentsApp._ensure_restart_prompt_loaded()
-        assert "deepagents_code.widgets.restart_prompt" in sys.modules
+        assert "deepagents_code.tui.widgets.restart_prompt" in sys.modules
 
 
 def test_ensure_restart_prompt_loaded_swallows_missing_module() -> None:
     """A failed preload is best-effort and must not raise.
 
-    `None` in `sys.modules` makes `import deepagents_code.widgets.restart_prompt`
+    `None` in `sys.modules` makes `import deepagents_code.tui.widgets.restart_prompt`
     raise `ModuleNotFoundError`, standing in for the half-replaced tree left by
     a self-upgrade. The preload swallows it so the install continues; the
     post-install import then falls back to its own guard.
     """
     with patch.dict(
         sys.modules,
-        {"deepagents_code.widgets.restart_prompt": None},
+        {"deepagents_code.tui.widgets.restart_prompt": None},
     ):
         # Must not raise despite the unimportable module.
         DeepAgentsApp._ensure_restart_prompt_loaded()

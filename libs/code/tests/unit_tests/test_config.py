@@ -15,6 +15,8 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
+    LANGSMITH_EU_ENDPOINT,
+    LANGSMITH_US_ENDPOINT,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     LangSmithApiError,
@@ -41,8 +43,10 @@ from deepagents_code.config import (
     fetch_langsmith_project_url,
     fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
+    is_http_url,
     is_langsmith_redaction_enabled,
     newline_shortcut,
+    normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -2696,6 +2700,215 @@ class TestApplyStoredLangSmithTracing:
         assert "LANGSMITH_TRACING" not in os.environ
         assert any("may be corrupt" in r.getMessage() for r in caplog.records)
 
+    def test_applies_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored endpoint is applied to LANGSMITH_ENDPOINT at startup."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_stored_endpoint_does_not_override_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit LANGSMITH_ENDPOINT wins over the stored endpoint at startup."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://from-env.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == "https://from-env.example.com"
+
+    def test_no_stored_endpoint_leaves_env_endpoint_untouched(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key without an endpoint never clears an existing env endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://self-hosted.example.com")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == "https://self-hosted.example.com"
+
+    def test_alternate_env_endpoint_blocks_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lone LANGCHAIN_ENDPOINT (the alternate) also wins over a stored one."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://alt-env.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        # The stored endpoint must not be applied, and the alternate is preserved.
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+        assert os.environ["LANGCHAIN_ENDPOINT"] == "https://alt-env.example.com"
+
+    def test_replace_applies_stored_endpoint_over_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save replaces the endpoint and clears the alternate."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://old.example.com")
+        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://old-alt.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_replace_clears_endpoint_when_blank(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save clears the endpoint when no base URL is stored."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://old.example.com")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+
+    def test_disabled_tracing_leaves_endpoint_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A paused key (tracing off) never applies its stored endpoint.
+
+        The endpoint is applied only after the enable decision, so a deliberate
+        opt-out must not leak a stored endpoint into the process env.
+        """
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+
+    def test_prefixed_key_override_leaves_stored_endpoint_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A session-scoped key is not paired with a stale stored endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_matching_prefixed_key_allows_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped key with the stored value still uses the stored endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_stored")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+
+class TestNormalizeLangSmithEndpoint:
+    """Tests for normalize_langsmith_endpoint() and is_http_url()."""
+
+    def test_us_alias(self) -> None:
+        """`us` (any case) resolves to the canonical US endpoint."""
+        assert normalize_langsmith_endpoint("us") == LANGSMITH_US_ENDPOINT
+        assert normalize_langsmith_endpoint(" US ") == LANGSMITH_US_ENDPOINT
+
+    def test_eu_alias(self) -> None:
+        """`eu` (any case) resolves to the canonical EU endpoint."""
+        assert normalize_langsmith_endpoint("eu") == LANGSMITH_EU_ENDPOINT
+        assert normalize_langsmith_endpoint("Eu") == LANGSMITH_EU_ENDPOINT
+
+    def test_full_url_passthrough(self) -> None:
+        """A full URL is returned stripped and unchanged."""
+        url = "https://langsmith.internal.example.com"
+        assert normalize_langsmith_endpoint(f"  {url}  ") == url
+
+    def test_empty(self) -> None:
+        """Blank input returns an empty string."""
+        assert normalize_langsmith_endpoint("   ") == ""
+
+    def test_is_http_url(self) -> None:
+        """Only http(s) URLs with a host pass validation."""
+        assert is_http_url(LANGSMITH_EU_ENDPOINT) is True
+        assert is_http_url("http://localhost:1984") is True
+        assert is_http_url("ftp://example.com") is False
+        assert is_http_url("not-a-url") is False
+        assert is_http_url("https://") is False
+        assert is_http_url("http://[::1") is False
+        # A host with internal whitespace is malformed: rejecting it at save time
+        # stops a wrong endpoint from being stored and silently dropping traces.
+        assert is_http_url("https://exa mple.com") is False
+
 
 class TestGetTracingStatus:
     """Tests for get_tracing_status()."""
@@ -4768,6 +4981,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4788,9 +5002,332 @@ class TestLazyModuleAttributes:
 
             # Prefixed value wins — canonical is overwritten.
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
+            # The original canonical value is saved for subprocess restoration.
+            assert (
+                config_mod._bootstrap_state.original_tracing_api_keys[
+                    "LANGSMITH_API_KEY"
+                ]
+                == "lsv2_original"
+            )
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    @pytest.mark.parametrize("canonical", ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"])
+    def test_restore_user_tracing_api_keys_recovers_original_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: str
+    ) -> None:
+        """Shell subprocess env gets the caller's original API key, not the override.
+
+        Parametrized over both members of `_TRACING_API_KEY_ENV_VARS` so the
+        `LANGCHAIN_API_KEY` alias is covered, not just the primary var.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            # Isolate the key var under test so its sibling alias cannot mask it.
+            for var in config_mod._TRACING_API_KEY_ENV_VARS:
+                monkeypatch.delenv(var, raising=False)
+                monkeypatch.delenv(f"DEEPAGENTS_CODE_{var}", raising=False)
+            monkeypatch.setenv(canonical, "lsv2_original")
+            monkeypatch.setenv(f"DEEPAGENTS_CODE_{canonical}", "lsv2_override")
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap overwrote the canonical key with the prefixed value.
+            assert os.environ[canonical] == "lsv2_override"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # Shell subprocesses get the caller's original key back.
+            assert shell_env[canonical] == "lsv2_original"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_restore_user_tracing_api_keys_drops_unset_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the caller had no canonical key, restore removes it from shell env."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap propagated the prefixed key to canonical.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # Caller had no key — the propagated value is removed from shell env.
+            assert "LANGSMITH_API_KEY" not in shell_env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_restore_user_tracing_api_keys_pops_auth_stored_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `/auth`-stored key is bridged onto the env but popped for shells.
+
+        The snapshot is captured *before* `apply_stored_langsmith_auth` bridges
+        the stored key onto `LANGSMITH_API_KEY`, so the caller's original is
+        `None` and restore pops the bridged key instead of leaking the agent's
+        stored credential into `execute` subprocesses. Locks in the
+        capture-before-bridge ordering that a bootstrap refactor could break.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            # No env or prefixed key — only a `/auth`-stored credential.
+            for var in (
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+                "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+            ):
+                monkeypatch.delenv(var, raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap bridged the stored key onto the canonical env var...
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
+            # ...but the caller had none, so the snapshot (taken before the
+            # bridge) records it as absent.
+            assert (
+                config_mod._bootstrap_state.original_tracing_api_keys[
+                    "LANGSMITH_API_KEY"
+                ]
+                is None
+            )
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # The agent's stored credential is not leaked into shell subprocesses.
+            assert "LANGSMITH_API_KEY" not in shell_env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_bootstrap_warns_on_conflicting_override(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A conflicting prefixed override logs a single explanatory warning."""
+        import logging
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
+            monkeypatch.delenv(
+                "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING", raising=False
+            )
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            ):
+                _ensure_bootstrap()
+
+            warnings = [
+                r.getMessage()
+                for r in caplog.records
+                if "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in r.getMessage()
+            ]
+            assert len(warnings) == 1
+            assert "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING=1" in warnings[0]
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_bootstrap_suppresses_override_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The suppression flag silences the override warning but keeps the override."""
+        import logging
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_override")
+            monkeypatch.setenv("DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING", "1")
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            ):
+                _ensure_bootstrap()
+
+            # Override still applies; only the warning is silenced.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
+            assert not [
+                r
+                for r in caplog.records
+                if "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in r.getMessage()
+            ]
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_bootstrap_no_warning_when_values_match(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Matching canonical and prefixed values propagate without warning."""
+        import logging
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_same")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_same")
+            monkeypatch.delenv(
+                "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING", raising=False
+            )
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            ):
+                _ensure_bootstrap()
+
+            # No conflict, so no warning; the shared value stays in place.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_same"
+            assert not [
+                r
+                for r in caplog.records
+                if "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in r.getMessage()
+            ]
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_propagates_empty_string(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4941,6 +5478,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4981,6 +5519,7 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4999,6 +5538,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -5006,8 +5546,12 @@ class TestLazyModuleAttributes:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
             monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
             monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
             monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
-            auth_store.set_stored_key("langsmith", "lsv2_stored")
+            auth_store.set_stored_key(
+                "langsmith", "lsv2_stored", base_url=LANGSMITH_EU_ENDPOINT
+            )
 
             with (
                 patch("deepagents_code.config._load_dotenv"),
@@ -5020,10 +5564,13 @@ class TestLazyModuleAttributes:
 
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
             assert os.environ["LANGSMITH_TRACING"] == "true"
+            assert "LANGSMITH_ENDPOINT" not in os.environ
+            assert "LANGCHAIN_ENDPOINT" not in os.environ
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5042,6 +5589,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -5073,6 +5621,7 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
 
 class TestApplyDefaultLangsmithProject:

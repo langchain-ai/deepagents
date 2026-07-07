@@ -307,7 +307,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    git checkout -b alpha/<PACKAGE>-<VERSION>
    ```
 
-   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. If no `vX.Y` branch exists, use `main` and confirm the next alpha number from existing `<PACKAGE>==*aN` tags/releases. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
 
    For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x` and you need an installable alpha for validation, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work — the PEP 440 version `0.7.0a1` becomes `alpha/deepagents-0-7-0a1` (hyphens instead of periods) as the branch name.
 
@@ -316,15 +316,31 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - `libs/cli/pyproject.toml` — `version = "0.0.35a1"`
    - `libs/cli/deepagents_cli/_version.py` — `__version__ = "0.0.35a1"`
 
-3. **Commit and push:**
+3. **Regenerate package lockfiles** if the package has a `uv.lock`. The pre-commit lock check compares the local package version in the lockfile, so alpha version bumps need the same lockfile refresh as release-please PRs.
 
    ```bash
-   git add <path>/pyproject.toml <path>/<module>/_version.py
+   uv lock --directory <path> --python <PYTHON_VERSION>
+   ```
+
+   Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
+
+   For example, for the SDK:
+
+   ```bash
+   uv lock --directory libs/deepagents --python 3.12
+   ```
+
+4. **Commit and push:**
+
+   ```bash
+   git add <path>/pyproject.toml <path>/<module>/_version.py <path>/uv.lock
    git commit -m "hotfix(<SCOPE>): alpha release <VERSION>"
    git push -u origin alpha/<PACKAGE>-<VERSION>
    ```
 
-4. **Trigger the release workflow:**
+   Omit `<path>/uv.lock` only when the package does not have one.
+
+5. **Trigger the release workflow:**
 
    - Go to **Actions** > `🚀 Package Release` > **Run workflow**
    - Branch: `alpha/<PACKAGE>-<VERSION>`
@@ -333,9 +349,20 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Enable `dangerous-nonmain-release` ✓
    - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally older than the workspace SDK)
 
-5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
+   Or dispatch it with the GitHub CLI:
 
-6. **Clean up** — delete the branch after the workflow succeeds:
+   ```bash
+   gh workflow run release.yml \
+     --repo langchain-ai/deepagents \
+     --ref alpha/<PACKAGE>-<VERSION> \
+     -f package=<PACKAGE> \
+     -f version=<VERSION> \
+     -f dangerous-nonmain-release=true
+   ```
+
+6. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
+
+7. **Clean up** — delete the branch after the workflow succeeds:
 
    ```bash
    git checkout main

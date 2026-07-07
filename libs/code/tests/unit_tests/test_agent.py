@@ -1958,6 +1958,45 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == user_project
 
+    def test_project_context_restores_user_shell_langsmith_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The shell env is routed through `restore_user_tracing_api_keys`.
+
+        Guards the wiring in `create_cli_agent`'s local-shell branch: the env
+        handed to `LocalShellBackend` must carry the caller's original
+        `LANGSMITH_API_KEY` (the agent's in-process override reverted) and must
+        drop a key the caller never set. Removing the restore call regresses
+        both assertions, catching the exact key leak the restore prevents.
+        """
+        import deepagents_code.config as config_mod
+
+        original_done = config_mod._bootstrap_state.done
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        # Simulate a completed bootstrap: the caller had their own LANGSMITH key
+        # (since overridden in-process) and never set a LANGCHAIN key.
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc_agent_override")
+        config_mod._bootstrap_state.original_tracing_api_keys = {
+            "LANGSMITH_API_KEY": "lsv2_user_original",
+            "LANGCHAIN_API_KEY": None,
+        }
+        # Guard the seeded snapshot against an incidental bootstrap run.
+        config_mod._bootstrap_state.done = True
+
+        try:
+            mock_shell, _ = self._build_shell_agent(
+                monkeypatch, tmp_path, user_langchain_project=None
+            )
+            env = mock_shell.call_args.kwargs["env"]
+            # The caller's own key is restored, not the agent's override.
+            assert env["LANGSMITH_API_KEY"] == "lsv2_user_original"
+            # A key the caller never set is dropped, not leaked.
+            assert "LANGCHAIN_API_KEY" not in env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path
     ) -> None:

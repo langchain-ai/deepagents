@@ -74,6 +74,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    restore_user_tracing_api_keys,
     restore_user_tracing_env,
     settings,
 )
@@ -1496,7 +1497,7 @@ def create_cli_agent(
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware())
+            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1558,10 +1559,10 @@ def create_cli_agent(
         ConfigurableModelMiddleware(),
     ]
 
-    # Resume state: declares the `_context_tokens` and `_model_spec` channels
-    # and writes them from `after_model` (token count from the latest
-    # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
-    # The CLI reads them back from `state_values` on thread resume.
+    # Resume state: declares private checkpoint channels used on resume.
+    # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
+    # is written by `ConfigurableModelMiddleware` from the actual completed model
+    # request. The CLI reads them back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and injects goal guidance into the prompt.
     from deepagents_code.goal_tools import GoalToolsMiddleware
@@ -1663,6 +1664,7 @@ def create_cli_agent(
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
             restore_user_tracing_env(shell_env)
+            restore_user_tracing_api_keys(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)
@@ -1673,6 +1675,9 @@ def create_cli_agent(
             # `inherit_env=False`: `shell_env` is already a complete, curated
             # copy of `os.environ`. Inheriting again would re-copy `os.environ`
             # and resurrect the popped carrier var, leaking it into `execute`.
+            # `restore_user_tracing_api_keys` above depends on this too: flipping
+            # to `inherit_env=True` would re-copy the agent's overridden
+            # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 virtual_mode=False,
@@ -1697,6 +1702,9 @@ def create_cli_agent(
             )
             raise ValueError(msg)
         # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
+        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
+            suppress_langchain_beta_warning,
+        )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
         ptc_names = _resolve_ptc_option(
@@ -1708,16 +1716,20 @@ def create_cli_agent(
         ptc_option: PTCOption | None = (
             cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
         )
-        agent_middleware.append(
-            CodeInterpreterMiddleware(
-                tool_name="js_eval",
-                timeout=settings.interpreter_timeout_seconds,
-                memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                max_ptc_calls=settings.interpreter_max_ptc_calls,
-                max_result_chars=settings.interpreter_max_result_chars,
-                ptc=ptc_option,
+        # `CodeInterpreterMiddleware` is decorated `@beta()`, which emits a
+        # `LangChainBetaWarning` on every instantiation. We intentionally use it
+        # and the warning is not actionable for users, so suppress it.
+        with suppress_langchain_beta_warning():
+            agent_middleware.append(
+                CodeInterpreterMiddleware(
+                    tool_name="js_eval",
+                    timeout=settings.interpreter_timeout_seconds,
+                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=settings.interpreter_max_ptc_calls,
+                    max_result_chars=settings.interpreter_max_result_chars,
+                    ptc=ptc_option,
+                )
             )
-        )
 
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):

@@ -9,6 +9,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GlobResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -1000,6 +1001,31 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     # When searching from root and default backend errors, return the error
     result = await comp.agrep("test", path="/")
     assert result.error == "Default backend error"
+
+
+async def test_composite_aglob_default_error_short_circuits_routes_async() -> None:
+    """A root glob default error should return before consulting routed backends."""
+
+    class ErrorDefaultBackend(StoreBackend):
+        async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+            return GlobResult(error="Default backend error")
+
+    class TrackingRouteBackend(StoreBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.called = False
+
+        async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+            self.called = True
+            return GlobResult(matches=[])
+
+    routed_backend = TrackingRouteBackend()
+    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+
+    result = await comp.aglob("*", path="/")
+
+    assert result.error == "Default backend error"
+    assert not routed_backend.called
 
 
 async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:

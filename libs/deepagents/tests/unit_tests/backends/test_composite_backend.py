@@ -367,6 +367,31 @@ def test_composite_glob_merge_propagates_backend_error(monkeypatch: pytest.Monke
     assert result.error == "sandbox RPC failed"
 
 
+def test_composite_glob_default_error_short_circuits_routes() -> None:
+    """A root glob default error should return before consulting routed backends."""
+
+    class ErrorDefaultBackend(StoreBackend):
+        def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+            return GlobResult(error="Default backend error")
+
+    class TrackingRouteBackend(StoreBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.called = False
+
+        def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+            self.called = True
+            return GlobResult(matches=[])
+
+    routed_backend = TrackingRouteBackend()
+    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+
+    result = comp.glob("*", path="/")
+
+    assert result.error == "Default backend error"
+    assert not routed_backend.called
+
+
 async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """`agrep`/`aglob` merge paths mirror the sync accumulation and error precedence."""
     comp, default, routed = _merge_composite()

@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.34](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.33...deepagents-code==0.1.34) (2026-07-07)
+
+
+### Bug Fixes
+
+* **code:** show `(local)` tag under ANSI themes ([#4534](https://github.com/langchain-ai/deepagents/issues/4534)) ([699e439](https://github.com/langchain-ai/deepagents/commit/699e439699723e477a621f95eef87a7d76aac5f5))
+
 ## [0.1.33](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.32...deepagents-code==0.1.33) (2026-07-06)
 
 ### Features

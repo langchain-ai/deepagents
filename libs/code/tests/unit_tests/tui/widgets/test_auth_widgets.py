@@ -640,24 +640,39 @@ api_key_url = "javascript:alert(1)"
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A successful save surfaces a confirmation toast naming the provider."""
-        notices: list[tuple[str, str | None]] = []
+        # `openai` resolves to "OpenAI" via the built-in display-name map but
+        # would title-case to "Openai" via the bare fallback, so asserting on it
+        # proves the label is resolved through `provider_display_name` (with the
+        # screen's config) rather than the raw provider key.
+        notices: list[tuple[str, str | None, bool]] = []
 
         def _capture_notify(
-            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
         ) -> None:
-            notices.append((str(message), severity))
+            notices.append((str(message), severity, markup))
 
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             monkeypatch.setattr(app, "notify", _capture_notify)
-            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
-            app.screen.query_one("#auth-prompt-input", Input).value = "sk-ant-test"
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-test"
             await pilot.press("enter")
             await pilot.pause()
 
         assert app.prompt_result is AuthResult.SAVED
-        assert ("Successfully saved key for Anthropic.", "information") in notices
+        # `markup=False` is load-bearing: a user-configured display name can
+        # contain Textual markup metacharacters (e.g. `[`), so the toast must not
+        # interpret its interpolated label as markup.
+        assert (
+            "Successfully saved key for OpenAI.",
+            "information",
+            False,
+        ) in notices
 
     async def test_langsmith_submit_applies_tracing_env_immediately(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1108,6 +1123,12 @@ api_key_url = "javascript:alert(1)"
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed credential write shows an inline error and keeps the modal."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
 
         def _raise(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
             msg = "credential store is not writable"
@@ -1117,6 +1138,7 @@ api_key_url = "javascript:alert(1)"
 
         app = _AuthHostApp()
         async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
             app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
             await pilot.pause()
             app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
@@ -1130,6 +1152,9 @@ api_key_url = "javascript:alert(1)"
         assert "Could not save credential" in error_text
         assert "credential store is not writable" in error_text
         assert app.prompt_dismissed is False
+        # The success toast must never fire when the write raised — it would
+        # tell the user the key was saved when it wasn't.
+        assert not any(msg.startswith("Successfully saved key") for msg, _ in notices)
 
     async def test_optional_prompt_notifies_store_warnings(
         self, monkeypatch: pytest.MonkeyPatch

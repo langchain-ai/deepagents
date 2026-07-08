@@ -3,7 +3,6 @@ import io
 import json
 import logging
 import shutil
-import subprocess
 import threading
 import warnings
 from collections.abc import Iterator
@@ -857,7 +856,7 @@ class _FakePopen:
         self.returncode = -9
         self._killed.set()
 
-    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+    def wait(self, timeout: float | None = None) -> int:
         return self.returncode
 
 

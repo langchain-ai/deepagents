@@ -471,12 +471,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches single character
                 - `[abc]` matches one character from set
 
-        Examples:
-            - `'*.py'` - only search Python files
-            - `'**/*.txt'` - search all `.txt` files recursively
-            - `'src/**/*.js'` - search JS files under src/
-            - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
-
             max_count: Optional total cap on the number of matches returned
                 across all files.
 
@@ -485,6 +479,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 that many matches have been collected and the result is flagged
                 with `GrepResult.truncated=True`. Interpreted as a total cap, not
                 a per-file cap.
+
+        Examples:
+            - `'*.py'` - only search Python files
+            - `'**/*.txt'` - search all `.txt` files recursively
+            - `'src/**/*.js'` - search JS files under src/
+            - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
+
 
         Returns:
             `GrepResult` with matches or error.

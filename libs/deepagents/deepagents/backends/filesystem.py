@@ -672,7 +672,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
 
-    def _ripgrep_search(  # noqa: C901, PLR0912, PLR0915  # streaming loop + per-exception logging (timeout vs exec-race vs hard-error vs cap) keeps branches explicit
+    def _ripgrep_search(  # noqa: C901, PLR0911, PLR0912, PLR0915
         self,
         pattern: str,
         base_full: Path,
@@ -768,7 +768,9 @@ class FilesystemBackend(BackendProtocol):
         try:
             # `proc.stdout` is a text stream because `text=True`; iterating it
             # yields one `--json` frame per line as ripgrep emits them.
-            for line in proc.stdout:  # type: ignore[union-attr]
+            # `stdout=PIPE` guarantees a stream; narrow it for the type checker.
+            assert proc.stdout is not None  # noqa: S101
+            for line in proc.stdout:
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:

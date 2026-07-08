@@ -12,8 +12,6 @@ import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
-    IMPLICIT_AUTH_PROVIDERS,
-    NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     THREAD_COLUMN_DEFAULTS,
@@ -59,22 +57,6 @@ def _clear_model_caches() -> Iterator[None]:
     clear_caches()
     yield
     clear_caches()
-
-
-class TestRetryParamByProvider:
-    """Tests for retry-parameter registry drift."""
-
-    def test_all_retry_providers_are_known(self) -> None:
-        """Every retry-enabled provider is a known provider."""
-        known_providers = (
-            set(PROVIDER_API_KEY_ENV)
-            | set(IMPLICIT_AUTH_PROVIDERS)
-            | set(NO_AUTH_REQUIRED_PROVIDERS)
-            | {"bedrock"}
-        )
-
-    def test_contains_expected_retry_params(self) -> None:
-        """Major retry-enabled providers use `max_retries`."""
 
 
 class TestModelSpec:

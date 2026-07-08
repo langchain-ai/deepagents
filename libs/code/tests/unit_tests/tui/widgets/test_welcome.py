@@ -621,7 +621,7 @@ class TestRemovedSections:
     def test_no_legacy_sections(self) -> None:
         """None of the old splash footer sections appear."""
         plain = _make_banner()._build_banner().plain
-        for absent in ("Ready to code", "Tip:"):
+        for absent in ("Ready to code", "Tip:", "tip:"):
             assert absent not in plain
 
 

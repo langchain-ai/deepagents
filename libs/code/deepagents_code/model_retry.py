@@ -128,16 +128,17 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     """
     # Optional dependency: httpx ships with the HTTP-based providers but keep the
     # import lazy so classification never forces it at startup.
+    httpx_transient: tuple[type[BaseException], ...] = ()
     try:
         import httpx
     except ImportError:
-        httpx = None  # type: ignore[assignment]
-
-    if httpx is not None and isinstance(
-        exc, (httpx.TimeoutException, httpx.TransportError)
-    ):
+        pass
+    else:
         # Covers ReadError, ConnectError, RemoteProtocolError, and every other
         # TransportError, plus connect/read/write/pool timeouts.
+        httpx_transient = (httpx.TimeoutException, httpx.TransportError)
+
+    if isinstance(exc, httpx_transient):
         return True
 
     # A status-bearing provider error is decided solely by its code: retry only

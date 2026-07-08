@@ -158,6 +158,58 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          PACKAGE_RESOLVED: ${{ steps.parse.outputs.package }}
+          PACKAGE_OVERRIDE: ${{ inputs.package-override }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release-sha }}
+          IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
+          SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+        run: |
+          set -euo pipefail
+
+          escape_cell() {
+            local value="$1"
+            # Backticks can't be escaped inside the single-backtick code spans
+            # below (there's no backslash-escape inside a GFM code span), so
+            # strip them outright rather than risk a malformed table row.
+            value="${value//\`/}"
+            value="${value//|/\\|}"
+            value="${value//$'\r\n'/<br>}"
+            value="${value//$'\n'/<br>}"
+            printf '%s' "$value"
+          }
+
+          {
+            echo "### 🌳 Source tree"
+            echo ""
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on [\`${GITHUB_REF_NAME}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME})."
+            echo ""
+            echo "### 🚀 Release dispatch inputs"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| \`package\` | \`$(escape_cell "${PACKAGE_RESOLVED}")\` |"
+            if [ -n "${PACKAGE_OVERRIDE}" ]; then
+              echo "| \`package-override\` | \`$(escape_cell "${PACKAGE_OVERRIDE}")\` |"
+            fi
+            echo "| \`version\` | \`$(escape_cell "${INPUT_VERSION}")\` |"
+            if [ -n "${INPUT_SHA}" ]; then
+              echo "| \`release-sha\` | \`$(escape_cell "${INPUT_SHA}")\` |"
+            else
+              echo "| \`release-sha\` | (empty) |"
+            fi
+            if [ "${IS_DANGEROUS}" = "true" ]; then
+              echo "| \`dangerous-nonmain-release\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+
       - name: Resolve and validate release SHA
         id: resolve-sha
         env:

@@ -67,6 +67,7 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
+    DEFAULT_MODEL_RETRIES,
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
     config,
@@ -1328,6 +1329,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    model_retries: int = DEFAULT_MODEL_RETRIES,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1418,6 +1420,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        model_retries: Model-node retry attempts after the first call. `0`
+            disables retries. Resolved upstream from config/CLI.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1558,6 +1562,13 @@ def create_cli_agent(
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
     ]
+
+    # Model-node retry: wraps only the model call so transient connection
+    # failures are retried without replaying completed tool calls. `0` disables.
+    if model_retries > 0:
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

@@ -601,40 +601,6 @@ backend rejects at call time.
 """
 
 
-RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "max_retries",
-    "azure_openai": "max_retries",
-    "baseten": "max_retries",
-    "bedrock": "max_retries",
-    "deepseek": "max_retries",
-    "fireworks": "max_retries",
-    "google_genai": "max_retries",
-    "google_vertexai": "max_retries",
-    "groq": "max_retries",
-    "litellm": "max_retries",
-    "mistralai": "max_retries",
-    "openai": "max_retries",
-    "openrouter": "max_retries",
-    "perplexity": "max_retries",
-    "together": "max_retries",
-    "xai": "max_retries",
-}
-"""Maps a provider to the constructor kwarg that sets its retry count.
-
-The value is the kwarg name to pass to the provider's chat model constructor.
-It is uniformly `max_retries` for every provider listed today, but this is a
-`dict` rather than a `set` of providers because retry-kwarg names diverge across
-the ecosystem -- some integrations expose a differently named kwarg -- and the
-value column lets a future provider register its own name without restructuring
-callers.
-
-Membership is verified against each provider's chat model constructor (e.g.
-`ChatGoogleGenerativeAI` exposes `max_retries`, not `retries`), not inferred
-from naming. Providers absent from this map either lack an integer retry-count
-kwarg or are not yet wired as a credential-resolvable provider in this module;
-a `[retries]` config for them is ignored with a warning by `_resolve_retry_kwargs`.
-"""
-
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain
     # integration and underlying SDK may read, canonical name first. Names were

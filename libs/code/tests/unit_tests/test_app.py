@@ -5534,6 +5534,35 @@ class TestGoalCommand:
             assert app._pending_goal_objective == "add refresh tokens"
             assert app._pending_goal_rubric == "- model draft"
 
+    async def test_goal_revision_does_not_duplicate_ready_message(self) -> None:
+        """Revision cycles must not re-announce readiness (see duplicate bug)."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "cancelled"})
+            )
+            with (
+                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._propose_goal_rubric("add refresh tokens")
+                await pilot.pause()
+                await app._propose_goal_rubric(
+                    "add refresh tokens",
+                    feedback="be thorough in research",
+                    previous_criteria="- tests pass",
+                )
+                await pilot.pause()
+
+            ready_messages = [
+                w
+                for w in app.query(AppMessage)
+                if str(w._content) == "Proposed acceptance criteria are ready."
+            ]
+            assert len(ready_messages) == 1
+
     async def test_goal_review_regeneration_failure_remounts_pending_review(
         self,
     ) -> None:

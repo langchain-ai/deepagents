@@ -514,7 +514,7 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
 
     assert proc.returncode == 0
     assert not args_path.exists()
-    assert "already up to date" in proc.stdout
+    assert "Already up to date!" in proc.stdout
     assert not (tmp_path / "home/.deepagents").exists()
 
 

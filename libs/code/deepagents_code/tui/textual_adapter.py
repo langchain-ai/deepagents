@@ -377,9 +377,18 @@ class TextualUIAdapter:
         """Called to restore the token display with the cached value."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
-        """Sync a tool widget when the app provided a store callback."""
-        if self._sync_tool_message is not None:
+        """Sync a tool widget when the app provided a store callback.
+
+        Total by contract: never raises. Call sites are scattered across the
+        turn loop, some outside try/except, so a sync failure must not abort
+        the turn — it is logged and swallowed here.
+        """
+        if self._sync_tool_message is None:
+            return
+        try:
             self._sync_tool_message(tool_msg)
+        except Exception:
+            logger.exception("Failed to sync tool widget state to store")
 
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.

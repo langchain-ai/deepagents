@@ -27,17 +27,13 @@ DEFAULT_HEIGHT_HINT = 5
 """Estimated terminal rows for a message whose rendered height is unknown."""
 
 MIN_HEIGHT_HINT = 1
-"""Smallest useful row estimate for spacer and prefix-height math."""
+"""Smallest useful row estimate for spacer and range-height math."""
 
+_ACTIVE_REASON = "active"
+"""Protection reason for the currently-streaming message."""
 
-@dataclass(frozen=True, slots=True)
-class MessageWindow:
-    """Projected message range and spacer heights for transcript virtualization."""
-
-    start: int
-    end: int
-    top_height: int
-    bottom_height: int
+_LIVE_REASON = "live"
+"""Protection reason for a pending/running tool row (default for protect_message)."""
 
 
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
@@ -49,7 +45,6 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_reject_reason",
         "skill_expanded",
         "is_streaming",
-        "height_hint",
     }
 )
 """Fields on `MessageData` that callers are allowed to update via `update_message`.
@@ -198,15 +193,13 @@ class MessageData:
     """
 
     height_hint: int | None = None
-    """Cached widget height in terminal rows for scroll position estimation.
+    """Cached rendered widget height in terminal rows, or None if unmeasured.
 
-    When `_hydrate_messages_above` inserts widgets above the viewport it needs
-    to adjust the scroll offset so the user's view doesn't jump. Currently this
-    uses a fixed estimate (5 rows per message). Caching the actual rendered
-    height here after first mount would make that estimate accurate, especially
-    for tall messages like diffs or long assistant responses.
-
-    Not yet populated — see `_hydrate_messages_above` in `app.py`.
+    Measured after layout by `_measure_message_height` in `app.py` and stored
+    via `set_height_hint`. Consumed by `estimate_height`/`range_height` to size
+    the transcript spacers and to keep the scroll anchor stable across
+    hydrate-above/below. When None (not yet measured), `estimate_height` falls
+    back to `DEFAULT_HEIGHT_HINT`. Always `>= MIN_HEIGHT_HINT` once set.
     """
 
     def __post_init__(self) -> None:
@@ -427,9 +420,13 @@ class MessageStore:
     of widgets that are actually mounted in the DOM.
 
     Attributes:
-        WINDOW_SIZE: Maximum number of widgets to keep in DOM.
+        WINDOW_SIZE: Maximum number of messages to keep mounted in the DOM.
 
-            Balances DOM performance with smooth scrolling experience.
+            Trades DOM cost against scroll smoothness. Note each message may
+            also mount a timestamp footer, so the live widget count is up to
+            ~2x this value. Spacer rows above/below the window preserve full
+            scroll geometry, so this only bounds how much is rendered at once,
+            not what the user can scroll to.
         HYDRATE_BUFFER: Number of messages to hydrate when scrolling near edge.
 
             Provides enough buffer to avoid visible loading pauses.
@@ -451,11 +448,19 @@ class MessageStore:
         self._visible_start: int = 0
         self._visible_end: int = 0
 
-        self._protected_message_ids: set[str] = set()
-        """Message IDs that must stay mounted while they are still live."""
+        self._protection_reasons: dict[str, set[str]] = {}
+        """Message ID -> set of reasons it must stay mounted while live.
+
+        A message is protected from virtualization iff it has at least one
+        reason. Reasons are independent (`_ACTIVE_REASON` for the streaming
+        message, `_LIVE_REASON` for a pending/running tool), so releasing one
+        source never revokes another's protection.
+        """
 
         self._active_message_id: str | None = None
-        """Backward-compatible single active assistant ID."""
+        """The single currently-streaming message, mirrored into
+        `_protection_reasons` under `_ACTIVE_REASON`. Retained so the
+        `is_active`/`set_active_message` API keeps working."""
 
     @property
     def total_count(self) -> int:
@@ -483,6 +488,7 @@ class MessageStore:
         Args:
             message: The message data to add.
         """
+        was_at_tail = self._visible_end == len(self._messages)
         if message.id in self._index:
             logger.warning(
                 "Duplicate message ID %r appended; previous entry will be "
@@ -491,7 +497,8 @@ class MessageStore:
             )
         self._messages.append(message)
         self._index[message.id] = message
-        self._visible_end = len(self._messages)
+        if was_at_tail:
+            self._visible_end = len(self._messages)
 
     def bulk_load(
         self, messages: list[MessageData]
@@ -577,16 +584,18 @@ class MessageStore:
     def set_active_message(self, message_id: str | None) -> None:
         """Set the currently active (streaming) message.
 
-        Active messages are never archived.
+        Active messages are never archived. Only the previous active message's
+        `_ACTIVE_REASON` is released, so a message also protected for another
+        reason (e.g. a live tool) stays protected.
 
         Args:
             message_id: The ID of the active message, or None to clear.
         """
         if self._active_message_id is not None:
-            self._protected_message_ids.discard(self._active_message_id)
+            self.unprotect_message(self._active_message_id, reason=_ACTIVE_REASON)
         self._active_message_id = message_id
         if message_id is not None:
-            self._protected_message_ids.add(message_id)
+            self.protect_message(message_id, reason=_ACTIVE_REASON)
 
     def is_active(self, message_id: str) -> bool:
         """Check if a message is the active streaming message.
@@ -599,35 +608,42 @@ class MessageStore:
         """
         return message_id == self._active_message_id
 
-    def protect_message(self, message_id: str) -> None:
+    def protect_message(self, message_id: str, *, reason: str = _LIVE_REASON) -> None:
         """Keep a live message mounted during window updates.
+
+        Reasons accumulate independently; a message stays protected until every
+        reason is released. Idempotent per reason.
 
         Args:
             message_id: Message ID to protect.
+            reason: Why the message is protected. Defaults to a live tool row.
         """
-        self._protected_message_ids.add(message_id)
+        self._protection_reasons.setdefault(message_id, set()).add(reason)
 
-    def unprotect_message(self, message_id: str) -> None:
-        """Allow a finalized message to be virtualized normally.
+    def unprotect_message(self, message_id: str, *, reason: str = _LIVE_REASON) -> None:
+        """Release one protection reason from a message.
+
+        The message becomes virtualizable only once it has no remaining
+        reasons. Releasing a reason the message does not hold is a no-op.
 
         Args:
             message_id: Message ID to stop protecting.
+            reason: Which reason to release. Defaults to a live tool row.
         """
-        self._protected_message_ids.discard(message_id)
-        if self._active_message_id == message_id:
-            self._active_message_id = None
+        reasons = self._protection_reasons.get(message_id)
+        if reasons is None:
+            return
+        reasons.discard(reason)
+        if not reasons:
+            del self._protection_reasons[message_id]
 
     def is_protected(self, message_id: str) -> bool:
         """Check whether a message is protected from virtualization.
 
         Returns:
-            Whether the message is protected.
+            Whether the message is protected for at least one reason.
         """
-        return message_id in self._protected_message_ids
-
-    def get_protected_messages(self) -> list[MessageData]:
-        """Return protected messages that still exist in source history."""
-        return [msg for msg in self._messages if msg.id in self._protected_message_ids]
+        return message_id in self._protection_reasons
 
     def window_exceeded(self) -> bool:
         """Check if the visible window exceeds the maximum size.
@@ -641,8 +657,9 @@ class MessageStore:
         """Get the oldest visible messages that should be pruned.
 
         Returns a contiguous run of messages from the START of the visible
-        window. Stops at the active streaming message to avoid creating gaps
-        in the visible window (which would desync store state from the DOM).
+        window. Stops at the first protected message (the active stream or a
+        live tool run) to avoid creating gaps in the visible window (which
+        would desync store state from the DOM).
 
         Args:
             count: Number of messages to prune, or None to prune
@@ -662,8 +679,8 @@ class MessageStore:
 
         while len(to_prune) < count and idx < self._visible_end:
             msg = self._messages[idx]
-            # Stop at the active message to keep the window contiguous
-            if msg.id in self._protected_message_ids:
+            # Stop at the first protected message to keep the window contiguous
+            if self.is_protected(msg.id):
                 break
             to_prune.append(msg)
             idx += 1
@@ -691,7 +708,7 @@ class MessageStore:
         idx = self._visible_end - 1
         while len(to_prune) < count and idx >= self._visible_start:
             msg = self._messages[idx]
-            if msg.id in self._protected_message_ids:
+            if self.is_protected(msg.id):
                 break
             to_prune.append(msg)
             idx -= 1
@@ -758,8 +775,12 @@ class MessageStore:
     ) -> list[MessageData]:
         """Get messages below the visible window to hydrate.
 
+        Args:
+            count: Number of messages to hydrate; defaults to `HYDRATE_BUFFER`
+                when omitted.
+
         Returns:
-            Messages below the mounted window.
+            Messages below the mounted window, in order.
         """
         if count is None:
             count = self.HYDRATE_BUFFER
@@ -769,7 +790,11 @@ class MessageStore:
         return self._messages[self._visible_end : hydrate_end]
 
     def mark_hydrated_below(self, count: int) -> None:
-        """Mark that messages below were hydrated."""
+        """Mark that messages below were hydrated.
+
+        Args:
+            count: Number of messages that were hydrated below the window.
+        """
         self._visible_end = min(len(self._messages), self._visible_end + count)
 
     def should_hydrate_above(
@@ -845,7 +870,7 @@ class MessageStore:
         self._index.clear()
         self._visible_start = 0
         self._visible_end = 0
-        self._protected_message_ids.clear()
+        self._protection_reasons.clear()
         self._active_message_id = None
 
     def get_visible_range(self) -> tuple[int, int]:
@@ -873,7 +898,10 @@ class MessageStore:
         return self._messages[self._visible_start : self._visible_end]
 
     def set_height_hint(self, message_id: str, rows: int) -> bool:
-        """Update a measured message height.
+        """Update a measured message height, clamped to `MIN_HEIGHT_HINT`.
+
+        The single write path for `height_hint`; `height_hint` is intentionally
+        excluded from `update_message`'s allowlist so every write clamps here.
 
         Args:
             message_id: Message ID to update.
@@ -882,10 +910,11 @@ class MessageStore:
         Returns:
             Whether the message existed and was updated.
         """
-        return self.update_message(
-            message_id,
-            height_hint=max(MIN_HEIGHT_HINT, rows),
-        )
+        msg_data = self._index.get(message_id)
+        if msg_data is None:
+            return False
+        msg_data.height_hint = max(MIN_HEIGHT_HINT, rows)
+        return True
 
     def invalidate_height_hints(self, *, scale: float | None = None) -> None:
         """Invalidate or scale cached height hints after terminal reflow.
@@ -909,18 +938,6 @@ class MessageStore:
             return DEFAULT_HEIGHT_HINT
         return max(MIN_HEIGHT_HINT, message.height_hint)
 
-    def prefix_height(self, end: int) -> int:
-        """Estimate rows before `end`.
-
-        Args:
-            end: Exclusive message index.
-
-        Returns:
-            Estimated row count before `end`.
-        """
-        bounded = max(0, min(end, len(self._messages)))
-        return sum(self.estimate_height(msg) for msg in self._messages[:bounded])
-
     def range_height(self, start: int, end: int) -> int:
         """Estimate rows in `[start:end]`.
 
@@ -933,57 +950,3 @@ class MessageStore:
             self.estimate_height(msg)
             for msg in self._messages[bounded_start:bounded_end]
         )
-
-    @property
-    def total_estimated_height(self) -> int:
-        """Estimated height of the full source transcript."""
-        return self.range_height(0, len(self._messages))
-
-    def get_window_for_viewport(
-        self,
-        *,
-        scroll_y: float,
-        viewport_height: int,
-        overscan: int,
-    ) -> MessageWindow:
-        """Calculate the source window that should cover the viewport.
-
-        Args:
-            scroll_y: Current scroll offset in terminal rows.
-            viewport_height: Visible chat height.
-            overscan: Extra rows to render above and below the viewport.
-
-        Returns:
-            Window range plus top/bottom spacer estimates.
-        """
-        total = len(self._messages)
-        if total == 0:
-            return MessageWindow(0, 0, 0, 0)
-
-        top_target = max(0, int(scroll_y) - overscan)
-        bottom_target = max(top_target, int(scroll_y) + viewport_height + overscan)
-
-        start = 0
-        offset = 0
-        while start < total:
-            height = self.estimate_height(self._messages[start])
-            if offset + height > top_target:
-                break
-            offset += height
-            start += 1
-
-        end = start
-        covered = offset
-        while end < total and covered < bottom_target:
-            covered += self.estimate_height(self._messages[end])
-            end += 1
-
-        if end - start < min(self.WINDOW_SIZE, total):
-            while end < total and end - start < self.WINDOW_SIZE:
-                end += 1
-            while start > 0 and end - start < self.WINDOW_SIZE:
-                start -= 1
-
-        top_height = self.range_height(0, start)
-        bottom_height = self.range_height(end, total)
-        return MessageWindow(start, end, top_height, bottom_height)

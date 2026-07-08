@@ -5790,41 +5790,27 @@ class DeepAgentsApp(App):
         old_scroll_y = chat.scroll_y
         first_child = self._first_transcript_child(messages_container)
 
-        # Build widgets in chronological order, then mount in reverse so
-        # each is inserted before the previous first_child, resulting in
-        # correct chronological order in the DOM.
+        # Mount from the window edge outward (newest archived first), each
+        # inserted before the running `first_child` so the DOM stays
+        # chronological. Stop at the first failure: `mark_hydrated` advances
+        # `_visible_start` by a plain count, so the mounted rows must remain a
+        # contiguous block adjacent to the window or the store desyncs from the
+        # DOM.
         hydrated_count = 0
-        hydrated_widgets: list[tuple] = []  # (widget, msg_data)
-        for msg_data in to_hydrate:
+        for msg_data in reversed(to_hydrate):
             try:
                 widget = msg_data.to_widget()
-                hydrated_widgets.append((widget, msg_data))
-            except Exception:
-                logger.warning(
-                    "Failed to create widget for message %s",
-                    msg_data.id,
-                    exc_info=True,
-                )
-
-        for widget, msg_data in reversed(hydrated_widgets):
-            try:
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
-                if first_child:
-                    nodes: list[Widget] = [widget]
-                    if footer is not None:
-                        nodes.append(footer)
-                    await self._mount_transcript_nodes(
-                        messages_container,
-                        nodes,
-                        before=first_child,
-                    )
-                else:
-                    nodes = [widget]
-                    if footer is not None:
-                        nodes.append(footer)
-                    await self._mount_transcript_nodes(messages_container, nodes)
+                nodes: list[Widget] = [widget]
+                if footer is not None:
+                    nodes.append(footer)
+                await self._mount_transcript_nodes(
+                    messages_container,
+                    nodes,
+                    before=first_child,
+                )
                 first_child = widget
                 hydrated_count += 1
                 self._schedule_message_height_measurement(msg_data.id)
@@ -5833,25 +5819,23 @@ class DeepAgentsApp(App):
                     await widget.set_content(msg_data.content)
             except Exception:
                 logger.warning(
-                    "Failed to mount hydrated widget %s",
-                    widget.id,
+                    "Failed to hydrate message %s above window; stopping to "
+                    "keep the mounted window contiguous",
+                    msg_data.id,
                     exc_info=True,
                 )
+                break
 
-        # Only update store for the number we actually mounted
         if hydrated_count > 0:
             self._message_store.mark_hydrated(hydrated_count)
             await self._prune_messages_below_window(messages_container)
             self._sync_transcript_spacers(messages_container)
 
-        # Adjust scroll position to maintain the user's view.
-        # Newly mounted widgets are measured after layout; use the current
-        # source estimates immediately so the anchor stays close on this frame.
-        added_height = sum(
-            self._message_store.estimate_height(msg)
-            for msg in to_hydrate[:hydrated_count]
-        )
-        chat.scroll_y = old_scroll_y + added_height
+        # The top spacer already shrank by the hydrated rows' estimated height
+        # (via `_sync_transcript_spacers` above) while real widgets filled the
+        # freed space, so total content above the viewport is unchanged and the
+        # anchor holds without adjusting scroll_y. (Mirrors _hydrate_below.)
+        chat.scroll_y = old_scroll_y
 
         # Collapse any completed tool runs brought in above the window so
         # hydrated history matches the live transcript.
@@ -5875,6 +5859,9 @@ class DeepAgentsApp(App):
 
         old_scroll_y = chat.scroll_y
         hydrated_count = 0
+        # Mount in order from the window edge downward, stopping at the first
+        # failure so `mark_hydrated_below`'s count stays contiguous with the
+        # mounted rows (a mid-batch gap would desync `_visible_end`).
         for msg_data in to_hydrate:
             try:
                 widget = msg_data.to_widget()
@@ -5891,10 +5878,12 @@ class DeepAgentsApp(App):
                     await widget.set_content(msg_data.content)
             except Exception:
                 logger.warning(
-                    "Failed to mount below-window widget %s",
+                    "Failed to hydrate message %s below window; stopping to "
+                    "keep the mounted window contiguous",
                     msg_data.id,
                     exc_info=True,
                 )
+                break
 
         if hydrated_count == 0:
             return
@@ -11638,6 +11627,7 @@ class DeepAgentsApp(App):
             return
 
         await self._ensure_transcript_spacers(messages)
+        await self._hydrate_all_messages_below()
 
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
@@ -11705,6 +11695,15 @@ class DeepAgentsApp(App):
             input_container.scroll_visible()
         except NoMatches:
             pass
+
+    async def _hydrate_all_messages_below(self) -> None:
+        """Mount any hidden tail before appending fresh transcript output."""
+        while self._message_store.has_messages_below:
+            before = self._message_store.get_visible_range()[1]
+            await self._hydrate_messages_below()
+            after = self._message_store.get_visible_range()[1]
+            if after == before:
+                break
 
     async def _prune_old_messages(self) -> None:
         """Prune oldest message widgets if we exceed the window size.
@@ -11918,11 +11917,14 @@ class DeepAgentsApp(App):
         try:
             data = MessageData.from_widget(widget)
         except Exception:
+            # Fail safe: we can't prove the tool is terminal, so keep the row
+            # mounted rather than leaving a possibly-live tool pruneable.
             logger.warning(
-                "Failed to serialize tool widget %s",
+                "Failed to serialize tool widget %s; keeping it protected",
                 widget.id,
                 exc_info=True,
             )
+            self._message_store.protect_message(widget.id)
             return
         self._message_store.update_message(
             widget.id,
@@ -11933,7 +11935,10 @@ class DeepAgentsApp(App):
         )
         if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
             self._message_store.protect_message(widget.id)
-        else:
+        elif data.tool_status is not None:
+            # Only release protection for a known terminal status. An
+            # unrecognized status serializes to None; unprotecting then could
+            # let a still-live row be virtualized mid-run.
             self._message_store.unprotect_message(widget.id)
 
     async def _clear_messages(self) -> None:

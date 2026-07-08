@@ -351,12 +351,18 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
 
 
 def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
-    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
+    """Parse the `allowed-tools` frontmatter value into a list of tool names.
+
+    Accepts either a space- or comma-separated string or a YAML list of strings.
+    Non-string list items and empty entries are skipped.
+    """
     if isinstance(raw_tools, str):
-        return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
+        return [tool for tool in re.split(r"[\s,]+", raw_tools) if tool]
+    if isinstance(raw_tools, list):
+        return [t.strip() for t in raw_tools if isinstance(t, str) and t.strip()]
     if raw_tools is not None:
         logger.warning(
-            "Ignoring non-string 'allowed-tools' in %s (got %s)",
+            "Ignoring 'allowed-tools' in %s: expected a string or list, got %s",
             skill_path,
             type(raw_tools).__name__,
         )
@@ -426,9 +432,15 @@ def _parse_skill_metadata(
     description_str = description
     if len(description_str) > MAX_SKILL_DESCRIPTION_LENGTH:
         logger.warning(
-            "Description exceeds %d characters in %s, truncating",
-            MAX_SKILL_DESCRIPTION_LENGTH,
+            "Skill description in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters; the rest "
+            "is dropped from what the model sees when deciding whether to use "
+            "this skill. Shorten the 'description' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(description_str),
+            MAX_SKILL_DESCRIPTION_LENGTH,
+            MAX_SKILL_DESCRIPTION_LENGTH,
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
@@ -437,9 +449,14 @@ def _parse_skill_metadata(
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
         logger.warning(
-            "Compatibility exceeds %d characters in %s, truncating",
-            MAX_SKILL_COMPATIBILITY_LENGTH,
+            "Skill compatibility in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters and dropping "
+            "the rest. Shorten the 'compatibility' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(compatibility_str),
+            MAX_SKILL_COMPATIBILITY_LENGTH,
+            MAX_SKILL_COMPATIBILITY_LENGTH,
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 

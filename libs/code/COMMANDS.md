@@ -29,7 +29,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
 | `/notifications` |  | Configure startup warnings |
-| `/offload` | `/compact` | Offload older messages to free context |
+| `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.30"
+version = "0.1.34"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.0a3",
+    "deepagents==0.7.0a6",
     "langchain>=1.3.11,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.0,<4.0.0",
 
@@ -38,7 +38,7 @@ dependencies = [
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.4.7,<2.0.0",
-    "langchain-google-genai>=4.2.6,<5.0.0",
+    "langchain-google-genai>=4.2.7,<5.0.0",
     "langchain-openai>=1.3.3,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
@@ -91,7 +91,7 @@ bedrock = ["langchain-aws>=1.6.1,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.4.3,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.2.6,<5.0.0"]
+google-genai = ["langchain-google-genai>=4.2.7,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
@@ -122,7 +122,9 @@ all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
 ]
 
-# Standalone integrations (kept for backwards-compatible install commands)
+# Standalone integrations
+media = ["av>=17.0.0,<18.0.0", "pillow>=12.2.0,<13.0.0"]
+# (quickjs kept for backwards-compatible install commands)
 quickjs = []
 
 
@@ -268,7 +270,13 @@ ignore-var-parameters = true
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
 ]
-"tests/unit_tests/test_mcp_{auth,commands,tools}.py" = [
+"tests/unit_tests/test_mcp_{auth,tools}.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
+]
+"tests/unit_tests/client/commands/test_mcp.py" = [
     "ANN202",   # Missing return type on private test helper — common for mocks
     "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
     "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins

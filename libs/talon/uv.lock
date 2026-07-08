@@ -157,6 +157,34 @@ wheels = [
 ]
 
 [[package]]
+name = "av"
+version = "17.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/e3/477fa20578c284abeda08d91b63ee9abaebc93445d8feeb989d3d444bae1/av-17.1.0.tar.gz", hash = "sha256:7f1e71ff621b66253333926f948e00faae11d855b2442133c65128bca64cdeb3", size = 4288546, upload-time = "2026-06-07T05:52:55.999Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/87/8036b5c781bc3639ea04ef42d4e26da253bd4bd4311d8705b6a1c8824047/av-17.1.0-cp311-abi3-macosx_11_0_x86_64.whl", hash = "sha256:ad7b4aa011093324b7118245f50ac6db244cfe9900d4072508a5245a2b0d3f41", size = 22460847, upload-time = "2026-06-07T05:52:04.261Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/af/dfdf6fc7b17814b50d0aa9e7a7e37b87be91be3890f44b0d525433cd1fd1/av-17.1.0-cp311-abi3-macosx_14_0_arm64.whl", hash = "sha256:43ebbe977f19a7f2d2bd1a4e119675a0b15e05852cf7309846b6ab922ba7ffe9", size = 18159115, upload-time = "2026-06-07T05:52:06.64Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/13/64f6c466471cea225b8b2f4cdc51a571f8a286984b55a08d169b932fda5d/av-17.1.0-cp311-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:6a20658ec7d96a70e14b1196eff00b7cdd8831ac3b99868e16b8ba8b24090847", size = 33224427, upload-time = "2026-06-07T05:52:09.165Z" },
+    { url = "https://files.pythonhosted.org/packages/77/43/96b35170bf2e64e00a41748c6400ff73232dc0fc62ded283679fb07c7fe0/av-17.1.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:f9a65d1f48b818323fb411e80358f89d77dec340b01d27c6b2dfbb9cbf4b779f", size = 35370183, upload-time = "2026-06-07T05:52:11.959Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/b3/8e8b4b6498731bfbd88e8399a756543f8088f1bd33d08eab678b5aebe728/av-17.1.0-cp311-abi3-manylinux_2_31_armv7l.whl", hash = "sha256:58f7593726437cda5bd19793027e027768450b5c4a594777bf487798a33db702", size = 24459265, upload-time = "2026-06-07T05:52:14.66Z" },
+    { url = "https://files.pythonhosted.org/packages/14/ac/ceb84b7553db21f1143d817245c560d9267168e1e58b1a8eeae2b62c4d04/av-17.1.0-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:bbab058bd965309f39962e53caac8126987c68c0be094fc4f9427e5615b0218f", size = 34283709, upload-time = "2026-06-07T05:52:17.389Z" },
+    { url = "https://files.pythonhosted.org/packages/59/f9/4115fd84148c9a1cf365096694be6ac882fd3cd3cdb7a2f35e71fecf1631/av-17.1.0-cp311-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:9514cfda85180554c430695282faf4be3ffdf95775d8519733821244eecb58e0", size = 25397573, upload-time = "2026-06-07T05:52:20.012Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/ac/92e52d5ed0e0b84d9d93e52b4338c2713d8a44082b8696e6516fdae7c4e4/av-17.1.0-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e1c90f85cd7431ede95b11e8e711571a896ebea433f298849c2c0f1594c8d86e", size = 36451495, upload-time = "2026-06-07T05:52:22.581Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/f2/53a7cd34adb6a971d7e6d99663e74db286966c9db8afdca17472fdf0f98e/av-17.1.0-cp311-abi3-win_amd64.whl", hash = "sha256:5df5c1172ef1cf65a1529d612f7da7798ce2cf82c1ff7212466b538a6cc7214c", size = 28036393, upload-time = "2026-06-07T05:52:25.657Z" },
+    { url = "https://files.pythonhosted.org/packages/66/47/cd9ae0edf2206351c1251bb94b5ec58728e42c5f6ee16c03c412f3a1bb3e/av-17.1.0-cp311-abi3-win_arm64.whl", hash = "sha256:ee98534242a74da847af78624779ac5a3177dc7c69f956a4da9e6f0fdb37d7f6", size = 21174601, upload-time = "2026-06-07T05:52:28.077Z" },
+    { url = "https://files.pythonhosted.org/packages/36/90/b5668cddb3c401fcf22553bc495d5b0c6d8a01d118624b26f0db1d0b8653/av-17.1.0-cp314-cp314t-macosx_11_0_x86_64.whl", hash = "sha256:5327807c1219293803ef0c5d1578ff3ae1cf638c09e5998962026e1a554ec240", size = 22699499, upload-time = "2026-06-07T05:52:30.335Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/7e/7be6bfddb823d045ff9fd5d4deb922ee3847605e162c3882e6c45b4c35ff/av-17.1.0-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:6c9b71fe5c0c5a8d303b1588d4d8ce9397d6b023f467cfef95000ba1f75507fa", size = 18366696, upload-time = "2026-06-07T05:52:32.645Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/23/391dcfa75c1ae1977efca44b753a11b929399b558826670c16a8808dd0e3/av-17.1.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:f997e3351bdf51127c07a74e21741a2996e9230cbeb2d81c14acde761b116c9c", size = 36582649, upload-time = "2026-06-07T05:52:35.218Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/32/7312854868b318b9d1b1dcbd1bddb460aaaeac7d57f816e11efec3bef5b1/av-17.1.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:efe9b1397300b67b644ad220c89df4892a76f2debe70f16bae1749fa20526e63", size = 38479390, upload-time = "2026-06-07T05:52:37.968Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/72/af47f59b4458e81ca7d89f477698dbfb3d5a0cd8ae6c1e4441d01074af8a/av-17.1.0-cp314-cp314t-manylinux_2_31_armv7l.whl", hash = "sha256:fa64e1f1500d01c4a98e7a41dc1a9a35fb4dfe71f5de0389264ec1192200c76a", size = 27127432, upload-time = "2026-06-07T05:52:40.371Z" },
+    { url = "https://files.pythonhosted.org/packages/88/85/c2e6861baf0f8c7d21c4ce811d4d424fedac915e3910d3570ce4377717dc/av-17.1.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:ffbd78d73d2c9bf31e9a007c992faec3991428b2941a3b085b84fb82e8c32d19", size = 37406592, upload-time = "2026-06-07T05:52:43.215Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/40/3cc13125aea976101c0858af99ac47257c0654411aa199b5d8e81eea7002/av-17.1.0-cp314-cp314t-musllinux_1_2_armv7l.whl", hash = "sha256:bff8896454b38fcb785a70e5ae0485d7021cb776303a5849393128a30b8f850b", size = 28336228, upload-time = "2026-06-07T05:52:46.134Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/38/c7d9c3e746209a1a695c13e3aa7d817229e84a85d0a84271f313d1befdd3/av-17.1.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:1284addf3c0dd939887a9722dc30df2241a97471ad52c3c507e31583ae22ff02", size = 39490680, upload-time = "2026-06-07T05:52:48.887Z" },
+    { url = "https://files.pythonhosted.org/packages/a1/25/9d42da561b7b8f7dabdfaebba07b52977bee58c5c7e4285ac991abcfaa72/av-17.1.0-cp314-cp314t-win_amd64.whl", hash = "sha256:ec630be6321b04e317862f6082e84812bbd801e55a3c2298312e3fc8a0a4af4f", size = 28355673, upload-time = "2026-06-07T05:52:51.614Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/41/562a61d5a61fba3ffb273a115e249f1d8471b9515c59fcc38b4b9deda238/av-17.1.0-cp314-cp314t-win_arm64.whl", hash = "sha256:b41647e42884bf543b8e8d0a1dabd4d1b006c99183eb1a2d7afc5b01f73eeff4", size = 21324700, upload-time = "2026-06-07T05:52:53.972Z" },
+]
+
+[[package]]
 name = "babel"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -734,6 +762,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "av", marker = "extra == 'video'", specifier = ">=17.0.0,<18.0.0" },
     { name = "langchain", specifier = ">=1.3.11,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.7,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.6.1,<2.0.0" },
@@ -741,15 +770,18 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.2.6,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.2" },
     { name = "langsmith", specifier = ">=0.9.3" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=10.0.0,<13.0.0" },
     { name = "wcmatch", specifier = ">=10.1" },
 ]
-provides-extras = ["aws", "quickjs"]
+provides-extras = ["aws", "quickjs", "video"]
 
 [package.metadata.requires-dev]
 test = [
+    { name = "av", specifier = ">=17.0.0,<18.0.0" },
     { name = "build" },
     { name = "langchain-openai" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
+    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-benchmark" },
@@ -780,7 +812,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.30"
+version = "0.1.34"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -817,10 +849,17 @@ dependencies = [
     { name = "uuid-utils" },
 ]
 
+[package.optional-dependencies]
+media = [
+    { name = "av" },
+    { name = "pillow" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'nvidia'", specifier = ">=3.14.1,<3.15.0" },
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
+    { name = "av", marker = "extra == 'media'", specifier = ">=17.0.0,<18.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.8,<1.0.0" },
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
@@ -836,8 +875,8 @@ requires-dist = [
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.4.3,<2.0.0" },
-    { name = "langchain-google-genai", specifier = ">=4.2.6,<5.0.0" },
-    { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.2.6,<5.0.0" },
+    { name = "langchain-google-genai", specifier = ">=4.2.7,<5.0.0" },
+    { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.2.7,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
@@ -866,6 +905,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.9.2,<2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.2.0,<13.0.0" },
+    { name = "pillow", marker = "extra == 'media'", specifier = ">=12.2.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<2.14.0a0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
@@ -880,7 +920,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.16.2,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
 
 [package.metadata.requires-dev]
 test = [
@@ -905,17 +945,17 @@ test = [
 
 [[package]]
 name = "deepagents-talon"
-version = "0.0.2"
+version = "0.0.3"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
     { name = "deepagents-code" },
-    { name = "fleet-deepagents-export" },
     { name = "langchain-mcp-adapters" },
 ]
 
 [package.optional-dependencies]
-speech = [
+media = [
+    { name = "deepagents-code", extra = ["media"] },
     { name = "librosa" },
     { name = "numpy" },
     { name = "phonemizer" },
@@ -940,16 +980,16 @@ test = [
 requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", editable = "../code" },
-    { name = "fleet-deepagents-export", specifier = ">=0.0.1,<1.0.0" },
+    { name = "deepagents-code", extras = ["media"], marker = "extra == 'media'", editable = "../code" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.0,<1.0.0" },
-    { name = "librosa", marker = "extra == 'speech'", specifier = ">=0.11.0,<1.0.0" },
-    { name = "numpy", marker = "extra == 'speech'", specifier = ">=2.4.6,<3.0.0" },
-    { name = "phonemizer", marker = "extra == 'speech'", specifier = ">=3.3.0,<4.0.0" },
-    { name = "torch", marker = "extra == 'speech'", specifier = ">=2.12.1,<2.13.0" },
-    { name = "torchaudio", marker = "extra == 'speech'", specifier = ">=2.11.0,<2.12.0" },
-    { name = "transformers", marker = "extra == 'speech'", specifier = ">=5.12.1,<6.0.0" },
+    { name = "librosa", marker = "extra == 'media'", specifier = ">=0.11.0,<1.0.0" },
+    { name = "numpy", marker = "extra == 'media'", specifier = ">=2.4.6,<3.0.0" },
+    { name = "phonemizer", marker = "extra == 'media'", specifier = ">=3.3.0,<4.0.0" },
+    { name = "torch", marker = "extra == 'media'", specifier = ">=2.12.1,<2.13.0" },
+    { name = "torchaudio", marker = "extra == 'media'", specifier = ">=2.11.0,<2.12.0" },
+    { name = "transformers", marker = "extra == 'media'", specifier = ">=5.12.1,<6.0.0" },
 ]
-provides-extras = ["speech"]
+provides-extras = ["media"]
 
 [package.metadata.requires-dev]
 test = [
@@ -1006,21 +1046,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bb/29/745f7d30d47fe0f251d3ad3dc2978a23141917661998763bebb6da007eb1/filetype-1.2.0.tar.gz", hash = "sha256:66b56cd6474bf41d8c54660347d37afcc3f7d1970648de365c102ef77548aadb", size = 998020, upload-time = "2022-11-02T17:34:04.141Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/18/79/1b8fa1bb3568781e84c9200f951c735f3f157429f44be0495da55894d620/filetype-1.2.0-py2.py3-none-any.whl", hash = "sha256:7ce71b6880181241cf7ac8697a2f1eb6a8bd9b429f7ad6d27b8db9ba5f1c2d25", size = 19970, upload-time = "2022-11-02T17:34:01.425Z" },
-]
-
-[[package]]
-name = "fleet-deepagents-export"
-version = "0.0.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "deepagents" },
-    { name = "httpx" },
-    { name = "langchain-mcp-adapters" },
-    { name = "python-dotenv" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/03/5042d0d91d4f29b55ab2697b4f30c5953782584da75bc3c8dc6114861500/fleet_deepagents_export-0.0.1.tar.gz", hash = "sha256:88ed75e4193e2c21ca668cf4eafd4f9155bbd338b8114ea86f176cbd466f6433", size = 17913, upload-time = "2026-06-02T22:52:22.884Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/75/69a299a7fa4a85e450897d2fe4be2ab88099e7de558e776433c78325b39f/fleet_deepagents_export-0.0.1-py3-none-any.whl", hash = "sha256:400023b27a8daaba203268f5a319eb0f6f18e21304aa61aa2ed037688dd6fe17", size = 14017, upload-time = "2026-06-02T22:52:21.706Z" },
 ]
 
 [[package]]
@@ -1614,7 +1639,7 @@ wheels = [
 
 [[package]]
 name = "langchain-google-genai"
-version = "4.2.6"
+version = "4.2.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filetype" },
@@ -1622,9 +1647,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/08/68e4f90b273d1d8dc3a7a948e6535e60baac726adbb2a8341dcf17662f54/langchain_google_genai-4.2.6.tar.gz", hash = "sha256:653dc331e691ddd79784d9ff6a4082749e0f873394c6dc782c414eb4409850eb", size = 280074, upload-time = "2026-06-26T06:18:58.807Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/0c/bc60dabc362ca7c6ffe8c4bcc2f724c7e566b43eb230cee51419f88f784c/langchain_google_genai-4.2.7.tar.gz", hash = "sha256:03b1463ffe4d42435f43c7870467f2215f684bb46400d2543435d10157c80ac7", size = 281605, upload-time = "2026-07-06T13:51:58.724Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/85/3c/9a6b43bced0238f95640555e14423fe4a8268e3f4f536f67e26e79e633d4/langchain_google_genai-4.2.6-py3-none-any.whl", hash = "sha256:c40db0c2d033a5fb6db8e2cc3fb6d49c5678b89b337a64da095fb73ec9f72021", size = 70457, upload-time = "2026-06-26T06:18:57.781Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/f9/d73d1e712591723aaddb7a7b1e94978cd2320c29acfe0d26b6169a2f26f0/langchain_google_genai-4.2.7-py3-none-any.whl", hash = "sha256:0d9c388d0e6c629718fca6abb19c6fdca728a9a7873d0324c1ec821288b5b571", size = 70702, upload-time = "2026-07-06T13:51:57.499Z" },
 ]
 
 [[package]]

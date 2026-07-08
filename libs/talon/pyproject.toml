@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-talon"
-version = "0.0.2"
+version = "0.0.3"
 description = "Local runtime host for long-running Deep Agents channels and schedules (experimental)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,15 +23,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    # Keep Talon aligned with deepagents-code's prerelease deepagents pin.
-    "deepagents>=0.6.12,<0.9.0",
-    "deepagents-code>=0.1.28,<1.0.0",
-    "fleet-deepagents-export>=0.0.1,<1.0.0",
+    "deepagents>=0.7.0a3",
+    "deepagents-code>=0.1.30,<1.0.0",
     "langchain-mcp-adapters>=0.3.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
-speech = [
+media = [
+    "deepagents-code[media]>=0.1.30,<1.0.0",
     "librosa>=0.11.0,<1.0.0",
     "numpy>=2.4.6,<3.0.0",
     "phonemizer>=3.3.0,<4.0.0",

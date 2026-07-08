@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from deepagents_code._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
+from deepagents_code._env_vars import (
+    DISABLED_PROJECT_MCP_SERVERS,
+    ENABLED_PROJECT_MCP_SERVERS,
+    HIDE_SPLASH_VERSION,
+    is_env_truthy,
+)
 from deepagents_code._git import resolve_git_branch
 from deepagents_code._version import __version__
 from deepagents_code.config_manifest import (
@@ -57,6 +62,20 @@ class _BootstrapState:
 
     original_tracing_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """Caller's tracing-enable env before Deep Agents Code mutates flags."""
+
+    original_tracing_api_keys: dict[str, str | None] = dataclass_field(
+        default_factory=dict
+    )
+    """Caller's tracing API keys before Deep Agents Code overwrites them.
+
+    Two bootstrap steps can overwrite the canonical `LANGSMITH_API_KEY` (and
+    its `LANGCHAIN_API_KEY` alias): the `DEEPAGENTS_CODE_`-prefixed override and
+    the `/auth`-stored key bridged on by `apply_stored_langsmith_auth`. Both run
+    after this snapshot is captured. Without saving the originals, shell
+    subprocesses inherit the agent's session key and the caller's own value is
+    irrecoverable in-process. This mirrors the save/restore pattern used for
+    tracing flags (`original_tracing_env`).
+    """
 
 
 _bootstrap_state = _BootstrapState()
@@ -141,6 +160,32 @@ lowercase `bash_env` injected into the environment is inert. Any future entry
 that some consumer reads case-insensitively would need a different check.
 """
 
+_PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
+    {
+        ENABLED_PROJECT_MCP_SERVERS,
+        DISABLED_PROJECT_MCP_SERVERS,
+    }
+)
+"""Env keys a *project* `.env` must not inject, even though they are otherwise
+safe process-env inputs.
+
+These two vars are the env form of the user-level project-MCP allow/deny lists
+(`model_config.load_mcp_server_trust_lists`). Their whole purpose is to be a
+*user-level* decision: naming a project MCP server here pre-approves it from an
+untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
+`${VAR}` header exfiltration during the discovery preflight). A project `.env`
+travels with a cloned repo, so honoring it would let an attacker commit
+`.mcp.json` + `.env` and self-approve their own servers — exactly the trust
+boundary the feature exists to hold.
+
+Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
+`.env` loading into code execution), these are denied only from the *project*
+`.env`: the user's own global `~/.deepagents/.env` and their shell exports are
+legitimate, trusted sources and continue to set them. The loader reads plain
+`os.environ`, so blocking injection here — before the value ever reaches
+`os.environ` — is what keeps that read trustworthy.
+"""
+
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
     """Find the nearest `.env` file from an explicit start path upward.
@@ -187,7 +232,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         if env.get(key) == value:
             env.pop(key)
 
-    def apply_dotenv(dotenv_path: Path | None) -> None:
+    def apply_dotenv(dotenv_path: Path | None, *, is_project: bool) -> None:
         if dotenv_path is None:
             return
         try:
@@ -207,6 +252,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
+            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+                # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
+                # user-level MCP trust decision (the global `.env`/shell can).
+                logger.debug(
+                    "Ignoring project-denied env key %r from %s", key, dotenv_path
+                )
+                continue
             env[key] = value
 
     project_dotenv: Path | None = None
@@ -223,7 +275,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             start_path or "cwd",
             exc_info=True,
         )
-    apply_dotenv(project_dotenv)
+    apply_dotenv(project_dotenv, is_project=True)
 
     try:
         global_dotenv = _GLOBAL_DOTENV_PATH if _GLOBAL_DOTENV_PATH.is_file() else None
@@ -235,7 +287,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             exc_info=True,
         )
         global_dotenv = None
-    apply_dotenv(global_dotenv)
+    apply_dotenv(global_dotenv, is_project=False)
 
     return env
 
@@ -298,7 +350,7 @@ def _load_dotenv(
                 os.environ.pop(key)
         _dotenv_loaded_values.clear()
 
-    def apply_dotenv(dotenv_path: Path) -> bool:
+    def apply_dotenv(dotenv_path: Path, *, is_project: bool) -> bool:
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
@@ -307,6 +359,13 @@ def _load_dotenv(
             if key in _DOTENV_DENIED_ENV_KEYS:
                 # Log the key only — the value is attacker-controlled.
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                continue
+            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+                # A committed project `.env` must not set a user-level MCP trust
+                # decision; the global `.env` and shell may (is_project=False).
+                logger.debug(
+                    "Ignoring project-denied env key %r from %s", key, dotenv_path
+                )
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
@@ -321,11 +380,11 @@ def _load_dotenv(
             found = dotenv.find_dotenv(usecwd=True)
             if found:
                 dotenv_path = found
-                loaded = apply_dotenv(Path(found)) or loaded
+                loaded = apply_dotenv(Path(found), is_project=True) or loaded
         else:
             dotenv_path = _find_dotenv_from_start_path(start_path)
             if dotenv_path is not None:
-                loaded = apply_dotenv(dotenv_path) or loaded
+                loaded = apply_dotenv(dotenv_path, is_project=True) or loaded
     except (OSError, ValueError):
         logger.warning(
             "Could not read project dotenv at %s; project env vars will not be loaded",
@@ -338,7 +397,9 @@ def _load_dotenv(
     # try/except wraps both is_file() and load_dotenv() to cover the TOCTOU
     # window where the file can vanish between stat and open.
     try:
-        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(_GLOBAL_DOTENV_PATH):
+        if _GLOBAL_DOTENV_PATH.is_file() and apply_dotenv(
+            _GLOBAL_DOTENV_PATH, is_project=False
+        ):
             loaded = True
             logger.debug("Loaded global dotenv: %s", _GLOBAL_DOTENV_PATH)
     except (OSError, ValueError):
@@ -364,6 +425,65 @@ _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
+
+LANGSMITH_US_ENDPOINT = "https://api.smith.langchain.com"
+"""Canonical LangSmith SaaS endpoint for the US region (the SDK default)."""
+
+LANGSMITH_EU_ENDPOINT = "https://eu.api.smith.langchain.com"
+"""Canonical LangSmith SaaS endpoint for the EU region."""
+
+
+def normalize_langsmith_endpoint(value: str) -> str:
+    """Resolve a LangSmith endpoint shorthand to its canonical URL.
+
+    Maps the case-insensitive region aliases `us`/`eu` to the LangSmith SaaS
+    endpoints so the CLI `--base-url` flag and the TUI `/auth` prompt share one
+    decode. Any other non-empty value is returned stripped and unchanged (a
+    self-hosted or proxied URL); empty input returns an empty string.
+
+    Args:
+        value: A region alias, a full endpoint URL, or an empty string.
+
+    Returns:
+        The canonical endpoint URL, the stripped literal value, or `""`.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    alias = cleaned.lower()
+    if alias == "us":
+        return LANGSMITH_US_ENDPOINT
+    if alias == "eu":
+        return LANGSMITH_EU_ENDPOINT
+    return cleaned
+
+
+def is_http_url(value: str) -> bool:
+    """Return whether `value` is a non-empty `http`/`https` URL with a host.
+
+    Guards the LangSmith endpoint so a stored API key is never paired with a
+    non-HTTP, malformed, or schemeless value that could route trace ingestion
+    (and the key) somewhere unintended.
+
+    Args:
+        value: Candidate endpoint URL.
+
+    Returns:
+        `True` when `value` parses as an `http`/`https` URL with a network
+            location that contains no whitespace.
+    """
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    # A real host never contains whitespace, but `urlparse` keeps an internal
+    # space in the netloc (e.g. "exa mple.com"). Such a value would be stored,
+    # written to `LANGSMITH_ENDPOINT`, and its traces may then be dropped at
+    # ingest. Reject it loudly at save time.
+    return not any(char.isspace() for char in parsed.netloc)
+
 
 _TRACING_RUNS_ENDPOINTS_ENV_VARS = (
     "LANGSMITH_RUNS_ENDPOINTS",
@@ -518,6 +638,25 @@ def restore_user_tracing_env(env: dict[str, str]) -> None:
             env[var] = value
 
 
+def restore_user_tracing_api_keys(env: dict[str, str]) -> None:
+    """Restore caller tracing API keys in an environment passed to user code.
+
+    Reverts both bootstrap overwrites of the canonical LangSmith key — the
+    `DEEPAGENTS_CODE_`-prefixed override and the `/auth`-stored key — so shell
+    subprocesses receive the caller's own key rather than the agent's session
+    key. See `original_tracing_api_keys` for the rationale; this mirrors
+    `restore_user_tracing_env`, which does the same for tracing flags.
+
+    Args:
+        env: Environment mapping prepared for a child/user subprocess.
+    """
+    for var, value in _bootstrap_state.original_tracing_api_keys.items():
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -617,7 +756,9 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     which bootstrap bridges to `LANGSMITH_TRACING`) is honored and tracing stays
     off, so the stored key can be paused without deleting it. A custom stored
     project is applied to `LANGSMITH_PROJECT` when the user has not set one,
-    unless `replace_project` is set for the immediate `/auth` save path.
+    unless `replace_project` is set for the immediate `/auth` save path. A stored
+    endpoint (e.g. the EU region) is applied to `LANGSMITH_ENDPOINT` with the
+    same precedence via `_apply_stored_langsmith_endpoint`.
 
     No-op when no LangSmith key is stored, so a key supplied only through the
     environment keeps the prior behavior (tracing stays off unless a flag is
@@ -655,6 +796,8 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     # (tracing stays off unless a flag is set).
     if entry is None or entry["type"] != "api_key" or not entry["key"]:
         return
+    if _stored_langsmith_key_is_suppressed(entry["key"]):
+        return
 
     # The key was bridged onto LANGSMITH_API_KEY by
     # `apply_stored_service_credentials`. Decide whether to enable tracing.
@@ -671,6 +814,10 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     if not any(flag is True for flag in flags):
         os.environ["LANGSMITH_TRACING"] = "true"
 
+    _apply_stored_langsmith_endpoint(
+        entry.get("base_url") or None, replace=replace_project
+    )
+
     project = entry.get("project") or None
     if replace_project:
         if project:
@@ -680,6 +827,64 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
         return
     if project and not os.environ.get("LANGSMITH_PROJECT"):
         os.environ["LANGSMITH_PROJECT"] = project
+
+
+def _stored_langsmith_key_is_suppressed(stored_key: str) -> bool:
+    """Return whether an env override keeps `stored_key` from taking effect."""
+    prefixed_names = [f"DEEPAGENTS_CODE_{name}" for name in _TRACING_API_KEY_ENV_VARS]
+    prefixed_values = [
+        os.environ.get(name) or None for name in prefixed_names if name in os.environ
+    ]
+    if prefixed_values:
+        return any(value != stored_key for value in prefixed_values)
+    env_key = os.environ.get("LANGSMITH_API_KEY")
+    return bool(env_key and env_key != stored_key)
+
+
+def _apply_stored_langsmith_endpoint(endpoint: str | None, *, replace: bool) -> None:
+    """Apply a `/auth`-stored LangSmith endpoint to `LANGSMITH_ENDPOINT`.
+
+    Writes a stored endpoint to the canonical `LANGSMITH_ENDPOINT` and clears the
+    `LANGCHAIN_ENDPOINT` alternate so the SDK can't read a stale value through it.
+    Precedence mirrors the stored project:
+
+    - `replace` (the immediate `/auth` save): the stored endpoint replaces the
+        current value, and a blank endpoint (the US default) clears both names so
+        ingestion falls back to the LangSmith SaaS default.
+    - Startup (`replace=False`): a non-empty `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`
+        already in the environment stays authoritative, so a stored endpoint is
+        applied only when neither is set. A stored credential without an endpoint
+        never clears an existing env value (self-hosted setups keep working).
+
+    Like a stored key, a stored endpoint is trusted by *presence*, not
+    reachability: this never connects to it. A wrong-but-well-formed endpoint (a
+    typo'd or dead host) is applied anyway, and its traces may then be dropped at
+    ingest. `is_http_url` rejects the obviously malformed cases at save time, but
+    if traces never appear the stored endpoint is worth re-checking via `/auth`
+    alongside the key.
+
+    Args:
+        endpoint: The stored endpoint URL, or `None` when none is stored.
+        replace: Whether the stored value should overwrite the current
+            environment (the immediate `/auth` save path).
+    """
+    canonical, alternate = _TRACING_ENDPOINT_ENV_VARS
+    if replace:
+        if endpoint:
+            os.environ[canonical] = endpoint
+        else:
+            os.environ.pop(canonical, None)
+        os.environ.pop(alternate, None)
+        return
+    if not endpoint:
+        return
+    if any(os.environ.get(var) for var in _TRACING_ENDPOINT_ENV_VARS):
+        return
+    os.environ[canonical] = endpoint
+    # Past the guard above both endpoint vars are falsy, so this only clears an
+    # empty-string `LANGCHAIN_ENDPOINT`; it keeps canonical as the one name the
+    # SDK reads and mirrors the `replace` branch's alternate-clearing.
+    os.environ.pop(alternate, None)
 
 
 def _ensure_bootstrap() -> None:
@@ -729,6 +934,9 @@ def _ensure_bootstrap() -> None:
             _bootstrap_state.original_tracing_env = {
                 var: os.environ.get(var) for var in _TRACING_ENABLE_ENV_VARS
             }
+            _bootstrap_state.original_tracing_api_keys = {
+                var: os.environ.get(var) for var in _TRACING_API_KEY_ENV_VARS
+            }
 
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
@@ -745,7 +953,10 @@ def _ensure_bootstrap() -> None:
             # LangSmith SDK reads os.environ directly and has no knowledge
             # of the DEEPAGENTS_CODE_ prefix. Setting canonical vars here
             # bridges that gap.
+            from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
             from deepagents_code.model_config import _ENV_PREFIX
+
+            suppress_override_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
 
             for canonical in (
                 "LANGSMITH_API_KEY",
@@ -762,14 +973,22 @@ def _ensure_bootstrap() -> None:
                     os.environ[canonical] = prefixed_val
                 elif os.environ[canonical] != prefixed_val:
                     os.environ[canonical] = prefixed_val
-                    logger.warning(
-                        "Both %s and %s are set with different values; "
-                        "using %s. Unset %s to silence this warning.",
-                        canonical,
-                        prefixed,
-                        prefixed,
-                        canonical,
-                    )
+                    if not suppress_override_warning:
+                        logger.warning(
+                            "%s and %s are both set to different values. Deep "
+                            "Agents Code uses %s for this session (the "
+                            "%s-prefixed value takes precedence). The %s you "
+                            "exported in your own shell is unaffected. This is "
+                            "expected. To silence this warning, unset %s or set "
+                            "%s=1.",
+                            canonical,
+                            prefixed,
+                            prefixed,
+                            _ENV_PREFIX,
+                            canonical,
+                            canonical,
+                            SUPPRESS_ENV_OVERRIDE_WARNING,
+                        )
 
             # Bridge stored service keys, apply stored LangSmith tracing defaults,
             # disable orphaned tracing, and route active tracing to the displayed
@@ -3117,8 +3336,8 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     return has_key or _has_langsmith_profile_credentials(env)
 
 
-def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
-    """Return whether replica trace ingestion targets are configured.
+def _langsmith_runs_endpoint_urls_from(env: dict[str, str]) -> tuple[str, ...]:
+    """Return the replica trace ingestion URLs configured via runs-endpoints.
 
     Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
     JSON list of `{"api_url": "...", "api_key": "..."}` objects, or a JSON
@@ -3129,7 +3348,7 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
         env: Environment mapping to read.
 
     Returns:
-        `True` when a valid runs-endpoints configuration is present.
+        The configured replica ingestion URLs, in configuration order.
     """
     raw = next(
         (
@@ -3140,23 +3359,40 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
         None,
     )
     if raw is None:
-        return False
+        return ()
 
     try:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
-        return False
+        return ()
 
     if isinstance(parsed, list):
-        return any(
-            isinstance(item, dict)
+        return tuple(
+            item["api_url"]
+            for item in parsed
+            if isinstance(item, dict)
             and isinstance(item.get("api_url"), str)
             and isinstance(item.get("api_key"), str)
-            for item in parsed
         )
     if isinstance(parsed, dict):
-        return any(isinstance(value, str) for value in parsed.values())
-    return False
+        return tuple(
+            url
+            for url, api_key in parsed.items()
+            if isinstance(url, str) and isinstance(api_key, str)
+        )
+    return ()
+
+
+def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+    """Return whether replica trace ingestion targets are configured.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        `True` when a valid runs-endpoints configuration is present.
+    """
+    return bool(_langsmith_runs_endpoint_urls_from(env))
 
 
 def _tracing_can_upload_from(env: dict[str, str]) -> bool:
@@ -3269,6 +3505,9 @@ class TracingStatus:
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
 
+    runs_endpoints: tuple[str, ...] = ()
+    """Replica ingestion URLs from `LANGSMITH_RUNS_ENDPOINTS`, if any."""
+
     def __post_init__(self) -> None:
         """Reject the contradictory enabled/explicitly-disabled pair.
 
@@ -3311,6 +3550,7 @@ def get_tracing_status() -> TracingStatus:
         replica_project=_get_first_langsmith_replica_project(
             _get_langsmith_replica_projects_from(env)
         ),
+        runs_endpoints=_langsmith_runs_endpoint_urls_from(env),
     )
 
 

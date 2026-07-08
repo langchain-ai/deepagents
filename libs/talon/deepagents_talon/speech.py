@@ -247,7 +247,7 @@ def _load_local_pipeline(model: str, device: str) -> _LocalSpeechPipeline:
         module = importlib.import_module("transformers")
     except ImportError as exc:
         msg = (
-            "Local voice transcription dependencies are missing. Install the `speech` "
+            "Local voice transcription dependencies are missing. Install the `media` "
             "extra and ensure ffmpeg is on PATH."
         )
         raise ImportError(msg) from exc

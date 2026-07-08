@@ -742,7 +742,7 @@ def check_cli_dependencies() -> None:
 
     if missing:
         print("\nMissing required dependencies!")  # noqa: T201  # App output for missing dependencies
-        print("\nThe following packages are required to use Deep Agents Code:")  # noqa: T201  # App output for missing dependencies
+        print("\nThe following packages are required to use dcode:")  # noqa: T201  # App output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
         print("\nReinstall dcode with the recommended installer:")  # noqa: T201  # CLI output for missing dependencies
@@ -3070,7 +3070,7 @@ def cli_main() -> None:
                 # so confirm before pulling third-party code into the tool env.
                 console.print(
                     f"This will install the package '{escape(package)}' into "
-                    "the Deep Agents Code environment (this runs third-party "
+                    "the dcode environment (this runs third-party "
                     "code).",
                     highlight=False,
                 )

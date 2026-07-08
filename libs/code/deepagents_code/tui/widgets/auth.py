@@ -519,6 +519,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("f2", "toggle_advanced", "Advanced", show=False, priority=True),
+        Binding("ctrl+r", "reload_env", "Reload", show=False, priority=True),
         Binding("ctrl+d", "delete_stored", "Delete stored", show=False, priority=True),
     ]
 
@@ -662,33 +663,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cosmetically (title prefix, env note), so a MISSING fallback is safe.
         # The config is loaded once here so compose-time helpers can read the
         # cached instance instead of reloading outside this crash-safety guard.
-        try:
-            self._config = ModelConfig.load()
-            self._auth_status = _auth_status_for(provider)
-            self._has_existing = auth_store.get_stored_key(provider) is not None
-            self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
-            self._existing_project = auth_store.get_stored_project(provider) or ""
-            self._advanced_visible = bool(
-                self._existing_base_url or self._existing_project
-            )
-            self._region: Region = _region_for_endpoint(self._existing_base_url)
-            self._store_warning: str | None = None
-        except RuntimeError as exc:
-            logger.warning(
-                "Could not read stored credentials for %s: %s", provider, exc
-            )
-            self._config = ModelConfig()
-            self._auth_status = ProviderAuthStatus(
-                state=ProviderAuthState.MISSING, provider=provider
-            )
-            self._has_existing = False
-            self._existing_base_url = ""
-            self._existing_project = ""
-            self._advanced_visible = False
-            self._region = Region.US
-            self._store_warning = (
-                f"Credential file is unreadable ({exc}). Saving here will overwrite it."
-            )
+        self._probe_credential_state()
+        self._advanced_visible = bool(self._existing_base_url or self._existing_project)
         # Surface when an environment endpoint is set: at startup an existing
         # `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT` takes precedence over the
         # stored region, so without this note the radio could show one region
@@ -704,6 +680,41 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "An endpoint is set in your environment "
                 "(LANGSMITH_ENDPOINT/LANGCHAIN_ENDPOINT) and takes precedence at "
                 "startup; saving a region here applies your selection instead."
+            )
+
+    def _probe_credential_state(self) -> None:
+        """Resolve the current credential source, store, base URL, and project.
+
+        Never let a corrupt auth.json/config crash the screen: Textual would
+        propagate the exception before the modal mounts (at construction) or
+        while it is live (on Ctrl+R reload). Treat unreadable as "no env source"
+        / "no existing key" and surface a one-line warning at compose time. The
+        status is consumed only cosmetically, so a MISSING fallback is safe.
+        """
+        try:
+            self._config = ModelConfig.load()
+            self._auth_status = _auth_status_for(self._provider)
+            self._has_existing = auth_store.get_stored_key(self._provider) is not None
+            self._existing_base_url = (
+                auth_store.get_stored_base_url(self._provider) or ""
+            )
+            self._existing_project = auth_store.get_stored_project(self._provider) or ""
+            self._region: Region = _region_for_endpoint(self._existing_base_url)
+            self._store_warning: str | None = None
+        except RuntimeError as exc:
+            logger.warning(
+                "Could not read stored credentials for %s: %s", self._provider, exc
+            )
+            self._config = ModelConfig()
+            self._auth_status = ProviderAuthStatus(
+                state=ProviderAuthState.MISSING, provider=self._provider
+            )
+            self._has_existing = False
+            self._existing_base_url = ""
+            self._existing_project = ""
+            self._region = Region.US
+            self._store_warning = (
+                f"Credential file is unreadable ({exc}). Saving here will overwrite it."
             )
 
     def compose(self) -> ComposeResult:
@@ -850,7 +861,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                         "priority. Set ",
                         (self._env_var, TStyle(bold=True)),
                         " to share a key with other provider SDK tools; it is used "
-                        "only when no scoped or stored key exists. ",
+                        "only when no scoped or stored key exists. After setting one "
+                        "in a .env file, press ",
+                        ("Ctrl+R", TStyle(bold=True)),
+                        " to reload without restarting. A variable exported in a "
+                        "separate shell after launch is invisible to this process; "
+                        "it needs a full relaunch. ",
                         (
                             "Configuration docs",
                             self._link_style(CONFIGURATION_DOCS_URL),
@@ -962,7 +978,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             save_label = self._submit_label or (
                 "Enter replace" if self._has_existing else "Enter save"
             )
-            help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
+            help_parts = [
+                f"{save_label} {glyphs.bullet} Esc cancel",
+                "F2 advanced",
+                "Ctrl+R reload",
+            ]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
             yield Static(
@@ -1291,6 +1311,60 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     def action_cancel(self) -> None:
         """Dismiss without saving."""
         self.dismiss(AuthResult.CANCELLED)
+
+    async def action_reload_env(self) -> None:
+        """Re-read .env/environment, re-probe credentials, and continue.
+
+        Mirrors the /reload slash command so a credential env var set in a
+        .env file (or before launch) is picked up without a full restart. If
+        the provider was blocked and is now resolvable, dismiss with SAVED so
+        the caller retries the original operation; otherwise refresh the modal
+        in place and toast the outcome.
+        """
+        from deepagents_code.config import settings
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to reload configuration from auth prompt: %s", exc)
+            self.app.notify(
+                "Could not reload configuration. Check your .env file and "
+                "environment variables for syntax errors, then try again.",
+                severity="error",
+                markup=False,
+            )
+            return
+
+        was_blocking = self._auth_status.blocks_start
+        self._probe_credential_state()
+
+        if was_blocking and not self._auth_status.blocks_start:
+            self.app.notify(
+                f"Credentials detected for {self._provider}. Continuing.",
+                markup=False,
+            )
+            self.dismiss(AuthResult.SAVED)
+            return
+
+        # Preserve any in-progress input across the recompose so a reload never
+        # discards values the user already started typing.
+        before = {inp.id: inp.value for inp in self.query(Input)}
+        await self.recompose()
+        for inp in self.query(Input):
+            if inp.id in before:
+                inp.value = before[inp.id]
+        self.query_one("#auth-prompt-input", Input).focus()
+
+        if was_blocking:
+            self.app.notify(
+                "No credentials detected. Set a key in a .env file, then press "
+                "Ctrl+R. A variable exported in a separate shell needs a full "
+                "relaunch to take effect.",
+                markup=False,
+            )
+        else:
+            self.app.notify("Environment reloaded.", markup=False)
 
     def action_delete_stored(self) -> None:
         """Open the delete-confirmation overlay, or quit when nothing is stored.

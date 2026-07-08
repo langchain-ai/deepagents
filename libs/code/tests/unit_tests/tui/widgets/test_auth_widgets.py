@@ -1150,6 +1150,96 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_result is AuthResult.CANCELLED
         assert auth_store.get_stored_key("openai") is None
 
+    async def test_ctrl_r_reload_continues_when_env_now_resolves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R dismisses with SAVED once a credential becomes resolvable."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.SAVED
+
+    async def test_ctrl_r_reload_stays_open_when_still_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R with nothing newly set keeps the modal open (no false SAVED)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+    async def test_ctrl_r_reload_preserves_typed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An in-progress key survives the reload recompose."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "half-typed"
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            value = app.screen.query_one("#auth-prompt-input", Input).value
+        assert value == "half-typed"
+
+    async def test_ctrl_r_reload_surfaces_config_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed reload is caught and never crashes the modal."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+
+            def _boom() -> list[str]:
+                msg = "bad .env"
+                raise ValueError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.config.settings.reload_from_environment", _boom
+            )
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+    async def test_help_line_advertises_reload(self) -> None:
+        """The modal help line tells users Ctrl+R reloads the environment."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            help_line = app.screen.query_one(".auth-prompt-help", Static)
+            content = str(help_line.content)
+        assert "Ctrl+R reload" in content
+
+    async def test_advanced_copy_flags_reload_and_relaunch_caveat(self) -> None:
+        """Advanced env-var copy points at Ctrl+R and the separate-shell caveat."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            key_meta = str(
+                app.screen.query_one("#auth-prompt-key-meta", Static).content
+            )
+        assert "Ctrl+R" in key_meta
+        assert "relaunch" in key_meta
+
     async def test_ctrl_d_opens_confirm_then_deletes(self) -> None:
         """Ctrl+D opens the confirmation modal; Enter completes the delete."""
         from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen

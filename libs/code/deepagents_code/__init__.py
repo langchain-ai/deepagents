@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from deepagents_code._debug import configure_debug_logging
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+configure_debug_logging(logging.getLogger(__name__))  # noqa: RUF067  # package logger must be configured before child modules emit logs
 
 __all__ = [
     "__version__",

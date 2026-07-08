@@ -1,0 +1,11 @@
+{
+  "name": "content-writer",
+  "description": "Researches topics and drafts blog posts and social media content.",
+  "model": "anthropic:claude-sonnet-4-6",
+  "backend": {
+    "type": "sandbox",
+    "sandbox_config": {
+      "scope": "thread"
+    }
+  }
+}

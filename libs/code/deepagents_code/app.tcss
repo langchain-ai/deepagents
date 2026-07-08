@@ -21,10 +21,31 @@ Screen {
 
 /* Main content goes on base layer by default */
 
-/* Chat area - main scrollable messages area */
+.message-timestamp-footer {
+    display: none;
+    height: auto;
+    color: $text-muted;
+    text-style: dim;
+    margin: -1 0 1 0;
+    padding: 0;
+}
+
+/*
+ * Visibility is toggled per-footer (not via a class on #messages) so a
+ * `/timestamps` toggle restyles only the footer leaves instead of forcing a
+ * re-cascade across every message subtree.
+ */
+.message-timestamp-footer.message-timestamp-footer-visible {
+    display: block;
+}
+
+/* Chat area - main scrollable messages area.
+   No horizontal padding so message blocks span the same full width as the
+   input box below (whose border is flush to both edges). The scrollbar is
+   toggled at runtime via the /scrollbar command (off by default). */
 #chat {
     height: 1fr;
-    padding: 1 2 0 2;
+    padding: 1 0 0 0;
     background: $background;
 }
 
@@ -229,6 +250,78 @@ ToolCallMessage.-ascii:hover {
     margin: 1 0 0 0;
     border: solid $warning;
     background: $surface;
+}
+
+/* Goal review widget */
+.goal-review-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    background: $surface;
+    border: solid $success;
+}
+
+.goal-review-menu .goal-review-title {
+    text-style: bold;
+    color: $success;
+    margin-bottom: 0;
+}
+
+.goal-review-menu .goal-review-content {
+    height: auto;
+    max-height: 12;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-body {
+    height: auto;
+}
+
+.goal-review-menu .goal-review-markdown {
+    margin: 0 0 1 0;
+    padding: 0;
+}
+
+.goal-review-menu .goal-review-options-container {
+    height: auto;
+    background: $surface-darken-1;
+    padding: 0 1;
+    margin-top: 0;
+}
+
+.goal-review-menu .goal-review-option {
+    height: 1;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-option-selected {
+    background: $primary;
+    text-style: bold;
+}
+
+.goal-review-menu .goal-review-edit-input {
+    margin: 1 1 0 1;
+    height: auto;
+    min-height: 4;
+    max-height: 12;
+    background: transparent;
+}
+
+.goal-review-menu .goal-review-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.goal-review-menu AskUserTextArea {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
 }
 
 /* Ask user widget */

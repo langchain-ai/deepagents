@@ -1,7 +1,33 @@
+<!-- markdownlint-disable MD024 -->
+
 # Deep Agents CLI Changelog
 
-From 0.1.0 onward, `deepagents-cli` only contains `deploy`, `dev`, and `init`.
-The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
+From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and `mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API. The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
+
+## [0.2.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.1...deepagents-cli==0.2.2) (2026-06-07)
+
+
+### Bug Fixes
+
+* support `state` deploy backend via state kwarg rather than `default`, misc API alignments with MDA ([#3790](https://github.com/langchain-ai/deepagents/issues/3790)) ([04b4bb9](https://github.com/langchain-ai/deepagents/commit/04b4bb946fc5ff914b8cccc8c9543d10533de0f8))
+
+## [0.2.1](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.2.0...deepagents-cli==0.2.1) (2026-06-03)
+
+* Version bumps
+
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.2...deepagents-cli==0.2.0) (2026-06-01)
+
+### ⚠ BREAKING CHANGES
+
+* `deepagents deploy` now targets the Managed Deep Agents API; `deepagents dev`, `deepagents.toml`, and the `--config`/`--dry-run` flags are removed. Run `deepagents init` to re-scaffold (`agent.json` + `tools.json`). See [PR](https://github.com/langchain-ai/deepagents/pull/3609) for the full migration guide.
+
+### Features
+
+* Migrate `deepagents deploy` to use Managed Deep Agents API ([#3609](https://github.com/langchain-ai/deepagents/issues/3609)) ([72aef52](https://github.com/langchain-ai/deepagents/commit/72aef52542a3fd4a7eebcb3dba40e28adf1aa044))
+
+### Bug Fixes
+
+* Stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
 
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.1...deepagents-cli==0.1.2) (2026-05-21)
 

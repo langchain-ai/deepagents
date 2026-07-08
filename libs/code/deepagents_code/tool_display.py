@@ -7,6 +7,7 @@ path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies
 """
 
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,21 @@ from deepagents_code.unicode_security import strip_dangerous_unicode
 _HIDDEN_CHAR_MARKER = " [hidden chars removed]"
 """Marker appended to display values that had dangerous Unicode stripped, so
 users know the value was modified for safety."""
+
+JS_EVAL_HEADER_MAX_LENGTH = 120
+"""Width at which the `js_eval` header truncates the first code line.
+
+Shared with `messages.py` so the "header truncates the first line" cutoff and
+the "offer a collapsible code block" threshold stay in lock-step from a single
+source of truth.
+"""
+
+EXECUTE_HEADER_MAX_LENGTH = 120
+"""Width at which the `execute` header truncates the shell command.
+
+Shared with `messages.py` so the header cutoff and the "offer a collapsible
+command block" threshold stay in lock-step from a single source of truth.
+"""
 
 
 def _format_timeout(seconds: int) -> str:
@@ -95,6 +111,38 @@ def _sanitize_display_value(value: object, *, max_length: int = MAX_ARG_LENGTH) 
     return display
 
 
+def _format_scope_path(
+    path_value: object,
+    abbreviate: Callable[[str], str],
+) -> str:
+    """Format a glob/grep `path` argument as a display suffix.
+
+    The glob tool defaults `path` to the backend root (`"/"`); the grep tool
+    defaults it to `None` (the backend's working directory). In either case the
+    default scope adds no information and is omitted. Only an explicit, non-root
+    path is rendered, so that two otherwise-identical calls scoped to different
+    directories are distinguishable in the UI. The rendered path is shortened
+    via the supplied `abbreviate` helper.
+
+    Args:
+        path_value: The raw `path` argument, or `None` when not supplied.
+        abbreviate: Path-shortening helper from the calling scope.
+
+    Returns:
+        A suffix like ` in langchain`, or an empty string for the default scope.
+    """
+    if path_value is None:
+        return ""
+    raw = str(path_value)
+    if raw in {"", "/"}:
+        return ""
+    sanitized = strip_dangerous_unicode(raw)
+    display = abbreviate(sanitized)
+    if sanitized != raw:
+        display += _HIDDEN_CHAR_MARKER
+    return f" in {display}"
+
+
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """Format tool calls for display with tool-specific smart formatting.
 
@@ -108,7 +156,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         Formatted string for display (e.g., "(*) read_file(config.py)" in ASCII mode)
 
     Examples:
-        read_file(path="/long/path/file.py") → "<prefix> read_file(file.py)"
+        read_file(file_path="/long/path/file.py") → "<prefix> read_file(file.py)"
         web_search(query="how to code") → '<prefix> web_search("how to code")'
         execute(command="pip install foo") → '<prefix> execute("pip install foo")'
     """
@@ -148,7 +196,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return path.name
 
     # Tool-specific formatting - show the most important argument(s)
-    if tool_name in {"read_file", "write_file", "edit_file"}:
+    if tool_name in {"read_file", "write_file", "edit_file", "delete"}:
         # File operations: show the primary file path argument (file_path or path)
         path_value = tool_args.get("file_path")
         if path_value is None:
@@ -167,15 +215,18 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{query}")'
 
     elif tool_name == "grep":
-        # Grep: show the search pattern
+        # Grep: show the search pattern, and the scoped path when non-default
         if "pattern" in tool_args:
             pattern = _sanitize_display_value(tool_args["pattern"], max_length=70)
-            return f'{prefix} {tool_name}("{pattern}")'
+            scope = _format_scope_path(tool_args.get("path"), abbreviate_path)
+            return f'{prefix} {tool_name}("{pattern}"{scope})'
 
     elif tool_name == "execute":
         # Execute: show the command, and timeout only if non-default
         if "command" in tool_args:
-            command = _sanitize_display_value(tool_args["command"], max_length=120)
+            command = _sanitize_display_value(
+                tool_args["command"], max_length=EXECUTE_HEADER_MAX_LENGTH
+            )
             timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
             from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
@@ -185,11 +236,20 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return f'{prefix} {tool_name}("{command}")'
 
     elif tool_name == "js_eval":
-        # JS interpreter: show the first line of the snippet, truncated.
+        # JS interpreter: show only the first non-blank line of the snippet so a
+        # multi-line program collapses to a single, scannable header line. The
+        # full code is available via the collapsible args block.
         code = tool_args.get("code")
         if isinstance(code, str) and code.strip():
-            snippet = _sanitize_display_value(code, max_length=120)
-            return f'{prefix} {tool_name}("{snippet}")'
+            first_line = next(
+                (line for line in code.splitlines() if line.strip()), ""
+            ).strip()
+            multiline = sum(1 for line in code.splitlines() if line.strip()) > 1
+            snippet = _sanitize_display_value(
+                first_line, max_length=JS_EVAL_HEADER_MAX_LENGTH
+            )
+            ellipsis = get_glyphs().ellipsis if multiline else ""
+            return f'{prefix} {tool_name}("{snippet}{ellipsis}")'
         return f"{prefix} {tool_name}()"
 
     elif tool_name == "ls":
@@ -203,10 +263,11 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
         return f"{prefix} {tool_name}()"
 
     elif tool_name == "glob":
-        # Glob: show the pattern
+        # Glob: show the pattern, and the scoped path when non-default
         if "pattern" in tool_args:
             pattern = _sanitize_display_value(tool_args["pattern"], max_length=80)
-            return f'{prefix} {tool_name}("{pattern}")'
+            scope = _format_scope_path(tool_args.get("path"), abbreviate_path)
+            return f'{prefix} {tool_name}("{pattern}"{scope})'
 
     elif tool_name == "fetch_url":
         # Fetch URL: show the URL being fetched

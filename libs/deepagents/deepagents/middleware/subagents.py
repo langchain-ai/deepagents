@@ -8,7 +8,13 @@ from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ContextT,
+    ModelRequest,
+    ModelResponse,
+    ResponseT,
+)
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
@@ -22,6 +28,9 @@ from pydantic import BaseModel, Field
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
+
+SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
+"""Configurable key used by task-tool callers to request dynamic response format."""
 
 
 class SubAgent(TypedDict):
@@ -52,7 +61,10 @@ class SubAgent(TypedDict):
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-5.5'`).
         middleware: Additional middleware for custom behavior, logging,
-            or rate limiting.
+            or rate limiting. To restrict filesystem tools, include a
+            `FilesystemMiddleware(tools=...)` instance here — it
+            will be used as the subagent's filesystem middleware instead of
+            the default one.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
@@ -162,6 +174,13 @@ class CompiledSubAgent(TypedDict):
         This is required for the subagent to communicate results back to
         the main agent.
 
+    !!! note
+
+        `CompiledSubAgent` runnables are used as provided. They do not
+        inherit `create_deep_agent(state_schema=...)`; if the runnable
+        needs custom state fields, compile it with a compatible state
+        schema yourself.
+
     When the subagent completes, the parent reads the returned state:
     if `structured_response` is non-`None`, it is JSON-serialized and used as
     the `ToolMessage` content; otherwise, the last non-empty `AIMessage`
@@ -234,9 +253,6 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
-    "skills_metadata",
-    "skills_load_errors",
-    "memory_contents",
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -248,12 +264,8 @@ When returning updates:
 2. The todos and `structured_response` keys are excluded as they do not have
     a defined reducer and no clear meaning for returning them from a subagent
     to the main agent.
-3. The `skills_metadata`, `skills_load_errors`, and `memory_contents` keys are
-    automatically excluded from subagent output via `PrivateStateAttr`
-    annotations on their respective state schemas. However, they must ALSO
-    be explicitly filtered from runtime.state when invoking a subagent to
-    prevent parent state from leaking to child agents (e.g., the general-purpose
-    subagent loads its own skills via `SkillsMiddleware`).
+3. Agent-private fields on middleware state schemas are excluded from both
+    subagent output and subagent inputs.
 """
 
 
@@ -423,16 +435,6 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 
 
-class _SubagentSpec(TypedDict):
-    """Internal spec for building the task tool."""
-
-    name: str
-
-    description: str
-
-    runnable: Runnable
-
-
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -457,24 +459,138 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
-def _build_task_tool(  # noqa: C901, PLR0915
-    subagents: list[_SubagentSpec],
-    task_description: str | None = None,
-) -> BaseTool:
-    """Create a task tool from pre-built subagent graphs.
+def create_sub_agent(
+    spec: SubAgent,
+    *,
+    state_schema: type | None = None,
+    response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
+) -> Runnable:
+    """Create a runnable agent from a raw `SubAgent` spec.
+
+    This is the shared entrypoint for the `create_agent` path used by
+    raw subagent specs. Pre-compiled `CompiledSubAgent` runnables are already
+    created by the caller and are handled separately by `SubAgentMiddleware`.
 
     Args:
-        subagents: List of subagent specs containing name, description, and runnable.
+        spec: Subagent spec to compile. Must specify `model` and `tools`.
+        state_schema: Base graph state schema forwarded to `create_agent` for
+            the subagent.
+        response_format: Optional response format override for this compiled
+            subagent instance.
+
+    Returns:
+        Runnable agent ready for task-tool invocation.
+
+    Raises:
+        ValueError: If `spec` is missing `model` or `tools`.
+    """
+    if "model" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'model'"
+        raise ValueError(msg)
+    if "tools" not in spec:
+        msg = f"SubAgent '{spec['name']}' must specify 'tools'"
+        raise ValueError(msg)
+
+    from deepagents._models import resolve_model  # noqa: PLC0415
+
+    model = resolve_model(spec["model"])
+    middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
+
+    interrupt_on = spec.get("interrupt_on")
+    if interrupt_on:
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    selected_response_format = response_format if response_format is not None else spec.get("response_format")
+    create_agent_kwargs: dict[str, Any] = {
+        "system_prompt": spec["system_prompt"],
+        "tools": spec["tools"],
+        "middleware": middleware,
+        "name": spec["name"],
+        "response_format": selected_response_format,
+    }
+    if state_schema is not None:
+        create_agent_kwargs["state_schema"] = state_schema
+
+    return create_agent(model, **create_agent_kwargs)
+
+
+def _get_subagent_response_format(
+    runtime: ToolRuntime,
+) -> ResponseFormat[Any] | type | dict[str, Any] | None:
+    """Return the response format carried in this task tool call's config."""
+    config = runtime.config
+    configurable = config.get("configurable") if isinstance(config, dict) else None
+    if not isinstance(configurable, dict):
+        return None
+    value = configurable.get(SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY)
+    if value is None:
+        return None
+    return value
+
+
+def _build_task_tool(  # noqa: C901, PLR0915
+    subagents: Sequence[SubAgent | CompiledSubAgent],
+    task_description: str | None = None,
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
+    state_schema: type | None = None,
+) -> BaseTool:
+    """Create a task tool from subagent specs.
+
+    Args:
+        subagents: List of raw or compiled subagent specs.
         task_description: Custom description for the task tool. If `None`,
             uses default template. Supports `{available_agents}` placeholder.
+        private_state_keys: State keys marked with `PrivateStateAttr` that
+            should be stripped from parent state before invoking subagents.
+        state_schema: Base graph state schema forwarded to raw subagent specs.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
-    # Build the graphs dict and descriptions from the unified spec list
-    subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
 
-    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+    def _compile_spec(
+        spec: SubAgent | CompiledSubAgent,
+        *,
+        response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
+    ) -> CompiledSubAgent:
+        """Compile one raw spec or configure one provided runnable."""
+        if "runnable" in spec:
+            if response_format is not None:
+                msg = f'response_schema cannot be used with compiled subagent "{spec["name"]}"; dynamic schemas require a raw SubAgent spec.'
+                raise ValueError(msg)
+
+            # Use with_config (not attribute mutation) so the original runnable is
+            # untouched and a shared instance can be registered under multiple names.
+            compiled = cast("CompiledSubAgent", spec)
+            runnable = compiled["runnable"].with_config(
+                {
+                    "metadata": {"lc_agent_name": spec["name"]},
+                    "run_name": spec["name"],
+                }
+            )
+            return {
+                "name": spec["name"],
+                "description": spec["description"],
+                "runnable": runnable,
+            }
+        return {
+            "name": spec["name"],
+            "description": spec["description"],
+            "runnable": create_sub_agent(
+                spec,
+                state_schema=state_schema,
+                response_format=response_format,
+            ),
+        }
+
+    compiled_subagents = [_compile_spec(spec) for spec in subagents]
+    subagents_by_name = {spec["name"]: spec for spec in subagents}
+
+    # Build the graphs dict and descriptions from the unified spec list
+    subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in compiled_subagents}
+
+    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in compiled_subagents)
 
     # Use custom description if provided, otherwise use default template
     if task_description is None:
@@ -524,36 +640,33 @@ def _build_task_tool(  # noqa: C901, PLR0915
             }
         )
 
-    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+    def _select_subagent(
+        subagent_type: str,
+        runtime: ToolRuntime,
+    ) -> Runnable:
+        """Return the runnable to use for this task invocation."""
+        response_format = _get_subagent_response_format(runtime)
+        if response_format is not None:
+            new_spec = _compile_spec(
+                subagents_by_name[subagent_type],
+                response_format=response_format,
+            )
+            return new_spec["runnable"]
+
+        return subagent_graphs[subagent_type]
+
+    def _validate_and_prepare_state(
+        subagent_type: str,
+        description: str,
+        runtime: ToolRuntime,
+    ) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
-        subagent = subagent_graphs[subagent_type]
+        subagent = _select_subagent(subagent_type, runtime)
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
+        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
-
-    def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
-        """Derive the subagent's `RunnableConfig` from the parent's runtime config.
-
-        Only `callbacks`, `tags`, and `configurable` are forwarded.
-
-        Callbacks let Pregel's streaming handlers propagate into the subagent
-        so its events land on the parent's stream.  Tags are forwarded
-        for tracing continuity. `configurable` is needed for Pregel to recognize
-        the subagent as a nested subgraph.
-
-        `recursion_limit` and `metadata` are intentionally
-        *not* forwarded — the subagent's own bound config must take precedence.
-
-        Passing `metadata` in the invoke config replaces the
-        subagent's bound metadata (e.g. `lc_agent_name`).
-        """
-        parent_config = runtime.config or {}
-        config: RunnableConfig = {}
-        for key in ("callbacks", "tags", "configurable"):
-            if key in parent_config:
-                config[key] = parent_config[key]  # type: ignore[literal-required]
-        return config
 
     def task(
         description: str,
@@ -566,15 +679,19 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        subagent_config = _build_subagent_config(runtime)
-        # Tag the subagent's configurable so downstream readers (e.g. middleware
-        # that key off `runtime.config["configurable"]["ls_agent_type"]`) see the
-        # subagent context, in addition to the langsmith tracing-context tag.
-        subagent_config["configurable"] = {
-            **subagent_config.get("configurable", {}),
-            "ls_agent_type": "subagent",
-        }
+        subagent, subagent_state = _validate_and_prepare_state(
+            subagent_type,
+            description,
+            runtime,
+        )
+        # The parent's callbacks, tags and configurable reach the subagent
+        # automatically: langgraph's `ensure_config` seeds each run from the
+        # ambient parent config and (as of langgraph#7926) merges it per-key, so
+        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+        # Forwarding those keys explicitly would double-count under the merge
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -590,14 +707,19 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        subagent_config = _build_subagent_config(runtime)
-        # Mirror `task()` — tag the subagent's configurable as well as the
-        # langsmith tracing context so both code paths see `ls_agent_type`.
-        subagent_config["configurable"] = {
-            **subagent_config.get("configurable", {}),
-            "ls_agent_type": "subagent",
-        }
+        subagent, subagent_state = _validate_and_prepare_state(
+            subagent_type,
+            description,
+            runtime,
+        )
+        # The parent's callbacks, tags and configurable reach the subagent
+        # automatically: langgraph's `ensure_config` seeds each run from the
+        # ambient parent config and (as of langgraph#7926) merges it per-key, so
+        # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
+        # `recursion_limit`) and parent metadata propagates (deepagents#3634).
+        # Forwarding those keys explicitly would double-count under the merge
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
+        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -637,6 +759,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
+        state_schema: Base graph state schema forwarded to raw `SubAgent`
+            specs when their runnables are compiled.
+
+            Leave unset to use `create_agent`'s default. `CompiledSubAgent`
+            entries are unaffected — callers own those runnables' schemas.
 
     Example:
         ```python
@@ -671,6 +798,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        private_state_keys: frozenset[str] | None = None,
+        state_schema: type | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -680,75 +809,44 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
         self._backend = backend
         self._subagents = subagents
-        subagent_specs = self._get_subagents()
-        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
+        self._private_state_keys = private_state_keys or frozenset()
+        self._task_description = task_description
+        self._state_schema = state_schema
+        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(subagent_specs, task_description)
+        task_tool = _build_task_tool(
+            self._subagents,
+            task_description,
+            private_state_keys=self._private_state_keys,
+            state_schema=self._state_schema,
+        )
 
         # Build system prompt with available agents
-        if system_prompt and subagent_specs:
-            agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagent_specs)
+        if system_prompt and subagents:
+            agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
             self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
 
         self.tools = [task_tool]
 
-    def _get_subagents(self) -> list[_SubagentSpec]:
-        """Create runnable agents from specs.
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        """State keys stripped from parent state before invoking subagents."""
+        return self._private_state_keys
 
-        Returns:
-            List of subagent specs with name, description, and runnable.
-        """
-        specs: list[_SubagentSpec] = []
-
-        for spec in self._subagents:
-            if "runnable" in spec:
-                # Use with_config (not attribute mutation) so the original runnable is
-                # untouched and a shared instance can be registered under multiple names.
-                compiled = cast("CompiledSubAgent", spec)
-                runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
-                continue
-
-            # SubAgent - validate required fields
-            if "model" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'model'"
-                raise ValueError(msg)
-            if "tools" not in spec:
-                msg = f"SubAgent '{spec['name']}' must specify 'tools'"
-                raise ValueError(msg)
-
-            # Resolve model if string
-            from deepagents._models import resolve_model  # noqa: PLC0415
-
-            model = resolve_model(spec["model"])
-
-            # Use middleware as provided (caller is responsible for building full stack)
-            middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
-
-            interrupt_on = spec.get("interrupt_on")
-            if interrupt_on:
-                middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-
-            specs.append(
-                {
-                    "name": spec["name"],
-                    "description": spec["description"],
-                    "runnable": create_agent(
-                        model,
-                        system_prompt=spec["system_prompt"],
-                        tools=spec["tools"],
-                        middleware=middleware,
-                        name=spec["name"],
-                        response_format=spec.get("response_format"),
-                    ),
-                }
-            )
-
-        return specs
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+        task_tool = _build_task_tool(
+            self._subagents,
+            task_description=self._task_description,
+            private_state_keys=value,
+            state_schema=self._state_schema,
+        )
+        self.tools = [task_tool]
 
     def wrap_model_call(
         self,

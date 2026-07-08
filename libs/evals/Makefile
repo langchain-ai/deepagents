@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -41,29 +41,46 @@ test_watch: ## Run tests in watch mode
 # Harbor jobs
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
-# AGENT_MODE: cli (local default) or sdk (CI default)
-AGENT_MODE ?= cli
-AGENT_KWARG = --agent-kwarg use_cli_agent=$(if $(filter cli,$(AGENT_MODE)),true,false)
+HARBOR_AGENT_IMPL ?= dcode
+HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
+HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
+HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
+HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}' --agent-env 'FIREWORKS_API_KEY=$${FIREWORKS_API_KEY}' --agent-env 'UV_PRERELEASE=allow'
+HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
+HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench
+HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2
+HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
-run-hello-world: ## Run hello-world job
-	@mkdir -p jobs/hello-world
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker $(AGENT_KWARG)
+stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sandboxes
+	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
 
-run-terminal-bench-modal: ## Run terminal-bench on Modal (4 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 4 --jobs-dir jobs/terminal-bench --env modal $(AGENT_KWARG)
+run-hello-world: stage-harbor-local-deps ## Run hello-world job (override model with MODEL=<id>)
+	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --model $(or $(MODEL),fireworks:accounts/fireworks/models/glm-5p2) --dataset hello-world --include-task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
-run-terminal-bench-daytona: ## Run terminal-bench on Daytona (40 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 40 --jobs-dir jobs/terminal-bench --env daytona $(AGENT_KWARG)
+run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) -n 4 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env modal
 
-run-terminal-bench-docker: ## Run terminal-bench on Docker (sequential)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker $(AGENT_KWARG)
+run-terminal-bench-daytona: stage-harbor-local-deps ## Run terminal-bench on Daytona (40 concurrent)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) -n 40 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env daytona
 
-run-terminal-bench-runloop: ## Run terminal-bench on Runloop (10 concurrent)
-	@mkdir -p jobs/terminal-bench
-	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env runloop $(AGENT_KWARG)
+run-terminal-bench-docker: stage-harbor-local-deps ## Run terminal-bench on Docker (sequential)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env docker
+
+run-terminal-bench-runloop: stage-harbor-local-deps ## Run terminal-bench on Runloop (10 concurrent)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) -n 10 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env runloop
+
+run-terminal-bench-langsmith: stage-harbor-local-deps ## Run terminal-bench on LangSmith prod sandboxes (sequential; override with MODEL=<id>)
+	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset $(HARBOR_TERMINAL_BENCH_DATASET) --model $(or $(MODEL),anthropic:claude-opus-4-8) -n 1 --jobs-dir $(HARBOR_TERMINAL_BENCH_JOBS_DIR) --env langsmith --plugin langsmith --plugin-kwarg dataset_name=$(HARBOR_TERMINAL_BENCH_DATASET) --plugin-kwarg experiment_name=$(HARBOR_LANGSMITH_EXPERIMENT)
 
 ######################
 # CHARTS

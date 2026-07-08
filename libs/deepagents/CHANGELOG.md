@@ -1,4 +1,105 @@
-# Changelog
+<!-- markdownlint-disable MD024 -->
+
+# Deep Agents Changelog
+
+## [0.6.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.11...deepagents==0.6.12) (2026-06-25)
+
+This release adds the `deepagents[aws]` extra, which installs `langchain-aws` so Bedrock users get the automatic prompt caching integration added in [#4108](https://github.com/langchain-ai/deepagents/issues/4108).
+
+### Features
+
+* Add Bedrock prompt caching middleware ([#4108](https://github.com/langchain-ai/deepagents/issues/4108)) ([a398382](https://github.com/langchain-ai/deepagents/commit/a398382c85ce518ea1b7f365e49df905cdcd498b))
+
+### Bug Fixes
+
+* Preserve media references in summarization archives ([#3990](https://github.com/langchain-ai/deepagents/issues/3990)) ([2d6fb53](https://github.com/langchain-ai/deepagents/commit/2d6fb53cd8c94680a42fa9d7041509ff78050616))
+
+## [0.6.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.10...deepagents==0.6.11) (2026-06-18)
+
+### Bug Fixes
+
+* Route `BaseSandbox async` helpers through aexecute ([#3996](https://github.com/langchain-ai/deepagents/issues/3996)) ([52dcf1a](https://github.com/langchain-ai/deepagents/commit/52dcf1a42cb00dd614b336038e4398472f78859d))
+
+## [0.6.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.9...deepagents==0.6.10) (2026-06-13)
+
+### Bug Fixes
+
+* Compare provider in `model_matches_spec` ([#3943](https://github.com/langchain-ai/deepagents/issues/3943)) ([34244b6](https://github.com/langchain-ai/deepagents/commit/34244b6aebde4c237758dacedccdc3e22f3ca8e5))
+
+## [0.6.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.8...deepagents==0.6.9) (2026-06-12)
+
+### Features
+
+* Support configurable subagent response format ([#3882](https://github.com/langchain-ai/deepagents/issues/3882)) ([b0e4d7a](https://github.com/langchain-ai/deepagents/commit/b0e4d7aa8d0ad58c65bddef3835e539b3d5b2a99))
+
+### Bug Fixes
+
+* Don't swallow `TypeError` from custom `token_counter` ([#3927](https://github.com/langchain-ai/deepagents/issues/3927)) ([a6ec9d0](https://github.com/langchain-ai/deepagents/commit/a6ec9d0e797a8b8a7d53d7debb197bb25e80be41))
+* Handle `Overwrite`-wrapped messages in tool result interception ([#3905](https://github.com/langchain-ai/deepagents/issues/3905)) ([a043c5a](https://github.com/langchain-ai/deepagents/commit/a043c5a6717374c405a3ed740cfdafdd196f5f21))
+* Keep private state out of subagent propagation ([#3542](https://github.com/langchain-ai/deepagents/issues/3542)) ([7ff9553](https://github.com/langchain-ai/deepagents/commit/7ff9553fc057a682ba503ebfe9a870adb51ab848))
+* Make sync glob timeout bound wall-clock time ([#3866](https://github.com/langchain-ai/deepagents/issues/3866)) ([cba6caf](https://github.com/langchain-ai/deepagents/commit/cba6caf8f708133381506ecc9e217e7e3ca1c7f2))
+* Normalize read slices after windowing ([#3888](https://github.com/langchain-ai/deepagents/issues/3888)) ([33d900c](https://github.com/langchain-ai/deepagents/commit/33d900c98b686aa7e7782d0be3019010ced5f03a))
+* Stream Python grep fallback ([#3886](https://github.com/langchain-ai/deepagents/issues/3886)) ([3673d95](https://github.com/langchain-ai/deepagents/commit/3673d95d41aa00f03fbfe2083e46afa485800f3a))
+
+### Performance Improvements
+
+* Count tokens once per model call in summarization middleware ([#3877](https://github.com/langchain-ai/deepagents/issues/3877)) ([6558c8c](https://github.com/langchain-ai/deepagents/commit/6558c8ca3d8e10e3309f95c807e740914af3175f))
+* Cache filesystem system prompts ([#3889](https://github.com/langchain-ai/deepagents/issues/3889)) ([2f432ba](https://github.com/langchain-ai/deepagents/commit/2f432ba63687d7c8488d5d41d0551d02b4ae00b4))
+* Cache grep glob matchers ([#3887](https://github.com/langchain-ai/deepagents/issues/3887)) ([eae3cf1](https://github.com/langchain-ai/deepagents/commit/eae3cf148de3f8c8ee9ffd8af6e5a5e06cce9d6f))
+
+## [0.6.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.7...deepagents==0.6.8) (2026-06-03)
+
+### Features
+
+* Add interrupt mode to filesystem permissions ([#3505](https://github.com/langchain-ai/deepagents/issues/3505)) ([a090162](https://github.com/langchain-ai/deepagents/commit/a090162ea9fd950c54fac874b8a165ca770fd2dc))
+* Surface subagents via inherited `lc_agent_name` projection ([e0a1ed2](https://github.com/langchain-ai/deepagents/commit/e0a1ed24e6b44c31d0aac3358aeee0d6cb66b2c4))
+
+### Bug Fixes
+
+* Pass through summarization factory prompt knobs ([#3559](https://github.com/langchain-ai/deepagents/issues/3559)) ([a663cad](https://github.com/langchain-ai/deepagents/commit/a663cad8858a78a5d063af0c51bb789bfb1aba2b))
+* Align `glob` path default with `grep` ([#3666](https://github.com/langchain-ai/deepagents/issues/3666)) ([ece8e75](https://github.com/langchain-ai/deepagents/commit/ece8e752059f493254753194bcf59befe54b3556))
+* Guard empty binary reads with empty-content warning ([#3675](https://github.com/langchain-ai/deepagents/issues/3675)) ([2c2cec8](https://github.com/langchain-ai/deepagents/commit/2c2cec87476f06e32c7b09cedd2c44e0c713f147))
+* Surface missing path errors in `FilesystemBackend.ls` ([#3574](https://github.com/langchain-ai/deepagents/issues/3574)) ([4c28760](https://github.com/langchain-ai/deepagents/commit/4c28760abbbe43117f2118793f11ff9d4f71761e))
+* Timeout python grep fallback ([#1937](https://github.com/langchain-ai/deepagents/issues/1937)) ([665a18e](https://github.com/langchain-ai/deepagents/commit/665a18e7fe7f291319af6780328384cc658af899))
+
+### Warnings
+
+* We are dropping public exports of `SubagentRunStream`, `AsyncSubagentRunStream`, and `SubagentTransformer`. These are internal classes for the beta `stream_events(version="v3")` streaming API that should not have been publicly exported in the first place.
+
+## [0.6.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.6...deepagents==0.6.7) (2026-05-30)
+
+### Bug Fixes
+
+* Propagate goto and graph in Commands returned by tools ([#3391](https://github.com/langchain-ai/deepagents/issues/3391)) ([d92aef6](https://github.com/langchain-ai/deepagents/commit/d92aef68f70a5e5277c43a50581e7895e682c417))
+* Handle base64 reads with unknown file extensions ([#3663](https://github.com/langchain-ai/deepagents/issues/3663)) ([9857a08](https://github.com/langchain-ai/deepagents/commit/9857a08b6144b2f001d8f4bf03ac2f254c6b2da4))
+* Export `DeepAgentState` ([#3653](https://github.com/langchain-ai/deepagents/issues/3653)) ([14a9047](https://github.com/langchain-ai/deepagents/commit/14a904757c2d9d797945b6ea1bc9529f1f8cf369))
+
+## [0.6.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.5...deepagents==0.6.6) (2026-05-28)
+
+### Features
+
+* Allow passing `state_schema` in `create_deep_agent` ([#3642](https://github.com/langchain-ai/deepagents/issues/3642)) ([37839bd](https://github.com/langchain-ai/deepagents/commit/37839bd7d67fba8c11ff0ccaaa8ac92b39609450))
+
+## [0.6.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.4...deepagents==0.6.5) (2026-05-28)
+
+### Features
+
+* `RubricMiddleware` for self-evaluated agent iteration ([#3529](https://github.com/langchain-ai/deepagents/issues/3529)) ([5b8d44d](https://github.com/langchain-ai/deepagents/commit/5b8d44d65c6ec43084687019cf00a37d730ac2fa))
+* Log when grep falls back from ripgrep ([#3593](https://github.com/langchain-ai/deepagents/issues/3593)) ([379b1ff](https://github.com/langchain-ai/deepagents/commit/379b1ffdc3ccf5da72d9f7264d531be108f0b36d))
+
+### Bug Fixes
+
+* Use `file_path` kwarg in `read_file` examples ([#3630](https://github.com/langchain-ai/deepagents/issues/3630)) ([97946ee](https://github.com/langchain-ai/deepagents/commit/97946ee09eb167c63d8c07f8bb116f40cfc9603f))
+* `read_file` pagination skipping lines after wrapping ([#3641](https://github.com/langchain-ai/deepagents/issues/3641)) ([390551d](https://github.com/langchain-ai/deepagents/commit/390551d61d57ce68c2a80ed78c07eaa8e985908b))
+* Handle `None` state in messages delta reducer ([#3636](https://github.com/langchain-ai/deepagents/issues/3636)) ([5a6d920](https://github.com/langchain-ai/deepagents/commit/5a6d920d9dec2199cbe743062a5cc1ff8f298567))
+* Return grep errors for sandbox exec failures ([#3637](https://github.com/langchain-ai/deepagents/issues/3637)) ([f87d61f](https://github.com/langchain-ai/deepagents/commit/f87d61f01a23fcfb994e88b7f9324d404e66faef))
+
+## [0.6.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.3...deepagents==0.6.4) (2026-05-26)
+
+### Bug Fixes
+
+* Grep crashing when files vanish mid-walk ([#3592](https://github.com/langchain-ai/deepagents/issues/3592)) ([0b8301b](https://github.com/langchain-ai/deepagents/commit/0b8301b2067f7dbbc83ebcf05c52e91413260fd1))
+* Stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
 
 ## [0.6.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.2...deepagents==0.6.3) (2026-05-20)
 
@@ -134,6 +235,6 @@ See the [profiles documentation](https://docs.langchain.com/oss/python/deepagent
 
 ---
 
-# Prior Releases
+## Prior Releases
 
 Versions prior to 0.5.1 were released without release-please and do not have changelog entries. Refer to the [releases page](https://github.com/langchain-ai/deepagents/releases?q=deepagents) for details on previous versions.

@@ -88,7 +88,7 @@ class UnicodeIssue:
     Attributes:
         position: Zero-based index in the original string.
         character: The single raw character found in the input.
-        codepoint: Uppercase code point string like ``U+202E``.
+        codepoint: Uppercase code point string like `U+202E`.
         name: Unicode character name.
     """
 
@@ -171,6 +171,53 @@ def strip_dangerous_unicode(text: str) -> str:
         Sanitized text with dangerous characters removed.
     """
     return "".join(ch for ch in text if ch not in _DANGEROUS_CHARACTERS)
+
+
+def sanitize_control_chars(
+    text: str,
+    *,
+    keep_newlines: bool = False,
+    collapse_whitespace: bool = True,
+    max_length: int | None = None,
+) -> str:
+    """Neutralize control characters and deceptive Unicode in untrusted text.
+
+    Untrusted strings (MCP server errors, config-file contents, tool output)
+    can carry ANSI escape sequences, other control characters, or invisible
+    Unicode that corrupts the terminal, breaks out of a layout, or injects fake
+    lines into logs and prompts. This first removes the invisible/bidi code
+    points flagged by `strip_dangerous_unicode`, then replaces every remaining
+    Unicode "Other" (control/format) character with a space.
+
+    Args:
+        text: Untrusted text to sanitize.
+        keep_newlines: When `True`, newlines survive so multiline, scrollable
+            surfaces keep their line structure; otherwise newlines are
+            flattened to spaces along with the other control characters.
+        collapse_whitespace: When `True`, runs of whitespace are collapsed to a
+            single space and surrounding whitespace is stripped. With
+            `keep_newlines`, collapsing is applied per line so line breaks are
+            preserved.
+        max_length: When set, truncate to at most this many characters,
+            replacing the final character with an ellipsis.
+
+    Returns:
+        Sanitized text safe to embed in terminal output, markup substitutions,
+        logs, or prompts.
+    """
+    allowed = {" ", "\n"} if keep_newlines else {" "}
+    cleaned = "".join(
+        ch if ch in allowed or not unicodedata.category(ch).startswith("C") else " "
+        for ch in strip_dangerous_unicode(text)
+    )
+    if collapse_whitespace:
+        if keep_newlines:
+            cleaned = "\n".join(" ".join(line.split()) for line in cleaned.split("\n"))
+        else:
+            cleaned = " ".join(cleaned.split())
+    if max_length is not None and len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 1].rstrip() + "…"
+    return cleaned
 
 
 def render_with_unicode_markers(text: str) -> str:
@@ -465,7 +512,7 @@ def iter_string_values(
     """Flatten nested dict/list structures into key-path/string pairs.
 
     Returns:
-        List of ``(path, value)`` tuples for all string leaves.
+        List of `(path, value)` tuples for all string leaves.
     """
     values: list[tuple[str, str]] = []
     for key, value in data.items():

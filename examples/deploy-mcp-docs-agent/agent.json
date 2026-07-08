@@ -1,0 +1,6 @@
+{
+  "name": "deploy-mcp-docs-agent",
+  "runtime": {
+    "model": {"model_id": "anthropic:claude-sonnet-4-5"}
+  }
+}

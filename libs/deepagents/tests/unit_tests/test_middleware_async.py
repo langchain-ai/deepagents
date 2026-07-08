@@ -9,8 +9,9 @@ from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemState
+from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
+from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
 
 def _make_backend(files=None):
@@ -138,6 +139,13 @@ class TestFilesystemMiddlewareAsync:
         # But NOT subdirectory files
         assert "/pokemon/charmander.txt" not in result.content
         assert "/pokemon/water/squirtle.txt" not in result.content
+
+    async def test_als_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
 
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
@@ -290,7 +298,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     async def test_glob_timeout_returns_error_message_async(self):
         backend, _ = _make_backend()
@@ -315,6 +323,47 @@ class TestFilesystemMiddlewareAsync:
             )
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+
+    async def test_glob_surfaces_backend_exception_as_error_async(self):
+        """A non-timeout exception from the backend aglob is returned as a tool error, not propagated."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        async def boom(*_args: object, **_kwargs: object) -> object:
+            msg = "path traversal not allowed"
+            raise ValueError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", side_effect=boom),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert result.content == "Error: glob failed: path traversal not allowed"
+
+    async def test_glob_backend_timeouterror_not_misreported_as_glob_timeout_async(self):
+        """A `TimeoutError` raised inside the backend aglob must not be reported as a glob-pattern timeout."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        async def raise_timeout(*_args: object, **_kwargs: object) -> object:
+            msg = "backend RPC timed out"
+            raise TimeoutError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", side_effect=raise_timeout),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert "timed out after" not in result.content
+        assert result.content == "Error: glob failed: backend RPC timed out"
 
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
@@ -347,6 +396,61 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    async def test_agrep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+        ):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
+
+    async def test_agrep_partial_error_truncates_combined_output(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
+        result_with_partial_matches = GrepResult(
+            error=error,
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+        ):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert len(result.content) < len(error)
+        assert TRUNCATION_GUIDANCE in result.content
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
@@ -496,6 +600,27 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result.content == "No matches found"
 
+    async def test_agrep_regex_pattern_no_matches_adds_hint(self):
+        """A no-match pattern that looks like regex gets a literal-search hint (async path)."""
+        files = {
+            "/test.py": FileData(
+                content=["def hello():"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = await grep_search_tool.ainvoke(
+            {
+                "pattern": "def hello|def world",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content.startswith("No matches found")
+        assert "literal text, not regex" in result.content
+
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
         files = {
@@ -625,6 +750,71 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         assert isinstance(result, ToolMessage)
+        assert mem_store.get(("filesystem",), "/test.txt") is not None
+
+    async def test_adelete(self):
+        """Async delete removes the file and reports success."""
+        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/test.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d1", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert "Deleted" in result.content
+        assert mem_store.get(("filesystem",), "/test.txt") is None
+
+    async def test_adelete_invalid_path(self):
+        """Async delete rejects a traversal path with an error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "../etc/passwd",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d2", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "traversal" in result.content
+
+    async def test_adelete_missing_returns_error(self):
+        """Async delete surfaces the backend's not-found error."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/ghost.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d3", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "not found" in result.content
+
+    async def test_adelete_permission_denied(self):
+        """Async delete is blocked by a deny write permission."""
+        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, mem_store = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+        )
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = await delete_tool.ainvoke(
+            {
+                "file_path": "/test.txt",
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="d5", store=None, stream_writer=lambda _: None, config={}),
+            }
+        )
+        assert result.status == "error"
+        assert "permission denied for write" in result.content
+        # The file is left untouched since deletion was blocked.
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):

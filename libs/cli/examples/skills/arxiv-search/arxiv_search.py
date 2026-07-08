@@ -21,7 +21,7 @@ def query_arxiv(query: str, max_papers: int = 10) -> str:
         The formatted search results or an error message.
     """
     try:
-        import arxiv  # type: ignore[import-not-found]
+        import arxiv  # ty: ignore
     except ImportError:
         return "Error: arxiv package not installed. Install with: pip install arxiv"
 

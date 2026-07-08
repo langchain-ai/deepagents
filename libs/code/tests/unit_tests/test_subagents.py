@@ -1,6 +1,9 @@
 """Unit tests for subagent loading functionality."""
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from deepagents_code.subagents import (
     _load_subagents_from_dir,
@@ -96,7 +99,7 @@ Always structure your response with headings.
         assert "1. Write clearly" in result["system_prompt"]
 
     def test_parse_subagent_missing_name(self, tmp_path: Path) -> None:
-        """Test that subagent without name is rejected."""
+        """Test that subagent without name is rejected without a fallback."""
         subagent_file = tmp_path / "invalid.md"
         subagent_file.write_text("""---
 description: Missing name field
@@ -106,6 +109,69 @@ Content
 """)
 
         assert _parse_subagent_file(subagent_file) is None
+
+    def test_parse_subagent_uses_fallback_name(self, tmp_path: Path) -> None:
+        """Test that fallback name is used when frontmatter omits name."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+description: Missing name field
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="helper")
+
+        assert result is not None
+        assert result["name"] == "helper"
+        assert result["description"] == "Missing name field"
+
+    def test_parse_subagent_frontmatter_name_overrides_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that an explicit frontmatter name wins over the fallback."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("""---
+name: explicit
+description: Has explicit name
+---
+
+Content
+""")
+
+        result = _parse_subagent_file(subagent_file, fallback_name="folder")
+
+        assert result is not None
+        assert result["name"] == "explicit"
+
+    @pytest.mark.parametrize(
+        "name_line",
+        [
+            'name: ""',  # present-but-empty string
+            'name: "   "',  # present-but-whitespace-only
+            "name:",  # present-but-null
+            "name: 123",  # present-but-non-string
+        ],
+    )
+    def test_parse_subagent_invalid_name_not_rescued_by_fallback(
+        self, tmp_path: Path, name_line: str
+    ) -> None:
+        """Test that a present-but-invalid name is rejected despite a fallback.
+
+        The fallback only applies when `name` is omitted entirely; an explicit
+        empty/whitespace-only/null/non-string value must fail loudly rather than
+        silently resolving to the folder name.
+        """
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text(f"""---
+{name_line}
+description: Has invalid name
+---
+
+Content
+""")
+
+        assert _parse_subagent_file(subagent_file, fallback_name="helper") is None
 
     def test_parse_subagent_missing_description(self, tmp_path: Path) -> None:
         """Test that subagent without description is rejected."""
@@ -225,6 +291,27 @@ class TestLoadSubagentsFromDir:
         assert "researcher" in result
         assert result["researcher"]["source"] == "user"
 
+    def test_load_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test loading a subagent whose frontmatter omits name."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "helper"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Helpful assistant
+---
+
+Content
+""")
+
+        result = _load_subagents_from_dir(agents_dir, "user")
+
+        assert len(result) == 1
+        assert "helper" in result
+        assert result["helper"]["name"] == "helper"
+        assert result["helper"]["description"] == "Helpful assistant"
+
     def test_load_multiple_subagents(self, tmp_path: Path) -> None:
         """Test loading multiple subagents."""
         agents_dir = tmp_path / "agents"
@@ -312,6 +399,26 @@ class TestListSubagents:
         (folder / "AGENTS.md").write_text(
             make_subagent_content("researcher", "Research assistant")
         )
+
+        result = list_subagents(user_agents_dir=user_dir)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "researcher"
+        assert result[0]["source"] == "user"
+
+    def test_list_uses_folder_name_when_frontmatter_omits_name(
+        self, tmp_path: Path
+    ) -> None:
+        """Test that the folder-name fallback surfaces through list_subagents."""
+        user_dir = tmp_path / "user_agents"
+        folder = user_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text("""---
+description: Research assistant
+---
+
+You are a research assistant.
+""")
 
         result = list_subagents(user_agents_dir=user_dir)
 
@@ -429,3 +536,196 @@ class TestListSubagents:
 
         assert len(result) == 1
         assert result[0]["model"] == "anthropic:claude-haiku-4-5-20251001"
+
+
+class TestDiagnostics:
+    """Test that discovery surfaces warnings for misconfigured subagents."""
+
+    def test_warns_on_missing_frontmatter(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A file without frontmatter logs an explanatory warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("# Just markdown\n\nNo frontmatter.")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "missing YAML frontmatter" in caplog.text
+
+    def test_warns_on_unreadable_file(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A file that cannot be read (here, a directory) logs a warning."""
+        # Reading a directory with read_text raises OSError deterministically,
+        # without relying on chmod (which is a no-op for root in CI).
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(tmp_path) is None
+
+        assert "could not read file" in caplog.text
+
+    def test_warns_on_invalid_yaml(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Frontmatter that is not valid YAML logs a warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("---\nname: [unclosed\n---\n\nContent\n")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "invalid YAML frontmatter" in caplog.text
+
+    def test_warns_on_non_dict_frontmatter(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Frontmatter that parses to a non-mapping (a list) logs a warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("---\n- just\n- a\n- list\n---\n\nContent\n")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "must be a mapping" in caplog.text
+
+    def test_warns_on_missing_description_field(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A missing description names the description field in the warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("---\nname: helper\n---\n\nContent\n")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "description (non-empty string required)" in caplog.text
+
+    def test_warns_on_missing_name_field(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A missing name names the name field in the warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text("---\ndescription: A helper\n---\n\nContent\n")
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "name (non-empty string required)" in caplog.text
+
+    def test_warns_on_non_string_model_field(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string model names the model field in the warning."""
+        subagent_file = tmp_path / "AGENTS.md"
+        subagent_file.write_text(
+            "---\nname: helper\ndescription: A helper\nmodel: 42\n---\n\nContent\n"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert _parse_subagent_file(subagent_file) is None
+
+        assert "model (string required when present)" in caplog.text
+
+    def test_warns_on_stray_file_in_agents_dir(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A markdown file placed directly in agents/ is flagged."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "researcher.md").write_text(
+            make_subagent_content("researcher", "Research assistant")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert result == {}
+        assert "researcher.md" in caplog.text
+        assert "AGENTS.md" in caplog.text
+
+    def test_warns_on_folder_without_agents_md(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A folder with a misnamed definition (agent.md, not AGENTS.md) is flagged."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "agent.md").write_text(
+            make_subagent_content("researcher", "Research assistant")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "user")
+
+        assert result == {}
+        assert "agent.md" in caplog.text
+        assert "AGENTS.md" in caplog.text
+
+    def test_warns_on_name_collision(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two folders declaring the same frontmatter name are flagged."""
+        agents_dir = tmp_path / "agents"
+        for folder_name in ("researcher", "web-researcher"):
+            folder = agents_dir / folder_name
+            folder.mkdir(parents=True)
+            # Both folders declare the same frontmatter `name`, so one silently
+            # shadows the other without this warning.
+            (folder / "AGENTS.md").write_text(
+                make_subagent_content("researcher", f"Defined in {folder_name}")
+            )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        # One definition wins (collapsed to a single entry); the collision warns.
+        assert len(result) == 1
+        assert "name collision" in caplog.text
+        assert "researcher" in caplog.text
+
+    def test_warns_on_collision_between_fallback_and_frontmatter_name(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A folder-name fallback colliding with an explicit name is flagged."""
+        agents_dir = tmp_path / "agents"
+        # This folder omits `name`, so it resolves to its folder name "helper".
+        fallback_folder = agents_dir / "helper"
+        fallback_folder.mkdir(parents=True)
+        (fallback_folder / "AGENTS.md").write_text("""---
+description: Resolves to folder name
+---
+
+Content
+""")
+        # This folder declares name="helper" explicitly, colliding with the above.
+        explicit_folder = agents_dir / "other"
+        explicit_folder.mkdir(parents=True)
+        (explicit_folder / "AGENTS.md").write_text(
+            make_subagent_content("helper", "Declares name explicitly")
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert len(result) == 1
+        assert "name collision" in caplog.text
+        assert "helper" in caplog.text
+
+    def test_no_warning_for_valid_or_unrelated_entries(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A valid subagent alongside an unrelated non-markdown file stays silent."""
+        agents_dir = tmp_path / "agents"
+        folder = agents_dir / "researcher"
+        folder.mkdir(parents=True)
+        (folder / "AGENTS.md").write_text(
+            make_subagent_content("researcher", "Research assistant")
+        )
+        # An unrelated file (not .md) directly under agents/ must not be flagged.
+        (agents_dir / "notes.txt").write_text("just some notes")
+
+        with caplog.at_level(logging.WARNING):
+            result = _load_subagents_from_dir(agents_dir, "project")
+
+        assert len(result) == 1
+        assert caplog.records == []

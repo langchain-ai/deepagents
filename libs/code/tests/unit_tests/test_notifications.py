@@ -39,7 +39,9 @@ def _update_entry(
         title=f"Update available: v{latest}",
         body=f"v{latest} is available.",
         actions=(NotificationAction(ActionId.INSTALL, "Install now", primary=True),),
-        payload=UpdateAvailablePayload(latest=latest, upgrade_cmd="pip install"),
+        payload=UpdateAvailablePayload(
+            latest=latest, upgrade_cmd="uv tool upgrade deepagents-code"
+        ),
     )
 
 
@@ -85,7 +87,7 @@ class TestPendingNotificationInvariants:
 
         entry = _dep_entry()
         with pytest.raises(FrozenInstanceError):
-            entry.key = "other"  # type: ignore[misc]
+            entry.key = "other"  # ty: ignore
 
 
 class TestNotificationRegistry:

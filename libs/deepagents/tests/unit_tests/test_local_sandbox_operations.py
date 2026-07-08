@@ -26,7 +26,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from langchain.tools import ToolRuntime
 
+from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     EditResult,
@@ -40,6 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES, BaseSandbox
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
 pytestmark = pytest.mark.skipif(
@@ -58,6 +61,8 @@ class LocalSubprocessSandbox(BaseSandbox):
         self._id = "local-subprocess-sandbox"
         self._virtual_root = VIRTUAL_SANDBOX_ROOT
         self._real_root = self._virtual_root
+        # Real host shell, so capture-at-source (opt-in, default off) is supported.
+        self.enable_capture_offload = True
 
     def set_real_root(self, real_root: str) -> None:
         """Set the on-disk directory used for test file operations."""
@@ -194,9 +199,10 @@ class LocalSubprocessSandbox(BaseSandbox):
                 match["path"] = self._to_virtual_path(match["path"])
         return result
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Run glob against mapped real paths."""
-        result = super().glob(pattern, path=self._to_real_path(path))
+        mapped_path = self._to_real_path(path) if path is not None else None
+        result = super().glob(pattern, path=mapped_path)
         if result.error is not None:
             result.error = self._to_virtual_path(result.error)
         if result.matches is not None:
@@ -280,20 +286,19 @@ class TestLocalSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_existing_file_fails(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that writing to an existing file returns an error."""
+    def test_write_existing_file_overwrites(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that writing to an existing file overwrites it."""
         test_path = "/tmp/test_sandbox_ops/existing.txt"
         # Create file first
         sandbox.write(test_path, "First content")
 
-        # Try to write again
+        # Write again should overwrite
         result = sandbox.write(test_path, "Second content")
 
-        assert result.error is not None
-        assert "already exists" in result.error.lower()
-        # Verify original content unchanged
+        assert result.error is None
+        # Verify new content
         exec_result = sandbox.execute(f"cat {test_path}")
-        assert exec_result.output.strip() == "First content"
+        assert exec_result.output.strip() == "Second content"
 
     def test_write_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing content with special characters and escape sequences."""
@@ -1599,3 +1604,126 @@ class TestLocalSandboxOperations:
         grep_result = sandbox.grep("file", path=base_dir).matches
         assert grep_result is not None
         assert len(grep_result) >= 3  # At least 3 matches
+
+
+# 5000 of these lines (~250 KB) clear the default eviction budget (~80 KB).
+_BIG_OUTPUT_CMD = 'for i in $(seq 1 5000); do echo "line $i: padding text to make the output long enough to offload"; done'
+
+
+class TestExecuteCaptureOffload:
+    """End-to-end capture-at-source offload via the execute tool on a real shell.
+
+    Drives the `execute` and `read_file` tools through a `CompositeBackend` whose
+    default is a `LocalSubprocessSandbox` and whose `artifacts_root` lives under
+    the translated virtual root, so the wrapper's capture file lands in the test
+    directory rather than the host filesystem root.
+    """
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[LocalSubprocessSandbox]:
+        return LocalSubprocessSandbox()
+
+    @pytest.fixture(autouse=True)
+    def setup_test_dir(self, sandbox: LocalSubprocessSandbox, tmp_path: Path) -> None:
+        sandbox.set_real_root(str(tmp_path / "sandbox_ops"))
+        sandbox.execute("rm -rf /tmp/test_sandbox_ops && mkdir -p /tmp/test_sandbox_ops")
+
+    @pytest.fixture
+    def tools(self, sandbox: LocalSubprocessSandbox) -> tuple:
+        backend = CompositeBackend(default=sandbox, routes={}, artifacts_root=VIRTUAL_SANDBOX_ROOT)
+        middleware = FilesystemMiddleware(backend=backend)
+        execute_tool = next(t for t in middleware.tools if t.name == "execute")
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        return execute_tool, read_tool
+
+    @staticmethod
+    def _runtime(tool_call_id: str) -> ToolRuntime:
+        return ToolRuntime(
+            state={},
+            context=None,
+            tool_call_id=tool_call_id,
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+    @staticmethod
+    def _capture_path(tool_call_id: str) -> str:
+        return f"{VIRTUAL_SANDBOX_ROOT}/large_tool_results/{tool_call_id}"
+
+    def test_small_output_returned_inline_and_leaves_no_file(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+        execute_tool, _ = tools
+        result = execute_tool.invoke({"command": "echo hello", "runtime": self._runtime("c_small")})
+
+        assert "hello" in result.content
+        assert "exit code 0" in result.content
+        # Small results are not offloaded -- no pointer, and the capture file is removed.
+        assert "large_tool_results" not in result.content
+        listing = sandbox.execute(f"ls {VIRTUAL_SANDBOX_ROOT}/large_tool_results/ 2>/dev/null | wc -l")
+        assert listing.output.strip() == "0"
+
+    def test_large_output_offloads_and_full_content_roundtrips(self, tools: tuple) -> None:
+        execute_tool, read_tool = tools
+        rt = self._runtime("c_large")
+        result = execute_tool.invoke({"command": _BIG_OUTPUT_CMD, "runtime": rt})
+
+        capture_path = self._capture_path("c_large")
+        # Preview + pointer, not the full output inline.
+        assert capture_path in result.content
+        assert "read_file" in result.content
+        assert "line 1:" in result.content  # head shown
+        assert "line 5000:" in result.content  # tail shown
+        assert "lines truncated" in result.content
+        # A middle line is absent from the preview...
+        assert "line 2500:" not in result.content
+
+        # ...but recoverable in full via read_file on the offload path: a middle
+        # slice the preview never showed is present on disk.
+        read = read_tool.invoke({"file_path": capture_path, "offset": 2499, "limit": 3, "runtime": rt})
+        assert "line 2500:" in read.content
+
+    def test_nonzero_exit_code_preserved(self, tools: tuple) -> None:
+        execute_tool, _ = tools
+        result = execute_tool.invoke({"command": "echo oops; exit 3", "runtime": self._runtime("c_ec")})
+
+        assert "oops" in result.content
+        assert "exit code 3" in result.content
+
+    def test_runaway_output_is_capped_and_flagged(self, tools: tuple, sandbox: LocalSubprocessSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Cap must exceed the eviction budget so a capped result still offloads
+        # (rather than fitting inline). Default budget is ~80 KB.
+        cap = 100_000
+        monkeypatch.setattr("deepagents.backends.sandbox._EXECUTE_CAPTURE_MAX_BYTES", cap)
+
+        execute_tool, _ = tools
+        rt = self._runtime("c_cap")
+        # ~250 KB of output over the cap, but the command exits 0. The cap drains
+        # the excess instead of SIGPIPE-killing the producer, so the command's real
+        # exit code survives -- a regression guard: closing the pipe early would
+        # report this successful command as failed.
+        result = execute_tool.invoke({"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
+
+        assert "exceeded the capture size limit" in result.content
+        assert "succeeded with exit code 0" in result.content
+        # The on-disk capture file is bounded at the cap regardless of total output.
+        size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
+        assert size == str(cap)
+
+    def test_enable_capture_offload_flag_controls_offload(self, sandbox: LocalSubprocessSandbox) -> None:
+        budget = 100  # small, so _BIG_OUTPUT_CMD would offload when capture is enabled
+
+        # Disabled -> command runs unwrapped: full output inline, not offloaded, no file.
+        sandbox.enable_capture_offload = False
+        off_path = self._capture_path("flag_off")
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, off_path, max_inline_bytes=budget)
+        assert offload.offloaded is False
+        assert "line 5000:" in offload.response.output  # full output returned, not a preview
+        assert "line 2500:" in offload.response.output
+        assert sandbox.execute(f"test -e {off_path} && echo Y || echo N").output.strip() == "N"
+
+        # Enabled -> offloaded to a file; only a head/tail preview is returned.
+        sandbox.enable_capture_offload = True
+        on_path = self._capture_path("flag_on")
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
+        assert offload.offloaded is True
+        assert "line 2500:" not in offload.response.output  # middle omitted -> it's a preview

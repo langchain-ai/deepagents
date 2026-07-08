@@ -56,6 +56,7 @@
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
     "deepagents-code": "dcode",
+    "deepagents-talon": "talon",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
@@ -66,11 +67,14 @@
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
     "langchain-runloop": "runloop",
+    "langchain-vercel-sandbox": "vercel",
     "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
     "quickjs": "quickjs",
     "runloop": "runloop",
-    "sdk": "deepagents"
+    "sdk": "deepagents",
+    "talon": "talon",
+    "vercel": "vercel"
   },
   "branchRules": [
     {
@@ -100,6 +104,11 @@
       "skipExcludedFiles": true
     },
     {
+      "label": "talon",
+      "prefix": "libs/talon/",
+      "skipExcludedFiles": true
+    },
+    {
       "label": "evals",
       "prefix": "libs/evals/",
       "skipExcludedFiles": true
@@ -122,6 +131,11 @@
     {
       "label": "runloop",
       "prefix": "libs/partners/runloop/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "vercel",
+      "prefix": "libs/partners/vercel/",
       "skipExcludedFiles": true
     },
     {

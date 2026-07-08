@@ -92,7 +92,7 @@ jobs:
 
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🐍 Set up Python ${{ matrix.python-version }} + UV"
         uses: "./.github/actions/uv_setup"
@@ -105,8 +105,8 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test
 
-      - name: "📦 Install Sandbox Extras (CLI only)"
-        if: matrix.working-directory == 'libs/cli'
+      - name: "📦 Install Sandbox Extras (Code only)"
+        if: matrix.working-directory == 'libs/code'
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test --extra all-sandboxes
 

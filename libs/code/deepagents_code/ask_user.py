@@ -248,6 +248,11 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 questions=questions,
                 tool_call_id=tool_call_id,
             )
+            # interrupt() raises GraphInterrupt from INSIDE tool execution,
+            # within ToolNode's wrap_tool_call chain. Any
+            # wrap_tool_call middleware that catches exceptions MUST re-raise
+            # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
+            # would swallow this interrupt and silently break ask_user.
             response = interrupt(ask_request)
             return _parse_answers(response, questions, tool_call_id)
 

@@ -8,7 +8,7 @@ assertions are deterministic regardless of terminal configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
 if TYPE_CHECKING:
@@ -107,8 +107,8 @@ class TestCoerceTimeoutSeconds:
         assert _coerce_timeout_seconds(None) is None
 
     def test_float_type_returns_none(self) -> None:
-        # `type(x) is int` rejects floats (and bool subclass isn't int either).
-        assert _coerce_timeout_seconds(1.5) is None  # type: ignore[arg-type]
+        # Intentionally pass a wrong runtime type to verify defensive coercion.
+        assert _coerce_timeout_seconds(cast("Any", 1.5)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -181,19 +181,25 @@ class TestFormatToolDisplay:
 
     # --- file tools ---
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_file_path(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"file_path": "/tmp/test.py"})
         assert result.startswith(_PREFIX)
         assert tool_name in result
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_path_key(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"path": "/tmp/test.py"})
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_missing_path_falls_back_to_generic(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {})
         assert _PREFIX in result
@@ -230,6 +236,40 @@ class TestFormatToolDisplay:
         result = format_tool_display("grep", {"pattern": "def foo"})
         assert 'grep("def foo")' in result
 
+    def test_grep_shows_scoped_path(self) -> None:
+        abs_path = str(Path.cwd() / "subdir")
+        result = format_tool_display("grep", {"pattern": "def foo", "path": abs_path})
+        assert 'grep("def foo" in subdir)' in result
+
+    def test_grep_omits_default_root_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": "/"})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_omits_empty_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": ""})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_omits_none_path(self) -> None:
+        result = format_tool_display("grep", {"pattern": "def foo", "path": None})
+        assert 'grep("def foo")' in result
+        assert " in " not in result
+
+    def test_grep_shows_out_of_cwd_path(self) -> None:
+        # A path outside cwd cannot be made relative; it must still render.
+        result = format_tool_display(
+            "grep", {"pattern": "def foo", "path": "/etc/nginx"}
+        )
+        assert " in /etc/nginx" in result
+
+    def test_grep_scoped_path_strips_dangerous_unicode(self) -> None:
+        # A zero-width space in the path is stripped and flagged for the user.
+        abs_path = str(Path.cwd() / "subdir") + "\u200b"
+        result = format_tool_display("grep", {"pattern": "def foo", "path": abs_path})
+        assert " in subdir" in result
+        assert _HIDDEN_CHAR_MARKER in result
+
     # --- execute ---
 
     def test_execute_shows_command(self) -> None:
@@ -257,6 +297,27 @@ class TestFormatToolDisplay:
         result = format_tool_display("execute", {"command": "ls", "timeout": "abc"})
         assert "timeout" not in result
 
+    # --- js_eval ---
+
+    def test_js_eval_single_line_shows_full_snippet(self) -> None:
+        result = format_tool_display("js_eval", {"code": "1 + 1"})
+        assert result == f'{_PREFIX} js_eval("1 + 1")'
+
+    def test_js_eval_multiline_shows_first_line_with_ellipsis(self) -> None:
+        result = format_tool_display(
+            "js_eval", {"code": "const x = 1;\nconst y = 2;\nx + y"}
+        )
+        # First non-blank line only, with an ellipsis marking the elision.
+        assert result == f'{_PREFIX} js_eval("const x = 1;{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_skips_leading_blank_lines(self) -> None:
+        result = format_tool_display("js_eval", {"code": "\n\nreal();\nmore();"})
+        assert result == f'{_PREFIX} js_eval("real();{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_empty_code(self) -> None:
+        result = format_tool_display("js_eval", {"code": "   "})
+        assert result == f"{_PREFIX} js_eval()"
+
     # --- ls ---
 
     def test_ls_with_path(self) -> None:
@@ -273,6 +334,48 @@ class TestFormatToolDisplay:
     def test_glob_shows_pattern(self) -> None:
         result = format_tool_display("glob", {"pattern": "**/*.py"})
         assert 'glob("**/*.py")' in result
+
+    def test_glob_shows_scoped_path(self) -> None:
+        abs_path = str(Path.cwd() / "subdir")
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": abs_path})
+        assert 'glob("**/*.py" in subdir)' in result
+
+    def test_glob_omits_default_root_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": "/"})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_distinguishes_scoped_from_unscoped(self) -> None:
+        # The two calls from the LangSmith trace must render differently.
+        unscoped = format_tool_display("glob", {"pattern": "**/*.py"})
+        scoped = format_tool_display(
+            "glob", {"pattern": "**/*.py", "path": str(Path.cwd() / "langchain")}
+        )
+        assert unscoped != scoped
+
+    def test_glob_omits_empty_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": ""})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_omits_none_path(self) -> None:
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": None})
+        assert 'glob("**/*.py")' in result
+        assert " in " not in result
+
+    def test_glob_shows_out_of_cwd_path(self) -> None:
+        # A path outside cwd cannot be made relative; it must still render.
+        result = format_tool_display(
+            "glob", {"pattern": "**/*.py", "path": "/etc/nginx"}
+        )
+        assert " in /etc/nginx" in result
+
+    def test_glob_scoped_path_strips_dangerous_unicode(self) -> None:
+        # A zero-width space in the path is stripped and flagged for the user.
+        abs_path = str(Path.cwd() / "subdir") + "\u200b"
+        result = format_tool_display("glob", {"pattern": "**/*.py", "path": abs_path})
+        assert " in subdir" in result
+        assert _HIDDEN_CHAR_MARKER in result
 
     # --- fetch_url ---
 

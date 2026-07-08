@@ -1,5 +1,6 @@
+import mimetypes
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -8,21 +9,27 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolCall,
     ToolMessage,
 )
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
+    GlobResult,
+    GrepResult,
     ReadResult,
     SandboxBackendProtocol,
 )
 from deepagents.backends.utils import (
+    TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
     create_file_data,
     format_content_with_line_numbers,
@@ -39,8 +46,10 @@ from deepagents.middleware._message_eviction import (
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     NUM_CHARS_PER_TOKEN,
+    SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
+    FilesystemPermission,
     FilesystemState,
     supports_execution,
 )
@@ -119,27 +128,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -174,6 +183,13 @@ class TestFilesystemMiddleware:
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result.content == str(["/test.txt", "/test2.txt"])
+
+    def test_ls_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -407,7 +423,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
@@ -424,14 +440,103 @@ class TestFilesystemMiddleware:
             patch.object(middleware, "_get_backend", return_value=backend_obj),
             patch.object(backend_obj, "glob", side_effect=slow_glob),
         ):
+            start = time.monotonic()
             result = glob_search_tool.invoke(
                 {
                     "pattern": "**/*",
                     "runtime": _runtime(),
                 }
             )
+            elapsed = time.monotonic() - start
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        # The tool must return as soon as the timeout fires, not block until
+        # the runaway glob (2s) finishes in its worker thread.
+        assert elapsed < 1.5, f"glob tool blocked for {elapsed:.2f}s past its 0.5s timeout"
+
+    def test_glob_timeout_does_not_stall_subsequent_calls(self):
+        """A timed-out glob still running in a worker must not block the next glob."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        call_count = 0
+
+        def stuck_then_fast_glob(*args: object, **kwargs: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                time.sleep(2)
+            return backend_obj.__class__.glob(backend_obj, *args, **kwargs)
+
+        with (
+            patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=stuck_then_fast_glob),
+        ):
+            first_start = time.monotonic()
+            first = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+            first_elapsed = time.monotonic() - first_start
+            start = time.monotonic()
+            second = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+            elapsed = time.monotonic() - start
+
+        assert "timed out" in first.content
+        # The first (timing-out) call must itself return at the 0.5s timeout
+        # rather than block until its 2s worker finishes - an independent guard
+        # against the original `with`-block regression, where the timeout did
+        # not bound wall-clock latency.
+        assert first_elapsed < 1.5, f"first glob blocked for {first_elapsed:.2f}s past its 0.5s timeout"
+        assert second.status == "success"
+        assert elapsed < 1.0, f"second glob waited {elapsed:.2f}s behind a stuck one"
+
+    def test_glob_surfaces_backend_exception_as_error(self):
+        """A non-timeout exception from the backend glob is returned as a tool error, not propagated."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def boom(*_args: object, **_kwargs: object) -> object:
+            msg = "path traversal not allowed"
+            raise ValueError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=boom),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert result.content == "Error: glob failed: path traversal not allowed"
+
+    def test_glob_backend_timeouterror_not_misreported_as_glob_timeout(self):
+        """A `TimeoutError` raised inside the backend must not be reported as a glob-pattern timeout.
+
+        `concurrent.futures.TimeoutError is TimeoutError` on Python 3.11+, so a
+        single `except concurrent.futures.TimeoutError` around the future's wait
+        would also swallow a backend-raised builtin `TimeoutError` and misreport
+        it as the glob pattern timing out.
+        """
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        def raise_timeout(*_args: object, **_kwargs: object) -> object:
+            msg = "backend RPC timed out"
+            raise TimeoutError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", side_effect=raise_timeout),
+        ):
+            result = glob_search_tool.invoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert "timed out after" not in result.content
+        assert result.content == "Error: glob failed: backend RPC timed out"
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -496,6 +601,233 @@ class TestFilesystemMiddleware:
         assert "/test.py" in result.content
         assert "/helper.txt" in result.content
         assert "/main.py" not in result.content
+
+    def test_grep_partial_error_preserves_matches(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        result_with_partial_matches = GrepResult(
+            error="Grep timed out after 30s with 1 matching file(s)",
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "Grep timed out after 30s" in result.content
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
+
+    def test_grep_partial_error_truncates_combined_output(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
+        result_with_partial_matches = GrepResult(
+            error=error,
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert len(result.content) < len(error)
+        assert TRUNCATION_GUIDANCE in result.content
+        # The error is truncated separately so partial matches survive.
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
+
+    def test_grep_truncated_renders_as_success_with_note(self):
+        """A truncated grep is a success with valid partial matches plus a narrow-your-search note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+            truncated=True,
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert "1: import os" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    def test_grep_truncated_regex_pattern_no_matches_keeps_note(self):
+        """A regex-looking miss still reports that the backend search was incomplete."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(matches=[], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "def hello|def world",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert result.content.startswith("No matches found")
+        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert "literal text, not regex" not in result.content
+
+    def test_glob_truncated_renders_as_success_with_note(self):
+        """A truncated glob returns its partial paths as a success plus the narrow-your-search note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GlobResult(
+            matches=[{"path": "/test.py", "is_dir": False}],
+            truncated=True,
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", return_value=truncated_result),
+        ):
+            result = glob_search_tool.invoke(
+                {
+                    "pattern": "*.py",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert "/test.py" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    def test_grep_not_truncated_omits_note(self):
+        """A complete grep must not carry the truncation note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        complete_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=False)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=complete_result),
+        ):
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert SEARCH_TRUNCATION_NOTE not in result.content
+
+    def test_glob_not_truncated_omits_note(self):
+        """A complete glob must not carry the truncation note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        complete_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=False)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", return_value=complete_result),
+        ):
+            result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert SEARCH_TRUNCATION_NOTE not in result.content
+
+    def test_grep_truncation_note_survives_size_truncation(self):
+        """A grep that is both time-truncated and size-overflowing keeps the truncation note (it isn't tail-cut)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        # Enough matches to overflow the size limit so the match body is tail-cut.
+        big_matches = [{"path": f"/f{i}.py", "line": i + 1, "text": "import os " * 8} for i in range(6000)]
+        truncated_result = GrepResult(matches=big_matches, truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
+        assert TRUNCATION_GUIDANCE in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    async def test_async_grep_truncated_renders_as_success_with_note(self):
+        """The async grep handler renders a truncated result as success with the note (parity with sync)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=truncated_result),
+        ):
+            result = await grep_search_tool.ainvoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "1: import os" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    async def test_async_glob_truncated_renders_as_success_with_note(self):
+        """The async glob handler renders a truncated result as success with the note (parity with sync)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", return_value=truncated_result),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "*.py", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/test.py" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -660,6 +992,120 @@ class TestFilesystemMiddleware:
             }
         )
         assert "No matches found" in result.content
+
+    def test_grep_regex_pattern_no_matches_adds_hint(self):
+        """A no-match pattern that looks like regex gets a literal-search hint."""
+        files = {
+            "/test.py": FileData(
+                content=["def hello():"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "def hello|def world",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content.startswith("No matches found")
+        assert "literal text, not regex" in result.content
+
+    def test_grep_literal_no_matches_omits_hint(self):
+        """A plain literal no-match pattern does not get the regex hint."""
+        files = {
+            "/test.py": FileData(
+                content=["print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content == "No matches found"
+
+    def test_grep_regex_pattern_with_matches_omits_hint(self):
+        """A regex-looking pattern that still matches literally shows no hint."""
+        files = {
+            "/test.py": FileData(
+                content=["a = b|c"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "b|c",
+                "output_mode": "content",
+                "runtime": _runtime(),
+            }
+        )
+        assert "a = b|c" in result.content
+        assert "literal text, not regex" not in result.content
+
+    def test_grep_regex_pattern_all_matches_permission_filtered_omits_hint(self):
+        """A miss caused by permission redaction, not regex syntax, shows no hint.
+
+        The backend matches the literal `b|c` in `/secret.py`, but a deny rule
+        strips that match. The empty result then reads "No matches found" for a
+        redaction reason, so the regex hint would misattribute the cause.
+        """
+        files = {
+            "/secret.py": FileData(
+                content=["a = b|c"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")],
+        )
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "b|c",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content == "No matches found"
+        assert "literal text, not regex" not in result.content
+
+    def test_grep_error_regex_pattern_omits_hint(self):
+        """A backend error result never gets the regex hint appended."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        error_result = GrepResult(error="boom: backend exploded", matches=[])
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=error_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "def hello|def world",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert "literal text, not regex" not in result.content
 
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""
@@ -1017,6 +1463,162 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
+    def test_intercept_command_with_remove_all_sentinel(self):
+        """Commands prefixed with a `REMOVE_ALL_MESSAGES` sentinel are handled."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in messages[1].content
+
+    async def test_aintercept_command_with_remove_all_sentinel(self):
+        """Async path handles `REMOVE_ALL_MESSAGES`-prefixed message lists."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in messages[1].content
+
+    def test_intercept_command_with_short_sentinel_messages(self):
+        """A small ToolMessage stays prefixed with the sentinel and unchanged."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        small_content = "x" * 1000
+        tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1:] == [tool_message]
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is None
+
+    def test_intercept_command_with_mixed_sentinel_messages(self):
+        """Non-tool messages in a sentinel-prefixed update survive in order."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        final_message = AIMessage(content="Done")
+        command = Command(
+            update={
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    ai_message,
+                    tool_message,
+                    final_message,
+                ],
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
+        assert messages[3] == final_message
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    async def test_aintercept_command_with_mixed_sentinel_messages(self):
+        """Async path preserves non-tool messages in sentinel-prefixed updates."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message],
+            }
+        )
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    def test_intercept_command_with_empty_sentinel_messages(self):
+        """A sentinel-only message list stays as just the sentinel."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert len(messages) == 1
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert result.update["custom_key"] == "custom_value"
+
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
         assert sanitize_tool_call_id("call_123") == "call_123"
@@ -1218,6 +1820,113 @@ class TestFilesystemMiddleware:
         assert result.content[0]["mime_type"] == "image/png"
         assert result.content[0]["base64"] == "<base64_data>"
 
+    def test_read_file_base64_unknown_extension_returns_file_block(self):
+        """Binary reads route on `encoding`, not the extension map (#3657).
+
+        A backend may return `encoding="base64"` for a file whose extension is
+        absent from `_EXTENSION_TO_FILE_TYPE` (e.g. `.docx`). The base64 payload
+        must be emitted as a generic `file` content block, never line-numbered
+        as text into the LLM context.
+        """
+
+        class DocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "<docx_base64_data>",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=DocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="docx-read-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        # Binary content_blocks, not a line-numbered text string.
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "file"
+        assert result.content[0]["base64"] == "<docx_base64_data>"
+        # The block carries the best media type `mimetypes` can resolve for the
+        # extension, falling back to `application/octet-stream`. The resolved
+        # value is platform-dependent (`.docx` maps to the full Office type on
+        # macOS/Linux but to `application/octet-stream` on Windows, where
+        # `mimetypes` reads the registry), so mirror the production logic rather
+        # than hardcoding a single value.
+        expected_mime = mimetypes.guess_type("file.docx")[0] or "application/octet-stream"
+        assert result.content[0]["mime_type"] == expected_mime
+
+    def test_read_file_empty_mapped_binary_returns_empty_content_warning(self):
+        """Empty reads of mapped binary extensions (e.g. .pdf) return the empty-file warning (#3664)."""
+
+        class EmptyPdfBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyPdfBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-pdf-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.pdf", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_empty_unmapped_binary_returns_empty_content_warning(self):
+        """Empty reads of unmapped binary extensions (e.g. .docx) return the empty-file warning (#3664)."""
+
+        class EmptyDocxBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": "",
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=EmptyDocxBackend())
+        state = FilesystemState(messages=[], files={})
+        runtime = ToolRuntime(
+            state=state,
+            context=None,
+            tool_call_id="empty-docx-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/docs/report.docx", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
     def test_read_file_image_returns_error_when_download_fails(self):
         """Image reads should return a clear backend error string."""
 
@@ -1361,6 +2070,341 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
+
+    def test_delete_filtered_when_backend_lacks_delete(self):
+        """Delete is removed from the request when the backend can't delete.
+
+        Mirrors how the execute tool is filtered out when the backend doesn't
+        support execution, rather than advertising a tool that fails at call time.
+        """
+
+        class _NoDeleteBackend(StateBackend):
+            # Opt out of delete support by inheriting the protocol's default.
+            delete = BackendProtocol.delete
+
+        middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        request.override.assert_called_once()
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_delete_kept_when_backend_supports_delete(self):
+        """Delete stays in the request when the backend supports deletion."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # StateBackend supports delete (and no execute tool is present), so no
+        # tool filtering — and with an empty system prompt, no override at all.
+        request.override.assert_not_called()
+
+    def test_enabled_tools_raises_when_read_file_excluded(self):
+        """read_file must be in tools when a non-empty allowlist is given."""
+        with pytest.raises(ValueError, match="read_file must be included in tools"):
+            FilesystemMiddleware(backend=StateBackend(), tools=["write_file"])
+
+    def test_enabled_tools_filters_unlisted_tool(self):
+        """A tool not in tools is filtered out of the model request."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls"],
+        )
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_enabled_tools_filters_multiple_unlisted(self):
+        """Only tools in the allowlist survive; the rest are filtered."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
+        for t in tools:
+            t.name = t._mock_name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+
+    def test_enabled_tools_does_not_filter_user_provided_tools(self):
+        """User-provided (non-filesystem) tools are never removed by the allowlist."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        custom_tool = MagicMock()
+        custom_tool.name = "search"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool, custom_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "search" in filtered_names  # user tool untouched
+        assert "write_file" not in filtered_names  # FS tool not in allowlist
+
+    def test_enabled_tools_passes_listed_tools_through(self):
+        """Tools in the allowlist survive; an unlisted tool is dropped."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        grep_tool = MagicMock()
+        grep_tool.name = "grep"
+        edit_tool = MagicMock()
+        edit_tool.name = "edit_file"
+        request = MagicMock()
+        request.tools = [ls_tool, grep_tool, edit_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+        assert "edit_file" not in filtered_names
+
+    def test_enabled_tools_read_file_only_filters_everything_else(self):
+        """tools=["read_file"] hides all other tools."""
+        all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file"],
+        )
+        tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
+        for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
+            t.name = name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "read_file" in filtered_names
+        assert filtered_names == {"read_file"}
+
+    def test_enabled_tools_none_default_passes_all_tools(self):
+        """tools=None (default) does not filter any tools."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+        )
+        tools = [MagicMock() for _ in range(3)]
+        for t, name in zip(tools, ["ls", "read_file", "write_file"], strict=True):
+            t.name = name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # No tools=... override should have been made (nothing filtered)
+        tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
+        assert tools_overrides == []
+
+    def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
+        """Execute in tools list is still filtered when the backend doesn't support execution."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),  # StateBackend has no execution support
+            system_prompt="",
+            tools=["read_file", "ls", "execute"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        execute_tool = MagicMock()
+        execute_tool.name = "execute"
+        request = MagicMock()
+        request.tools = [ls_tool, execute_tool]
+        request.runtime = MagicMock()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "execute" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_grep_description_omits_execute_fallback_when_backend_lacks_execution(self):
+        """Default grep docs must not advertise hidden execute tooling."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert "execute tool" not in grep_tool.description
+        assert "rg '<regex>'" not in grep_tool.description
+        assert next(tool for tool in middleware.tools if tool.name == "grep").description != grep_tool.description
+
+    def test_grep_description_omits_execute_fallback_when_execute_unlisted(self):
+        """Default grep docs follow the tools allowlist even if the backend can execute."""
+
+        class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0)
+
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert "execute" not in {tool.name for tool in tools_override}
+        assert "execute tool" not in grep_tool.description
+        assert "rg '<regex>'" not in grep_tool.description
+
+    def test_grep_description_keeps_execute_fallback_when_execution_visible(self):
+        """Default grep docs can recommend execute only when execute is available."""
+
+        class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0)
+
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="")
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
+        grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        assert tools_overrides == []
+        assert "execute tool" in grep_tool.description
+        assert "rg '<regex>'" in grep_tool.description
+
+    def test_custom_grep_description_is_not_rewritten_when_execute_hidden(self):
+        """User-provided grep docs remain authoritative."""
+        custom_description = "Custom literal search guidance."
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            custom_tool_descriptions={"grep": custom_description},
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert grep_tool.description == custom_description
+
+    def test_grep_description_swap_copies_dict_tool_specs(self):
+        """Dict-shaped grep specs are swapped via a copy, leaving the input untouched."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        default_description = next(tool for tool in middleware.tools if tool.name == "grep").description
+        original = {"name": "grep", "description": default_description}
+
+        rewritten = middleware._with_filtered_grep_description([original], include_execution=False)
+
+        rewritten_grep = next(tool for tool in rewritten if tool["name"] == "grep")
+        # Swapped via a copy, never mutated in place.
+        assert rewritten_grep is not original
+        assert original["description"] == default_description
+        # The copy carries the without-execute variant.
+        assert "execute tool" not in rewritten_grep["description"]
+        assert "rg '<regex>'" not in rewritten_grep["description"]
+        assert "LITERAL text pattern" in rewritten_grep["description"]
+
+    def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
+        """Dynamic system prompt only mentions the tools that survived filtering."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            tools=["read_file", "ls"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool]
+        request.system_message = None
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
+        content = system_message_override.kwargs["system_message"].content
+        system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
+        assert "ls" in system_text
+        assert "read_file" in system_text
+        assert "write_file" not in system_text
+
+    def test_delete_invalid_path_returns_error(self):
+        """The sync delete tool rejects a traversal path before deleting."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
@@ -1716,8 +2760,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 5
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -1770,8 +2817,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 8
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."

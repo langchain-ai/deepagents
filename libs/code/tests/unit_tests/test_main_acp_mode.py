@@ -54,6 +54,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     mcp_tool = object()
     mcp_server_info = [SimpleNamespace(name="docs")]
     fetch_tool = object()
+    thread_tool = object()
     search_tool = object()
 
     def _resolve_mcp_tools_with_bound_loop(
@@ -87,6 +88,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
             "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
         ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
+        patch("deepagents_code.tools.get_current_thread_id", new=thread_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
@@ -115,7 +117,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
-    assert call_kwargs["tools"] == [fetch_tool, search_tool, mcp_tool]
+    assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
     assert call_kwargs["checkpointer"] is not None
     mock_server_cls.assert_called_once_with("graph")
@@ -136,6 +138,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     server = object()
     run_agent = AsyncMock(return_value=None)
     fetch_tool = object()
+    thread_tool = object()
     search_tool = object()
     resolve_mcp_tools = AsyncMock(return_value=([], None, []))
 
@@ -153,6 +156,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
             "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
         ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
+        patch("deepagents_code.tools.get_current_thread_id", new=thread_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
@@ -168,7 +172,7 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
-    assert call_kwargs["tools"] == [fetch_tool]
+    assert call_kwargs["tools"] == [fetch_tool, thread_tool]
     assert call_kwargs["mcp_server_info"] == []
     assert call_kwargs["checkpointer"] is not None
 

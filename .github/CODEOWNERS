@@ -3,10 +3,10 @@
 # Owners will be automatically requested for review when someone opens a pull request.
 # For more information: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
-/.github/ @mdrxy @eyurtsev
-/libs/sdk/ @hwchase17 @sydney-runkle @ccurme @eyurtsev @vtrivedy
+/.github/ @mdrxy
+/libs/sdk/ @hwchase17 @sydney-runkle @ccurme
 /libs/cli/ @mdrxy
-/libs/evals/ @mdrxy @vtrivedy
+/libs/evals/ @mdrxy
+/libs/talon/ @jkennedyvz
 /libs/partners/ @eyurtsev
-/libs/partners/quickjs/ @eyurtsev @hntrl
-/libs/acp/ @jacoblee93
+/libs/partners/quickjs/ @hntrl

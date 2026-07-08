@@ -4,12 +4,12 @@ version = "0.1.0"
 description = "A content writer agent configured entirely through files on disk"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents>=0.3.5",
-    "google-genai>=1.0.0",
+    "deepagents>=0.6.12",
+    "google-genai>=2.10.0",
     "pillow>=12.2.0",
-    "pyyaml>=6.0.0",
-    "rich>=13.0.0",
-    "tavily-python>=0.5.0",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "tavily-python>=0.7.26",
 ]
 
 [dependency-groups]

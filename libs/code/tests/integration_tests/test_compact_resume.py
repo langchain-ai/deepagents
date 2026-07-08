@@ -52,7 +52,7 @@ async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) ->
 def _event_field(event: object, key: str) -> object | None:
     """Read a summarization-event field from either dict or object form."""
     if isinstance(event, dict):
-        return event.get(key)  # ty: ignore[invalid-argument-type]
+        return event.get(key)  # ty: ignore
     return getattr(event, key, None)
 
 
@@ -87,10 +87,10 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
     from deepagents_code import model_config
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.config import create_model
-    from deepagents_code.server_manager import server_session
     from deepagents_code.sessions import generate_thread_id
-    from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
     config_path = home_dir / ".deepagents" / "config.toml"
     # Some tests import `model_config` earlier in the session, so override the
@@ -138,7 +138,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
             config = {"configurable": {"thread_id": thread_id}}
 
             app = DeepAgentsApp(
-                agent=agent,  # ty: ignore[invalid-argument-type]
+                agent=agent,  # ty: ignore
                 assistant_id=assistant_id,
                 backend=compact_backend,
                 cwd=project_dir,

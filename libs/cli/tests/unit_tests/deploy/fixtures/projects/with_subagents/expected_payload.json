@@ -1,0 +1,16 @@
+{
+  "name": "parent",
+  "system_prompt": "Parent prompt",
+  "subagents": [
+    {
+      "name": "researcher",
+      "description": "Researches a topic.",
+      "model_id": "anthropic:claude-sonnet-4-6",
+      "instructions": "You research a topic and summarise.",
+      "tools": {
+        "tools": [{"name": "search", "mcp_server_url": "https://tools.example"}],
+        "interrupt_config": {}
+      }
+    }
+  ]
+}

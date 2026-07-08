@@ -4,18 +4,24 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import asyncio
 import errno
 import warnings
+from unittest.mock import patch
 
 import pytest
 
 from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
+    ASYNC_GREP_TIMEOUT,
+    DEFAULT_GREP_TIMEOUT,
     BackendProtocol,
+    DeleteResult,
     GlobResult,
     GrepResult,
     LsResult,
     SandboxBackendProtocol,
+    _supports_delete,
 )
 
 
@@ -64,6 +70,10 @@ class TestBackendProtocolRaisesNotImplemented:
         with pytest.raises(NotImplementedError):
             backend.edit("/file.txt", "old", "new")
 
+    def test_delete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            backend.delete("/file.txt")
+
     def test_upload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
             backend.upload_files([("/file.txt", b"data")])
@@ -108,6 +118,24 @@ class TestAsyncMethodsPropagateNotImplemented:
         with pytest.raises(NotImplementedError):
             await backend.aedit("/file.txt", "old", "new")
 
+    async def test_adelete(self, backend: BareBackend) -> None:
+        with pytest.raises(NotImplementedError):
+            await backend.adelete("/file.txt")
+
+
+class TestSupportsDelete:
+    """`_supports_delete` detects whether a backend overrides `delete`."""
+
+    def test_false_when_not_overridden(self, backend: BareBackend) -> None:
+        assert _supports_delete(backend) is False
+
+    def test_true_when_overridden(self) -> None:
+        class MyBackend(BackendProtocol):
+            def delete(self, file_path: str) -> DeleteResult:
+                return DeleteResult(path=file_path)
+
+        assert _supports_delete(MyBackend()) is True
+
 
 class TestDeprecatedMethodsRouteToNewNames:
     """Old method names warn and delegate to the new implementations."""
@@ -145,7 +173,7 @@ class TestDeprecatedMethodsRouteToNewNames:
 
     def test_glob_info_delegates_to_glob(self) -> None:
         class MyBackend(BackendProtocol):
-            def glob(self, pattern: str, path: str = "/") -> GlobResult:
+            def glob(self, pattern: str, path: str | None = None) -> GlobResult:
                 return GlobResult(matches=[{"path": f"{path}/{pattern}"}])
 
         with warnings.catch_warnings(record=True) as w:
@@ -198,6 +226,37 @@ class TestLegacySubclassOverrideRouting:
     async def test_aexecute(self, sandbox_backend: BareSandboxBackend) -> None:
         with pytest.raises(NotImplementedError):
             await sandbox_backend.aexecute("ls")
+
+
+class TestAgrepTimeout:
+    """Tests for `agrep` async timeout safety net."""
+
+    def test_agrep_timeout_exceeds_two_sync_grep_phases(self) -> None:
+        """`agrep` gives `FilesystemBackend` headroom for `rg` timeout plus fallback timeout."""
+        assert ASYNC_GREP_TIMEOUT > (2 * DEFAULT_GREP_TIMEOUT)
+
+    async def test_agrep_returns_error_on_timeout(self, backend: BareBackend) -> None:
+        """`agrep` catches `TimeoutError` and returns `GrepResult` with error."""
+        seen_timeout = None
+
+        async def mock_wait_for(coro, *, timeout):  # noqa: ASYNC109
+            nonlocal seen_timeout
+            seen_timeout = timeout
+            coro.close()
+            raise TimeoutError
+
+        with patch.object(asyncio, "wait_for", mock_wait_for):
+            result = await backend.agrep("pattern", "/path", "*.py")
+
+        assert seen_timeout == ASYNC_GREP_TIMEOUT
+        assert result.error is not None
+        assert "timed out" in result.error
+        assert result.matches is None
+
+    async def test_agrep_propagates_not_implemented(self, backend: BareBackend) -> None:
+        """`NotImplementedError` from `grep` still propagates through the timeout wrapper."""
+        with pytest.raises(NotImplementedError):
+            await backend.agrep("pattern")
 
 
 def _runtime_error_from_eloop_context() -> RuntimeError:

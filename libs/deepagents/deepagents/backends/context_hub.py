@@ -1,9 +1,10 @@
-"""ContextHubBackend: Store files in a LangSmith Hub agent repo (persistent)."""
+"""`ContextHubBackend`: Store files in a LangSmith Hub agent repo (persistent)."""
 
 from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,7 @@ from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -98,17 +100,22 @@ class ContextHubBackend(BackendProtocol):
         return dict(self._linked_entries)
 
     def has_prior_commits(self) -> bool:
-        """Return True if the hub repo already exists with at least one commit."""
+        """Return `True` if the hub repo already exists with at least one commit."""
         self._ensure_cache()
         return self._commit_hash is not None
 
-    def _commit(self, files: dict[str, str]) -> None:
-        """Push `files` as one commit; update the cache on success."""
-        if not files:
+    def _commit(self, changes: dict[str, str | None]) -> None:
+        """Push `changes` as one commit; update the cache on success.
+
+        Each value is either new file content or `None`. A `None` value is the
+        deletion marker: relative to `parent_commit`, the server drops that path
+        from the tree.
+        """
+        if not changes:
             return
 
         payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
-            path: FileEntry(type="file", content=content) for path, content in files.items()
+            path: FileEntry(type="file", content=content) if content is not None else None for path, content in changes.items()
         }
         url = self._client.push_agent(
             self._identifier,
@@ -120,8 +127,11 @@ class ContextHubBackend(BackendProtocol):
             self._commit_hash = match.group(1)
 
         if self._cache is not None:
-            for path, content in files.items():
-                self._cache[path] = content
+            # Rebuild the cache rather than mutating in place: drop paths whose
+            # new content is None (deletions) and overlay the rest as updates.
+            deletions = {path for path, content in changes.items() if content is None}
+            updates = {path: content for path, content in changes.items() if content is not None}
+            self._cache = {path: content for path, content in self._cache.items() if path not in deletions} | updates
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -136,7 +146,7 @@ class ContextHubBackend(BackendProtocol):
             limit: Maximum number of lines.
 
         Returns:
-            ReadResult with raw (unformatted) content.
+            `ReadResult` with raw (unformatted) content.
         """
         hub_path = self._strip_prefix(file_path)
         try:
@@ -200,6 +210,34 @@ class ContextHubBackend(BackendProtocol):
             return EditResult(error=f"Hub unavailable: {exc}")
         return EditResult(path=file_path, occurrences=occurrences)
 
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory by committing its removal from the hub repo.
+
+        Deleting a path removes the exact file plus every nested entry under it
+        (the prefix `file_path` + "/"), so a directory is removed recursively.
+
+        Args:
+            file_path: Path of the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if nothing is
+                stored at or under it (or the hub is unavailable).
+        """
+        hub_path = self._strip_prefix(file_path)
+        try:
+            cache = self._ensure_cache()
+            base = hub_path.rstrip("/")
+            prefix = base + "/"
+            to_delete = [key for key in cache if key == base or key.startswith(prefix)]
+            if not to_delete:
+                return DeleteResult(error=f"Error: File '{file_path}' not found")
+            self._commit(dict.fromkeys(to_delete, None))
+        except LangSmithError as exc:
+            logger.exception("Hub delete failed for %r", self._identifier)
+            self._cache = None
+            return DeleteResult(error=f"Hub unavailable: {exc}")
+        return DeleteResult(path=file_path)
+
     def ls(self, path: str = "/") -> LsResult:
         """List immediate files and subdirectories under `path` (non-recursive)."""
         hub_prefix = self._strip_prefix(path).rstrip("/")
@@ -253,10 +291,12 @@ class ContextHubBackend(BackendProtocol):
 
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
+        glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
+
         for file_path, content in cache.items():
             if prefix and not file_path.startswith(prefix):
                 continue
-            if glob and not fnmatch.fnmatch(file_path, glob):
+            if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):
@@ -264,7 +304,7 @@ class ContextHubBackend(BackendProtocol):
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: ARG002
         """Return files matching `pattern` (`path` unused — flat namespace)."""
         try:
             cache = self._ensure_cache()
@@ -282,7 +322,7 @@ class ContextHubBackend(BackendProtocol):
         """Upload text files in one commit; non-UTF-8 inputs rejected per file."""
         # Decode each input; `None` text means we'll reject this entry as invalid.
         decoded: list[tuple[str, str | None]] = []
-        valid_files: dict[str, str] = {}
+        valid_files: dict[str, str | None] = {}
         for path, content in files:
             try:
                 text = content.decode("utf-8")
@@ -309,7 +349,7 @@ class ContextHubBackend(BackendProtocol):
             elif commit_error is not None:
                 # Backend-specific error string per protocol docs
                 # (FileOperationError literal union doesn't cover hub failures).
-                results.append(FileUploadResponse(path=path, error=commit_error))  # type: ignore[arg-type]
+                results.append(FileUploadResponse(path=path, error=commit_error))
             else:
                 results.append(FileUploadResponse(path=path))
         return results
@@ -322,10 +362,7 @@ class ContextHubBackend(BackendProtocol):
             logger.exception("Hub pull failed for %r", self._identifier)
             # Backend-specific error string per protocol docs (FileOperationError
             # literal union doesn't cover hub failures).
-            return [
-                FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")  # type: ignore[arg-type]
-                for p in paths
-            ]
+            return [FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}") for p in paths]
         results: list[FileDownloadResponse] = []
         for path in paths:
             hub_path = self._strip_prefix(path)

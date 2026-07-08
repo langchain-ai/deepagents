@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import BaseMessage
 
+from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.config import settings
@@ -18,8 +19,7 @@ from deepagents_code.offload import (
     format_offload_limit,
     offload_messages_to_backend,
 )
-from deepagents_code.textual_adapter import format_token_count
-from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 # Patch target for perform_offload (business logic)
 _PERFORM_OFFLOAD_PATH = "deepagents_code.offload.perform_offload"
@@ -92,7 +92,7 @@ def _make_offload_result(
         "file_path": file_path,
     }
     return OffloadResult(
-        new_event=new_event,  # ty: ignore[invalid-argument-type]
+        new_event=new_event,  # ty: ignore
         messages_offloaded=messages_offloaded,
         messages_kept=messages_kept,
         tokens_before=tokens_before,
@@ -291,9 +291,9 @@ class TestOffloadSuccess:
             # Single aupdate_state call: _summarization_event + _context_tokens
             # ride along together to share a checkpoint and avoid a separate
             # standalone `UpdateState` LangSmith run.
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 1  # ty: ignore
 
-            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # ty: ignore
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 4
             assert event["summary_message"] is not None
@@ -390,7 +390,7 @@ class TestOffloadEdgeCases:
 
             msgs = app.query(AppMessage)
             assert any("within the retention budget" in str(w._content) for w in msgs)
-            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+            app._agent.aupdate_state.assert_not_called()  # ty: ignore
 
     async def test_cutoff_zero_overhead_dominated(self) -> None:
         """Show overhead message when context exceeds limit."""
@@ -437,7 +437,7 @@ class TestOffloadEdgeCases:
                 await pilot.pause()
 
             mock_agent = app._agent
-            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # ty: ignore
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 1
 
@@ -516,9 +516,9 @@ class TestReOffload:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 1  # ty: ignore
 
-            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # ty: ignore
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 7
 
@@ -601,9 +601,9 @@ class TestOffloadErrorHandling:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 1  # ty: ignore
 
-            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
+            update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # ty: ignore
             event = update_values["_summarization_event"]
             assert event["file_path"] is None
 
@@ -623,7 +623,7 @@ class TestOffloadErrorHandling:
                 await pilot.pause()
 
             # State should not have been updated
-            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+            app._agent.aupdate_state.assert_not_called()  # ty: ignore
 
             error_msgs = app.query(ErrorMessage)
             assert any("Offload failed" in str(w._content) for w in error_msgs)
@@ -634,7 +634,7 @@ class TestOffloadErrorHandling:
         async with app.run_test() as pilot:
             await pilot.pause()
             _setup_offload_app(app)
-            app._agent.aupdate_state = AsyncMock(  # type: ignore[union-attr]
+            app._agent.aupdate_state = AsyncMock(  # ty: ignore
                 side_effect=RuntimeError("state write failed")
             )
 
@@ -702,7 +702,7 @@ class TestCreateModelFailure:
                 "working model configuration" in str(w._content) for w in error_msgs
             )
             # State should not have been modified
-            app._agent.aupdate_state.assert_not_called()  # type: ignore[union-attr]
+            app._agent.aupdate_state.assert_not_called()  # ty: ignore
             # _agent_running must be reset so the UI doesn't lock up
             assert app._agent_running is False
 
@@ -911,7 +911,7 @@ class TestOffloadRemoteFallback:
 
     async def test_resumed_remote_thread_uses_server_state(self) -> None:
         """Should offload using state returned by the remote server."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -972,7 +972,7 @@ class TestOffloadRemoteStateNormalization:
         self,
     ) -> None:
         """Serialized `messages` from remote state are normalized in the UI path."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1019,7 +1019,7 @@ class TestOffloadRemoteStateNormalization:
         self,
     ) -> None:
         """Serialized `summary_message` is normalized in the UI path."""
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code.client.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1194,7 +1194,7 @@ class TestOffloadProfileOverride:
                 await pilot.pause()
 
             # Single state update folds offload + _context_tokens together.
-            assert app._agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
+            assert app._agent.aupdate_state.call_count == 1  # ty: ignore
             kwargs = mock_perform.call_args.kwargs
             assert kwargs["context_limit"] == 4096
 

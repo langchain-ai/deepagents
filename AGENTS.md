@@ -47,6 +47,15 @@ make lint
 make format
 ```
 
+#### Environment and dependency management
+
+Use `uv` for all environment and dependency operations in this monorepo. Do not invoke `pip`, `poetry`, or `conda` directly.
+
+- Let `uv` manage the interpreter and virtual environments — `uv sync` and `uv run` operate without manual `source .venv/bin/activate`. Do not create ad-hoc virtual environments outside the package directory.
+- Each package targets its own supported Python range via its `pyproject.toml`; do not pin a global Python version. If you need an interpreter explicitly, defer to the package's `requires-python` rather than assuming system Python.
+- Install dependencies explicitly through `uv sync` (optionally `--group <name>` / `--all-groups`); never let them install implicitly.
+- Don't mix environments within a session, and don't add new dependencies unless strictly required — when you do, justify them (recent releases/commits, adoption).
+
 #### Suppressing ruff lint rules
 
 Prefer inline `# noqa: RULE` over `[tool.ruff.lint.per-file-ignores]` for individual exceptions. `per-file-ignores` silences a rule for the *entire* file — If you add it for one violation, all future violations of that rule in the same file are silently ignored. Inline `# noqa` is precise to the line, self-documenting, and keeps the safety net intact for the rest of the file. Add comments to justify silencing. If you can't make a good justification for the ignore, it is probably code smell and should be re-evaluated.
@@ -74,6 +83,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
 
@@ -87,6 +97,22 @@ style(cli): strip trailing annotations from `ask_user` questions
 ```
 
 See [PR labeling and linting](#pr-labeling-and-linting) for more info.
+
+#### Branch naming
+
+Branches should be prefixed `<github-username>/<scope>/<short-description>`:
+
+- `<github-username>` — the author's GitHub login (e.g. `mdrxy`).
+- `<scope>` — the same scope used in the Conventional Commit title (`sdk`, `cli`, `code`, `evals`, `acp`, partner name, `infra`, `docs`).
+- `<short-description>` — kebab-case, brief, no trailing slash.
+
+Examples:
+
+```txt
+mdrxy/sdk/concrete-toolruntime-middleware-tools
+mdrxy/code/help-screen-drift-test
+mdrxy/cli/startup-cmd-flag
+```
 
 #### PR descriptions
 
@@ -109,6 +135,7 @@ The description *is* the summary — do not add a `# Summary` header.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
 - Wrap class, function, method, parameter, and variable names in backticks.
+- For net new features or behavior-changing bugfixes, PR descriptions should include a `## Release note` section that states the user-visible change in release-note-ready language. Otherwise, omit the header.
 - Skip dedicated "Test plan" or "Testing" sections in most cases. Mention tests only when coverage is non-obvious, risky, or otherwise notable.
 - Call out areas of the change that require careful review.
 
@@ -218,7 +245,48 @@ Always use the latest generally available models when referencing LLMs in docstr
 
 ## Package-specific guidance
 
+### Deep Agents SDK (`libs/deepagents/`)
+
+For SDK questions about `create_deep_agent`, middleware, tools, subagents, or agent construction, start in:
+
+- `libs/deepagents/deepagents/graph.py`
+  - `create_deep_agent` is the public construction entry point.
+  - It builds the Deep Agents middleware stack and delegates to `langchain.agents.create_agent(...)`.
+  - The final call currently happens near the end of `create_deep_agent`, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
+- `libs/deepagents/deepagents/middleware/`
+  - Built-in Deep Agents middleware lives here.
+  - `subagents.py` handles subagent middleware and nested `create_agent` use.
+  - `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py` are feature-specific middleware modules.
+- `libs/deepagents/tests/`
+  - Unit tests for SDK behavior.
+
+If investigating LangChain `create_agent` internals, Deep Agents usually delegates into LangChain rather than owning the graph node assembly itself. Resolve the installed dependency source directly rather than searching the whole repo.
+
+### Search hygiene
+
+Avoid broad repo-level `glob` / `grep` for normal SDK work. This repo contains package `.venv`s, hidden worktrees, generated metadata, and scratch files that make broad searches noisy.
+
+Prefer targeted paths:
+
+- SDK source: `libs/deepagents/deepagents`
+- SDK tests: `libs/deepagents/tests`
+- Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
+- CLI deploy package: `libs/cli`
+- ACP package: `libs/acp`
+
+Avoid searching these unless explicitly needed:
+
+- `.venv/`
+- `.worktrees/`
+- `.claude/worktrees/`
+- `deepagents.egg-info/`
+- benchmark result JSONs and scratch scripts at repo root
+
+For dependency internals, first locate the dependency file from the package environment, then read that exact file instead of grepping all `site-packages`.
+
 ### Deep Agents Code (`libs/code/`)
+
+The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).
 
 See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
 
@@ -293,6 +361,10 @@ See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overridi
 
 See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
 
+#### Developing a new version line
+
+See [Developing a new version line](.github/RELEASING.md#developing-a-new-version-line) in `RELEASING.md` before creating a version branch (e.g. staging `0.7` while `main` stays `0.6.x`, or maintaining `0.6.x` after `main` moves on). Branches must be named `vX.Y` to match the protection ruleset (CI-passing PRs required like `main`, but `v[0-9].*` additionally allows merge commits — `main` stays squash-only); release-please only runs on `main`; keep a staging branch current by opening forward-merge PRs from `main` (a merge commit, not squash), reserving cherry-pick for when the branch deliberately diverges; and the cutover is an admin merge-commit to `main` that preserves individual commits (don't squash) so the changelog stays itemized.
+
 ### PR labeling and linting
 
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
@@ -321,7 +393,7 @@ When adding a new partner package, update these files:
 - `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
 - `.github/workflows/release-please.yml` – Add release detection output and trigger job
 - `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add initial version entry
+- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
 - `.github/RELEASING.md` – Add to Managed Packages table
 - `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
 

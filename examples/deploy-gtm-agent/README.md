@@ -70,3 +70,5 @@ deploy-gtm-agent/
 
 - [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)
 - [Subagents docs](https://docs.langchain.com/deepagents/subagents)
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

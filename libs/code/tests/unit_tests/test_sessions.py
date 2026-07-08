@@ -174,6 +174,53 @@ class TestThreadFunctions:
             assert by_id["thread2"]["cwd"] == "/tmp/workspace"
             assert by_id["thread3"]["cwd"] is None
 
+    def test_list_threads_creates_covering_index(self, temp_db):
+        """`list_threads` creates the covering index and the plan uses it.
+
+        Regression guard for the `threads list` slowdown on large profiles: the
+        GROUP BY must be an index-only scan of `idx_dcode_threads_list`, not a
+        full scan of the blob-bearing checkpoints table.
+        """
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            asyncio.run(sessions.list_threads())
+
+        conn = sqlite3.connect(str(temp_db))
+        try:
+            index_names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            assert "idx_dcode_threads_list" in index_names
+
+            plan = " ".join(
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT thread_id, "
+                    "MAX(json_extract(metadata, '$.updated_at')) u, "
+                    "MAX(checkpoint_id), "
+                    "MAX(json_extract(metadata, '$.agent_name')), "
+                    "MAX(json_extract(metadata, '$.git_branch')), "
+                    "MAX(json_extract(metadata, '$.cwd')) "
+                    "FROM checkpoints GROUP BY thread_id ORDER BY u DESC LIMIT 20"
+                )
+            )
+            # Index-only scan of the covering index, not the PK autoindex (which
+            # would drag the checkpoint state blobs through I/O).
+            assert "idx_dcode_threads_list" in plan
+            assert "sqlite_autoindex_checkpoints_1" not in plan
+        finally:
+            conn.close()
+
+    def test_list_threads_index_creation_is_idempotent(self, temp_db):
+        """Repeated `list_threads` calls succeed once the index already exists."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            first = asyncio.run(sessions.list_threads())
+            second = asyncio.run(sessions.list_threads())
+        assert len(first) == len(second) == 3
+
     def test_list_threads_filter_by_agent(self, temp_db):
         """List filters by agent name."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):
@@ -241,6 +288,52 @@ class TestThreadFunctions:
             agent = asyncio.run(sessions.get_thread_agent("nonexistent"))
             assert agent is None
 
+    def test_get_thread_cwd(self, temp_db):
+        """Get thread cwd returns the stored working directory."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread1"))
+            assert cwd == "/home/user/project-a"
+
+    def test_get_thread_cwd_returns_latest_value(self, temp_db):
+        """Get thread cwd uses the most recent checkpoint metadata."""
+        conn = sqlite3.connect(str(temp_db))
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            (
+                "thread1",
+                "zz_latest",
+                json.dumps({"agent_name": "agent1", "cwd": "/tmp/new-cwd"}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread1"))
+            assert cwd == "/tmp/new-cwd"
+
+    def test_get_thread_cwd_not_found(self, temp_db):
+        """Get thread cwd returns None when missing."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread3"))
+            assert cwd is None
+
+    def test_get_thread_cwd_ignores_empty_string(self, temp_db):
+        """An empty stored cwd is treated as missing rather than returned."""
+        conn = sqlite3.connect(str(temp_db))
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            ("thread-empty", "c1", json.dumps({"cwd": ""})),
+        )
+        conn.commit()
+        conn.close()
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            cwd = asyncio.run(sessions.get_thread_cwd("thread-empty"))
+            assert cwd is None
+
     def test_delete_thread(self, temp_db):
         """Delete thread removes thread."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):
@@ -268,6 +361,51 @@ class TestGetCheckpointer:
                     assert "AsyncSqliteSaver" in type(cp).__name__
 
         asyncio.run(_test())
+
+    def test_drains_worker_thread(self, tmp_path):
+        """`get_checkpointer` joins the aiosqlite worker thread on exit.
+
+        Prevents the daemon worker from outliving the surrounding event loop
+        and raising `RuntimeError: Event loop is closed` via
+        `call_soon_threadsafe` during interpreter / xdist worker shutdown.
+        """
+        captured: dict[str, object] = {}
+
+        async def _test() -> None:
+            db_path = tmp_path / "test.db"
+            with patch.object(sessions, "get_db_path", return_value=db_path):
+                async with sessions.get_checkpointer() as cp:
+                    captured["conn"] = cp.conn
+
+        asyncio.run(_test())
+        conn = cast("aiosqlite.Connection", captured["conn"])
+        worker = conn._thread
+        assert not worker.is_alive(), (
+            "aiosqlite worker thread should be joined after get_checkpointer exit"
+        )
+
+
+class TestConnectHelper:
+    """Tests for the internal `_connect` async context manager."""
+
+    def test_drains_worker_thread(self, tmp_path):
+        """`_connect` joins the aiosqlite worker thread on exit."""
+        db_path = tmp_path / "drain.db"
+        # Create empty file so aiosqlite has something to open.
+        sqlite3.connect(str(db_path)).close()
+        captured: dict[str, object] = {}
+
+        async def _test() -> None:
+            with patch.object(sessions, "get_db_path", return_value=db_path):
+                async with sessions._connect() as conn:
+                    captured["conn"] = conn
+
+        asyncio.run(_test())
+        conn = cast("aiosqlite.Connection", captured["conn"])
+        worker = conn._thread
+        assert not worker.is_alive(), (
+            "aiosqlite worker thread should be joined after _connect exit"
+        )
 
 
 class TestFormatTimestamp:
@@ -358,6 +496,19 @@ class TestFormatRelativeTimestamp:
         result = sessions.format_relative_timestamp(ts)
         assert result.endswith("s ago")
 
+    def test_boundary_360_to_364_days_shows_months(self) -> None:
+        """360-364 days old should show months, never the bogus '0y ago'."""
+        for days in (360, 362, 364):
+            ts = (datetime.now(tz=UTC) - timedelta(days=days, hours=1)).isoformat()
+            result = sessions.format_relative_timestamp(ts)
+            assert result == "12mo ago"
+
+    def test_boundary_365_days_shows_years(self) -> None:
+        """At exactly 365 days, the year bucket takes over with '1y ago'."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=365, hours=1)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result == "1y ago"
+
 
 class TestFormatPath:
     """Tests for format_path helper."""
@@ -415,6 +566,75 @@ class TestTextualSessionState:
         assert new_id != old_id
         assert uuid.UUID(new_id).version == 7
         assert state.thread_id == new_id
+
+    def test_reset_thread_clears_approval_mode_key(self):
+        """A new thread must not inherit the prior thread's live approval key.
+
+        The key is hashed per thread; leaving a stale key would point the
+        interrupt predicate at the previous thread's mode.
+        """
+        state = TextualSessionState(thread_id="original")
+        state.approval_mode_key = "stale"
+        state.reset_thread()
+        assert state.approval_mode_key is None
+
+    def test_advance_turn_increments_and_generates_id(self):
+        """advance_turn bumps a 1-based turn_number and yields a fresh turn_id."""
+        state = TextualSessionState(thread_id="t")
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id_1, turn_number_1 = state.advance_turn()
+        assert turn_number_1 == 1
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id_1
+        assert uuid.UUID(turn_id_1)  # valid uuid
+
+        turn_id_2, turn_number_2 = state.advance_turn()
+        assert turn_number_2 == 2
+        assert turn_id_2 != turn_id_1
+
+    def test_reset_thread_resets_turn_markers(self):
+        """reset_thread restarts the per-thread turn sequence."""
+        state = TextualSessionState(thread_id="t")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.reset_thread()
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+    def test_thread_switch_resets_turn_markers(self):
+        """Assigning a different thread_id must not carry the prior turn count.
+
+        `/threads` switches and resume injection set `thread_id` directly
+        (not via `reset_thread`); the per-thread turn sequence has to restart so
+        the switched-to thread's traces aren't ordered under the previous
+        thread's turn_number/turn_id.
+        """
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.thread_id = "thread-b"
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id, turn_number = state.advance_turn()
+        assert turn_number == 1
+        assert state.turn_id == turn_id
+
+    def test_thread_id_reassigned_same_value_keeps_turn_markers(self):
+        """Re-assigning the identical thread_id is a no-op for the turn markers."""
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        turn_id = state.turn_id
+
+        state.thread_id = "thread-a"
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id
 
 
 class TestFindSimilarThreads:
@@ -1048,6 +1268,7 @@ class TestPrewarmThreadMessageCounts:
                     },
                     relative_time=True,
                     sort_order="updated_at",
+                    scope="cwd",
                 ),
             ),
             patch.object(
@@ -1240,6 +1461,153 @@ class TestMessageCountFromCheckpointBlob:
             # BUG: Currently returns 0 because it looks at writes table
             # EXPECTED: 4 messages from checkpoint blob
             assert threads[0]["message_count"] == 4
+
+    @pytest.fixture
+    def temp_db_delta_channel(self, tmp_path: Path) -> Path:
+        """DB whose latest checkpoint omits `messages` (DeltaChannel, SDK >= 0.6).
+
+        The full message list is not inlined in `channel_values`; it lives only
+        as per-message deltas in the `writes` table, exactly as the deepagents
+        SDK's `DeltaChannel` messages channel stores it between snapshots.
+        """
+        db_path = tmp_path / "delta.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT "
+            "DEFAULT '', checkpoint_id TEXT, parent_checkpoint_id TEXT, type "
+            "TEXT, checkpoint BLOB, metadata BLOB, "
+            "PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))"
+        )
+        conn.execute(
+            "CREATE TABLE writes (thread_id TEXT, checkpoint_ns TEXT DEFAULT '', "
+            "checkpoint_id TEXT, task_id TEXT, idx INTEGER, channel TEXT, type "
+            "TEXT, value BLOB, PRIMARY KEY "
+            "(thread_id, checkpoint_ns, checkpoint_id, task_id, idx))"
+        )
+
+        serde = JsonPlusSerializer()
+        # Latest checkpoint: messages absent from channel_values (DeltaChannel
+        # only snapshots periodically); other channels still present.
+        checkpoint_data = {
+            "v": 1,
+            "ts": "2024-01-01T00:00:00+00:00",
+            "id": "cp_latest",
+            "channel_values": {"_context_tokens": 5},
+            "channel_versions": {"messages": "00000000000000000000000000000002"},
+            "versions_seen": {},
+            "updated_channels": [],
+        }
+        type_str, checkpoint_blob = serde.dumps_typed(checkpoint_data)
+        metadata = json.dumps({"agent_name": "agent1", "updated_at": "2024-01-02"})
+        conn.execute(
+            "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, "
+            "type, checkpoint, metadata) VALUES (?, '', ?, ?, ?, ?)",
+            ("delta_thread", "cp_latest", type_str, checkpoint_blob, metadata),
+        )
+
+        # Three message deltas across two checkpoints (one human, one ai, one
+        # tool) — the true current count is 3.
+        deltas = [
+            ("cp_a", "task1", 0, [{"type": "human", "content": "hi", "id": "h1"}]),
+            ("cp_a", "task2", 0, [{"type": "ai", "content": "hello", "id": "a1"}]),
+            (
+                "cp_b",
+                "task3",
+                0,
+                [{"type": "tool", "content": "ok", "id": "t1", "tool_call_id": "c1"}],
+            ),
+        ]
+        for cid, task, idx, value in deltas:
+            vtype, vblob = serde.dumps_typed(value)
+            conn.execute(
+                "INSERT INTO writes (thread_id, checkpoint_ns, checkpoint_id, "
+                "task_id, idx, channel, type, value) VALUES (?, '', ?, ?, ?, "
+                "'messages', ?, ?)",
+                ("delta_thread", cid, task, idx, vtype, vblob),
+            )
+
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_counts_messages_from_writes_when_not_inlined(
+        self, temp_db_delta_channel: Path
+    ) -> None:
+        """Regression: DeltaChannel threads reconstruct the count from writes.
+
+        The latest checkpoint omits `messages` from `channel_values`, so the
+        count must be rebuilt by replaying the `messages` writes. Before the
+        fix this returned 0 for every such thread.
+        """
+        sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+        try:
+            with patch.object(
+                sessions, "get_db_path", return_value=temp_db_delta_channel
+            ):
+                threads = asyncio.run(sessions.list_threads(include_message_count=True))
+            assert len(threads) == 1
+            assert threads[0]["message_count"] == 3
+        finally:
+            sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    def test_inlined_messages_take_precedence_over_writes(
+        self, temp_db_with_checkpoint_messages: Path
+    ) -> None:
+        """When the latest checkpoint inlines messages, writes are not replayed.
+
+        The fixture inlines 4 messages and has no writes; the count must come
+        from the checkpoint without falling back to (here, empty) writes.
+        """
+        sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+        try:
+            with (
+                patch.object(
+                    sessions,
+                    "get_db_path",
+                    return_value=temp_db_with_checkpoint_messages,
+                ),
+                patch.object(
+                    sessions,
+                    "_load_message_counts_from_writes_batch",
+                    new_callable=AsyncMock,
+                ) as mock_writes,
+            ):
+                threads = asyncio.run(sessions.list_threads(include_message_count=True))
+            assert threads[0]["message_count"] == 4
+            mock_writes.assert_not_awaited()
+        finally:
+            sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+
+    def test_writes_reconstructed_count_is_cached(
+        self, temp_db_delta_channel: Path
+    ) -> None:
+        """A delta-channel count is cached so the writes replay runs only once.
+
+        The freshness-keyed cache is what keeps the `/threads` modal cheap; a
+        second open must not re-query the `writes` table.
+        """
+        sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+        try:
+            with patch.object(
+                sessions, "get_db_path", return_value=temp_db_delta_channel
+            ):
+                first = asyncio.run(sessions.list_threads(include_message_count=True))
+                assert first[0]["message_count"] == 3
+
+                # Second open: the reconstructed count is served from cache, so
+                # the writes-replay loader must not run again.
+                with patch.object(
+                    sessions,
+                    "_load_message_counts_from_writes_batch",
+                    new_callable=AsyncMock,
+                ) as mock_writes:
+                    second = asyncio.run(
+                        sessions.list_threads(include_message_count=True)
+                    )
+                assert second[0]["message_count"] == 3
+                mock_writes.assert_not_awaited()
+        finally:
+            sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
 
 
 class TestGetThreadLimit:
@@ -1902,7 +2270,7 @@ class TestBatchCheckpointSummaries:
         """Empty thread_ids list should return empty dict without querying."""
         serde = JsonPlusSerializer()
         result = await sessions._load_latest_checkpoint_summaries_batch(
-            None,  # type: ignore[arg-type]  # connection not used
+            None,  # ty: ignore  # connection not used
             [],
             serde,
         )
@@ -2048,7 +2416,7 @@ class TestLoadInitialPromptsFromWritesBatch:
         """Empty thread list should short-circuit without touching the connection."""
         serde = JsonPlusSerializer()
         result = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
-            None,  # type: ignore[arg-type]  # connection not used
+            None,  # ty: ignore  # connection not used
             [],
             serde,
         )
@@ -2079,6 +2447,475 @@ class TestLoadInitialPromptsFromWritesBatch:
         assert results == {}
 
 
+class TestLoadMessageCountsFromWritesBatch:
+    """Tests for the writes-table message-count reconstruction loader."""
+
+    async def test_reconstructs_count_across_checkpoints(self) -> None:
+        """Deltas spread across checkpoints fold into the full message count."""
+        serde = JsonPlusSerializer()
+        first = serde.dumps_typed([{"type": "human", "content": "hi", "id": "h1"}])
+        second = serde.dumps_typed([{"type": "ai", "content": "yo", "id": "a1"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_b", "task2", second[0], second[1]),
+                    ("t1", "cp_a", "task1", first[0], first[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 2}
+
+    async def test_dedups_updates_by_id(self) -> None:
+        """A later write that reuses a message ID updates, not appends."""
+        serde = JsonPlusSerializer()
+        original = serde.dumps_typed([{"type": "ai", "content": "draft", "id": "a1"}])
+        updated = serde.dumps_typed([{"type": "ai", "content": "final", "id": "a1"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", original[0], original[1]),
+                    ("t1", "cp_b", "task2", updated[0], updated[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 1}
+
+    async def test_remove_message_tombstone_decrements(self) -> None:
+        """A `RemoveMessage` write drops the matching message from the count."""
+        from langchain_core.messages import RemoveMessage
+
+        serde = JsonPlusSerializer()
+        add_two = serde.dumps_typed(
+            [
+                {"type": "human", "content": "hi", "id": "h1"},
+                {"type": "ai", "content": "yo", "id": "a1"},
+            ]
+        )
+        remove_one = serde.dumps_typed([RemoveMessage(id="a1")])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", add_two[0], add_two[1]),
+                    ("t1", "cp_b", "task2", remove_one[0], remove_one[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 1}
+
+    async def test_overwrite_resets_accumulator(self) -> None:
+        """An `Overwrite` write replaces the accumulated list as a reset point."""
+        from langgraph.types import Overwrite
+
+        serde = JsonPlusSerializer()
+        seed = serde.dumps_typed(
+            [
+                {"type": "human", "content": "a", "id": "h1"},
+                {"type": "ai", "content": "b", "id": "a1"},
+                {"type": "human", "content": "c", "id": "h2"},
+            ]
+        )
+        overwrite = serde.dumps_typed(
+            Overwrite(value=[{"type": "human", "content": "fresh", "id": "h9"}])
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", seed[0], seed[1]),
+                    ("t1", "cp_b", "task2", overwrite[0], overwrite[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 1}
+
+    async def test_remove_all_messages_resets_then_appends(self) -> None:
+        """`REMOVE_ALL_MESSAGES` clears the list; later deltas rebuild from there.
+
+        The deepagents SDK uses this for compaction/reset, so it is a live path
+        for the threads this loader targets.
+        """
+        from langchain_core.messages import RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        serde = JsonPlusSerializer()
+        seed = serde.dumps_typed(
+            [
+                {"type": "human", "content": "a", "id": "h1"},
+                {"type": "ai", "content": "b", "id": "a1"},
+            ]
+        )
+        # Clear everything, then add a single fresh message in the same delta.
+        reset = serde.dumps_typed(
+            [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                {"type": "human", "content": "fresh", "id": "h9"},
+            ]
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", seed[0], seed[1]),
+                    ("t1", "cp_b", "task2", reset[0], reset[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 1}
+
+    async def test_excludes_subgraph_namespace_writes(self) -> None:
+        """Only root-namespace writes count; subagent (`checkpoint_ns`) excluded.
+
+        Subagents persist their own `messages` writes under the same
+        `thread_id` with a non-empty `checkpoint_ns`; those must not inflate the
+        root conversation's count.
+        """
+        serde = JsonPlusSerializer()
+        root = serde.dumps_typed([{"type": "human", "content": "hi", "id": "h1"}])
+        sub_a = serde.dumps_typed([{"type": "ai", "content": "x", "id": "s1"}])
+        sub_b = serde.dumps_typed([{"type": "tool", "content": "y", "id": "s2"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, ?, ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "", "cp_a", "task1", root[0], root[1]),
+                    ("t1", "subagent:abc", "cp_a", "task2", sub_a[0], sub_a[1]),
+                    ("t1", "subagent:abc", "cp_b", "task3", sub_b[0], sub_b[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": 1}
+
+    async def test_counts_each_thread_independently(self) -> None:
+        """Multiple threads in one batch fold separately."""
+        serde = JsonPlusSerializer()
+        one = serde.dumps_typed([{"type": "human", "content": "hi", "id": "h1"}])
+        two = serde.dumps_typed(
+            [
+                {"type": "human", "content": "x", "id": "h2"},
+                {"type": "ai", "content": "y", "id": "a2"},
+            ]
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", one[0], one[1]),
+                    ("t2", "cp_a", "task1", two[0], two[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1", "t2"], serde
+            )
+
+        assert results == {"t1": 1, "t2": 2}
+
+    async def test_omits_threads_with_no_messages_writes(self) -> None:
+        """Threads without any messages-channel write are absent from result."""
+        serde = JsonPlusSerializer()
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1", "t2"], serde
+            )
+
+        assert results == {}
+
+    async def test_empty_input_returns_empty(self) -> None:
+        """Empty thread list short-circuits without touching the connection."""
+        serde = JsonPlusSerializer()
+        result = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+            None,  # ty: ignore  # connection not used
+            [],
+            serde,
+        )
+        assert result == {}
+
+    async def test_corrupt_blob_is_skipped_without_raising(self) -> None:
+        """A row with undecodable bytes is skipped, not raised."""
+        serde = JsonPlusSerializer()
+        good = serde.dumps_typed([{"type": "human", "content": "hi", "id": "h1"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_a", "task1", good[0], good[1]),
+                    ("t1", "cp_b", "task2", "msgpack", b"\xff\xff garbage"),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        # The good write still counts; the corrupt one is skipped.
+        assert results == {"t1": 1}
+
+    async def test_large_append_history_counts_correctly(self) -> None:
+        """A long append-only history counts correctly via the one-pass fold.
+
+        Correctness-at-scale check for the `threads list` speedup. Note this
+        does not guard against a perf regression on its own: the old O(n^2)
+        fold returns the same count (just slowly), so a revert to the quadratic
+        path would still pass. Wall-clock assertions are too flaky for CI; a
+        codspeed benchmark would be the real regression guard.
+        """
+        serde = JsonPlusSerializer()
+
+        import aiosqlite
+
+        n = 4000
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            rows = []
+            for i in range(n):
+                type_str, blob = serde.dumps_typed(
+                    [{"type": "human", "content": "x", "id": f"m{i}"}]
+                )
+                rows.append(("t1", f"cp_{i:06d}", "task1", type_str, blob))
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                rows,
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": n}
+
+
+class TestCountMessagesFromDeltas:
+    """Tests for the delta-folding message counter and its exact fallback."""
+
+    def test_fast_path_dedups_repeated_ids(self) -> None:
+        """Repeated IDs across deltas collapse to one message (fast path)."""
+        from langchain_core.messages import AIMessage
+
+        deltas = [
+            [AIMessage(content="draft", id="a1")],
+            [AIMessage(content="final", id="a1")],
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_remove_all_then_append_resets(self) -> None:
+        """`REMOVE_ALL_MESSAGES` clears the buffer before later appends."""
+        from langchain_core.messages import HumanMessage, RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        deltas = [
+            [HumanMessage(content="a", id="h1")],
+            [HumanMessage(content="b", id="h2")],
+            [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                HumanMessage(content="fresh", id="h9"),
+            ],
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_overwrite_resets_buffer(self) -> None:
+        """An `Overwrite` delta replaces the accumulated buffer."""
+        from langchain_core.messages import HumanMessage
+        from langgraph.types import Overwrite
+
+        deltas = [
+            [HumanMessage(content="a", id="h1")],
+            [HumanMessage(content="b", id="h2")],
+            Overwrite(value=[HumanMessage(content="fresh", id="h9")]),
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_duplicate_id_within_one_delta_counts_once(self) -> None:
+        """Two messages sharing an ID in one delta collapse to a single count.
+
+        Pins the case excluded from the property test: batch and sequential
+        `add_messages` may order/identify differently, but the *count* the
+        counter reports is the same (both dedup by ID), so the fast path is
+        safe here and needs no exact-fold routing.
+        """
+        from langchain_core.messages import AIMessage
+
+        deltas = [
+            [AIMessage(content="draft", id="d1"), AIMessage(content="final", id="d1")]
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
+            deltas
+        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+
+    def test_specific_remove_matches_incremental_fold(self) -> None:
+        """A delete-by-ID routes through the exact fold and matches it."""
+        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+
+        deltas = [
+            [HumanMessage(content="a", id="h1"), AIMessage(content="b", id="a1")],
+            [RemoveMessage(id="a1")],
+        ]
+        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
+            deltas
+        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_fast_and_exact_agree_on_realistic_histories(self) -> None:
+        """Fast path and exact fold agree on append/clear/overwrite histories.
+
+        Covers the realistic shapes the counter sees (unique-ID appends,
+        streaming updates that reuse an ID, compaction clears, and snapshot
+        overwrites). Excludes duplicate-ID-within-one-delta, whose batch-vs-
+        sequential *ordering/identity* equivalence we haven't characterized;
+        the counts still match there (see
+        `test_duplicate_id_within_one_delta_counts_once`).
+        """
+        import random
+
+        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+        from langgraph.types import Overwrite
+
+        rng = random.Random(20240117)
+        for _ in range(500):
+            deltas: list[object] = []
+            next_id = 0
+            for _ in range(rng.randint(0, 25)):
+                roll = rng.random()
+                if roll < 0.6:
+                    next_id += 1
+                    cls = rng.choice([HumanMessage, AIMessage])
+                    deltas.append([cls(content="x", id=f"m{next_id}")])
+                elif roll < 0.75 and next_id:
+                    # Streaming update: reuse a recent ID.
+                    deltas.append(
+                        [AIMessage(content="y", id=f"m{rng.randint(1, next_id)}")]
+                    )
+                elif roll < 0.85:
+                    deltas.append([RemoveMessage(id=REMOVE_ALL_MESSAGES)])
+                else:
+                    count = rng.randint(0, 3)
+                    deltas.append(
+                        Overwrite(
+                            value=[
+                                HumanMessage(content="o", id=f"ov{j}")
+                                for j in range(count)
+                            ]
+                        )
+                    )
+            fast = sessions._count_messages_from_deltas(deltas)  # pyright: ignore[reportPrivateUsage]
+            exact = sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+            assert fast == exact, deltas
+
+
 class TestInitialPromptFromMessages:
     """Tests for the message-list parser used by the writes-table reader."""
 
@@ -2104,3 +2941,94 @@ class TestInitialPromptFromMessages:
             [{"role": "assistant", "content": "ack"}]
         )
         assert result is None
+
+    def test_skips_system_prefixed_human_message(self) -> None:
+        """Synthetic `[SYSTEM]` interrupt notices are not used as the prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(
+                    content="[SYSTEM] Task interrupted by user. "
+                    "Previous operation was cancelled."
+                ),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_skips_system_prefixed_dict_message(self) -> None:
+        """`[SYSTEM]`-prefixed OpenAI-shape dicts are skipped too."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_returns_none_when_only_system_message(self) -> None:
+        """A lone `[SYSTEM]` message yields no displayable prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [HumanMessage(content="[SYSTEM] Task interrupted by user.")]
+        )
+        assert result is None
+
+    def test_skips_system_message_across_mixed_shapes(self) -> None:
+        """Skipping advances across object/dict shapes, not just within one.
+
+        The first write to `messages` is a raw dict; later writes are serialized
+        `BaseMessage` instances, so a real thread mixes the two shapes. The skip
+        must carry over from a `[SYSTEM]` dict to a real `HumanMessage` object
+        and vice versa.
+        """
+        from langchain_core.messages import HumanMessage
+
+        dict_then_object = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert dict_then_object == "real prompt"
+
+        object_then_dict = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] Task interrupted by user."),
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert object_then_dict == "real prompt"
+
+    def test_skips_consecutive_system_messages(self) -> None:
+        """A run of several `[SYSTEM]` messages is skipped, not just the first."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] first notice"),
+                HumanMessage(content="[SYSTEM] second notice"),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_empty_first_content_returns_without_falling_through(self) -> None:
+        """Empty (non-`[SYSTEM]`) first content returns as-is, not skipped.
+
+        Only `[SYSTEM]`-prefixed content is skipped; an empty-string first human
+        message is returned verbatim (`""`) rather than falling through to a
+        later message. This pins the `prompt is not None` guard so a future
+        "skip empties" change cannot silently alter behavior.
+        """
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content=""),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == ""

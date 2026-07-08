@@ -8,10 +8,13 @@ This repository is structured as a monorepo, with various packages located in th
 ```txt
 deepagents/          # Core SDK — create_deep_agent, middleware, backends
 acp/                 # Agent Client Protocol integration
+cli/                 # Deployment CLI
 evals/               # Evaluation suite and Harbor integration
 code/                # Coding agent with interactive terminal interface (Textual TUI)
-cli/                 # Deployment CLI
+talon/               # Local runtime host for long-running agents
 partners/            # Provider integrations
 ```
 
 (Each package contains its own `README.md` file with specific details about that package.)
+
+For monorepo setup and the command reference, see [`DEVELOPMENT.md`](DEVELOPMENT.md). For a high-level overview of the stack, see [`ARCHITECTURE.md`](ARCHITECTURE.md).

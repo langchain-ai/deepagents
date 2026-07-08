@@ -79,6 +79,7 @@ from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
+from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -262,7 +263,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 config=config,
                 tool_call_id=None,
             )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
+            return _resolve_backend(self._backend, tool_runtime)
         return self._backend
 
     def _format_agent_memory(self, contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:

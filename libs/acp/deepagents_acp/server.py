@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeGuard
 from uuid import uuid4
 
 from acp import (
@@ -68,16 +68,59 @@ from deepagents_acp.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from acp.interfaces import Client
     from deepagents.graph import Checkpointer
     from langchain_core.runnables import RunnableConfig
+    from langgraph.types import Interrupt
 
 # agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
 # options are now bare SessionConfigOptionSelect instances. Resolve dynamically
 # so the module imports cleanly under both v0.8.x and v0.9+.
 SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
+"""Compatibility alias for the optional ACP `SessionConfigOption` wrapper."""
+
+McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
+"""Type alias for ACP MCP server configuration variants."""
+
+_MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
+"""Runtime MCP server classes used to detect legacy positional `new_session` calls."""
+
+
+def _normalize_new_session_args(
+    additional_directories: list[str] | list[McpServer] | None,
+    mcp_servers: list[McpServer] | None,
+) -> tuple[list[str] | None, list[McpServer]]:
+    """Normalize `new_session` arguments while preserving old positional calls."""
+    if mcp_servers is not None:
+        return (
+            additional_directories if _is_additional_directories(additional_directories) else None,
+            mcp_servers,
+        )
+    if additional_directories is None:
+        return None, []
+    if _is_additional_directories(additional_directories):
+        return additional_directories, []
+    if _is_mcp_servers(additional_directories):
+        return None, additional_directories
+    return None, []
+
+
+def _is_additional_directories(
+    additional_directories: list[str] | list[McpServer] | None,
+) -> TypeGuard[list[str]]:
+    """Return whether a value is the ACP `additional_directories` argument."""
+    return additional_directories is not None and all(
+        isinstance(directory, str) for directory in additional_directories
+    )
+
+
+def _is_mcp_servers(
+    mcp_servers: list[str] | list[McpServer],
+) -> TypeGuard[list[McpServer]]:
+    """Return whether a value is the ACP `mcp_servers` argument."""
+    return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +176,7 @@ class AgentServerACP(ACPAgent):
         self._cancelled = False
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
+        self._session_mcp_servers: dict[str, list[McpServer]] = {}
         self._allowed_command_types: dict[
             str, set[tuple[str, str | None]]
         ] = {}  # Track allowed command types per session
@@ -225,14 +269,15 @@ class AgentServerACP(ACPAgent):
     async def new_session(
         self,
         cwd: str,
-        mcp_servers: list[HttpMcpServer | SseMcpServer | McpServerStdio] | None = None,
+        additional_directories: list[str] | list[McpServer] | None = None,
+        mcp_servers: list[McpServer] | None = None,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> NewSessionResponse:
         """Create a new agent session with the given working directory."""
-        if mcp_servers is None:
-            mcp_servers = []
+        _, mcp_servers = _normalize_new_session_args(additional_directories, mcp_servers)
         session_id = uuid4().hex
         self._session_cwds[session_id] = cwd
+        self._session_mcp_servers[session_id] = mcp_servers
 
         # Initialize session state
         if self._modes is not None:
@@ -275,7 +320,7 @@ class AgentServerACP(ACPAgent):
         self,
         config_id: str,
         session_id: str,
-        value: str | bool,
+        value: str | bool,  # noqa: FBT001  # signature fixed by ACP protocol interface
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
         """Update a configuration option for the session.
@@ -647,6 +692,7 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
+            pending_interrupts: Sequence[Interrupt] = ()
             async for stream_chunk in agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
@@ -691,12 +737,12 @@ class AgentServerACP(ACPAgent):
                                         {"interrupt_value": interrupt_value},
                                     )
 
-                            current_state = await agent.aget_state(config)
-                            user_decisions = await self._handle_interrupts(
-                                current_state=current_state,
-                                session_id=session_id,
-                            )
-                            break
+                            # The checkpoint backing this update may not be visible until
+                            # the stream iterator has closed. Defer reading state until
+                            # after leaving the async iterator so persistent checkpointers
+                            # do not return a stale, pre-interrupt snapshot.
+                            pending_interrupts = interrupt_objs
+                            continue
 
                     for node_name, update in updates.items():
                         if node_name == "tools" and isinstance(update, dict) and "todos" in update:
@@ -773,8 +819,16 @@ class AgentServerACP(ACPAgent):
             # The loop continues while there are interrupts (line 467)
             # We get the current state to check the loop condition
             current_state = await agent.aget_state(config)
-            # Note: Interrupts are handled during streaming via __interrupt__ updates
-            # This state check is only for the while loop condition
+            if pending_interrupts:
+                user_decisions = await self._handle_interrupts(
+                    current_state=current_state,
+                    session_id=session_id,
+                    pending_interrupts=pending_interrupts,
+                )
+                if user_decisions:
+                    # A stale snapshot has no interrupts and would otherwise end
+                    # the loop before the selected decisions can resume the graph.
+                    current_state = None
 
         return PromptResponse(stop_reason="end_turn")
 
@@ -783,12 +837,14 @@ class AgentServerACP(ACPAgent):
         *,
         current_state: StateSnapshot,
         session_id: str,
+        pending_interrupts: Sequence[Interrupt] | None = None,
     ) -> list[dict[str, Any]]:
         """Handle agent interrupts by requesting permission from the client."""
         user_decisions: list[dict[str, Any]] = []
-        if current_state.next and current_state.interrupts:
+        interrupts = pending_interrupts or current_state.interrupts
+        if (pending_interrupts or current_state.next) and interrupts:
             # Agent is interrupted, request permission from user
-            for interrupt in current_state.interrupts:
+            for interrupt in interrupts:
                 # Get the tool call info from the interrupt
                 tool_call_id = interrupt.id
                 interrupt_value = interrupt.value
@@ -964,7 +1020,7 @@ class AgentServerACP(ACPAgent):
 
 async def _serve_test_agent() -> None:
     """Run test agent from the root of the repository with ACP integration."""
-    from dotenv import load_dotenv  # Lazy import for dev-only entry point
+    from dotenv import load_dotenv  # noqa: PLC0415  # lazy import for dev-only entry point
 
     load_dotenv()
 

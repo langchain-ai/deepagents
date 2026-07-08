@@ -83,8 +83,10 @@ on:
           - "fireworks:accounts/fireworks/models/kimi-k2p6"
           - "fireworks:accounts/fireworks/models/glm-5"
           - "fireworks:accounts/fireworks/models/glm-5p1"
+          - "fireworks:accounts/fireworks/models/glm-5p2"
           - "fireworks:accounts/fireworks/models/minimax-m2p5"
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
+          - "fireworks:accounts/fireworks/models/minimax-m3"
           - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a\
             12b-fp8"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
@@ -114,6 +116,7 @@ on:
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
+          - "openrouter:z-ai/glm-5.2"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "openrouter:deepseek/deepseek-v4-pro"
           - "xai:grok-4"
@@ -276,7 +279,7 @@ jobs:
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -859,7 +862,7 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "📥 Download eval artifacts"
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

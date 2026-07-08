@@ -2,7 +2,7 @@
 
 `deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split.
 
-For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`.
+For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
 ## Textual (terminal UI framework)
 
@@ -10,10 +10,10 @@ For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmark
 
 **Key Textual resources:**
 
-- **Guide:** https://textual.textualize.io/guide/
-- **Widget gallery:** https://textual.textualize.io/widget_gallery/
-- **CSS reference:** https://textual.textualize.io/styles/
-- **API reference:** https://textual.textualize.io/api/
+- **Guide:** <https://textual.textualize.io/guide/>
+- **Widget gallery:** <https://textual.textualize.io/widget_gallery/>
+- **CSS reference:** <https://textual.textualize.io/styles/>
+- **API reference:** <https://textual.textualize.io/api/>
 
 ### Styled text in widgets
 
@@ -38,6 +38,13 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 `console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
 
+### Glyphs and spinners — reuse, don't redefine
+
+Charset-dependent characters and animations have **single sources of truth**. Reuse them instead of hand-rolling new ones — copies drift, and (more subtly) a hardcoded Unicode literal won't degrade to ASCII on terminals that need it.
+
+- **Glyphs** (checkmarks, arrows, ellipsis, cursor, box-drawing, branch icon, etc.): pull from `get_glyphs()` (`config.Glyphs`). Each glyph has a Unicode and an ASCII variant; `get_glyphs()` returns the right set for the active terminal. Never inline `"✓"`, `"…"`, `"›"`, and friends.
+- **Animated spinners**: reuse the `Spinner` class in `tui/widgets/loading.py`, which wraps `get_glyphs().spinner_frames` (braille on Unicode, `(-) (\) (|) (/)` on ASCII) and exposes `next_frame()`/`current_frame()`. Do **not** define your own frame tuples or interval constants for a spinner — drive a `Spinner` on a `set_interval`. The status-bar reconnect indicator (`tui/widgets/status.py`) is the reference example; it ticks at the same 0.1s cadence as `LoadingWidget`. All connection/queue progress lives in the status bar — the welcome banner deliberately stays out of it, so there are currently no bespoke spinners to carve an exception for.
+
 ### Textual patterns used in this codebase
 
 - **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
@@ -48,10 +55,23 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
+- For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
+- Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
+- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal.
+
+### Typing and test doubles
+
+When fixing `ty` diagnostics, do not mechanically replace `# type: ignore[...]` with `cast(...)`. First try to improve the actual type shape: narrower annotations, typed futures/callbacks, covariant read-only types such as `Mapping`/`Sequence`, local mock variables, or `monkeypatch.setattr(...)`. Treat `cast("Any", ...)` as a last resort.
+
+For Textual tests that intentionally replace concrete app methods with `MagicMock` or `AsyncMock`, prefer `monkeypatch.setattr(...)` or one small documented dynamic helper over repeated `cast("Any", app)` expressions. Assert on local mock variables instead of re-reading mocked methods from the concrete object when possible.
+
+Casts are acceptable when the type violation is the point of the test (for example, passing a wrong runtime type to exercise defensive validation) or when a third-party overload is narrower than verified runtime behavior. In those cases, keep the cast narrowly scoped and add a short comment explaining why it is intentional.
 
 ## SDK dependency pin
 
-`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.
+
+For a persistent editable `dcode-dev` install that stays separate from a released install, see [Local dev installs](./DEVELOPMENT.md#local-dev-installs) in the development guide.
 
 ## Startup performance
 
@@ -62,8 +82,16 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
 - Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
 - When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
-- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Features that run shell commands must never do so *silently* by default. Either gate them behind an explicit env var or config key (opt-in), or — if default-enabled — announce the action before running it and offer a documented opt-out. Auto-update is the sole default-enabled exception: it shows a one-time migration notice and skips the first install when enabled only by the opt-out default, prints the upgrade it is about to perform, is overridable via `DEEPAGENTS_CODE_AUTO_UPDATE` / `[update].auto_update`, and is always disabled for editable installs.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
+
+## Logging
+
+Debug logging is configured **once**, on the `deepagents_code` package logger, by the `configure_debug_logging` call in `deepagents_code/__init__.py`. Child module loggers (`logging.getLogger(__name__)`) reach the shared debug file via propagation.
+
+- Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
+- Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
+- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
 
 ## CLI help screen
 
@@ -71,21 +99,33 @@ The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, sepa
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/tui/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
 
 ## Slash commands
 
 Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `deepagents_code/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
 
-To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make commands-catalog` if you changed command names, aliases, descriptions, visibility, or hidden-command metadata, then (5) run `make lint && make test` — the drift test will catch any mismatch.
 
 ## Adding a new model provider
 
 `deepagents-code` supports LangChain-based chat model providers as optional dependencies. To add a new provider, update these files (all entries alphabetically sorted):
 
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
-2. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-3. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`
+2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
+3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
+4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
+5. `deepagents_code/tui/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
+6. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+
+### `PROVIDER_BASE_URL_ENV` guidelines
+
+`PROVIDER_BASE_URL_ENV` pairs a provider with the endpoint env var(s) its LangChain integration and SDK read, so a stored `/auth` endpoint resolves and an inherited gateway URL cannot leak. Before adding an entry:
+
+- **Verify against source — never infer from naming.** Read both the `langchain-<provider>` chat model (look for `from_env` / `get_from_dict_or_env` / `secret_from_env`, or a `Field` default on the `base_url`/`endpoint` alias) and the underlying vendor SDK, and record the exact env var name each reads. The integration and the SDK often read different names (e.g. `GROQ_API_BASE` vs `GROQ_BASE_URL`).
+- **Canonical name first.** Element `[0]` is written by `apply_stored_credentials` and read by `get_base_url`; every other name the integration or SDK may read goes in the tuple so it is cleared too. By convention the SDK's `*_BASE_URL`-style name is canonical and the integration's `*_API_BASE`/`*_API_URL` name is the alternate.
+- **Never list another provider's shared var.** OpenAI-compatible providers (e.g. `deepseek`, `openrouter`, `together`, `xai`, `baseten`) sit on the `openai` SDK, whose only endpoint var is the shared `OPENAI_BASE_URL`. Listing it under those providers would clobber the user's real OpenAI endpoint when their credential is written or cleared — list only the provider's own var (e.g. `DEEPSEEK_API_BASE`), or nothing.
+- **Omit providers with no dedicated var.** When the endpoint is a hardcoded default plus a constructor arg (`baseten`), an `api_base` arg resolved per-provider inside the library (`litellm`), or derived from the region (`google_vertexai`), leave the provider out. A `/auth` endpoint still resolves through `get_base_url`'s stored-credential step and reaches the model as the `base_url` kwarg.
 
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 

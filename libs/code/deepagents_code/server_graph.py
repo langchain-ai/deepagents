@@ -1,21 +1,21 @@
 """Server-side graph entry point for `langgraph dev`.
 
-This module is referenced by the generated `langgraph.json` and exposes the
-agent graph as a module-level variable that the LangGraph server can load
-and serve.
+This module is referenced by the generated `langgraph.json` and exposes a graph
+factory that the LangGraph server can load and serve.
 
-The graph is created at module import time via `make_graph()`, which reads
-configuration from `ServerConfig.from_env()` — the same dataclass the CLI uses
-to *write* the configuration via `ServerConfig.to_env()`. This shared schema
-ensures the two sides stay in sync.
+The graph is created by `make_graph()`, which reads configuration from
+`ServerConfig.from_env()` — the same dataclass the CLI uses to *write* the
+configuration via `ServerConfig.to_env()`. This shared schema ensures the two
+sides stay in sync.
 """
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -23,6 +23,9 @@ from deepagents_code._startup_error import (
     emit_startup_failure,
 )
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,18 @@ def _print_startup_error(message: str) -> None:
     print(  # noqa: T201  # machine-readable marker consumed by server.py
         f"{_STARTUP_ERROR_MARKER}{message}",
         file=sys.stderr,
+    )
+
+
+def _warm_mcp_adapter_imports() -> None:
+    """Eagerly import MCP adapter modules whose first import may block.
+
+    Called via `asyncio.to_thread` before MCP loading; kept as a small helper so
+    tests can patch it and assert the warmup stays off the server event loop.
+    """
+    from langchain_mcp_adapters import (
+        sessions as _sessions,  # noqa: F401
+        tools as _tools,  # noqa: F401
     )
 
 
@@ -63,7 +78,7 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
     return _mcp_session_manager
 
 
-def _build_tools(
+async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
 ) -> tuple[list[Any], list[Any] | None]:
@@ -72,11 +87,13 @@ def _build_tools(
     Loads built-in tools (conditionally including web search when Tavily is
     available) and MCP tools when enabled.
 
-    MCP discovery runs synchronously via `asyncio.run` because this function is
-    called during module-level graph construction (before the server's async
-    event loop is available). `stateless=True` ensures discovery only uses
-    throwaway sessions, while the shared runtime session manager binds real
-    sessions lazily inside the server loop on first tool invocation.
+    MCP discovery is awaited on the server's event loop: LangGraph invokes this
+    async factory on its running loop, so discovery must use `await` rather than
+    `asyncio.run` (which raises inside a running loop). `stateless=True` ensures
+    discovery only uses throwaway sessions, while the shared runtime session
+    manager binds real sessions lazily inside the server loop on first tool
+    invocation. MCP adapter imports are warmed in a worker thread first because
+    first import can perform blocking package-resource scans.
 
     Args:
         config: Deserialized server configuration.
@@ -90,28 +107,26 @@ def _build_tools(
         RuntimeError: If MCP tool loading fails.
     """
     from deepagents_code.config import settings
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
-    tools: list[Any] = [fetch_url]
+    tools: list[Any] = [fetch_url, get_current_thread_id]
     if settings.has_tavily:
         tools.append(web_search)
 
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
-        import asyncio
-
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
 
+        await asyncio.to_thread(_warm_mcp_adapter_imports)
+
         try:
-            mcp_tools, _, mcp_server_info = asyncio.run(
-                resolve_and_load_mcp_tools(
-                    explicit_config_path=config.mcp_config_path,
-                    no_mcp=config.no_mcp,
-                    trust_project_mcp=config.trust_project_mcp,
-                    project_context=project_context,
-                    stateless=True,
-                    session_manager=_get_mcp_session_manager(),
-                )
+            mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
+                explicit_config_path=config.mcp_config_path,
+                no_mcp=config.no_mcp,
+                trust_project_mcp=config.trust_project_mcp,
+                project_context=project_context,
+                stateless=True,
+                session_manager=_get_mcp_session_manager(),
             )
         except FileNotFoundError:
             logger.exception("MCP config file not found: %s", config.mcp_config_path)
@@ -129,7 +144,7 @@ def _build_tools(
     return tools, mcp_server_info
 
 
-def make_graph() -> Any:  # noqa: ANN401
+async def _make_graph() -> Any:  # noqa: ANN401
     """Create the agent graph from environment-based configuration.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
@@ -143,19 +158,33 @@ def make_graph() -> Any:  # noqa: ANN401
     project_context = get_server_project_context()
 
     from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import create_model, settings
+    from deepagents_code.config import (
+        configure_langsmith_secret_redaction,
+        create_model,
+        settings,
+    )
 
     if project_context is not None:
         settings.reload_from_environment(start_path=project_context.user_cwd)
+    configure_langsmith_secret_redaction()
 
-    result = create_model(config.model, extra_kwargs=config.model_params)
+    # Offload to a worker thread: `create_model` does blocking disk IO for some
+    # providers (e.g. the `openai_codex` token store currently acquires a file
+    # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`
+    # rejects on the server event loop.
+    result = await asyncio.to_thread(
+        create_model, config.model, extra_kwargs=config.model_params
+    )
     result.apply_to_settings()
 
-    tools, mcp_server_info = _build_tools(config, project_context)
+    tools, mcp_server_info = await _build_tools(config, project_context)
 
     # Create sandbox backend if a sandbox provider is configured.
-    # The context manager is held open at module level and cleaned up via
-    # atexit so the sandbox lives for the entire server process lifetime.
+    # The context manager is created here in the factory, but its reference is
+    # stored in a module-level global (and cleaned up via atexit) so the sandbox
+    # lives for the entire server process lifetime. `make_graph` caches the built
+    # graph, so this runs once per process despite LangGraph's per-run factory
+    # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
     sandbox_backend = None
     if config.sandbox_type:
@@ -203,41 +232,90 @@ def make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
-    async_subagents = load_async_subagents() or None
+    def _create_cli_agent_sync() -> Any:  # noqa: ANN401
+        async_subagents = load_async_subagents() or None
 
-    if config.interpreter_ptc is not None:
-        settings.interpreter_ptc = config.interpreter_ptc
-    if config.interpreter_ptc_acknowledge_unsafe:
-        settings.interpreter_ptc_acknowledge_unsafe = True
-    if config.enable_interpreter:
-        settings.enable_interpreter = True
+        # These process-global settings writes are safe here because `make_graph`
+        # is lock-serialized and caches one graph for the server process lifetime.
+        if config.interpreter_ptc is not None:
+            settings.interpreter_ptc = config.interpreter_ptc
+        if config.interpreter_ptc_acknowledge_unsafe:
+            settings.interpreter_ptc_acknowledge_unsafe = True
+        if config.enable_interpreter:
+            settings.enable_interpreter = True
 
-    agent, _ = create_cli_agent(
-        model=result.model,
-        assistant_id=config.assistant_id,
-        tools=tools,
-        sandbox=sandbox_backend,
-        sandbox_type=config.sandbox_type,
-        system_prompt=config.system_prompt,
-        interactive=config.interactive,
-        auto_approve=config.auto_approve,
-        interrupt_shell_only=config.interrupt_shell_only,
-        shell_allow_list=config.shell_allow_list,
-        enable_ask_user=config.enable_ask_user,
-        enable_memory=config.enable_memory,
-        enable_skills=config.enable_skills,
-        enable_shell=config.enable_shell,
-        enable_interpreter=config.enable_interpreter,
-        mcp_server_info=mcp_server_info,
-        cwd=project_context.user_cwd if project_context is not None else config.cwd,
-        project_context=project_context,
-        async_subagents=async_subagents,
-    )
-    return agent
+        agent, _ = create_cli_agent(
+            model=result.model,
+            assistant_id=config.assistant_id,
+            tools=tools,
+            sandbox=sandbox_backend,
+            sandbox_type=config.sandbox_type,
+            system_prompt=config.system_prompt,
+            interactive=config.interactive,
+            auto_approve=config.auto_approve,
+            interrupt_shell_only=config.interrupt_shell_only,
+            shell_allow_list=config.shell_allow_list,
+            enable_ask_user=config.enable_ask_user,
+            enable_memory=config.enable_memory,
+            enable_skills=config.enable_skills,
+            enable_shell=config.enable_shell,
+            enable_interpreter=config.enable_interpreter,
+            rubric_model=config.rubric_model,
+            rubric_max_iterations=config.rubric_max_iterations,
+            mcp_server_info=mcp_server_info,
+            cwd=project_context.user_cwd if project_context is not None else config.cwd,
+            project_context=project_context,
+            async_subagents=async_subagents,
+        )
+        return agent
+
+    return await asyncio.to_thread(_create_cli_agent_sync)
 
 
-try:
-    graph = make_graph()
-except Exception as exc:  # noqa: BLE001  # top-level barrier: any failure must surface to parent
-    emit_startup_failure(exc)
-    sys.exit(1)
+def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
+    """Build the cached async graph factory exposed to `langgraph dev`.
+
+    The returned coroutine function is what `langgraph.json` references. It keeps
+    its cache and lock in this closure rather than in module-level globals, so
+    importing the module (e.g. for import-only checks) introduces no shared
+    mutable state.
+
+    Returns:
+        A zero-arg async factory that builds the graph once and returns the
+        cached instance on every subsequent call.
+    """
+    missing = object()
+    graph: Any = missing
+    lock = asyncio.Lock()
+
+    async def make_graph() -> Any:  # noqa: ANN401
+        """Create (or return the cached) agent graph for `langgraph dev`.
+
+        LangGraph loads this async factory from the generated `langgraph.json`
+        and invokes it lazily on its event loop — and again on every run. The
+        built graph is cached for the process lifetime so MCP discovery, sandbox
+        creation, and `atexit` registration each happen exactly once; re-running
+        them per request would re-discover MCP servers, leak sandbox sessions,
+        and stack duplicate `atexit` handlers. Any construction failure is
+        converted into a startup-error marker (scraped by the parent app
+        process) before exiting.
+
+        Returns:
+            Compiled LangGraph agent graph.
+        """
+        nonlocal graph
+        if graph is not missing:
+            return graph
+        async with lock:
+            if graph is missing:
+                try:
+                    graph = await _make_graph()
+                except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
+                    emit_startup_failure(exc)
+                    sys.exit(1)
+            return graph
+
+    return make_graph
+
+
+make_graph = _build_graph_factory()

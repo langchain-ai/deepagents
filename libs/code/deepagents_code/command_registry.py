@@ -80,138 +80,186 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auth",
-        description="Manage stored API keys for model providers",
+        description="Connect and manage provider and service credentials",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="key keys credential credentials login token api",
+        hidden_keywords=(
+            "key keys credential credentials login token api tracing langsmith"
+        ),
         aliases=("/connect",),
     ),
     SlashCommand(
         name="/clear",
-        description="Clear chat and start new thread",
+        description="Clear the chat and start a new thread",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reset",
     ),
     SlashCommand(
         name="/copy",
-        description="Copy latest assistant message to clipboard",
+        description="Copy the latest assistant message to clipboard",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/force-clear",
-        description="Interrupt active work, clear chat, and start new thread",
+        description="Stop active work, clear the chat, and start a new thread",
         bypass_tier=BypassTier.ALWAYS,
         hidden_keywords="reset interrupt",
     ),
     SlashCommand(
+        name="/goal",
+        description="Set a persistent objective by drafting acceptance criteria",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords=(
+            "objective criteria acceptance rubric grader grading model iterations"
+        ),
+        argument_hint="[<objective>|show|clear|model|max-iterations]",
+    ),
+    SlashCommand(
         name="/editor",
-        description="Open prompt in external editor ($EDITOR)",
+        description="Open prompt in an external editor ($EDITOR)",
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
+        name="/effort",
+        description="Set reasoning effort for the current model",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="reasoning thinking level",
+        argument_hint="[none|low|medium|high|xhigh|max|clear]",
+    ),
+    SlashCommand(
         name="/mcp",
-        description=(
-            "Show MCP servers; `/mcp login <server>` to authenticate, "
-            "`/mcp reconnect` to load deferred logins, F2 in the viewer "
-            "to disable/enable a server"
-        ),
+        description="Manage MCP servers and authentication",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="servers oauth authenticate reconnect disable enable",
         argument_hint="[login <server> | reconnect]",
     ),
     SlashCommand(
         name="/model",
-        description="Switch or configure model (--model-params, --default)",
+        description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
         name="/notifications",
-        description="Configure startup warning preferences",
+        description="Configure startup warnings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="warnings alerts suppress",
     ),
     SlashCommand(
         name="/offload",
-        description="Free up context window space by offloading older messages",
+        description="Summarize and offload older messages to free context",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="compact",
         aliases=("/compact",),
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/remember",
-        description="Update memory and skills from conversation",
+        description="Save useful context to memory or skills",
         bypass_tier=BypassTier.QUEUED,
         argument_hint="[context]",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",
-        description="Guide for creating effective agent skills",
+        description="Create or refine agent skills",
         bypass_tier=BypassTier.QUEUED,
         argument_hint="[task]",
     ),
     SlashCommand(
         name="/threads",
-        description="Browse and resume previous threads",
+        description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="continue history sessions",
     ),
     SlashCommand(
         name="/trace",
-        description="Open current thread in LangSmith",
+        description="Open this thread in LangSmith",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/tokens",
-        description="Token usage",
+        description="Show token usage",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="cost",
     ),
     SlashCommand(
         name="/reload",
-        description="Reload config from environment variables and .env",
+        description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="refresh",
     ),
     SlashCommand(
+        name="/rubric",
+        description="Set explicit acceptance criteria for rubric grading",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="criteria acceptance grader grading evaluation iterations",
+        argument_hint="[set|next|file|show|clear|model|max-iterations]",
+        aliases=("/criteria",),
+    ),
+    SlashCommand(
+        name="/restart",
+        description="Restart the agent server",
+        bypass_tier=BypassTier.ALWAYS,
+        hidden_keywords="respawn server",
+    ),
+    SlashCommand(
         name="/theme",
-        description="Switch color theme",
+        description="Change color theme",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="dark light color appearance",
+    ),
+    SlashCommand(
+        name="/scrollbar",
+        description="Show or hide the chat scrollbar",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="scroll scroller bar vertical",
+    ),
+    SlashCommand(
+        name="/timestamps",
+        description="Show or hide message timestamps",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="time footer footers date dates",
     ),
     SlashCommand(
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="upgrade",
+        hidden_keywords="upgrade dependencies deps refresh",
+        argument_hint="[--deps] [--prerelease]",
+    ),
+    SlashCommand(
+        name="/install",
+        description="Install an optional integration",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras add provider sandbox dependency",
+        argument_hint="<extra> [--force]",
     ),
     SlashCommand(
         name="/auto-update",
-        description="Toggle automatic updates on or off",
+        description="Turn automatic updates on or off",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/changelog",
-        description="Open changelog in browser",
+        description="Open the changelog in a browser",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/version",
-        description="Show version",
+        description="Show version information",
         bypass_tier=BypassTier.CONNECTING,
         aliases=("/about",),
     ),
     SlashCommand(
         name="/feedback",
-        description="Submit a bug report or feature request",
+        description="Send feedback or report an issue",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/docs",
-        description="Open documentation in browser",
+        description="Open the docs",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/help",
-        description="Show help",
+        description="Show help and available commands",
         bypass_tier=BypassTier.QUEUED,
     ),
     SlashCommand(
@@ -262,11 +310,24 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error", "/restart"})
-"""Power-user commands kept out of autocomplete and help.
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error"})
+"""Power-user commands kept out of autocomplete and help."""
 
-Includes both debug helpers (`/debug-error`) and recovery escape hatches
-(`/restart` — hot-respawn the app-owned LangGraph server).
+STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(
+    {"/install", "/reload", "/update"}
+)
+"""`QUEUED`-tier commands that must still run when startup has failed.
+
+When the configured model can't be built (e.g. its provider package is
+missing) the server never starts and the app holds a `_server_startup_error`
+state that parks queued messages. These are the recovery escape hatches for
+that state — install the missing package, reload config/env, or upgrade the
+tool — so they must bypass the queue rather than sit behind the very failure
+they repair. `/model` and `/auth` already escape via `IMMEDIATE_UI` (which
+opens a modal and defers the real work); the commands here instead perform
+their repair work directly, so they stay `QUEUED` and rely on this exemption.
+The bypass itself is gated in `_can_bypass_queue`. Every entry is also
+`QUEUE_BOUND` — the recovery exemption is orthogonal to the normal queue.
 """
 
 ALL_CLASSIFIED: frozenset[str] = (

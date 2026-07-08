@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
 import shutil
 import tempfile
 import tomllib
-from pathlib import Path
+import warnings
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from deepagents.middleware import (
+    GRADER_SYSTEM_PROMPT,
+    FilesystemMiddleware,
+    MemoryMiddleware,
+    RubricMiddleware,
+    SkillsMiddleware,
+)
 
 # Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
 # `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
@@ -50,15 +58,24 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
+)
+from langchain_core.tools import StructuredTool, tool
 
 from deepagents_code import theme
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
     config,
     console,
     get_default_coding_instructions,
     get_glyphs,
+    get_langsmith_project_name,
+    restore_user_tracing_api_keys,
+    restore_user_tracing_env,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
@@ -83,6 +100,79 @@ logger = logging.getLogger(__name__)
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+_RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
+_RUBRIC_GRADER_SYSTEM_PROMPT = (
+    GRADER_SYSTEM_PROMPT
+    + "\n\nWhen the transcript says a tool result was saved under "
+    + f"`{_RUBRIC_GRADER_READ_FILE_PREFIX}`, use the `read_file` tool to inspect "
+    + "the referenced evidence before deciding that a criterion lacks support. "
+    + "Only read paths that are explicitly present in the transcript."
+)
+
+
+def _validate_rubric_grader_read_path(file_path: str) -> str | None:
+    normalized = file_path.replace("\\", "/")
+    if not normalized.startswith(_RUBRIC_GRADER_READ_FILE_PREFIX):
+        return "Rubric grader can only read files under /large_tool_results/."
+    parts = PurePosixPath(normalized).parts
+    if ".." in parts or "~" in parts:
+        return "Invalid path."
+    return None
+
+
+def _create_rubric_grader_tools(backend: CompositeBackend) -> list[BaseTool]:
+    filesystem = FilesystemMiddleware(backend=backend)
+    sdk_read_file: StructuredTool | None = None
+    for candidate in filesystem.tools:
+        if candidate.name == "read_file":
+            sdk_read_file = cast("StructuredTool", candidate)
+            break
+    if sdk_read_file is None:
+        msg = "SDK read_file tool is unavailable."
+        raise RuntimeError(msg)
+
+    sdk_read_file_func = sdk_read_file.func
+    if sdk_read_file_func is None:
+        msg = "SDK read_file tool is missing a sync implementation."
+        raise RuntimeError(msg)
+
+    @tool(description=sdk_read_file.description)
+    def read_file(
+        file_path: str,
+        runtime: ToolRuntime[None, Any],
+        offset: int = 0,
+        limit: int = 100,
+    ) -> object:
+        """Read an offloaded tool result referenced in the transcript.
+
+        Returns:
+            The SDK `read_file` tool result, or an error message when the path is
+            outside the grader evidence directory.
+        """
+        if error := _validate_rubric_grader_read_path(file_path):
+            return error
+        return sdk_read_file_func(
+            file_path=file_path,
+            runtime=runtime,
+            offset=offset,
+            limit=limit,
+        )
+
+    return [read_file]
+
+
+def _sanitize_agent_message_name(agent_name: str) -> str:
+    """Return a provider-safe message name for a user-facing agent name.
+
+    Args:
+        agent_name: Display/storage name for the selected agent.
+
+    Returns:
+        Name containing only alphanumerics, underscores, and hyphens.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]+", "_", agent_name).strip("_")
+    return sanitized or DEFAULT_AGENT_NAME
 
 
 class ShellAllowListMiddleware(AgentMiddleware):
@@ -199,7 +289,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"execute", "write_file", "edit_file"}
+    {"execute", "write_file", "edit_file", "delete"}
 )
 """Tools considered write/shell capable for PTC auditing.
 
@@ -218,12 +308,23 @@ def _resolve_ptc_option(
 ) -> list[str] | None:
     """Resolve the configured PTC allowlist to a concrete list of tool names.
 
+    Names are *not* validated against `tools`. The Deep Agents SDK injects the
+    filesystem, `task`, `write_todos`, and `execute` tools via middleware in
+    `create_deep_agent` — *after* this point — so they are absent from `tools`
+    here, and the SDK exposes no importable list of them. `CodeInterpreterMiddleware`
+    matches the resolved names against the live runtime registry and silently
+    ignores any that are absent, so resolution passes names through and lets
+    runtime decide. (Names that match nothing at runtime are dropped, so a typo
+    silently exposes no tool rather than raising.)
+
     Args:
         ptc: Raw `interpreter_ptc` value from settings or CLI. Accepts
-            `False`/`[]`, `"safe"`, `"all"`, or a list of names.
-        tools: Live tool list given to `create_cli_agent`. Used to validate
-            explicit names, intersect the `"safe"` preset, and enumerate
-            `"all"`.
+            `False`/`[]`, `"safe"`, `"all"`, or a list of names. A list may
+            include `"safe"`, which expands to `INTERPRETER_PTC_SAFE_PRESET`;
+            `"all"` is rejected inside a list.
+        tools: Tools passed to `create_cli_agent`. Used only to enumerate
+            `"all"`, which is therefore limited to these explicitly-passed
+            tools (the SDK runtime built-ins cannot be enumerated here).
         acknowledge_unsafe: Mirrors `settings.interpreter_ptc_acknowledge_unsafe`;
             required when `ptc="all"` and `auto_approve` is `False`.
         auto_approve: Whether HITL approval is globally disabled. When `True`,
@@ -235,8 +336,9 @@ def _resolve_ptc_option(
         suitable for `CodeInterpreterMiddleware(ptc=...)`.
 
     Raises:
-        ValueError: For unknown names in an explicit list, or for `"all"`
-            without `acknowledge_unsafe` outside of `auto_approve`.
+        ValueError: For `"all"` inside a list, for `"all"` without
+            `acknowledge_unsafe` outside of `auto_approve`, or for an invalid
+            `ptc` type or string.
     """
     from langchain.tools import BaseTool as _BaseTool
 
@@ -244,17 +346,17 @@ def _resolve_ptc_option(
         return None
 
     live_names: list[str] = []
-    for tool in tools:
-        if isinstance(tool, _BaseTool):
-            name = tool.name
+    for candidate in tools:
+        if isinstance(candidate, _BaseTool):
+            name = candidate.name
             if isinstance(name, str):
                 live_names.append(name)
-        elif isinstance(tool, dict):
-            raw_name = cast("dict[str, Any]", tool).get("name")
+        elif isinstance(candidate, dict):
+            raw_name = cast("dict[str, Any]", candidate).get("name")
             if isinstance(raw_name, str):
                 live_names.append(raw_name)
         else:
-            attr = getattr(tool, "name", None)
+            attr = getattr(candidate, "name", None)
             if isinstance(attr, str):
                 live_names.append(attr)
     live_set: set[str] = set(live_names)
@@ -264,14 +366,10 @@ def _resolve_ptc_option(
         if normalized == "safe":
             from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
 
-            selected = sorted(INTERPRETER_PTC_SAFE_PRESET & live_set)
-            dropped = sorted(INTERPRETER_PTC_SAFE_PRESET - live_set)
-            if dropped:
-                logger.debug(
-                    "interpreter_ptc='safe' preset members not present in toolset: %s",
-                    dropped,
-                )
-            return selected
+            # Return the preset as-is; the middleware exposes whichever members
+            # exist in the live registry at runtime (they are SDK built-ins not
+            # present in `tools` here).
+            return sorted(INTERPRETER_PTC_SAFE_PRESET)
         if normalized == "all":
             if not auto_approve and not acknowledge_unsafe:
                 msg = (
@@ -281,6 +379,11 @@ def _resolve_ptc_option(
                     "auto_approve=True) to opt in."
                 )
                 raise ValueError(msg)
+            # `all` can only enumerate the tools passed to `create_cli_agent`;
+            # SDK runtime built-ins (filesystem, `task`, …) are injected later
+            # and are not enumerable here. Exposing them under `all` needs an
+            # "expose everything" sentinel in `CodeInterpreterMiddleware`
+            # (tracked in langchain-ai/deepagents#3847).
             included = sorted(live_set)
             write_included = sorted(_INTERPRETER_WRITE_TOOLS & live_set)
             if write_included:
@@ -296,15 +399,42 @@ def _resolve_ptc_option(
         raise ValueError(msg)
 
     if isinstance(ptc, list):
-        unknown = [name for name in ptc if name not in live_set]
-        if unknown:
-            available = ", ".join(sorted(live_set)) or "<none>"
+        from deepagents_code.config import INTERPRETER_PTC_SAFE_PRESET
+
+        if any(name.strip().lower() == "all" for name in ptc):
             msg = (
-                "Unknown tool names in interpreter_ptc: "
-                f"{sorted(set(unknown))}. Available tools: {available}."
+                "interpreter_ptc list entries cannot include 'all'; use 'all' "
+                "as a standalone value or list explicit tool names (optionally "
+                "with the 'safe' preset)."
             )
             raise ValueError(msg)
-        return list(ptc)
+
+        resolved: list[str] = []
+        seen: set[str] = set()
+
+        def _add(name: str) -> None:
+            if name not in seen:
+                seen.add(name)
+                resolved.append(name)
+
+        for name in ptc:
+            if name.strip().lower() == "safe":
+                for member in sorted(INTERPRETER_PTC_SAFE_PRESET):
+                    _add(member)
+                continue
+            _add(name)
+
+        # Explicit names are passed through unvalidated: the middleware resolves
+        # them against the live runtime registry (which includes the SDK
+        # built-ins absent from `tools`) and drops any that match nothing.
+        absent = sorted(n for n in resolved if n not in live_set)
+        if absent:
+            logger.debug(
+                "interpreter_ptc names not in the build-time toolset (resolved "
+                "at runtime if present): %s",
+                absent,
+            )
+        return resolved
 
     msg = (
         "interpreter_ptc must be False, 'safe', 'all', or a list of tool names; "
@@ -381,17 +511,32 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+@functools.lru_cache(maxsize=1)
+def _reserved_agent_dir_names() -> frozenset[str]:
+    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+
+    `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`) and must
+    never appear in the agent picker. The name is derived from `BIN_DIR` so it
+    stays a single source of truth rather than being hardcoded here. The result
+    is cached since the reserved set is constant for the process.
+    """
+    from deepagents_code.managed_tools import BIN_DIR
+
+    return frozenset({BIN_DIR.name})
+
+
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
-    Filters out symlinks (so dangling links don't masquerade as agents)
-    and dot-prefixed names — `.state/` (app internal state) plus any
-    other hidden directory the user may have placed there.
+    Filters out symlinks (so dangling links don't masquerade as agents),
+    dot-prefixed names — `.state/` (app internal state) plus any other
+    hidden directory the user may have placed there — and reserved names
+    the app owns (e.g. `bin/`, the managed-binary install dir).
 
     `OSError` from `is_dir`/`is_symlink` propagates so callers can log
     with the failing entry's name as context.
     """
-    if entry.name.startswith("."):
+    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
         return False
     return entry.is_dir() and not entry.is_symlink()
 
@@ -401,8 +546,9 @@ def get_available_agent_names() -> list[str]:
 
     Scans the user's `.deepagents` directory and returns each real
     subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) are
-    skipped so internal app state never appears as an agent.
+    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
+    reserved app-owned directories (e.g., `bin/`, the managed-binary install
+    dir) are skipped so internal state never appears as an agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -836,6 +982,17 @@ def _format_edit_file_description(
     return f"Action: Replace text ({scope})"
 
 
+def _format_delete_description(
+    _tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format delete tool call for approval prompt.
+
+    Returns:
+        Formatted description string for the delete tool call.
+    """
+    return "Action: Delete file or directory"
+
+
 def _format_web_search_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -951,6 +1108,94 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
+def _is_auto_approve_enabled(value: object) -> bool:
+    """Return whether a context value explicitly enables auto-approve."""
+    return isinstance(value, bool) and value
+
+
+def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
+    """Return live approval mode from the LangGraph Store when configured.
+
+    Args:
+        store: `request.runtime.store` from the graph server.
+        key: Live approval-mode store key, or `None` when this run has no live
+            control record.
+
+    Returns:
+        `None` when no live key is configured for this run — the caller should
+            fall back to the static `auto_approve` context snapshot.
+        `True` or `False` when a live key is configured: these reflect
+            the stored mode, and `False` is also returned when the key
+            is configured but the store is unreadable (missing item,
+            malformed value, read error), so an unreadable live mode fails
+            closed and interrupts.
+        `None` therefore means "feature not in play," the opposite of the store
+            reader's `None` ("unreadable, be careful").
+    """
+    if not key:
+        return None
+    from deepagents_code.approval_mode import read_approval_mode_from_store
+
+    value = read_approval_mode_from_store(store, key)
+    if value is None:
+        logger.warning(
+            "Approval-mode store item is unavailable; interrupting for safety"
+        )
+        return False
+    return value
+
+
+def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
+    """Decide whether a gated tool call should pause for human approval.
+
+    Returns `False` once the run context carries `auto_approve=True` so
+    `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
+    interrupt-then-auto-resolve pattern that previously split each turn into a
+    separate run after every tool call, producing noisy traces.
+
+    Auto-approve is read from the run-scoped `CLIContext` (set by the client)
+    rather than graph state. Sourcing it from state required seeding it with a
+    first-turn `Command(update=...)`, which the LangGraph API server rebuilds
+    with `goto=None` — crashing `_control_branch` on a fresh thread. Context
+    is also safer: the model cannot self-approve by writing state.
+
+    Args:
+        request: The pending tool call under review.
+
+    Returns:
+        `True` to interrupt for approval, `False` to auto-approve.
+    """
+    runtime = getattr(request, "runtime", None)
+    ctx = getattr(runtime, "context", None)
+    store = getattr(runtime, "store", None)
+    if isinstance(ctx, CLIContextSchema):
+        if (live := _read_live_auto_approve(store, ctx.approval_mode_key)) is not None:
+            return not live
+        return not _is_auto_approve_enabled(ctx.auto_approve)
+    if isinstance(ctx, dict):
+        raw_key = ctx.get("approval_mode_key")
+        key = raw_key if isinstance(raw_key, str) else None
+        if (live := _read_live_auto_approve(store, key)) is not None:
+            return not live
+        # Type-checked (not truthiness) check: over the JSON/RemoteGraph boundary a
+        # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
+        # silently auto-approve. Only a genuine boolean `True` suppresses.
+        return not _is_auto_approve_enabled(ctx.get("auto_approve"))
+    if ctx is not None:
+        # Context is present but neither expected shape. The registered
+        # `context_schema=CLIContextSchema` guarantees in-process coercion to
+        # that dataclass, and RemoteGraph delivers a dict — so this means the
+        # context-plumbing contract broke (likely an SDK change). Fail closed
+        # (interrupt), but surface it: otherwise auto-approve silently stops
+        # working with no error, looking like a feature that just "broke".
+        logger.warning(
+            "auto-approve predicate received unexpected context type %s; "
+            "interrupting for safety",
+            type(ctx).__name__,
+        )
+    return True
+
+
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
@@ -959,48 +1204,66 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     delegation) is gated behind an approval prompt unless auto-approve
     is enabled.
 
+    Each config carries a `when` predicate so that enabling "approve always"
+    mid-session (carried in run-scoped context, not graph state) suppresses
+    the interrupt itself instead of relying on the client to auto-resolve it.
+
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_execute_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_write_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_write_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_edit_file_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_edit_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
+    }
+
+    delete_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_delete_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_web_search_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_fetch_url_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
-        "description": _format_task_description,  # type: ignore[typeddict-item]  # Callable description narrower than TypedDict expects
+        "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": "Launch, update, or cancel a remote async subagent.",
+        "when": _should_interrupt_tool_call,
     }
 
     interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
+        "delete": delete_interrupt_config,
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
@@ -1018,9 +1281,27 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
                 "window space. Recent messages are kept as-is. "
                 "Full history remains available for retrieval."
             ),
+            "when": _should_interrupt_tool_call,
         }
 
     return interrupt_map
+
+
+def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
+    """Re-apply a relayed launch-time `PYTHONPATH` to a shell-command env.
+
+    `server._build_server_env` strips `PYTHONPATH` from the server interpreter
+    and relays the launch value via `config._INHERITED_PYTHONPATH_ENV`. This
+    restores it as `PYTHONPATH` for the approval-gated `execute` subprocesses,
+    which run in the user's working directory and need the import path. Mutates
+    `env` in place; a no-op when no value was relayed.
+
+    Args:
+        env: Environment mapping for the shell backend, modified in place.
+    """
+    inherited = env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    if inherited is not None:
+        env["PYTHONPATH"] = inherited
 
 
 def create_cli_agent(
@@ -1040,12 +1321,14 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    rubric_model: str | BaseChatModel | None = None,
+    rubric_max_iterations: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
-) -> tuple[Pregel, CompositeBackend]:
+) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
     This is the main entry point for creating a Deep Agents Code agent, usable
@@ -1115,8 +1398,15 @@ def create_cli_agent(
             list or `interpreter_ptc="all"` with
             `interpreter_ptc_acknowledge_unsafe=True`.
 
-            Requires the `quickjs` optional extra
-            (`langchain-quickjs>=0.1.2,<0.2.0`).
+            Requires the core `langchain-quickjs` dependency.
+        rubric_model: Grader model for `RubricMiddleware`.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, the main `model` is reused.
+        rubric_max_iterations: Explicit grader iterations per rubric attempt
+            before the agent terminates with `'max_iterations_reached'`; `None`
+            uses the SDK default.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1204,51 +1494,81 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
+    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
+        middleware: list[AgentMiddleware] = []
+        if not has_explicit_model:
+            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        if restrictive_shell_allow_list is not None:
+            middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        # Subagents share the on-disk filesystem backend and can edit the user
+        # AGENTS.md, so they get the same managed onboarding-name block guard as
+        # the main agent. Gated on memory because the block only exists when
+        # memory is enabled.
+        if enable_memory:
+            from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+            middleware.append(
+                ManagedMemoryGuardMiddleware(
+                    [settings.get_user_agent_md_path(assistant_id)]
+                )
+            )
+        return middleware
+
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
     ):
+        # Treat a falsy spec (`None` or `""`) as "no explicit model" so an empty
+        # `model:` in subagent frontmatter inherits the runtime model rather than
+        # being forwarded verbatim to `resolve_model("")`.
+        model_spec = subagent_meta["model"]
+        has_explicit_model = bool(model_spec)
         subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],
         }
-        if subagent_meta["model"]:
-            subagent["model"] = subagent_meta["model"]
-        if restrictive_shell_allow_list is not None:
-            subagent["middleware"] = [
-                ShellAllowListMiddleware(restrictive_shell_allow_list)
-            ]
+        if model_spec:
+            subagent["model"] = model_spec
+        subagent_middleware = _subagent_cli_middleware(
+            has_explicit_model=has_explicit_model
+        )
+        if subagent_middleware:
+            subagent["middleware"] = subagent_middleware
         custom_subagents.append(subagent)
 
-    if restrictive_shell_allow_list is not None:
-        from deepagents.middleware.subagents import (
-            GENERAL_PURPOSE_SUBAGENT,
-            SubAgent as RuntimeSubAgent,
-        )
+    from deepagents.middleware.subagents import (
+        GENERAL_PURPOSE_SUBAGENT,
+        SubAgent as RuntimeSubAgent,
+    )
 
-        if not any(
-            subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
-            for subagent in custom_subagents
-        ):
-            general_purpose_subagent: RuntimeSubAgent = {
-                "name": GENERAL_PURPOSE_SUBAGENT["name"],
-                "description": GENERAL_PURPOSE_SUBAGENT["description"],
-                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
-            }
-            custom_subagents.append(general_purpose_subagent)
+    if not any(
+        subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
+        for subagent in custom_subagents
+    ):
+        general_purpose_subagent: RuntimeSubAgent = {
+            "name": GENERAL_PURPOSE_SUBAGENT["name"],
+            "description": GENERAL_PURPOSE_SUBAGENT["description"],
+            "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+            "middleware": _subagent_cli_middleware(has_explicit_model=False),
+        }
+        custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
-    agent_middleware = []
-    agent_middleware.append(ConfigurableModelMiddleware())
+    agent_middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(),
+    ]
 
-    # Token state: declares the `_context_tokens` channel and writes it from
-    # `after_model` based on the latest `AIMessage.usage_metadata`. The CLI
-    # reads it back from `state_values` on thread resume.
-    from deepagents_code.token_state import TokenStateMiddleware
+    # Resume state: declares private checkpoint channels used on resume.
+    # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
+    # is written by `ConfigurableModelMiddleware` from the actual completed model
+    # request. The CLI reads them back from `state_values` on thread resume.
+    # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
+    # constrained `update_goal` tool, and injects goal guidance into the prompt.
+    from deepagents_code.goal_tools import GoalToolsMiddleware
+    from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.append(TokenStateMiddleware())
+    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:
@@ -1268,8 +1588,20 @@ def create_cli_agent(
 
         agent_middleware.append(
             MemoryMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(virtual_mode=False),
                 sources=memory_sources,
+            )
+        )
+
+        # Protect the machine-managed onboarding-name block in the user
+        # AGENTS.md from being rewritten by agent file edits. The block's
+        # markers are HTML comments stripped before injection, so the model
+        # can't see the boundary and would otherwise clobber it.
+        from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
+
+        agent_middleware.append(
+            ManagedMemoryGuardMiddleware(
+                [settings.get_user_agent_md_path(assistant_id)]
             )
         )
 
@@ -1311,7 +1643,7 @@ def create_cli_agent(
 
         agent_middleware.append(
             SkillsMiddleware(
-                backend=FilesystemBackend(),
+                backend=FilesystemBackend(virtual_mode=False),
                 sources=middleware_sources,
             )
         )
@@ -1321,23 +1653,40 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
-            # Create environment for shell commands
-            # Restore user's original LANGSMITH_PROJECT so their code traces separately
+            # Create environment for shell commands.
+            # Restore the user's original LANGSMITH_PROJECT so their code traces
+            # separately. When they had none, drop the agent's override (the
+            # `deepagents-code` default applied at bootstrap) entirely so shell
+            # commands don't inherit it.
             shell_env = os.environ.copy()
-            if settings.user_langchain_project:
+            if settings.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            else:
+                shell_env.pop("LANGSMITH_PROJECT", None)
+            restore_user_tracing_env(shell_env)
+            restore_user_tracing_api_keys(shell_env)
+            # Re-apply a launch-time PYTHONPATH that was stripped from the server
+            # interpreter but relayed for approval-gated `execute` commands.
+            _apply_inherited_pythonpath(shell_env)
 
             # Use LocalShellBackend for filesystem + shell execution.
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
+            # `inherit_env=False`: `shell_env` is already a complete, curated
+            # copy of `os.environ`. Inheriting again would re-copy `os.environ`
+            # and resurrect the popped carrier var, leaking it into `execute`.
+            # `restore_user_tracing_api_keys` above depends on this too: flipping
+            # to `inherit_env=True` would re-copy the agent's overridden
+            # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
-                inherit_env=True,
+                virtual_mode=False,
+                inherit_env=False,
                 env=shell_env,
             )
         else:
             # No shell access - use plain FilesystemBackend
-            backend = FilesystemBackend(root_dir=root_dir)
+            backend = FilesystemBackend(root_dir=root_dir, virtual_mode=False)
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)
@@ -1353,6 +1702,9 @@ def create_cli_agent(
             )
             raise ValueError(msg)
         # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
+        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
+            suppress_langchain_beta_warning,
+        )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
         ptc_names = _resolve_ptc_option(
@@ -1364,21 +1716,30 @@ def create_cli_agent(
         ptc_option: PTCOption | None = (
             cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
         )
-        agent_middleware.append(
-            CodeInterpreterMiddleware(
-                tool_name="js_eval",
-                timeout=settings.interpreter_timeout_seconds,
-                memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                max_ptc_calls=settings.interpreter_max_ptc_calls,
-                max_result_chars=settings.interpreter_max_result_chars,
-                ptc=ptc_option,
+        # `CodeInterpreterMiddleware` is decorated `@beta()`, which emits a
+        # `LangChainBetaWarning` on every instantiation. We intentionally use it
+        # and the warning is not actionable for users, so suppress it.
+        with suppress_langchain_beta_warning():
+            agent_middleware.append(
+                CodeInterpreterMiddleware(
+                    tool_name="js_eval",
+                    timeout=settings.interpreter_timeout_seconds,
+                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=settings.interpreter_max_ptc_calls,
+                    max_result_chars=settings.interpreter_max_result_chars,
+                    ptc=ptc_option,
+                )
             )
-        )
 
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):
         agent_middleware.append(
-            LocalContextMiddleware(backend=backend, mcp_server_info=mcp_server_info)
+            LocalContextMiddleware(
+                backend=backend,
+                mcp_server_info=mcp_server_info,
+                tracing_project=get_langsmith_project_name(),
+                user_tracing_project=settings.user_langchain_project,
+            )
         )
 
     # Add shell allow-list middleware when interrupt_shell_only is active.
@@ -1407,7 +1768,7 @@ def create_cli_agent(
         interrupt_on = {}
     else:
         # Full HITL for destructive operations
-        interrupt_on = _add_interrupt_on()  # type: ignore[assignment]  # InterruptOnConfig is compatible at runtime
+        interrupt_on = _add_interrupt_on()  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
 
     # Set up composite backend with routing
     # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
@@ -1442,6 +1803,23 @@ def create_cli_agent(
         create_summarization_tool_middleware(model, composite_backend)
     )
 
+    # Rubric-driven self-evaluation. The middleware is a no-op until a
+    # `rubric` is supplied on invocation state, so installing it is safe.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The middleware `RubricMiddleware` is in beta",
+            category=Warning,
+        )
+        rubric_kwargs: dict[str, Any] = {
+            "model": rubric_model if rubric_model is not None else model,
+            "system_prompt": _RUBRIC_GRADER_SYSTEM_PROMPT,
+            "tools": _create_rubric_grader_tools(composite_backend),
+        }
+        if rubric_max_iterations is not None:
+            rubric_kwargs["max_iterations"] = rubric_max_iterations
+        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
+
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
         *custom_subagents,
@@ -1454,7 +1832,9 @@ def create_cli_agent(
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,
+        context_schema=CLIContextSchema,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
+        name=_sanitize_agent_message_name(assistant_id),
     ).with_config(config)
     return agent, composite_backend

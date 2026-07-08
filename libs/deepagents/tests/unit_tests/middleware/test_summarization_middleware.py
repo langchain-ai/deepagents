@@ -1,8 +1,12 @@
 """Unit tests for `SummarizationMiddleware` with backend offloading."""
 
 import asyncio
+import base64 as _base64
+import hashlib
+import inspect
+import re
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
@@ -12,8 +16,12 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    _token_counter_accepts_tools,
+    _upload_response_error,
+)
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -184,6 +192,17 @@ class MockBackend(BackendProtocol):
             msg = "Mock aedit exception"
             raise RuntimeError(msg)
         return self.edit(path, old_string, new_string, replace_all)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Record binary file uploads."""
+        responses = []
+        for path, _ in files:
+            self.write_calls.append((path, "<binary>"))
+            responses.append(FileUploadResponse(path=path, error=None))
+        return responses
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        return self.upload_files(files)
 
 
 def make_mock_runtime() -> MagicMock:
@@ -361,6 +380,7 @@ class TestSummarizationMiddlewareInit:
             )
 
         assert middleware._history_path_prefix == "/custom/history"
+        assert middleware._media_prefix == "/custom/history/media"
 
     def test_deprecated_history_path_prefix_overrides_default(self) -> None:
         """Deprecated history_path_prefix takes precedence over the default."""
@@ -411,7 +431,598 @@ class TestOffloadingBasic:
         assert path == "/conversation_history/test-thread-123.md"
 
         assert "## Summarized at" in content
-        assert "Human:" in content or "AI:" in content
+        assert '<message type="human">' in content or '<message type="ai">' in content
+
+    def test_offload_preserves_image_urls(self) -> None:
+        """Image URLs in evicted messages survive the offload (issue #2873).
+
+        The default `get_buffer_string` drops image content; the XML format keeps
+        image URLs, so the archived markdown still references them.
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        image_url = "https://example.com/diagram.png"
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is the diagram"},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+                id="img-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        assert len(backend.write_calls) == 1
+        _, content = backend.write_calls[0]
+        assert image_url in content
+
+    def test_offload_rewrites_non_base64_data_url(self) -> None:
+        """Non-base64 inline `data:` media (e.g. a URL-encoded SVG) is offloaded too.
+
+        `get_buffer_string(format="xml")` drops *any* `data:` URL block, not just
+        base64 ones, so a percent-encoded/plaintext `data:` URL must also be
+        decoded (here via percent-decoding) to a file and rewritten to a path
+        reference -- otherwise the inline media silently disappears from the
+        archive (PR #3990 review).
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        svg_url = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3C%2Fsvg%3E"
+        raw_svg = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'  # percent-decoded payload
+        expected_key = hashlib.sha256(raw_svg).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.svg"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is the inline SVG"},
+                    {"type": "image", "url": svg_url},
+                ],
+                id="svg-data-url",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert "Here is the inline SVG" in archive_write[1]
+        # Referenced by path; the raw inline data: URL is gone and nothing failed.
+        assert f'<image url="{expected_path}" />' in archive_write[1]
+        assert svg_url not in archive_write[1]
+        assert 'error="failed_to_offload"' not in archive_write[1]
+
+    def test_offload_rewrites_base64_images(self) -> None:
+        """Base64 image data is decoded to files and referenced by path in the archive (issue #2873).
+
+        `get_buffer_string(format="xml")` drops base64 blocks, so the middleware
+        decodes each one to `/conversation_history/media/{sha256}.{ext}` with
+        `upload_files`, then rewrites the block to `<image url="…" />`. This
+        covers all three base64 shapes recognized by langchain_core.
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # 1x1 transparent PNG — minimal valid PNG bytes
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            # Shape 1: explicit base64 field
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "explicit base64 field"},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="b64-field",
+            ),
+            # Shape 2: top-level data: URL
+            HumanMessage(
+                content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+                id="b64-url",
+            ),
+            # Shape 3: OpenAI-style image_url with data: URL
+            HumanMessage(
+                content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+                id="b64-openai",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Identical images are deduped — only one upload despite three messages.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        # Archive markdown references the image path three times (once per message).
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert archive_write[1].count(expected_path) == 3
+        # No raw base64 payload in the archive.
+        assert b64 not in archive_write[1]
+
+    def test_offload_media_uses_deprecated_history_path_prefix(self) -> None:
+        """Media files are written under the final history prefix."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        with pytest.warns(match="history_path_prefix"):
+            middleware = SummarizationMiddleware(
+                model=mock_model,
+                backend=backend,
+                trigger=("messages", 5),
+                keep=("messages", 2),
+                history_path_prefix="/custom/history",
+            )
+
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/custom/history/media/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+                id="custom-prefix-image",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/custom/history/media/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert archive_write[0] == "/custom/history/test-thread-123.md"
+        assert expected_path in archive_write[1]
+
+    def test_offload_per_block_upload_failure(self) -> None:
+        """A failed upload writes a placeholder while other images are still rewritten (issue #2873).
+
+        Per-block failure tracking ensures one failed upload does not discard the
+        entire batch. The successfully uploaded image gets a path reference in the
+        archive; the failed image is replaced with an
+        `<image error="failed_to_offload" />` text placeholder.
+        """
+        raw_a = b"\x89PNG_FAKE_DATA_A"
+        raw_b = b"\x89PNG_FAKE_DATA_B"
+        b64_a = _base64.b64encode(raw_a).decode()
+        b64_b = _base64.b64encode(raw_b).decode()
+        key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+        key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+        expected_path_a = f"/conversation_history/media/{key_a}.png"
+        expected_path_b = f"/conversation_history/media/{key_b}.png"
+
+        class PartialUploadBackend(MockBackend):
+            """Backend that raises for any upload path containing key_b."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                responses = []
+                for path, _content in files:
+                    if key_b in path:
+                        msg = f"Simulated upload failure for {path}"
+                        raise RuntimeError(msg)
+                    self.write_calls.append((path, "<binary>"))
+                    responses.append(FileUploadResponse(path=path, error=None))
+                return responses
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = PartialUploadBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}],
+                id="img-a",
+            ),
+            HumanMessage(
+                content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}],
+                id="img-b",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Only image A was uploaded — B's upload raised.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path_a
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Image A is referenced by path in the archive.
+        assert expected_path_a in archive_write[1]
+        # Image B gets an error placeholder, not a path reference or raw base64.
+        assert expected_path_b not in archive_write[1]
+        assert b64_b not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
+    def test_offload_upload_response_error_writes_placeholder(self) -> None:
+        """Upload responses with errors are treated as failed image offloads."""
+        raw_a = b"\x89PNG_RESPONSE_OK"
+        raw_b = b"\x89PNG_RESPONSE_DENIED"
+        b64_a = _base64.b64encode(raw_a).decode()
+        b64_b = _base64.b64encode(raw_b).decode()
+        key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+        key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+        expected_path_a = f"/conversation_history/media/{key_a}.png"
+        expected_path_b = f"/conversation_history/media/{key_b}.png"
+
+        class ResponseErrorBackend(MockBackend):
+            """Backend that reports one image upload failure in the response."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                responses = []
+                for path, _content in files:
+                    if key_b in path:
+                        responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                    else:
+                        self.write_calls.append((path, "<binary>"))
+                        responses.append(FileUploadResponse(path=path, error=None))
+                return responses
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = ResponseErrorBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}], id="img-a"),
+            HumanMessage(content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}], id="img-b"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert image_uploads == [(expected_path_a, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path_a in archive_write[1]
+        assert expected_path_b not in archive_write[1]
+        assert b64_b not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
+    def test_offload_all_uploads_raise_writes_placeholders(self) -> None:
+        """All-raised upload failures still rewrite raw base64 to placeholders."""
+        raw_png = b"\x89PNG_ALL_RAISE"
+        b64 = _base64.b64encode(raw_png).decode()
+
+        class RaisingUploadBackend(MockBackend):
+            """Backend that raises for every image upload."""
+
+            def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                msg = f"Simulated upload failure for {files[0][0]}"
+                raise RuntimeError(msg)
+
+            async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+                return self.upload_files(files)
+
+        backend = RaisingUploadBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": b64, "mime_type": "image/png"}], id="img"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert b64 not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
+    def test_offload_rewrites_non_image_media(self) -> None:
+        """Non-image base64 media is offloaded and referenced with its own block type.
+
+        The offload path is media-generic: an audio block is decoded to
+        `/conversation_history/media/{sha256}.{ext}` and rewritten so the XML
+        archive renders an `<audio url="..." />` reference rather than
+        mislabeling it as an image.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_audio = b"ID3_FAKE_MP3_DATA"
+        b64 = _base64.b64encode(raw_audio).decode()
+        expected_key = hashlib.sha256(raw_audio).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.mp3"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "audio", "base64": b64, "mime_type": "audio/mpeg"}],
+                id="audio-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert image_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Rendered as an audio reference, not an image, and not raw base64.
+        assert f'<audio url="{expected_path}" />' in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_offload_decode_failure_writes_placeholder(self) -> None:
+        """A detected-but-undecodable base64 block becomes a placeholder, not a silent drop.
+
+        A base64 `data:` URL with an undecodable payload is recognized as media
+        but fails to decode. The block must still surface as an
+        `<image error="failed_to_offload" />` placeholder so the archive records
+        that media was present, and the failure must count toward the user-facing
+        warning -- decode failures are as unrecoverable as upload failures.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        # Detected as a base64 data URL (has the comma + "base64" header), but the
+        # single-character payload is undecodable -> _decode_data_url returns None.
+        malformed = "data:image/png;base64,a"
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "url": malformed}], id="bad-img"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+            call_wrap_model_call(middleware, state, runtime)
+
+        # Nothing was uploaded (decode failed before any upload).
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert 'error="failed_to_offload"' in archive_write[1]
+        assert malformed not in archive_write[1]
+
+    def test_offload_non_av_media_uses_file_reference(self) -> None:
+        """Non-(image/audio/video) media falls back to an XML-escaped `<file>` reference.
+
+        A PDF has no typed XML block, so `_media_reference_block` emits a text
+        block `<file url="..." />`. The XML renderer escapes text blocks, so the
+        archive contains the escaped form `&lt;file url="..." /&gt;` -- the
+        reference is preserved (not dropped) but rendered as literal text.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_pdf = b"%PDF-1.4 fake pdf bytes"
+        b64 = _base64.b64encode(raw_pdf).decode()
+        expected_key = hashlib.sha256(raw_pdf).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.pdf"
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[{"type": "file", "base64": b64, "mime_type": "application/pdf"}],
+                id="pdf-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        # Text-block fallback renders XML-escaped, and raw base64 is absent.
+        assert f'&lt;file url="{expected_path}" /&gt;' in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_offload_no_inline_media_returns_messages_unchanged(self) -> None:
+        """With no inline media, offload returns the original list and uploads nothing.
+
+        Guards the `saw_inline_media` short-circuit: text-only messages must skip the
+        copy/rewrite path entirely (identity return) so no media files are written.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=5, num_recent=2)
+        result, failed = middleware._offload_inline_media(backend, messages)
+
+        assert result is messages  # identity: no copy when there is no inline media
+        assert failed == 0
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+
+    def test_offload_base64_alongside_non_standard_block(self) -> None:
+        """Base64 media offloads cleanly even when a non-standard block shares the message.
+
+        A provider-specific `tool_use` block normalizes to a `non_standard`
+        content block when rewritten. This must not corrupt the archive: the
+        image is still referenced by path and no raw base64 leaks, regardless of
+        the sibling block.
+        """
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_png = b"\x89PNG_WITH_TOOL_USE"
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.png"
+
+        messages: list[BaseMessage] = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "calling a tool with an image"},
+                    {"type": "tool_use", "id": "t1", "name": "lookup", "input": {"q": 1}},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="ai-tool-img",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        media_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert media_uploads == [(expected_path, "<binary>")]
+
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_upload_runs_once_before_offload_and_summary(self) -> None:
+        """Image upload runs once and the result is shared by offload and summary.
+
+        `_create_summary` uses prefix format internally, so image blocks are
+        stripped from the summary prompt regardless. This test verifies that raw
+        base64 never reaches the summary model prompt, the archive gets the
+        uploaded image path, and each unique image is uploaded only once.
+        """
+        raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        b64 = _base64.b64encode(raw_png).decode()
+        expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+        expected_path = f"/conversation_history/media/{expected_key}.png"
+
+        backend = MockBackend()
+        mock_model = make_mock_model()
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages: list[BaseMessage] = [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Here is an image:"},
+                    {"type": "image", "base64": b64, "mime_type": "image/png"},
+                ],
+                id="b64-msg",
+            ),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        # upload_files is called exactly once even though both offload and
+        # summary consume the result.
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert len(image_uploads) == 1
+        assert image_uploads[0][0] == expected_path
+
+        # Archive has the uploaded image path.
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert expected_path in archive_write[1]
+
+        # Raw base64 never reaches the summary model prompt.
+        invoke_prompt: str = mock_model.invoke.call_args[0][0]
+        assert b64 not in invoke_prompt
 
     def test_offload_appends_to_existing_content(self) -> None:
         """Test that second summarization appends to existing file."""
@@ -1147,8 +1758,8 @@ class TestMarkdownFormatting:
         # Verify the offloaded content is markdown formatted
         _, content = backend.write_calls[0]
 
-        # Should contain human-readable message prefixes
-        assert "Human:" in content or "AI:" in content
+        # Should contain XML-tagged messages (get_buffer_string format="xml")
+        assert '<message type="human">' in content or '<message type="ai">' in content
         # Should contain the actual message content
         assert "User message" in content
 
@@ -2189,8 +2800,8 @@ def test_chained_summarization_cutoff_index() -> None:
         return [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else AIMessage(content=f"S{i}", id=f"s{i}") for i in range(n)]
 
     def offloaded_labels(write_call_content: str) -> list[str]:
-        """Extract S-labels from backend write content (e.g. "Human: S0" -> "S0")."""
-        return [word for word in write_call_content.split() if word.startswith("S") and word[1:].isdigit()]
+        """Extract S-labels from backend write content (e.g. `<message ...>S0</message>` -> "S0")."""
+        return re.findall(r"S\d+", write_call_content)
 
     # --- Round 1: first summarization, no previous event ---
     state = cast("AgentState[Any]", {"messages": make_state_messages(8)})
@@ -2563,3 +3174,456 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
     # If sequential, elapsed >= 2 * delay (0.2s). If parallel, elapsed ~ delay.
     # Use 2.5x multiplier to allow for CI scheduling jitter.
     assert elapsed < 2.5 * delay, f"Expected parallel execution (<{2.5 * delay}s) but took {elapsed:.2f}s"
+
+
+class TestTokenCountingEfficiency:
+    """The per-call token count is expensive (tool schema conversion), so it must run once."""
+
+    def _make_counting_middleware(self) -> tuple[SummarizationMiddleware, dict[str, int]]:
+        calls = {"count": 0}
+
+        def counting_token_counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            calls["count"] += 1
+            return 10  # Far below every trigger: no truncation, no summarization.
+
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("tokens", 1_000_000),
+            token_counter=counting_token_counter,
+            truncate_args_settings={
+                "trigger": ("tokens", 1_000_000),
+                "keep": ("messages", 2),
+            },
+        )
+        return middleware, calls
+
+    def test_token_counter_called_once_per_model_call(self) -> None:
+        middleware, calls = self._make_counting_middleware()
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+
+        _, captured_request = call_wrap_model_call(middleware, state, make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        assert calls["count"] == 1
+
+    async def test_token_counter_called_once_per_model_call_async(self) -> None:
+        middleware, calls = self._make_counting_middleware()
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+
+        _, captured_request = await call_awrap_model_call(middleware, state, make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        assert calls["count"] == 1
+
+    def _make_truncating_counting_middleware(
+        self,
+    ) -> tuple[SummarizationMiddleware, dict[str, int]]:
+        """Middleware whose truncation trigger fires but summarization never does.
+
+        Truncating tool-call args shrinks the message set, so the count must be
+        refreshed afterward before the summarization check; this middleware
+        exercises that recount branch.
+        """
+        calls = {"count": 0}
+
+        def counting_token_counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            calls["count"] += 1
+            return 10  # Far below the summarization trigger: nothing is summarized.
+
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("messages", 100),  # High: no summarization.
+            token_counter=counting_token_counter,
+            truncate_args_settings={
+                "trigger": ("messages", 5),  # Low: truncation fires.
+                "keep": ("messages", 2),
+                "max_length": 100,
+            },
+        )
+        return middleware, calls
+
+    def _truncatable_state(self) -> "AgentState[Any]":
+        """A conversation whose old `write_file` arg is large enough to truncate."""
+        messages = [
+            AIMessage(
+                content="",
+                id="a1",
+                tool_calls=[
+                    {
+                        "id": "tc1",
+                        "name": "write_file",
+                        "args": {"file_path": "/test.txt", "content": "x" * 200},
+                    }
+                ],
+            ),
+            ToolMessage(content="File written", tool_call_id="tc1", id="t1"),
+            HumanMessage(content="Request 1", id="h1"),
+            AIMessage(content="Response 1", id="a2"),
+            HumanMessage(content="Request 2", id="h2"),
+            AIMessage(content="Response 2", id="a3"),
+        ]
+        return cast("AgentState[Any]", {"messages": messages})
+
+    def test_token_counter_recounts_when_truncation_modifies_messages(self) -> None:
+        middleware, calls = self._make_truncating_counting_middleware()
+
+        _, captured_request = call_wrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        # Truncation changed the message set, so the count is refreshed:
+        # once before truncation, once after.
+        assert calls["count"] == 2
+        # Confirm the modify path was genuinely taken (not a vacuous recount).
+        first_ai = captured_request.messages[0]
+        assert isinstance(first_ai, AIMessage)
+        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+    async def test_token_counter_recounts_when_truncation_modifies_messages_async(self) -> None:
+        middleware, calls = self._make_truncating_counting_middleware()
+
+        _, captured_request = await call_awrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
+
+        assert captured_request is not None  # Handler ran; nothing was summarized.
+        # Truncation changed the message set, so the count is refreshed:
+        # once before truncation, once after.
+        assert calls["count"] == 2
+        # Confirm the modify path was genuinely taken (not a vacuous recount).
+        first_ai = captured_request.messages[0]
+        assert isinstance(first_ai, AIMessage)
+        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
+
+
+class _OpaqueCounter:
+    """Wraps a counter so its signature cannot be introspected.
+
+    Accessing `__signature__` raises, which is what `inspect.signature` consults
+    first. This forces `_token_counter_accepts_tools` onto its `None` result and
+    `_count_tokens` onto the runtime-probe fallback -- the only path that still
+    swallows a `TypeError`. The wrapped callable is invoked verbatim, so it can
+    either accept or reject a `tools` kwarg at call time.
+    """
+
+    def __init__(self, fn: Callable[..., int]) -> None:
+        self._fn = fn
+
+    def __call__(self, *args: Any, **kwargs: Any) -> int:
+        return self._fn(*args, **kwargs)
+
+    @property
+    def __signature__(self) -> inspect.Signature:
+        msg = "no signature available"
+        raise ValueError(msg)
+
+
+class TestTokenCounterToolsProbe:
+    """`_count_tokens` must not mask a `TypeError` raised inside the counter body."""
+
+    def test_accepts_tools_with_explicit_param(self) -> None:
+        # The parameter must be named `tools` to exercise the signature probe.
+        def counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401, ARG001
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_accepts_tools_with_var_keyword(self) -> None:
+        def counter(_messages: list[BaseMessage], **_kwargs: Any) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is True
+
+    def test_rejects_tools_without_param(self) -> None:
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is False
+
+    def test_rejects_var_positional_only(self) -> None:
+        # `*args` captures positional arguments only, so `tools=` cannot reach it
+        # as a keyword. The counter is treated as not accepting tools, guarding
+        # the deliberate omission of `VAR_POSITIONAL` from the kind check.
+        def counter(_messages: list[BaseMessage], *_args: Any) -> int:
+            return 0
+
+        assert _token_counter_accepts_tools(counter) is False
+
+    def test_returns_none_for_uninspectable_signature(self) -> None:
+        # A callable whose signature cannot be read yields `None`, signaling that
+        # `_count_tokens` must fall back to runtime probing.
+        opaque = _OpaqueCounter(lambda *_args, **_kwargs: 0)
+        assert _token_counter_accepts_tools(opaque) is None
+
+    def _make_request_with_tools(self) -> ModelRequest:
+        """A request carrying tools so `tools=` reaches the token counter."""
+        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
+        return ModelRequest(
+            model=make_mock_model(),
+            messages=state["messages"],
+            system_message=None,
+            tools=[{"type": "function", "function": {"name": "noop"}}],
+            runtime=make_mock_runtime(),
+            state=state,
+        )
+
+    def _make_middleware(self, counter: Any) -> SummarizationMiddleware:  # noqa: ANN401
+        """Middleware whose triggers never fire, so only `_count_tokens` runs."""
+        return SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=MockBackend(),
+            trigger=("tokens", 1_000_000),
+            token_counter=counter,
+            truncate_args_settings={"trigger": ("tokens", 1_000_000), "keep": ("messages", 2)},
+        )
+
+    def test_in_body_typeerror_propagates_sync(self) -> None:
+        # Accepts `tools` but its body raises only when tools is supplied, mimicking
+        # a counter whose tool-schema handling is broken. The old probe swallowed
+        # this and silently recounted without tools; it must now surface loudly.
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+    async def test_in_body_typeerror_propagates_async(self) -> None:
+        # `awrap_model_call` delegates to the synchronous `_count_tokens`, so the
+        # counting logic is shared with the sync test above. This guards the
+        # async wrapper itself from swallowing the propagated `TypeError`.
+        def broken_counter(_messages: list[BaseMessage], *, tools: Any = None) -> int:  # noqa: ANN401
+            if tools is not None:
+                msg = "tool schema conversion failed"
+                raise TypeError(msg)
+            return 10
+
+        middleware = self._make_middleware(broken_counter)
+
+        async def handler(_req: ModelRequest) -> ModelResponse:
+            return AIMessage(content="ok")
+
+        with pytest.raises(TypeError, match="tool schema conversion failed"):
+            await middleware.awrap_model_call(self._make_request_with_tools(), handler)
+
+    def test_counter_without_tools_param_is_called_without_tools(self) -> None:
+        # Tools are present on the request, but a counter that does not declare
+        # `tools` is invoked without them -- and does not raise.
+        def counter(_messages: list[BaseMessage]) -> int:
+            return 10
+
+        middleware = self._make_middleware(counter)
+        captured: ModelRequest | None = None
+
+        def handler(req: ModelRequest) -> ModelResponse:
+            nonlocal captured
+            captured = req
+            return AIMessage(content="ok")
+
+        result = middleware.wrap_model_call(self._make_request_with_tools(), handler)
+
+        assert isinstance(result, AIMessage)
+        assert captured is not None  # Handler ran; counting without tools did not raise.
+
+    def test_uninspectable_counter_probes_with_tools(self) -> None:
+        # Signature can't be read, so `_counter_accepts_tools` is `None` and
+        # `_count_tokens` probes with `tools=`. The probe succeeds, so the
+        # tools-inclusive count is returned -- tools are not silently dropped.
+        counter = _OpaqueCounter(lambda _messages, *, tools=None: 99 if tools is not None else 7)
+        middleware = self._make_middleware(counter)
+        assert middleware._counter_accepts_tools is None
+
+        messages = make_conversation_messages()
+        tools = [{"type": "function", "function": {"name": "noop"}}]
+        assert middleware._count_tokens(messages, None, tools) == 99
+
+    def test_uninspectable_counter_falls_back_without_tools(self) -> None:
+        # The opaque counter rejects `tools=` at call time. This is the sole path
+        # that still catches a `TypeError` from the probe, recounting without
+        # tools rather than surfacing it.
+        counter = _OpaqueCounter(lambda _messages: 7)
+        middleware = self._make_middleware(counter)
+        assert middleware._counter_accepts_tools is None
+
+        messages = make_conversation_messages()
+        tools = [{"type": "function", "function": {"name": "noop"}}]
+        assert middleware._count_tokens(messages, None, tools) == 7
+
+
+@pytest.mark.anyio
+async def test_async_offloads_base64_images() -> None:
+    """Async path offloads base64 images via aupload_files before gather (issue #2873).
+
+    `awrap_model_call` must upload image data before
+    `asyncio.gather(offload, summary)` so both coroutines see path references,
+    not raw base64. This mirrors `test_offload_rewrites_base64_images` but
+    exercises the async code path end-to-end.
+    """
+    raw_png = _base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+    b64 = _base64.b64encode(raw_png).decode()
+    expected_key = hashlib.sha256(raw_png).hexdigest()[:16]
+    expected_path = f"/conversation_history/media/{expected_key}.png"
+
+    backend = MockBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        # Shape 1: explicit base64 field
+        HumanMessage(
+            content=[{"type": "image", "base64": b64, "mime_type": "image/png"}],
+            id="b64-field",
+        ),
+        # Shape 2: top-level data: URL
+        HumanMessage(
+            content=[{"type": "image", "url": f"data:image/png;base64,{b64}"}],
+            id="b64-url",
+        ),
+        # Shape 3: OpenAI-style image_url
+        HumanMessage(
+            content=[{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}],
+            id="b64-openai",
+        ),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        await call_awrap_model_call(middleware, state, runtime)
+
+    # aupload_files delegates to upload_files in MockBackend, so write_calls captures it.
+    # Identical images are deduped — only one upload despite three messages.
+    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+    assert len(image_uploads) == 1
+    assert image_uploads[0][0] == expected_path
+
+    # Archive markdown references the offloaded path three times.
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert archive_write[1].count(expected_path) == 3
+    assert b64 not in archive_write[1]
+
+    # Raw base64 never reaches the async summary model prompt (symmetric with the
+    # sync `test_upload_runs_once_before_offload_and_summary` guard).
+    assert b64 not in str(mock_model.ainvoke.call_args)
+
+
+@pytest.mark.anyio
+async def test_async_upload_response_error_writes_placeholder() -> None:
+    """Async upload responses with errors are treated as failed image offloads."""
+    raw_a = b"\x89PNG_ASYNC_RESPONSE_OK"
+    raw_b = b"\x89PNG_ASYNC_RESPONSE_DENIED"
+    b64_a = _base64.b64encode(raw_a).decode()
+    b64_b = _base64.b64encode(raw_b).decode()
+    key_a = hashlib.sha256(raw_a).hexdigest()[:16]
+    key_b = hashlib.sha256(raw_b).hexdigest()[:16]
+    expected_path_a = f"/conversation_history/media/{key_a}.png"
+    expected_path_b = f"/conversation_history/media/{key_b}.png"
+
+    class ResponseErrorBackend(MockBackend):
+        """Backend that reports one async image upload failure in the response."""
+
+        async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            responses = []
+            for path, _content in files:
+                if key_b in path:
+                    responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                else:
+                    self.write_calls.append((path, "<binary>"))
+                    responses.append(FileUploadResponse(path=path, error=None))
+            return responses
+
+    backend = ResponseErrorBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content=[{"type": "image", "base64": b64_a, "mime_type": "image/png"}], id="img-a"),
+        HumanMessage(content=[{"type": "image", "base64": b64_b, "mime_type": "image/png"}], id="img-b"),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config():
+        await call_awrap_model_call(middleware, state, runtime)
+
+    image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+    assert image_uploads == [(expected_path_a, "<binary>")]
+
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert expected_path_a in archive_write[1]
+    assert expected_path_b not in archive_write[1]
+    assert b64_b not in archive_write[1]
+    assert 'error="failed_to_offload"' in archive_write[1]
+
+
+@pytest.mark.anyio
+async def test_async_all_uploads_raise_writes_placeholders() -> None:
+    """Async all-raised upload failures still rewrite raw base64 to placeholders."""
+    raw_png = b"\x89PNG_ASYNC_ALL_RAISE"
+    b64 = _base64.b64encode(raw_png).decode()
+
+    class RaisingUploadBackend(MockBackend):
+        """Backend that raises for every async image upload."""
+
+        async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            msg = f"Simulated upload failure for {files[0][0]}"
+            raise RuntimeError(msg)
+
+    backend = RaisingUploadBackend()
+    mock_model = make_mock_model()
+    mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content=[{"type": "image", "base64": b64, "mime_type": "image/png"}], id="img"),
+        *make_conversation_messages(num_old=5, num_recent=2),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+
+    with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+        await call_awrap_model_call(middleware, state, runtime)
+
+    archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+    assert b64 not in archive_write[1]
+    assert 'error="failed_to_offload"' in archive_write[1]
+
+
+def test_upload_response_error_classifies_batch_result() -> None:
+    """`_upload_response_error` distinguishes empty, error, and success responses.
+
+    Covers the defensive empty-list branch (a backend that returns no response
+    for a requested upload), which the integration tests don't exercise.
+    """
+    # Empty list: backend returned no response for the single requested file.
+    assert _upload_response_error([]) == "missing_upload_response"
+    # Populated error is surfaced as a string.
+    assert _upload_response_error([FileUploadResponse(path="/m.png", error="permission_denied")]) == "permission_denied"
+    # Success (error is None) returns None.
+    assert _upload_response_error([FileUploadResponse(path="/m.png", error=None)]) is None

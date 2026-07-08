@@ -1319,6 +1319,164 @@ def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
     )
 
 
+def test_install_script_ignores_symlinked_legacy_lock_file(tmp_path: Path) -> None:
+    """A symlinked legacy `install.lock` is not followed when flock is available.
+
+    Guards the root-install symlink hardening: a non-root
+    user who can write `~/.deepagents` could pre-create `install.lock` as a
+    symlink to a root-writable path. The installer must use the directory lock
+    instead of opening `install.lock`, so the target is never truncated by the
+    shell's `>` redirect.
+
+    macOS lacks `flock`, so a fake `flock` shim is staged on `PATH` to force
+    the regression case where flock would otherwise be available.
+    """
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    # Stage a fake `flock` so the flock path is taken even on macOS.
+    flock = bin_dir / "flock"
+    flock.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(flock)
+
+    deepagents = home / ".deepagents"
+    deepagents.mkdir()
+    target = tmp_path / "secret.txt"
+    target.write_text("precious")
+    (deepagents / "install.lock").symlink_to(target)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    # The symlink target must not have been truncated by the `>` redirect.
+    assert target.read_text() == "precious"
+    # The legacy lock path is ignored rather than replaced.
+    lock_file = deepagents / "install.lock"
+    assert lock_file.is_symlink()
+    assert lock_file.resolve() == target
+
+
+def test_install_script_does_not_redirect_to_legacy_lock_file() -> None:
+    """Pin the TOCTOU fix: post-open symlink checks are too late."""
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "INSTALL_LOCK_FILE" not in script
+    assert '>"$lock_root/install.lock"' not in script
+    assert '>"$HOME/.deepagents/install.lock"' not in script
+
+
+def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
+    """A stale mkdir lock left by a dead owner is reclaimed, and install proceeds.
+
+    Drives the full `acquire_install_lock` mkdir path (not just the
+    `install_lock_is_stale` predicate): a pre-existing `install.lock.d` with a
+    dead PID and an old `started_at` must be renamed aside, removed, and the
+    install allowed to continue. Guards against a regression to a plain
+    `rm -rf "$INSTALL_LOCK_DIR"`, which would reintroduce the reclaim race the
+    rename-then-delete fixes.
+    """
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    lock_dir = home / ".deepagents" / "install.lock.d"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
+    (lock_dir / "started_at").write_text("1\n")  # 1970 => well past the window
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        timeout=60,  # a reclaim regression could busy-loop; fail fast instead
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Removing stale installer lock" in proc.stderr
+    # The install ran (lock acquired) rather than aborting on the stale lock.
+    assert (tmp_path / "uv-args.txt").is_file()
+    # The lock is released on exit, leaving no lock dir and no reclaim leftovers.
+    deepagents = home / ".deepagents"
+    assert not (deepagents / "install.lock.d").exists()
+    assert not list(deepagents.glob("install.lock.d.reclaim.*"))
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses the directory permission bits"
+)
+def test_install_script_aborts_on_unremovable_stale_lock(tmp_path: Path) -> None:
+    """An unremovable stale lock aborts loudly instead of spinning forever.
+
+    When the stale `install.lock.d` can be neither renamed nor removed (here,
+    its parent is read-only), the reclaim must `exit 1` with an actionable
+    message. Regression guard for the busy-loop: `continue` skips the retry
+    `sleep`, so a silently swallowed `rm` failure would spin on `mkdir` and
+    spam the warning indefinitely. The `timeout` turns that hang into a
+    failure rather than letting the test run wedge.
+    """
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version="0.0.1", latest_version="0.1.0"
+    )
+    deepagents = home / ".deepagents"
+    lock_dir = deepagents / "install.lock.d"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
+    (lock_dir / "started_at").write_text("1\n")
+    # Read+execute only: entries inside cannot be renamed or unlinked, so both
+    # the `mv` and the fallback `rm -rf` fail with EACCES.
+    deepagents.chmod(0o555)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    try:
+        proc = subprocess.run(
+            ["bash", str(SCRIPT)],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            timeout=60,
+        )
+    finally:
+        # Restore write access so tmp_path teardown can remove the tree.
+        deepagents.chmod(0o755)
+
+    assert proc.returncode == 1, proc.stderr
+    assert "Cannot reclaim stale installer lock" in proc.stderr
+
+
 def test_install_script_upgrade_marks_removed_packages(tmp_path: Path) -> None:
     """An upgrade that drops a transitive dependency labels it `(removed)`."""
     proc, _ = _invoke(

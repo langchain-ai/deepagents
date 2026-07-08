@@ -189,7 +189,6 @@ done
 # create tempfiles append their paths here; cleanup_on_signal removes them all.
 TEMP_FILES=()
 INSTALL_LOCK_KIND=""
-INSTALL_LOCK_FILE=""
 INSTALL_LOCK_DIR=""
 # How old a mkdir-based lock (dead/unknown holder) must be before it's treated
 # as abandoned and reclaimed. 10 min comfortably exceeds a normal install.
@@ -567,30 +566,40 @@ install_lock_is_stale() {
 }
 
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
-# uv tool dir). Prefer flock's kernel advisory lock, which self-releases if the
-# holder dies; otherwise fall back to an atomic mkdir lock dir with a PID +
-# timestamp so a crashed holder's lock can be aged out (see install_lock_is_stale).
-# fd 9 is held open for the flock path and closed by release_install_lock.
+# uv tool dir). Use an atomic mkdir lock dir with a PID + timestamp so a crashed
+# holder's lock can be aged out (see install_lock_is_stale). Avoid shell
+# redirection to a lock file here: when the installer runs as root and HOME is
+# user-writable, opening ~/.deepagents/install.lock would follow a symlink before
+# any post-open validation can run.
 acquire_install_lock() {
   local lock_root="$HOME/.deepagents"
   mkdir -p "$lock_root"
   fix_owner "$lock_root"
 
-  INSTALL_LOCK_FILE="$lock_root/install.lock"
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
-
-  if command -v flock >/dev/null 2>&1; then
-    exec 9>"$INSTALL_LOCK_FILE"
-    fix_owner "$INSTALL_LOCK_FILE"
-    flock 9
-    INSTALL_LOCK_KIND="flock"
-    return 0
-  fi
 
   while ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; do
     if install_lock_is_stale; then
       log_warn "Removing stale installer lock at $INSTALL_LOCK_DIR"
-      rm -rf "$INSTALL_LOCK_DIR"
+      # Reclaim without clobbering a lock another installer may acquire
+      # concurrently: rename the stale directory to a private per-PID name and
+      # delete that, so our `rm` never targets the canonical path a fresh owner
+      # would occupy. The rename is atomic on POSIX filesystems. (It narrows,
+      # but cannot fully close, the check->reclaim race: a fresh owner that wins
+      # mkdir before our rename can still be moved aside — acceptable for a
+      # 10-minute-stale fallback lock.)
+      local _stale_reclaim="${INSTALL_LOCK_DIR}.reclaim.$$"
+      if mv "$INSTALL_LOCK_DIR" "$_stale_reclaim" 2>/dev/null; then
+        rm -rf "$_stale_reclaim" 2>/dev/null || true
+      elif install_lock_is_stale && ! rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null; then
+        # The stale lock can be neither renamed nor removed (typically it is
+        # owned by another user). Fail loudly rather than spin: `continue` skips
+        # the `sleep` below, so silently swallowing this error would busy-loop
+        # and spam the warning above forever.
+        log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+        log_error "Remove it manually or rerun as its owner, then retry."
+        exit 1
+      fi
       continue
     fi
     sleep 1
@@ -606,9 +615,6 @@ release_install_lock() {
   case "${INSTALL_LOCK_KIND:-}" in
     mkdir)
       rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
-      ;;
-    flock)
-      exec 9>&- 2>/dev/null || true
       ;;
   esac
   INSTALL_LOCK_KIND=""

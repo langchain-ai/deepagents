@@ -118,6 +118,74 @@ def test_tool_call_shim_does_not_delete_existing_files(tmp_path: Path) -> None:
     assert calls == 1
 
 
+def test_tool_call_shim_rejects_execute_content_placeholder_from_both_ingress_paths() -> None:
+    """Structured and text-repaired placeholders should stop before execution."""
+    middleware = NemotronToolCallShim()
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        msg = "placeholder command reached the execute backend"
+        raise AssertionError(msg)
+
+    structured = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "execute",
+                "args": {"command": "[content]"},
+                "id": "call_structured",
+                "type": "tool_call",
+            }
+        ],
+    )
+    text = AIMessage(content="<function=execute><parameter name=command>[content]</parameter></function>")
+    messages = (
+        NemotronTextToolCallParser._repair_message(structured, {"execute"}),
+        NemotronTextToolCallParser._repair_message(text, {"execute"}),
+    )
+
+    for message in messages:
+        call = message.tool_calls[0]
+        result = middleware.wrap_tool_call(_request(call["name"], call["args"]), handler)
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.name == "execute"
+        assert result.tool_call_id == "call_1"
+        assert "placeholder '[content]'" in result.content
+        assert "complete command" in result.content
+
+
+async def test_tool_call_shim_rejects_execute_content_placeholder_async() -> None:
+    """The async tool path should apply the same pre-execution guard."""
+    middleware = NemotronToolCallShim()
+
+    async def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        msg = "placeholder command reached the async execute backend"
+        raise AssertionError(msg)
+
+    result = await middleware.awrap_tool_call(_request("execute", {"command": "[content]"}), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert result.tool_call_id == "call_1"
+
+
+def test_tool_call_shim_allows_concrete_execute_commands() -> None:
+    """Concrete commands should continue to reach the execution backend."""
+    middleware = NemotronToolCallShim()
+    captured: list[ToolCallRequest] = []
+
+    def handler(request: ToolCallRequest) -> ToolMessage:
+        captured.append(request)
+        return ToolMessage(content="ok", tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(_request("execute", {"command": "pwd"}), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.content == "ok"
+    assert captured[0].tool_call["args"] == {"command": "pwd"}
+
+
 def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     """Exactly-at-limit `read_file` output should tell the model to keep paging."""
     middleware = ReadFileContinuationNoticeMiddleware()

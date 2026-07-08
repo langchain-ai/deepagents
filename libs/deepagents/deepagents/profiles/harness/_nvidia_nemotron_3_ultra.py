@@ -63,6 +63,7 @@ chat-model client.
 _FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file", "delete"})
 _EMPTY_TOOL_PLACEHOLDER = "(empty tool result)"
+_INVALID_EXECUTE_COMMANDS: frozenset[str] = frozenset({"[content]"})
 _DEFAULT_READ_LIMIT = 500
 _HTTP_TOO_MANY_REQUESTS = 429
 
@@ -83,7 +84,7 @@ def _tool_content_is_empty(content: str | list[Any] | None) -> bool:
 
 
 class NemotronToolCallShim(AgentMiddleware):
-    """Repair small Nemotron filesystem tool-call and tool-result quirks."""
+    """Repair small Nemotron tool-call and tool-result quirks."""
 
     name = "NemotronToolCallShim"
 
@@ -112,6 +113,24 @@ class NemotronToolCallShim(AgentMiddleware):
             return result.model_copy(update={"content": _EMPTY_TOOL_PLACEHOLDER})
         return result
 
+    @staticmethod
+    def _reject_execute_placeholder(request: ToolCallRequest) -> ToolMessage | None:
+        tool_call = request.tool_call
+        if tool_call.get("name") != "execute":
+            return None
+        command = (tool_call.get("args") or {}).get("command")
+        if not isinstance(command, str) or command.strip().casefold() not in _INVALID_EXECUTE_COMMANDS:
+            return None
+        return ToolMessage(
+            content=(
+                "Error: execute received the placeholder '[content]' instead of a concrete shell command. "
+                "Provide the complete command and do not retry the placeholder."
+            ),
+            name="execute",
+            tool_call_id=tool_call.get("id"),
+            status="error",
+        )
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -119,6 +138,8 @@ class NemotronToolCallShim(AgentMiddleware):
     ) -> ToolMessage | Command[Any]:
         """Repair the request, run the tool, and normalize empty results."""
         fixed = self._fix_args(request)
+        if error := self._reject_execute_placeholder(fixed):
+            return error
         return self._normalize(handler(fixed))
 
     async def awrap_tool_call(
@@ -128,6 +149,8 @@ class NemotronToolCallShim(AgentMiddleware):
     ) -> ToolMessage | Command[Any]:
         """Async variant of `wrap_tool_call`."""
         fixed = self._fix_args(request)
+        if error := self._reject_execute_placeholder(fixed):
+            return error
         return self._normalize(await handler(fixed))
 
 
@@ -1728,6 +1751,8 @@ If a tool call fails, read the error and change the call before retrying; never
 re-issue the same failing call unchanged. If a command times out or the same
 error repeats, reduce the input, add a termination condition, or switch
 approaches before trying again.
+Tool arguments must contain concrete values. Never pass placeholders such as
+`[content]` as a command, path, or content value.
 </loop_control>
 
 <tool_selection>

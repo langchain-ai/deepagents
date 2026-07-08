@@ -73,6 +73,7 @@ from deepagents_code.tui.widgets.messages import (
     SummarizationMessage,
     UserMessage,
 )
+from deepagents_code.tui.widgets.startup_tip import StartupTip
 
 
 async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
@@ -3189,6 +3190,67 @@ class TestQueuedMessage:
 
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
+
+    async def test_startup_tip_mounts_above_input(self) -> None:
+        """The startup tip appears in the bottom container above the input."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            bottom = app.query_one("#bottom-app-container", Container)
+            child_ids = [child.id for child in bottom.children]
+
+        assert "startup-tip" in child_ids
+        assert child_ids.index("subagent-panel") < child_ids.index("startup-tip")
+        assert child_ids.index("startup-tip") < child_ids.index("input-area")
+
+    async def test_startup_tip_respects_hide_env_var(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The bottom startup tip is not mounted when tips are disabled."""
+        from deepagents_code._env_vars import HIDE_SPLASH_TIPS
+
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+
+    async def test_startup_tip_removed_after_first_submission(self) -> None:
+        """The startup tip disappears once the first prompt is submitted."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.query(StartupTip)) == 1
+            # Force the queue path so the real submission flow runs (and
+            # dismisses the tip) without kicking off actual agent work.
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("hello", "normal"))
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+            assert app._pending_messages[0].text == "hello"
+
+    async def test_startup_tip_removed_on_external_input(self) -> None:
+        """External prompts dismiss the tip too, via the shared submit path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.query(StartupTip)) == 1
+            app._agent_running = True
+
+            app.post_message(
+                ExternalInput(
+                    ExternalEvent(kind="prompt", payload="task", source="test")
+                )
+            )
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+            assert app._pending_messages[0].text == "task"
 
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""
@@ -19895,6 +19957,7 @@ class TestCanBypassQueue:
 
         app._process_message = _process  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
 
         await app._submit_input("/install baseten", "command")
 
@@ -19913,6 +19976,7 @@ class TestCanBypassQueue:
 
         app._process_message = _process  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
 
         await app._submit_input("/clear", "command")
 

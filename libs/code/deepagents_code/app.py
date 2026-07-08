@@ -91,6 +91,7 @@ from deepagents_code.tui.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
+from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
 from deepagents_code.tui.widgets.welcome import WelcomeBanner
@@ -2911,8 +2912,11 @@ class DeepAgentsApp(App):
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
             # Live fan-out panel for subagents spawned from js_eval. Hidden
-            # until the first spawn event; sits just above the input.
+            # until the first spawn event; sits at the top of the bottom
+            # container, above the startup tip and input.
             yield SubagentPanel(id="subagent-panel")
+            if show_startup_tip():
+                yield StartupTip(id="startup-tip")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -7353,6 +7357,11 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
+        # Any submitted prompt (interactive or external) ends the startup
+        # tip's lifetime, so dismiss it here at the shared entry point rather
+        # than in a single handler.
+        await self._dismiss_startup_tip()
+
         from deepagents_code.command_registry import (
             ALWAYS_IMMEDIATE,
             HIDDEN_COMMANDS,
@@ -7419,6 +7428,16 @@ class DeepAgentsApp(App):
         await dispatch_hook("user.prompt", {})
 
         await self._submit_input(value, mode)
+
+    async def _dismiss_startup_tip(self) -> None:
+        """Remove the startup tip once the first prompt is submitted.
+
+        Called from `_submit_input`, so every submission path (interactive
+        and external) dismisses the tip. Subsequent calls are no-ops: the
+        widget is already gone and `query_one` raises `NoMatches`.
+        """
+        with suppress(NoMatches):
+            await self.query_one("#startup-tip", StartupTip).remove()
 
     async def on_external_input(self, event: ExternalInput) -> None:
         """Route external prompt and command events through the app queue.

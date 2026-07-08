@@ -2080,29 +2080,33 @@ class TestHealthChecks:
         self,
         write_config: Callable[..., str],
     ) -> None:
-        """The stdio pre-flight's `shutil.which` runs off the event loop.
-
-        `shutil.which` makes blocking `os.access` calls, which blockbuster
-        rejects on the server event loop (issue #4433).
-        """
+        """The stdio pre-flight's `shutil.which` runs off the event loop."""
         path = write_config({"mcpServers": {"srv": {"command": "missing"}}})
+        event_loop_thread = threading.current_thread()
         which_threads: list[threading.Thread] = []
 
-        def _record_which(_command: str) -> None:
+        def _record_missing_command(_command: str) -> str | None:
             which_threads.append(threading.current_thread())
+            return None
 
         with patch(
             "deepagents_code.mcp_tools.shutil.which",
-            side_effect=_record_which,
+            side_effect=_record_missing_command,
         ):
             tools, manager, server_infos = await get_mcp_tools(path)
 
-        assert which_threads
-        assert which_threads[0] is not threading.current_thread()
-        assert tools == []
-        assert server_infos[0].status == "error"
-        assert manager is not None
-        await manager.cleanup()
+        try:
+            assert which_threads
+            assert which_threads[0] is not event_loop_thread
+            assert tools == []
+            assert server_infos[0].name == "srv"
+            assert server_infos[0].status == "error"
+            error = server_infos[0].error or ""
+            assert "command 'missing' not found on PATH" in error
+            assert manager is not None
+        finally:
+            if manager is not None:
+                await manager.cleanup()
 
     async def test_check_remote_server_transport_error(self) -> None:
         """Transport errors are wrapped as `RuntimeError`."""

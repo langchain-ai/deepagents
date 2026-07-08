@@ -24,10 +24,14 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     hook_config,
 )
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
+    from langgraph.types import Command
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -376,4 +380,117 @@ class AdherenceGateMiddleware(AgentMiddleware):
         return self.after_model(state, runtime)
 
 
-__all__ = ["AdherenceGateMiddleware", "FinalizeMiddleware", "RambleMiddleware"]
+# --- Media guard --------------------------------------------------------------
+
+# Non-text content-block types `read_file` emits for binary files.
+_MEDIA_BLOCK_TYPES = frozenset({"image", "video", "audio", "file"})
+
+_GENERIC_MEDIA_NOTICE = (
+    "[read_file] This is a binary media file that this model cannot analyze "
+    "directly. It is unchanged on disk — inspect it programmatically from the shell."
+)
+
+
+def _first_media_block(content: object) -> dict[str, Any] | None:
+    """Return the first non-text media block in a tool result's content, else None."""
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if isinstance(block, dict) and block.get("type") in _MEDIA_BLOCK_TYPES:
+            return block
+    return None
+
+
+def _media_kind(mime: object, block_type: object) -> str:
+    """Return a human noun for the media: image / video / audio / document."""
+    top = mime.split("/", 1)[0] if isinstance(mime, str) else ""
+    if top in ("image", "video", "audio"):
+        return top
+    if block_type in ("image", "video", "audio"):
+        return str(block_type)
+    return "document"
+
+
+_KIB = 1024
+_MIB = 1024 * 1024
+
+
+def _media_size(base64_data: object) -> str:
+    """Return a `, N KB`-style size suffix from base64 length, or '' if unknown."""
+    if not isinstance(base64_data, str) or not base64_data:
+        return ""
+    n = (len(base64_data) * 3) // 4
+    if n >= _MIB:
+        return f", {n / _MIB:.1f} MB"
+    if n >= _KIB:
+        return f", {n / _KIB:.1f} KB"
+    return f", {n} B"
+
+
+def _media_notice(message: ToolMessage) -> str | None:
+    """Return a text replacement for a media `read_file` result, or None to pass through."""
+    block = _first_media_block(message.content)
+    if block is None:
+        return None
+    try:
+        extra = message.additional_kwargs or {}
+        path = extra.get("read_file_path") or "the file"
+        mime = (
+            extra.get("read_file_media_type")
+            or block.get("mime_type")
+            or "application/octet-stream"
+        )
+        kind = _media_kind(mime, block.get("type"))
+        article = "an" if kind[:1] in "aeiou" else "a"
+        return (
+            f"[read_file] '{path}' is {article} {kind} file "
+            f"({mime}{_media_size(block.get('base64'))}). "
+            "This model can't analyze that content directly. The file is unchanged on "
+            "disk at that path — if the task needs its contents, inspect it "
+            "programmatically from the shell."
+        )
+    except Exception:  # noqa: BLE001  (never forward media on a describe failure)
+        return _GENERIC_MEDIA_NOTICE
+
+
+class MediaGuardMiddleware(AgentMiddleware):
+    """Swap non-text `read_file` results for a text notice on text-only models."""
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Run the tool, then replace a media `read_file` result with a text notice."""
+        return self._guard(handler(request))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Async variant of `wrap_tool_call`."""
+        return self._guard(await handler(request))
+
+    @staticmethod
+    def _guard(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
+        """Return `result`, or a text-only replacement when it carries a media block."""
+        if not isinstance(result, ToolMessage):
+            return result
+        notice = _media_notice(result)
+        if notice is None:
+            return result
+        return ToolMessage(
+            content=notice,
+            name=result.name,
+            tool_call_id=result.tool_call_id,
+            status="success",
+        )
+
+
+__all__ = [
+    "AdherenceGateMiddleware",
+    "FinalizeMiddleware",
+    "MediaGuardMiddleware",
+    "RambleMiddleware",
+]

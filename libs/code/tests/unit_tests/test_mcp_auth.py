@@ -639,6 +639,128 @@ class TestExpiryAwareOAuthClientProvider:
 
 
 @pytest.mark.usefixtures("fake_home")
+class TestRefreshTokenSerialization:
+    """Cross-process-safe refresh serialization to avoid refresh-token reuse.
+
+    The LangSmith OAuth server rotates refresh tokens and revokes the entire
+    identity+client token family when an already-rotated token is replayed, so
+    the provider must reload the on-disk token under a lock before refreshing.
+    """
+
+    async def test_refresh_lock_path_is_sibling_of_token_file(self) -> None:
+        """The lock lives beside the token file and never replaces it."""
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        assert storage.refresh_lock_path == storage.path.with_name(
+            f"{storage.path.name}.lock"
+        )
+        assert storage.refresh_lock_path.parent == storage.path.parent
+        assert storage.refresh_lock_path != storage.path
+
+    async def test_skips_refresh_when_peer_already_rotated_on_disk(self) -> None:
+        """A peer's fresh token is reloaded and used instead of refreshing.
+
+        Guards the reuse fix: if this provider still has a stale token in
+        memory but disk already holds a peer's rotated token, it must attach
+        the reloaded token rather than replay its own (now-revoked) refresh
+        token.
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        # Backdate the sidecar so the loaded token reports as expired.
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        # Initialize with the stale token held in memory.
+        await provider._initialize()
+        assert provider.context.is_token_valid() is False
+
+        # A peer rotates the token on disk: fresh access token, future expiry.
+        await storage.set_tokens(
+            OAuthToken(
+                access_token="peer-rotated",
+                token_type="Bearer",
+                refresh_token="rt-new",
+                expires_in=3600,
+            )
+        )
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        first_request = await anext(flow)
+        # No refresh round-trip: the reloaded token is attached directly, and
+        # the first yielded request is the actual server call.
+        assert first_request.headers["Authorization"] == "Bearer peer-rotated"
+        assert str(first_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+    async def test_performs_locked_refresh_and_persists_rotation(self) -> None:
+        """A still-stale token triggers exactly one refresh, then persists it."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        refresh_request = await anext(flow)
+        assert refresh_request.method == "POST"
+        assert str(refresh_request.url) == "https://auth.example/token"
+        body = refresh_request.content.decode()
+        assert "grant_type=refresh_token" in body
+        assert "refresh_token=rt" in body
+
+        token_response = httpx.Response(
+            200,
+            json={
+                "access_token": "at-rotated",
+                "token_type": "Bearer",
+                "refresh_token": "rt-rotated",
+                "expires_in": 3600,
+            },
+            request=refresh_request,
+        )
+        actual_request = await flow.asend(token_response)
+        assert actual_request.headers["Authorization"] == "Bearer at-rotated"
+        assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+        # The rotated pair is persisted so the next process reads it too.
+        persisted = await storage.get_tokens()
+        assert persisted is not None
+        assert persisted.access_token == "at-rotated"
+        assert persisted.refresh_token == "rt-rotated"
+
+
+@pytest.mark.usefixtures("fake_home")
 class TestBasicAuthClientIdStripping:
     """Tests for dropping the duplicate body `client_id` under HTTP Basic auth."""
 

@@ -536,8 +536,9 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
 LINE_NUMBER_WIDTH = 6
 SEARCH_TRUNCATION_NOTE = (
-    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
-    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
+    "Note: the search stopped early (it hit its time limit or the maximum match count). "
+    "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
+    "narrower path), or raise max_count, to see the rest."
 )
 
 
@@ -745,6 +746,15 @@ class GrepSchema(BaseModel):
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description=GREP_OUTPUT_MODE_DESCRIPTION,
+    )
+
+    max_count: int | None = Field(
+        default=None,
+        description=(
+            "Optional cap on the total number of matches returned across all files. "
+            "Leave unset to use the configured default. When the cap is hit, results "
+            "are truncated and a note says so; narrow the pattern or path to see the rest."
+        ),
     )
 
 
@@ -1241,6 +1251,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
@@ -1259,6 +1270,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            grep_max_count: Default total cap on the number of matches the
+                `grep` tool returns across all files.
+
+                Defaults to `1000`, which bounds memory use and context size on
+                very large repositories. The model can override it per call via
+                the tool's `max_count` argument. Set to `None` to disable the
+                default cap (return every match unless a per-call cap is given).
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
@@ -1280,6 +1298,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        if grep_max_count is not None and grep_max_count <= 0:
+            msg = f"grep_max_count must be positive or None, got {grep_max_count}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
@@ -1313,6 +1334,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._grep_max_count = grep_max_count
         if isinstance(tools, list):
             self._enabled_tools: frozenset[str] | None = frozenset(tools)
         elif tools == "all":
@@ -2131,6 +2153,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -2151,7 +2174,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = resolved_backend.grep(pattern, path=path, glob=glob, max_count=effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
@@ -2175,6 +2199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -2195,7 +2220,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob, max_count=effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(

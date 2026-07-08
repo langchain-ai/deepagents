@@ -264,8 +264,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
-            Exception: The original error once retries are exhausted or the
-                error is not transient.
+            RuntimeError: If the retry loop exits without returning (unreachable
+                in practice). Exhausted or non-transient errors are re-raised by
+                the inherited `on_failure="error"` handling.
         """
         for attempt in range(self.max_retries + 1):
             try:
@@ -295,8 +296,9 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
-            Exception: The original error once retries are exhausted or the
-                error is not transient.
+            RuntimeError: If the retry loop exits without returning (unreachable
+                in practice). Exhausted or non-transient errors are re-raised by
+                the inherited `on_failure="error"` handling.
         """
         import asyncio
 

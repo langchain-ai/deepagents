@@ -67,8 +67,8 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
-    DEFAULT_MODEL_RETRIES,
     _INHERITED_PYTHONPATH_ENV,
+    DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
     config,
     console,

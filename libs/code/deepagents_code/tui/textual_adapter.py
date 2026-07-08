@@ -746,10 +746,7 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
-                    if (
-                        isinstance(data, dict)
-                        and data.get("type") == "model_retry"
-                    ):
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
                         if is_main_agent and adapter._set_spinner is not None:
                             await adapter._set_spinner(
                                 str(data.get("message", "Reconnecting"))

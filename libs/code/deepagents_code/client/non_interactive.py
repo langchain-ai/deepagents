@@ -804,9 +804,7 @@ def _process_stream_chunk(
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
         if data.get("type") == "model_retry":
-            console.print(
-                f"[dim]{escape_markup(str(data.get('message', '')))}[/dim]"
-            )
+            console.print(f"[dim]{escape_markup(str(data.get('message', '')))}[/dim]")
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":

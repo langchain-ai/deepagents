@@ -1018,12 +1018,6 @@ class TestModelResultApplyToSettings:
             settings.model_unsupported_modalities = original
 
 
-
-
-
-
-
-
 class TestCreateModelProfileOverrides:
     """Tests for profile overrides from config.toml in create_model."""
 

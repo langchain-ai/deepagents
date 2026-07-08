@@ -1,0 +1,38 @@
+libs/evals/EVAL_CATALOG.md
+  s_8516700a79d7f6::t_76284fa756c5d8 13,55-57
+libs/code/tests/unit_tests/smoke_tests/snapshots/system_prompt_interactive_local.md
+  s_8516700a79d7f6::t_10dc87955dc90c 384-392
+libs/evals/tests/evals/test_goal_tools.py
+  s_8516700a79d7f6::t_41c4c68619e430 104-109
+  s_8516700a79d7f6::t_869e4ae97299f4 133-136
+  s_8516700a79d7f6::t_51452eaae0cb37 20-23
+  s_8516700a79d7f6::t_747f470d2b2ab7 168-174
+  s_8516700a79d7f6::t_4aa7c069bcf5df 197
+  s_8516700a79d7f6::t_6866cc4ac6858d 38
+libs/evals/tests/unit_tests/test_assertions.py
+  s_8516700a79d7f6::t_3d8b03df064431 1-77,82,87-114
+  s_8516700a79d7f6::t_fff54323b96ffa 78-81,83-86
+libs/evals/tests/unit_tests/test_category_tagging.py
+  s_8516700a79d7f6::t_7c85430e9f777b 33
+libs/evals/tests/evals/utils.py
+  s_8516700a79d7f6::t_6d18840d9375f1 722,860-863,873-881
+  s_8516700a79d7f6::t_8700c1b79ef1a7 557-659,667-669,685-687,698-704,716-721
+libs/code/deepagents_code/goal_tools.py
+  s_8516700a79d7f6::t_28cd70d273126e 47-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "15b62a2f8d5ab7460742eace885c7bcbcaebc432",
+  "prompts": {},
+  "sessions": {
+    "s_8516700a79d7f6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7694cb4d-c975-4786-86e2-6b95150e5fa2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

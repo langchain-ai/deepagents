@@ -1,0 +1,59 @@
+libs/deepagents/tests/integration_tests/test_filesystem_middleware.py
+  s_91b213828615eb::t_0e97b568a461d0 52,68,78,88,100,105,130,140,150,162,167,187,197,209,229,239,251,271,281,291,321,353,365,386,396,429,440-444,552,557,562,583,593,603,613,640,650,660,672,677,709,714,719,740,750,760,770,797,807,817,829,834,914,962,986,993
+libs/deepagents/deepagents/backends/local_shell.py
+  s_dc2a3b03096659::t_ad2e9ad45b7d36 127
+  s_dc2a3b03096659::t_5dec86ba903646 136
+  s_dc2a3b03096659::t_1ba1bf17810a04 111,124
+libs/deepagents/tests/unit_tests/test_end_to_end.py
+  s_dc2a3b03096659::t_3809ff436634a2 2440,2442-2444
+libs/deepagents/deepagents/backends/store.py
+  s_dc2a3b03096659::t_caddf22c1d84da 95-96
+  s_dc2a3b03096659::t_7081e57671a660 145-148,151-153,155-166
+  s_dc2a3b03096659::t_eccb175baf1d61 185
+  s_dc2a3b03096659::t_df962f6516e79e 142-144
+  s_dc2a3b03096659::t_fbe0b8d9ddf46e 184
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_dc2a3b03096659::t_9d0defc10dcacd 1371
+  s_91b213828615eb::t_498f94c3118a9d 16,1216-1218,1234,1246-1247,1282-1290,1370,1486-1487,2736-2737,2739-2740
+libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
+  s_91b213828615eb::t_6d4fbbc0673cc2 76,81
+  s_91b213828615eb::t_8f4420ad3e32c3 5,74-75,77-80,82-83,115
+libs/deepagents/deepagents/backends/utils.py
+  s_91b213828615eb::t_8faddc7c5937c6 174-176
+libs/deepagents/tests/unit_tests/backends/test_file_format.py
+  s_91b213828615eb::t_a5b6fe839b5bce 1,5,19,27-31,34,43,45,58,60,71,73,86,98,109,116,121,130,135,140-141,146,148,153,158,160,166
+libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  s_dc2a3b03096659::t_533b85c4e6f623 288-289,291-319
+  s_dc2a3b03096659::t_e9fc199e4040f2 82
+  s_91b213828615eb::t_299c707aa57dba 11,70-81,83-85,175,179,201
+libs/deepagents/deepagents/backends/filesystem.py
+  s_dc2a3b03096659::t_4635fab86f1584 149-151
+  s_dc2a3b03096659::t_8455e9c0e7eb5a 123-124,130,140-141,153
+libs/deepagents/deepagents/backends/state.py
+  s_dc2a3b03096659::t_22b3ae52f1fec3 44-45
+  s_dc2a3b03096659::t_70de0341e58e32 48-49,120,157,303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da1e9252f54a24fb2ee4b1a275b90d4f6c1e4f5f",
+  "prompts": {},
+  "sessions": {
+    "s_91b213828615eb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3d46-57de-7be0-8c2c-f5aebc305c86",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_dc2a3b03096659": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "13d38450-da65-4b48-8669-416f39af8fec",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1134,7 +1134,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   # release literal would merely re-prompt an up-to-date user, never silently
   # skip a real upgrade. A shell installer can't import `packaging` to compare
   # semantically the way `update_check.py` does.
-  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
@@ -1145,7 +1145,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_success "deepagents-code is already up to date."
+    log_success "Already up to date!"
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
@@ -1164,7 +1164,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
   fi
 elif [ -n "$PRE_VERSION" ]; then
-  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
 else
   log_info "Installing ${PACKAGE}..."
 fi

@@ -1442,11 +1442,18 @@ detect_shell_profile() {
 # Check if ~/.local/bin is already referenced in the shell profile's PATH
 # config. Matches non-commented lines containing .local/bin in a PATH
 # assignment or fish_add_path. Returns 0 if already present.
+#
+# The alternation also recognizes the un-normalized ~/.local/share/../bin
+# spelling (share/.. collapses to .local, so it resolves to the same directory
+# as ~/.local/bin). Some tools write that spelling into a profile from
+# $XDG_DATA_HOME/../bin; without this we'd fail to see ~/.local/bin as already
+# on PATH and append a duplicate entry. This covers the common alias only — it
+# is not a full path normalizer, so other exotic spellings still slip through.
 local_bin_in_profile() {
   local profile="$1"
   [ -f "$profile" ] || return 1
-  grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*\.local/bin' \
-    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*\.local/bin'
+  grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*(\.local/bin|\.local/share/\.\./bin)' \
+    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*(\.local/bin|\.local/share/\.\./bin)'
 }
 
 managed_path_block_present() {
@@ -1653,7 +1660,10 @@ detect_shadowing_install() {
     [ -x "$expected" ] || continue
     original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
     [ -n "$original" ] || continue
-    [ "$original" = "$expected" ] && continue
+    # Same file reached via a different PATH spelling (e.g. ~/.local/share/../bin
+    # vs ~/.local/bin) is not a shadowing install. Compare by inode, not string,
+    # so `..`/symlink aliases don't trigger a false "existing install" warning.
+    { [ "$original" = "$expected" ] || [ "$original" -ef "$expected" ]; } && continue
     manager=$(classify_shadowing_command "$original")
     log_warn "Detected ${manager} ${candidate} at ${original}."
     log_warn "PATH order may run that binary instead of the uv tool at ${expected}."

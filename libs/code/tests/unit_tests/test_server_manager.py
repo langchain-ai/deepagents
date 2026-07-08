@@ -312,15 +312,24 @@ class TestWritePyproject:
 
         assert dependency == f"deepagents-code @ {package_root.as_uri()}"
 
-    def test_runtime_dependency_default_uses_package_project_root(self) -> None:
+    def test_runtime_dependency_default_uses_package_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The default root should not depend on `server_manager.py` depth."""
         from pathlib import Path
+
+        import deepagents_code
 
         # Derive the expected project root independently, from this test file's
         # own location (libs/code/tests/unit_tests/ -> libs/code), rather than
         # reusing the implementation's package-anchored expression. Mirroring the
         # implementation would let a bug in that expression pass unnoticed.
         project_root = Path(__file__).resolve().parents[2]
+        monkeypatch.setattr(
+            deepagents_code,
+            "__file__",
+            str(project_root / "deepagents_code" / "__init__.py"),
+        )
 
         dependency = _runtime_package_dependency()
 

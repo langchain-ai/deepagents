@@ -970,11 +970,7 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
         return PendingNotification(
             key="dep:tavily",
             title="Web search disabled",
-            body=(
-                "No Tavily API key is set, so web search is disabled.\n\n"
-                "Enter a key to store it (takes effect next launch), or get one "
-                "at https://tavily.com"
-            ),
+            body=("Add a Tavily API key to enable web search."),
             actions=(
                 NotificationAction(
                     ActionId.ENTER_API_KEY, "Enter API key", primary=True
@@ -1150,9 +1146,9 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
-    from deepagents_code.auth_commands import setup_auth_parser
-    from deepagents_code.config_commands import setup_config_parser
-    from deepagents_code.mcp_commands import setup_mcp_parsers
+    from deepagents_code.client.commands.auth import setup_auth_parser
+    from deepagents_code.client.commands.config import setup_config_parser
+    from deepagents_code.client.commands.mcp import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -1407,6 +1403,14 @@ def parse_args() -> argparse.Namespace:
         parents=help_parent(_lazy_help("show_tools_install_help")),
     )
     add_json_output_arg(tools_install)
+
+    tools_list = tools_sub.add_parser(
+        "list",
+        help="List the tools available to the agent",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_list_help")),
+    )
+    add_json_output_arg(tools_list)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -1901,7 +1905,8 @@ async def run_textual_cli_async(
 
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
@@ -1975,7 +1980,7 @@ async def run_textual_cli_async(
     # Never pass auto_approve to the server — the interactive server must
     # always configure full HITL interrupts so that Shift+Tab can toggle
     # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in textual_adapter.py.
+    # session_state.auto_approve in `tui.textual_adapter`.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2060,7 +2065,8 @@ async def _run_acp_cli_async(
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust (stdio and
+            remote alike).
 
     Returns:
         Exit code for ACP mode.
@@ -2328,7 +2334,7 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
         stats: The cumulative session stats from the Textual app.
         console: Rich console for output.
     """
-    from deepagents_code.textual_adapter import SessionStats, print_usage_table
+    from deepagents_code._session_stats import SessionStats, print_usage_table
 
     if not isinstance(stats, SessionStats):
         return
@@ -2355,12 +2361,20 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt.
 
+    Servers already resolved by the user's `enabled_project_servers` /
+    `disabled_project_servers` lists are shown for transparency but not
+    prompted for (enabled ones load regardless; disabled ones never load).
+    `None` is returned when that leaves nothing to decide. If the user's own
+    allow/deny policy cannot be read, returns `False` (fail closed) rather than
+    prompting under an unknown deny list.
+
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project servers, `False` to deny, or `None`
-            when no project servers exist.
+        `True` to allow project servers, `False` to deny (including when the
+            user's trust policy could not be read), or `None` when there are no
+            project servers whose fate this prompt decides.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2425,20 +2439,85 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
         return True
 
-    # Interactive prompt
+    # Partition by the user's own allow/deny lists (read only from home config,
+    # never the repo — the same boundary the loader enforces). Enabled servers
+    # load regardless of the answer here and disabled ones never load, so the
+    # prompt must not *ask* about them. It still *shows* them, though, so the
+    # user sees what their config decided — notably a repo redefining an
+    # allowlisted name, which binds by name rather than by fingerprint.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
     from rich.console import Console as _Console
+    from rich.markup import escape
+
+    prompt_console = _Console(stderr=True)
+    prompt_servers: list[tuple[str, str, str]] = []
+    preapproved: list[tuple[str, str, str]] = []
+    blocked: list[tuple[str, str, str]] = []
+    for name, kind, summary in all_servers:
+        # Disabled first: reject precedence (a name in both lists is disabled).
+        if name in trust_lists.disabled:
+            blocked.append((name, kind, summary))
+        elif name in trust_lists.enabled:
+            preapproved.append((name, kind, summary))
+        else:
+            prompt_servers.append((name, kind, summary))
+
+    def _print_auto_resolved() -> None:
+        """List servers the config already decided, without asking about them."""
+        if not preapproved and not blocked:
+            return
+        prompt_console.print()
+        prompt_console.print(
+            "[dim]Resolved by your config (not prompted):[/dim]", highlight=False
+        )
+        for name, kind, summary in preapproved:
+            prompt_console.print(
+                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
+                f"(enabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+        for name, kind, summary in blocked:
+            prompt_console.print(
+                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
+                f"(disabled_project_servers):  {escape(summary)}",
+                highlight=False,
+            )
+
+    if trust_lists.read_error is not None:
+        # The user's allow/deny policy could not be read. Fail closed here too
+        # (matching the loader, which forces the config untrusted) instead of
+        # prompting and possibly persisting fingerprint trust under an unknown
+        # deny list. Any env-enabled names still load — the loader re-applies the
+        # lists downstream — but nothing is approved via this prompt.
+        prompt_console.print(
+            f"[yellow]Warning: {escape(trust_lists.read_error)}; treating "
+            "project MCP servers as untrusted.[/yellow]",
+            highlight=False,
+        )
+        _print_auto_resolved()
+        return False
+
+    if not prompt_servers:
+        # Nothing left to decide interactively, but surface what the lists
+        # resolved so a load driven purely by config is never fully silent.
+        _print_auto_resolved()
+        return None
 
     docs_url = (
         "https://docs.langchain.com/oss/python/deepagents/code/"
         "mcp-tools#project-level-trust"
     )
-    prompt_console = _Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, kind, summary in all_servers:
-        prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
+    for name, kind, summary in prompt_servers:
+        prompt_console.print(
+            f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
+        )
+    _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
         f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
@@ -2521,12 +2600,12 @@ def cli_main() -> None:
         # and should fall through to the later handlers instead of raising here.
         command = getattr(args, "command", None)
         if command == "config":
-            from deepagents_code.config_commands import run_config_command
+            from deepagents_code.client.commands.config import run_config_command
 
             sys.exit(run_config_command(args))
 
         if command == "auth" and getattr(args, "auth_command", None) == "path":
-            from deepagents_code.auth_commands import run_auth_command
+            from deepagents_code.client.commands.auth import run_auth_command
 
             sys.exit(run_auth_command(args))
 
@@ -2536,7 +2615,7 @@ def cli_main() -> None:
             sys.exit(run_doctor_command(args))
 
         if command == "tools":
-            from deepagents_code.tools_commands import run_tools_command
+            from deepagents_code.client.commands.tools import run_tools_command
 
             sys.exit(run_tools_command(args))
 
@@ -2562,7 +2641,7 @@ def cli_main() -> None:
         from deepagents_code.config import console, settings
 
         if command == "auth":
-            from deepagents_code.auth_commands import run_auth_command
+            from deepagents_code.client.commands.auth import run_auth_command
 
             sys.exit(run_auth_command(args))
 
@@ -3304,7 +3383,10 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command == "mcp":
-            from deepagents_code.mcp_commands import run_mcp_config, run_mcp_login
+            from deepagents_code.client.commands.mcp import (
+                run_mcp_config,
+                run_mcp_login,
+            )
             from deepagents_code.ui import show_mcp_help
 
             if args.mcp_command == "login":
@@ -3431,7 +3513,7 @@ def cli_main() -> None:
                 _verify_interpreter_or_exit()
 
             # Non-interactive mode - execute single task and exit
-            from deepagents_code.non_interactive import run_non_interactive
+            from deepagents_code.client.non_interactive import run_non_interactive
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)

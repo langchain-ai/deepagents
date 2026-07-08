@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -18,7 +19,6 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     INTERRUPT_ON_TOOLS_ENV_KEY,
     DeepAgentRuntime,
-    RuntimeAgentComponents,
     _is_retryable,
     interrupt_on_with_env_overlay,
 )
@@ -97,16 +97,6 @@ class InterruptingGraph:
         self.executed = decision["type"] == "approve"
         content = "approved" if self.executed else "denied"
         return {"messages": [SimpleNamespace(content=content)]}
-
-
-class AuthFailingGraph:
-    def __init__(self, error: Exception) -> None:
-        self.error = error
-        self.calls: list[tuple[object, dict[str, Any]]] = []
-
-    async def ainvoke(self, payload: object, config: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append((payload, config))
-        raise self.error
 
 
 class StatusError(Exception):
@@ -209,6 +199,212 @@ async def test_runtime_wires_subagents(
     assert captured["subagents"] == subagents
 
 
+async def test_runtime_requires_approval_for_async_subagent_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    async_subagent = {
+        "name": "researcher",
+        "description": "Research tasks",
+        "graph_id": "agent",
+    }
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        subagents=cast("Any", [async_subagent]),
+        interrupt_on={"custom_tool": True, "start_async_task": False},
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [async_subagent]
+    assert captured["interrupt_on"] == {
+        "custom_tool": True,
+        "start_async_task": False,
+        "update_async_task": True,
+        "cancel_async_task": True,
+    }
+
+
+async def test_runtime_merges_local_and_async_subagents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
+    researcher_dir.mkdir(parents=True)
+    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    async_subagent = {
+        "name": "remote_reviewer",
+        "description": "Remote review tasks",
+        "graph_id": "review",
+    }
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        subagents=cast("Any", [async_subagent]),
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={},
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "researcher",
+            "description": "Use the researcher subagent.",
+            "system_prompt": "Research carefully.",
+        },
+        async_subagent,
+    ]
+
+
+async def test_runtime_loads_local_subagents_from_user_agents_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
+    reviewer_dir = tmp_path / "agent-home" / "agents" / "reviewer"
+    researcher_dir.mkdir(parents=True)
+    reviewer_dir.mkdir(parents=True)
+    (researcher_dir / "AGENTS.md").write_text(
+        "---\ndescription: Research tasks\nmodel_id: openai:model\n---\nResearch carefully.",
+        encoding="utf-8",
+    )
+    (reviewer_dir / "AGENTS.md").write_text("Review changes.", encoding="utf-8")
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={},
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "researcher",
+            "description": "Research tasks",
+            "system_prompt": "Research carefully.",
+            "model": "openai:model",
+        },
+        {
+            "name": "reviewer",
+            "description": "Use the reviewer subagent.",
+            "system_prompt": "Review changes.",
+        },
+    ]
+
+
+async def test_runtime_loads_subagents_from_explicit_target_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "imported-agent"
+    researcher_dir = assistant_dir / "agents" / "researcher"
+    researcher_dir.mkdir(parents=True)
+    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={},
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "researcher",
+            "description": "Use the researcher subagent.",
+            "system_prompt": "Research carefully.",
+        },
+    ]
+
+
+async def test_runtime_skips_unloadable_local_subagent_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    missing_dir = tmp_path / "agent-home" / "agents" / "missing"
+    bad_dir = tmp_path / "agent-home" / "agents" / "bad name"
+    good_dir = tmp_path / "agent-home" / "agents" / "good-name"
+    missing_dir.mkdir(parents=True)
+    bad_dir.mkdir(parents=True)
+    good_dir.mkdir(parents=True)
+    (bad_dir / "AGENTS.md").write_text("Bad prompt.", encoding="utf-8")
+    (good_dir / "AGENTS.md").write_text("Good prompt.", encoding="utf-8")
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "good-name",
+            "description": "Use the good-name subagent.",
+            "system_prompt": "Good prompt.",
+        }
+    ]
+    assert "unsafe subagent name 'bad name'" in caplog.text
+
+
 async def test_runtime_passes_middleware_to_create_deep_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,7 +456,7 @@ async def test_runtime_passes_interrupt_on_to_create_deep_agent(
 
 
 def test_interrupt_on_with_env_overlay_preserves_empty_behavior() -> None:
-    interrupt_on = {"fleet_tool": True}
+    interrupt_on = {"sample_tool": True}
 
     assert interrupt_on_with_env_overlay(None, {}) is None
     assert interrupt_on_with_env_overlay(None, {INTERRUPT_ON_TOOLS_ENV_KEY: " , "}) is None
@@ -269,12 +465,12 @@ def test_interrupt_on_with_env_overlay_preserves_empty_behavior() -> None:
 
 def test_interrupt_on_with_env_overlay_parses_comma_whitespace() -> None:
     interrupt_on = interrupt_on_with_env_overlay(
-        {"fleet_tool": True},
+        {"sample_tool": True},
         {INTERRUPT_ON_TOOLS_ENV_KEY: " bash,execute, , github_create_pr ,custom/mcp "},
     )
 
     assert interrupt_on == {
-        "fleet_tool": True,
+        "sample_tool": True,
         "bash": True,
         "execute": True,
         "github_create_pr": True,
@@ -298,14 +494,14 @@ async def test_runtime_adds_env_interrupt_on_overlay_to_create_deep_agent(
         include_web_tools=False,
         skills=(),
         memory=(),
-        interrupt_on={"fleet_tool": True},
+        interrupt_on={"sample_tool": True},
         env={INTERRUPT_ON_TOOLS_ENV_KEY: "bash, execute"},
     )
 
     await runtime.start()
 
     assert captured["interrupt_on"] == {
-        "fleet_tool": True,
+        "sample_tool": True,
         "bash": True,
         "execute": True,
     }
@@ -666,174 +862,6 @@ async def test_runtime_preserves_conversation_thread_across_turns(
     assert first.text == "seen:1"
     assert second.text == "seen:3"
     assert [call[1]["configurable"]["thread_id"] for call in graph.calls] == ["chat", "chat"]
-
-
-async def test_runtime_reloads_components_and_retries_once_after_auth_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = AuthFailingGraph(StatusError(401, "expired OAuth token"))
-    refreshed = RecordingGraph()
-    graphs: list[object] = [expired, refreshed]
-
-    def fake_create_deep_agent(**_kwargs: Any) -> object:
-        return graphs.pop(0)
-
-    reloads = 0
-
-    async def reload_agent_components() -> RuntimeAgentComponents:
-        nonlocal reloads
-        reloads += 1
-        return RuntimeAgentComponents(
-            model="test:model",
-            tools=(custom_tool,),
-            skills=(),
-            middleware=(),
-        )
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        reload_agent_components=reload_agent_components,
-    )
-    await runtime.start()
-
-    result = await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
-
-    assert result.text == "seen:1"
-    assert reloads == 1
-    assert len(expired.calls) == 1
-    assert len(refreshed.calls) == 1
-    assert refreshed.calls[0][1]["configurable"]["thread_id"] == "chat"
-
-
-async def test_runtime_returns_sanitized_structured_error_after_persistent_auth_failure(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = AuthFailingGraph(StatusError(401, "Bearer old-token expired"))
-    denied = AuthFailingGraph(StatusError(403, "Bearer new-token denied"))
-    graphs: list[object] = [expired, denied]
-
-    def fake_create_deep_agent(**_kwargs: Any) -> object:
-        return graphs.pop(0)
-
-    reloads = 0
-
-    async def reload_agent_components() -> RuntimeAgentComponents:
-        nonlocal reloads
-        reloads += 1
-        return RuntimeAgentComponents(
-            model="test:model",
-            tools=(custom_tool,),
-            skills=(),
-            middleware=(),
-        )
-
-    caplog.set_level("INFO", logger="deepagents_talon.runtime")
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        reload_agent_components=reload_agent_components,
-    )
-    await runtime.start()
-
-    result = await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
-
-    error = json.loads(result.text)
-    assert error == {
-        "error": "mcp_auth_failed",
-        "message": (
-            "Fleet MCP tool authorization failed after refreshing OAuth credentials. "
-            "Run the Fleet pre-authorization step, then retry."
-        ),
-        "status_code": 403,
-    }
-    assert reloads == 1
-    assert len(expired.calls) == 1
-    assert len(denied.calls) == 1
-    assert "old-token" not in caplog.text
-    assert "new-token" not in caplog.text
-    assert "old-token" not in result.text
-    assert "new-token" not in result.text
-
-
-async def test_runtime_reraises_provider_auth_without_fleet_reload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider_error = StatusError(401, "OpenAI API key is invalid")
-    graph = AuthFailingGraph(provider_error)
-
-    def fake_create_deep_agent(**_kwargs: Any) -> object:
-        return graph
-
-    reloads = 0
-
-    async def reload_agent_components() -> RuntimeAgentComponents:
-        nonlocal reloads
-        reloads += 1
-        return RuntimeAgentComponents(model="test:model")
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        reload_agent_components=reload_agent_components,
-    )
-    await runtime.start()
-
-    with pytest.raises(StatusError, match="OpenAI API key"):
-        await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
-
-    assert reloads == 0
-    assert len(graph.calls) == 1
-
-
-async def test_runtime_reraises_provider_auth_after_fleet_reload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expired = AuthFailingGraph(StatusError(401, "expired OAuth token"))
-    provider_denied = AuthFailingGraph(StatusError(401, "Anthropic API key is invalid"))
-    graphs: list[object] = [expired, provider_denied]
-
-    def fake_create_deep_agent(**_kwargs: Any) -> object:
-        return graphs.pop(0)
-
-    reloads = 0
-
-    async def reload_agent_components() -> RuntimeAgentComponents:
-        nonlocal reloads
-        reloads += 1
-        return RuntimeAgentComponents(
-            model="test:model",
-            tools=(custom_tool,),
-            skills=(),
-            middleware=(),
-        )
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        reload_agent_components=reload_agent_components,
-    )
-    await runtime.start()
-
-    with pytest.raises(StatusError, match="Anthropic API key"):
-        await runtime.invoke(AgentRequest(conversation_id="chat", text="run tool"))
-
-    assert reloads == 1
-    assert len(expired.calls) == 1
-    assert len(provider_denied.calls) == 1
 
 
 async def test_cron_tools_use_current_request_origin(

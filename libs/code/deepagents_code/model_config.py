@@ -438,6 +438,13 @@ class ProviderConfig(TypedDict, total=False):
     capitalization.
     """
 
+    short_name: str
+    """Compact brand label for space-constrained UI (e.g. the `/model` Recent
+    tag), where the full `display_name` — which may carry a parenthetical
+    qualifier like `"OpenAI Codex (ChatGPT login)"` — is too long. Optional;
+    when unset, callers fall back to `display_name`.
+    """
+
     api_key_url: str
     """Provider page where users can create or manage API keys.
 
@@ -2430,6 +2437,15 @@ class ModelConfig:
                     display_name,
                 )
 
+            short_name = cast("object", provider.get("short_name"))
+            if short_name is not None and not isinstance(short_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'short_name' value %r "
+                    "(expected a string). Falling back to the display name.",
+                    name,
+                    short_name,
+                )
+
             api_key_url = cast("object", provider.get("api_key_url"))
             if api_key_url is not None and not isinstance(api_key_url, str):
                 logger.warning(
@@ -2616,6 +2632,19 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         name = provider.get("display_name") if provider else None
+        return name if isinstance(name, str) else None
+
+    def get_provider_short_name(self, provider_name: str) -> str | None:
+        """Get the configured compact brand name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Compact brand name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("short_name") if provider else None
         return name if isinstance(name, str) else None
 
     def get_provider_api_key_url(self, provider_name: str) -> str | None:
@@ -3015,6 +3044,249 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     return True
+
+
+@dataclass(frozen=True)
+class McpServerTrustLists:
+    """User-level allow/deny lists for project MCP servers, by server name.
+
+    Sourced only from the user's own configuration — the home `config.toml`, the
+    global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
+    committed `.mcp.json` cannot self-approve. A committed *project* `.env` is
+    specifically prevented from setting the env forms of these lists (see
+    `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). See `load_mcp_server_trust_lists`.
+
+    The "reject wins" invariant — a name in both lists is only rejected — is
+    enforced in `__post_init__`, so every instance is disjoint no matter how it
+    was constructed; callers need not pre-subtract.
+    """
+
+    enabled: frozenset[str]
+    """Server names pre-approved to load from an untrusted project config."""
+
+    disabled: frozenset[str]
+    """Server names always rejected; reject wins over `enabled` and over trust."""
+
+    read_error: str | None = field(default=None, compare=False)
+    """Non-`None` when the user's `config.toml` existed but its trust policy
+    could not be fully read: the file was unreadable/unparseable, its `[mcp]`
+    value was not a table, or its `disabled_project_servers` was a wrong type
+    that could not be interpreted as a deny list. Callers must treat this as
+    fail-closed (do not grant whole-config project trust) and surface it, rather
+    than proceeding with a deny list that may not have loaded — use `load_failed`
+    for that check. Note the resolved `enabled`/`disabled` sets are not
+    necessarily empty here: names from a still-readable source (the env vars)
+    continue to apply. Excluded from equality so a failed load still compares
+    equal to empty lists for tests that only care about the resolved names."""
+
+    def __post_init__(self) -> None:
+        """Enforce reject precedence by removing disabled names from enabled.
+
+        A rejected name must never survive in `enabled`, whatever the caller
+        passed, so a future allow-first consumer can't be tricked into loading
+        a denied server. Frozen dataclass, so assign via `object.__setattr__`.
+        """
+        if self.enabled & self.disabled:
+            object.__setattr__(self, "enabled", self.enabled - self.disabled)
+
+    @property
+    def load_failed(self) -> bool:
+        """Whether the user's trust policy failed to load (see `read_error`).
+
+        Callers gating on trust MUST check this and fail closed: a failed load
+        means a configured deny may be missing, so whole-config project trust
+        must not be honored. Named so the fail-closed contract is discoverable
+        rather than resting on every caller remembering the `read_error`
+        sentinel.
+        """
+        return self.read_error is not None
+
+
+def _parse_csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated env var into a list of trimmed, non-empty names.
+
+    Returns:
+        The parsed list when the variable is set (possibly empty after
+            trimming), or `None` when the variable is unset so callers can
+            distinguish "unset, fall back to TOML" from "set but empty".
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _toml_str_list(
+    value: object, *, key: str, config_path: Path
+) -> tuple[list[str], bool]:
+    """Coerce a raw TOML value into a list of trimmed, non-empty server names.
+
+    A bare string is *split on commas* (e.g. `disabled_project_servers = "a, b"`
+    yields `["a", "b"]`), so a scalar written in the TOML parses identically to
+    the comma-separated env form in `_parse_csv_env` — the two forms can never
+    silently diverge into one bogus `"a, b"` token that matches no server. Non-
+    string list elements are dropped (with a log) while the surrounding valid
+    names survive. A genuinely wrong type (number, table, bool) cannot be
+    interpreted as names at all: it yields an empty list *and* flags `malformed`,
+    so a caller enforcing a deny list can fail closed rather than silently drop
+    the rejection.
+
+    Args:
+        value: The raw value read from the `[mcp]` table (or `None` when the
+            key is absent).
+        key: The TOML key name, used only for log context.
+        config_path: The config file the value came from, for log context.
+
+    Returns:
+        `(names, malformed)`. `names` are the trimmed, non-empty server names.
+            `malformed` is `True` only when `value` is present but neither a
+            string nor a list (so it could not be read as names); it is `False`
+            for an absent value, a string, or any list — even one whose non-
+            string elements were dropped.
+    """
+    if value is None:
+        return [], False
+    if isinstance(value, str):
+        # Split on commas so a bare string parses exactly like the env form; a
+        # single name with no comma still yields a one-element list.
+        return [item.strip() for item in value.split(",") if item.strip()], False
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].%s in %s should be a list of strings, got %s; ignoring it",
+            key,
+            config_path,
+            type(value).__name__,
+        )
+        return [], True
+    result: list[str] = []
+    discarded = 0
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        else:
+            discarded += 1
+    if discarded:
+        logger.warning(
+            "[mcp].%s in %s: ignored %d non-string or empty entr%s",
+            key,
+            config_path,
+            discarded,
+            "y" if discarded == 1 else "ies",
+        )
+    return result, False
+
+
+def load_mcp_server_trust_lists(
+    config_path: Path | None = None,
+) -> McpServerTrustLists:
+    """Load per-server project MCP allow/deny lists from user-level config.
+
+    Security boundary: this reads the `[mcp]` table only from the user-level
+    `config.toml` (`DEFAULT_CONFIG_PATH`, i.e. `~/.deepagents/config.toml`) and
+    the `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` /
+    `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS` process env vars — never from
+    a project's `.mcp.json` or any repo-committed file. There is no
+    project-level `config.toml` discovery, so an attacker who commits a
+    malicious `.mcp.json` plus an in-repo config cannot pre-approve their own
+    servers; the approval must live in the user's home config. This mirrors
+    Claude Code's "untrusted folder → only non-checked-in settings" rule.
+
+    Source resolution differs by list, matching each one's security direction:
+
+    - `enabled` (permissive): the env var, when set, *replaces* the TOML list
+        (env-beats-config, as elsewhere). Clearing it via an empty env value is
+        fail-closed — it only ever pre-approves fewer servers.
+    - `disabled` (restrictive): the env var *unions* with the TOML list — denies
+        accumulate and a lower-effort source can never silently empty a deny
+        entry set in the other, which would be a fail-open. There is
+        deliberately no way to *remove* a configured deny via env.
+
+    Rejection wins: a name appearing in both the enabled and disabled result is
+    reported only in `disabled`.
+
+    Args:
+        config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
+            callers should not point this at a project path — doing so would
+            defeat the boundary above.
+
+    Returns:
+        The resolved `McpServerTrustLists`. A missing file yields empty lists
+            (the normal "unset" case). `read_error` is set (so callers can fail
+            closed instead of treating a broken config as "nothing denied") when
+            the file exists but cannot be read/parsed, when `[mcp]` is not a
+            table, or when `disabled_project_servers` is a wrong type that cannot
+            be read as a deny list; env-sourced names still apply in that case.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    toml_enabled: list[str] = []
+    toml_disabled: list[str] = []
+    read_error: str | None = None
+    try:
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+            mcp_section = data.get("mcp", {})
+            if isinstance(mcp_section, dict):
+                # A wrong-typed `enabled` value degrades to an empty allowlist:
+                # approving nothing extra is already fail-closed, so the
+                # `malformed` flag is intentionally ignored here.
+                toml_enabled, _ = _toml_str_list(
+                    mcp_section.get("enabled_project_servers"),
+                    key="enabled_project_servers",
+                    config_path=config_path,
+                )
+                toml_disabled, disabled_malformed = _toml_str_list(
+                    mcp_section.get("disabled_project_servers"),
+                    key="disabled_project_servers",
+                    config_path=config_path,
+                )
+                if disabled_malformed:
+                    # A wrong-typed deny list cannot be read, so proceeding as
+                    # if nothing were denied would be a fail-open. Surface it and
+                    # fail closed, mirroring the unreadable-file path below.
+                    read_error = (
+                        f"[mcp].disabled_project_servers in {config_path} must be "
+                        "a list of strings; refusing to proceed with an "
+                        "unenforced deny list"
+                    )
+            else:
+                # An `[mcp]` value that is not a table means the deny list is
+                # unreadable too; fail closed rather than leave it unenforced.
+                read_error = (
+                    f"[mcp] in {config_path} must be a table, got "
+                    f"{type(mcp_section).__name__}"
+                )
+                logger.warning(
+                    "[mcp] in %s should be a table, got %s; treating project "
+                    "configs as untrusted",
+                    config_path,
+                    type(mcp_section).__name__,
+                )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # The file exists but is unreadable/unparseable. Record it so callers
+        # fail closed rather than silently proceeding with an empty deny list.
+        read_error = f"Could not read MCP trust lists from {config_path}: {exc}"
+        logger.warning(
+            "Could not read %s for MCP server trust lists; treating project "
+            "configs as untrusted",
+            config_path,
+            exc_info=True,
+        )
+
+    env_enabled = _parse_csv_env(_env_vars.ENABLED_PROJECT_MCP_SERVERS)
+    env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
+
+    # Enabled: env replaces TOML. Disabled: env unions with TOML (denies
+    # accumulate; env can add a deny but never clear a configured one).
+    enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
+    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
+    # Reject precedence (a name in both lists ends up only in `disabled`) is
+    # enforced by `McpServerTrustLists.__post_init__`, so no subtraction here.
+    return McpServerTrustLists(
+        enabled=enabled, disabled=disabled, read_error=read_error
+    )
 
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {

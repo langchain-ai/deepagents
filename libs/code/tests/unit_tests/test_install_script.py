@@ -63,6 +63,18 @@ if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "dir" ]; then
 fi
 if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "install" ]; then
   printf '%s\n' "$@" > {str(tmp_path / "uv-args.txt")!r}
+  if [ "${{FAKE_UV_CREATE_LOCAL_DCODE:-}}" = "1" ]; then
+    mkdir -p "$HOME/.local/bin"
+    cat > "$HOME/.local/bin/dcode" <<'DCODE'
+#!/usr/bin/env bash
+if [ "${{1:-}}" = "-v" ]; then
+  printf 'deepagents-code %s\n' "${{FAKE_LOCAL_DCODE_VERSION:-0.2.0}}"
+  exit 0
+fi
+exit 0
+DCODE
+    chmod +x "$HOME/.local/bin/dcode"
+  fi
   if [ -n "${{FAKE_UV_INSTALL_STDERR:-}}" ]; then
     printf '%s\n' "$FAKE_UV_INSTALL_STDERR" >&2
   fi
@@ -381,8 +393,121 @@ def test_install_script_rejects_version_and_prerelease_together(
     assert "mutually exclusive" in proc.stderr
 
 
+def _run_with_args(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    extra_env: dict[str, str] | None = None,
+    *,
+    installed_version: str | None = None,
+    latest_version: str | None = "0.2.0",
+) -> subprocess.CompletedProcess[str]:
+    """Run `install.sh` with positional `args` and the fake tools on `PATH`."""
+    env = _env(
+        tmp_path,
+        extra_env or {},
+        installed_version=installed_version,
+        latest_version=latest_version,
+    )
+    return subprocess.run(
+        ["bash", str(SCRIPT), *args],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def test_install_script_positional_version_installs_exact_version(
+    tmp_path: Path,
+) -> None:
+    """A positional VERSION pins that exact version, mirroring the env var."""
+    proc = _run_with_args(tmp_path, ("0.1.0rc1",), installed_version="0.0.1")
+
+    assert proc.returncode == 0, proc.stderr
+    args = (tmp_path / "uv-args.txt").read_text().splitlines()
+    assert args[:3] == ["tool", "install", "-U"]
+    assert args[-1] == "deepagents-code==0.1.0rc1"
+
+
+def test_install_script_positional_version_with_extras(tmp_path: Path) -> None:
+    """A positional VERSION feeds the same spec builder as the env var path."""
+    proc = _run_with_args(
+        tmp_path,
+        ("0.1.0rc1",),
+        {"DEEPAGENTS_CODE_EXTRAS": "ollama"},
+        installed_version="0.0.1",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    args = (tmp_path / "uv-args.txt").read_text().splitlines()
+    assert args[-1] == "deepagents-code[ollama]==0.1.0rc1"
+
+
+@pytest.mark.parametrize(
+    "bad_target",
+    [
+        "0.1.0; rm -rf /",  # shell metacharacters
+        "1.0 --force",  # whitespace + smuggled flag
+        ">=1.0",  # range operator, not an exact pin
+    ],
+)
+def test_install_script_rejects_invalid_positional_version(
+    tmp_path: Path, bad_target: str
+) -> None:
+    """An invalid positional target is rejected before uv runs (injection guard).
+
+    The positional arg is a brand-new untrusted input that flows into uv's argv;
+    this pins the `^[A-Za-z0-9][A-Za-z0-9_.!+-]*$` guard that blocks metacharacter
+    and smuggled-flag payloads independently of the DEEPAGENTS_CODE_VERSION check.
+    """
+    proc = _run_with_args(tmp_path, (bad_target,))
+
+    assert proc.returncode == 2
+    assert "Invalid version target" in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
+def test_install_script_rejects_single_dash_typo_as_flag(tmp_path: Path) -> None:
+    """A single-dash typo is reported as an unknown flag, not an invalid version."""
+    proc = _run_with_args(tmp_path, ("-V",))
+
+    assert proc.returncode == 2
+    assert "Unrecognized argument" in proc.stderr
+    assert "Invalid version target" not in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
+def test_install_script_rejects_multiple_positional_targets(tmp_path: Path) -> None:
+    """Two positional targets fail before uv runs."""
+    proc = _run_with_args(tmp_path, ("0.1.0", "0.2.0"))
+
+    assert proc.returncode == 2
+    assert "Only one target is allowed" in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
+def test_install_script_rejects_positional_version_with_env_version(
+    tmp_path: Path,
+) -> None:
+    """Combining a positional version with DEEPAGENTS_CODE_VERSION is rejected."""
+    proc = _run_with_args(
+        tmp_path, ("0.2.0rc1",), {"DEEPAGENTS_CODE_VERSION": "0.1.0rc1"}
+    )
+
+    assert proc.returncode == 1
+    assert "Do not combine a positional version" in proc.stderr
+    assert not (tmp_path / "uv-args.txt").exists()
+
+
 def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
-    """When the installed version matches PyPI's latest, uv is not invoked."""
+    """When installed matches PyPI's latest, uv is skipped and no lock is taken.
+
+    The `~/.deepagents` assertion pins that the early up-to-date exit returns
+    before `acquire_install_lock`, so the no-op path leaves no lock directory
+    behind.
+    """
     proc, args_path = _invoke(
         tmp_path, {}, installed_version="0.1.0", latest_version="0.1.0"
     )
@@ -390,6 +515,7 @@ def test_install_script_already_up_to_date_skips_uv(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert not args_path.exists()
     assert "already up to date" in proc.stdout
+    assert not (tmp_path / "home/.deepagents").exists()
 
 
 def test_install_script_latest_version_with_extras_installs_requested_extra(
@@ -481,6 +607,24 @@ def test_install_script_assume_yes_updates_without_prompt(tmp_path: Path) -> Non
 
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
+
+
+@pytest.mark.parametrize("assume_yes", ["true", "TRUE", "yes", " YES "])
+def test_install_script_assume_yes_accepts_codex_style_truthy_values(
+    tmp_path: Path, assume_yes: str
+) -> None:
+    """`DEEPAGENTS_CODE_YES` accepts common non-interactive truthy values."""
+    code, output, args_path = _invoke_interactive(
+        tmp_path,
+        {"DEEPAGENTS_CODE_YES": assume_yes},
+        answer="n",
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert code == 0
+    assert "Keeping deepagents-code" not in output
+    assert args_path.read_text().splitlines()[:3] == ["tool", "install", "-U"]
 
 
 def test_install_script_unreachable_pypi_falls_back_to_upgrade(tmp_path: Path) -> None:
@@ -969,6 +1113,212 @@ def test_install_script_failed_install_points_to_log(tmp_path: Path) -> None:
     )
 
 
+def test_install_script_propagates_uv_exit_code(tmp_path: Path) -> None:
+    """A failed install propagates uv's real exit code, not a flat `1`.
+
+    137 is the SIGKILL/OOM code the signal hint keys off. Asserting the exact
+    code catches a revert to `exit 1` (which the != 0 check above would miss)
+    and confirms the killed-before-finishing hint fires on a ≥128 exit.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_RC": "137"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 137
+    assert "Failed to install" in proc.stderr
+    # Portable across macOS/Linux: both the generic and the Linux-OOM hint begin
+    # with this phrase, so the assertion holds regardless of the test host's OS.
+    assert "killed before it could finish" in proc.stderr
+
+
+def _run_signal_failure_hint(
+    tmp_path: Path,
+    *,
+    exit_code: int,
+    os_name: str,
+    uname: str,
+    already_shown: bool = False,
+) -> str:
+    """Run the real `log_signal_failure_hint` in isolation and return its stderr.
+
+    A fake `uname` is placed on `PATH` so `is_linux_os` is fully determined by
+    (`os_name`, `uname`) rather than the test host's kernel — the OOM message is
+    gated on Linux, and this makes that gate deterministic on any CI runner.
+    """
+    bin_dir = tmp_path / "hintbin"
+    bin_dir.mkdir(exist_ok=True)
+    fake_uname = bin_dir / "uname"
+    fake_uname.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" {uname!r}\n')
+    _make_executable(fake_uname)
+
+    script = tmp_path / "signal_hint_harness.sh"
+    shown = "true" if already_shown else "false"
+    script.write_text(
+        'log_error() { printf "%s\\n" "$*" >&2; }\n'
+        f"OS={os_name!r}\n"
+        f"SIGNAL_FAILURE_HINT_SHOWN={shown}\n"
+        f"{_extract_shell_function('is_linux_os')}\n"
+        f"{_extract_shell_function('log_signal_failure_hint')}\n"
+        f"log_signal_failure_hint {exit_code}\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.stderr
+
+
+def test_signal_hint_reports_oom_on_linux(tmp_path: Path) -> None:
+    """Exit 137 on Linux surfaces the out-of-memory explanation."""
+    stderr = _run_signal_failure_hint(
+        tmp_path, exit_code=137, os_name="linux", uname="Linux"
+    )
+
+    assert "ran out of memory" in stderr
+
+
+def test_signal_hint_omits_oom_off_linux(tmp_path: Path) -> None:
+    """Exit 137 off Linux gives the generic hint, not the OOM explanation."""
+    stderr = _run_signal_failure_hint(
+        tmp_path, exit_code=137, os_name="macos", uname="Darwin"
+    )
+
+    assert "killed before it could finish (exit code 137)" in stderr
+    assert "ran out of memory" not in stderr
+
+
+def test_signal_hint_generic_for_other_signal_exit(tmp_path: Path) -> None:
+    """A non-137 signal exit (e.g. 143/SIGTERM) uses the generic hint only."""
+    stderr = _run_signal_failure_hint(
+        tmp_path, exit_code=143, os_name="linux", uname="Linux"
+    )
+
+    assert "killed before it could finish (exit code 143)" in stderr
+    assert "ran out of memory" not in stderr
+
+
+def test_signal_hint_silent_below_128(tmp_path: Path) -> None:
+    """An ordinary failure (exit < 128) emits no signal hint."""
+    stderr = _run_signal_failure_hint(
+        tmp_path, exit_code=1, os_name="linux", uname="Linux"
+    )
+
+    assert stderr.strip() == ""
+
+
+def test_signal_hint_deduped_when_already_shown(tmp_path: Path) -> None:
+    """The hint is printed once: a prior SIGNAL_FAILURE_HINT_SHOWN suppresses it."""
+    stderr = _run_signal_failure_hint(
+        tmp_path,
+        exit_code=137,
+        os_name="linux",
+        uname="Linux",
+        already_shown=True,
+    )
+
+    assert stderr.strip() == ""
+
+
+# A PID above every platform's pid_max, so `kill -0` always reports it dead.
+_DEAD_PID = "2147483647"
+
+
+def _eval_install_lock_is_stale(
+    tmp_path: Path,
+    *,
+    pid: str | None,
+    started_at: str | None,
+    stale_after: int = 600,
+    make_dir: bool = True,
+) -> bool:
+    """Run the real `install_lock_is_stale` against a synthetic lock directory.
+
+    Returns True when the function reports the lock as stale (exit 0). Threshold
+    extremes (0 / huge) let the age comparison be exercised without depending on
+    wall-clock timing.
+    """
+    lock_dir = tmp_path / "install.lock.d"
+    if make_dir:
+        lock_dir.mkdir()
+        if pid is not None:
+            (lock_dir / "pid").write_text(f"{pid}\n")
+        if started_at is not None:
+            (lock_dir / "started_at").write_text(f"{started_at}\n")
+
+    script = tmp_path / "stale_harness.sh"
+    script.write_text(
+        f"INSTALL_LOCK_DIR={str(lock_dir)!r}\n"
+        f"INSTALL_LOCK_STALE_AFTER_SECS={stale_after}\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        "install_lock_is_stale\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def test_install_lock_live_owner_is_never_stale(tmp_path: Path) -> None:
+    """A lock whose PID is still running is never reclaimed, regardless of age."""
+    assert not _eval_install_lock_is_stale(
+        tmp_path, pid=str(os.getpid()), started_at="1"
+    )
+
+
+def test_install_lock_dead_owner_old_timestamp_is_stale(tmp_path: Path) -> None:
+    """A dead owner past the staleness window is reclaimable."""
+    assert _eval_install_lock_is_stale(tmp_path, pid=_DEAD_PID, started_at="1")
+
+
+def test_install_lock_dead_owner_within_window_is_not_stale(tmp_path: Path) -> None:
+    """A dead owner still inside the staleness window is left alone."""
+    # Threshold must exceed the current epoch (~1.8e9) so `now - 1` stays inside
+    # the window; 1e10 comfortably clears it without depending on wall-clock now.
+    assert not _eval_install_lock_is_stale(
+        tmp_path, pid=_DEAD_PID, started_at="1", stale_after=10**10
+    )
+
+
+def test_install_lock_fresh_lock_without_metadata_is_not_stale(
+    tmp_path: Path,
+) -> None:
+    """A just-created lock (pid/timestamp not yet written) is respected.
+
+    Guards the mkdir-race fix: the window between `mkdir` winning and the owner
+    writing its metadata must not read as "stale", or a racing installer would
+    delete a lock that was just acquired. The dir mtime (≈ now) keeps it fresh.
+    """
+    assert not _eval_install_lock_is_stale(tmp_path, pid=None, started_at=None)
+
+
+def test_install_lock_without_metadata_ages_out_via_mtime(tmp_path: Path) -> None:
+    """With no metadata, staleness falls back to the lock dir's mtime."""
+    assert _eval_install_lock_is_stale(
+        tmp_path, pid=None, started_at=None, stale_after=0
+    )
+
+
+def test_install_lock_missing_dir_is_not_stale(tmp_path: Path) -> None:
+    """No lock directory means nothing to reclaim."""
+    assert not _eval_install_lock_is_stale(
+        tmp_path, pid=None, started_at=None, make_dir=False
+    )
+
+
 def test_install_script_upgrade_marks_removed_packages(tmp_path: Path) -> None:
     """An upgrade that drops a transitive dependency labels it `(removed)`."""
     proc, _ = _invoke(
@@ -1028,6 +1378,7 @@ def _invoke_with_os(
     installed_version: str | None = None,
     latest_version: str | None = None,
     extra_env: dict[str, str] | None = None,
+    fail_if_lockf_called: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run `install.sh` with faked `uname`/`xcode-select` os probes.
 
@@ -1047,6 +1398,14 @@ def _invoke_with_os(
     xcode_select = bin_dir / "xcode-select"
     xcode_select.write_text(f"#!/usr/bin/env bash\nexit {xcode_select_rc}\n")
     _make_executable(xcode_select)
+    if fail_if_lockf_called:
+        lockf = bin_dir / "lockf"
+        lockf.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'lockf must not be used for installer locking\\n' >&2\n"
+            "exit 64\n"
+        )
+        _make_executable(lockf)
 
     env = {
         **os.environ,
@@ -1261,6 +1620,12 @@ def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
         'log_warn()  { printf "%s\\n" "$*" >&2; }\n'
         'log_error() { printf "%s\\n" "$*" >&2; }\n'
         "cleanup_temp_files() { :; }\n"
+        # cleanup_on_signal now calls these unconditionally; extract the real
+        # implementations so the harness exercises shipped code without emitting
+        # "command not found" noise (which would otherwise pass tests by luck).
+        f"{_extract_shell_function('is_linux_os')}\n"
+        f"{_extract_shell_function('restore_terminal_after_signal')}\n"
+        f"{_extract_shell_function('log_signal_failure_hint')}\n"
         f"{_extract_shell_function('cleanup_on_signal')}\n"
         f"{_extract_shell_function('cleanup_on_interrupt')}\n"
         "trap cleanup_on_signal EXIT\n"
@@ -1291,6 +1656,9 @@ def test_interrupt_shows_notice_without_failure_message(tmp_path: Path) -> None:
 
     assert "Installation interrupted." in stderr
     assert "Installation failed" not in stderr
+    # The harness must define every helper cleanup_on_signal calls; a missing
+    # one would still pass the asserts above but corrupt the exercised path.
+    assert "command not found" not in stderr
 
 
 def test_exit_trap_reports_failure_on_ordinary_error(tmp_path: Path) -> None:
@@ -1304,6 +1672,7 @@ def test_exit_trap_reports_failure_on_ordinary_error(tmp_path: Path) -> None:
 
     assert "Installation failed (exit code 2)." in stderr
     assert "Installation interrupted." not in stderr
+    assert "command not found" not in stderr
 
 
 def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
@@ -1360,6 +1729,22 @@ def test_install_script_macos_with_clt_proceeds_to_install(tmp_path: Path) -> No
 
     assert proc.returncode == 0
     assert "Xcode Command Line Tools" not in proc.stderr
+    assert uv_args.exists()
+
+
+def test_install_script_macos_does_not_use_lockf(tmp_path: Path) -> None:
+    """The macOS `lockf` is command-scoped, not a file-descriptor lock."""
+    proc, uv_args = _invoke_with_os(
+        tmp_path,
+        uname_os="Darwin",
+        xcode_select_rc=0,
+        installed_version="0.0.1",
+        latest_version="0.2.0",
+        fail_if_lockf_called=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "lockf must not be used" not in proc.stderr
     assert uv_args.exists()
 
 
@@ -1535,7 +1920,9 @@ def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
         )
         if profile.exists()
     ]
+    assert any("# >>> deepagents-code installer >>>" in text for text in profile_texts)
     assert any('export PATH="$HOME/.local/bin:$PATH"' in text for text in profile_texts)
+    assert any("# <<< deepagents-code installer <<<" in text for text in profile_texts)
     assert "source ~/.local/bin/env" not in combined
 
 
@@ -1615,6 +2002,77 @@ def test_install_script_stale_shell_with_profile_already_set_shows_reload_hint(
     # But the reload hint is shown because the current shell is stale.
     assert "Restart your shell, or run:" in combined
     assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
+
+
+def test_install_script_rewrites_existing_managed_path_block(tmp_path: Path) -> None:
+    """An old installer-owned PATH block is rewritten in place."""
+    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _make_executable(dcode)
+
+    zshrc = home / ".zshrc"
+    zshrc.write_text(
+        "before\n"
+        "# >>> deepagents-code installer >>>\n"
+        'export PATH="$HOME/old-bin:$PATH"\n'
+        "# <<< deepagents-code installer <<<\n"
+        "after\n"
+    )
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        "SHELL": "/bin/zsh",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    profile = zshrc.read_text()
+    assert profile.count("# >>> deepagents-code installer >>>") == 1
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in profile
+    assert "$HOME/old-bin" not in profile
+    assert profile.startswith("before\n")
+    assert profile.endswith("after\n")
+
+
+def test_install_script_warns_when_original_path_shadows_uv_tool(
+    tmp_path: Path,
+) -> None:
+    """An older `dcode` earlier on PATH is reported instead of silently used."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_CREATE_LOCAL_DCODE": "1",
+            "FAKE_LOCAL_DCODE_VERSION": "0.2.0",
+        },
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "deepagents-code updated: 0.1.0 → 0.2.0" in proc.stdout
+    assert "Detected existing dcode" in proc.stderr
+    assert "PATH order may run that binary instead of the uv tool" in proc.stderr
 
 
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:

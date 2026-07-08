@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import httpx
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from deepagents_code import model_config
 from deepagents_code.config import (
@@ -21,6 +26,10 @@ from deepagents_code.model_retry import (
     build_retry_event,
     format_retry_status,
 )
+
+_READ_ERROR = httpx.ReadError("connection dropped")
+_CONNECT_ERROR = httpx.ConnectError("connection refused")
+_VALUE_ERROR = ValueError("bad request")
 
 
 class _StatusError(Exception):
@@ -45,13 +54,13 @@ class AuthenticationError(Exception):
         self.status_code = 401
 
 
-def _write_config(tmp_path, text):
+def _write_config(tmp_path: Path, text: str) -> Path:
     p = tmp_path / "config.toml"
     p.write_text(text)
     return p
 
 
-def _req(events=None):
+def _req(events: list[dict] | None = None) -> SimpleNamespace:
     writer = (lambda e: events.append(e)) if events is not None else None
     return SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer))
 
@@ -59,36 +68,36 @@ def _req(events=None):
 # --- resolve_model_retries / config resolution ---
 
 
-def test_default_retries_is_five(tmp_path):
+def test_default_retries_is_five(tmp_path: Path) -> None:
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
         assert resolve_model_retries("openai") == 5
     assert DEFAULT_MODEL_RETRIES == 5
 
 
-def test_cli_zero_disables(tmp_path):
+def test_cli_zero_disables(tmp_path: Path) -> None:
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml"):
         assert resolve_model_retries("openai", cli_max_retries=0) == 0
 
 
-def test_cli_overrides_config(tmp_path):
+def test_cli_overrides_config(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
         assert resolve_model_retries("openai", cli_max_retries=1) == 1
 
 
-def test_global_config_applies(tmp_path):
+def test_global_config_applies(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 3\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
         assert resolve_model_retries("openai") == 3
 
 
-def test_global_zero_disables(tmp_path):
+def test_global_zero_disables(tmp_path: Path) -> None:
     cfg = _write_config(tmp_path, "[retries]\nmax_retries = 0\n")
     with patch.object(model_config, "DEFAULT_CONFIG_PATH", cfg):
         assert resolve_model_retries("openai") == 0
 
 
-def test_provider_overrides_global(tmp_path):
+def test_provider_overrides_global(tmp_path: Path) -> None:
     cfg = _write_config(
         tmp_path,
         "[retries]\nmax_retries = 3\n[retries.openai]\nmax_retries = 7\n",
@@ -98,7 +107,9 @@ def test_provider_overrides_global(tmp_path):
         assert resolve_model_retries("anthropic") == 3
 
 
-def test_param_key_ignored_with_warning(tmp_path, caplog):
+def test_param_key_ignored_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     cfg = _write_config(
         tmp_path,
         '[retries.openai]\nparam = "num_retries"\nmax_retries = 2\n',
@@ -111,7 +122,7 @@ def test_param_key_ignored_with_warning(tmp_path, caplog):
     assert "obsolete" in caplog.text
 
 
-def test_resolve_config_retry_count_direct():
+def test_resolve_config_retry_count_direct() -> None:
     assert _resolve_config_retry_count(None, "openai") is None
     assert _resolve_config_retry_count({"max_retries": 2}, "openai") == 2
     assert _resolve_config_retry_count({"max_retries": 0}, "openai") == 0
@@ -139,7 +150,7 @@ def test_resolve_config_retry_count_direct():
         ConnectionError("x"),
     ],
 )
-def test_predicate_retryable(exc):
+def test_predicate_retryable(exc: Exception) -> None:
     assert _is_retryable_model_error(exc) is True
 
 
@@ -156,31 +167,31 @@ def test_predicate_retryable(exc):
         RuntimeError("model config error"),
     ],
 )
-def test_predicate_not_retryable(exc):
+def test_predicate_not_retryable(exc: Exception) -> None:
     assert _is_retryable_model_error(exc) is False
 
 
 # --- middleware behavior ---
 
 
-def test_middleware_defaults():
+def test_middleware_defaults() -> None:
     mw = CodeModelRetryMiddleware()
     assert mw.max_retries == DEFAULT_MODEL_RETRIES
     assert mw.on_failure == "error"
-    assert mw.initial_delay == 0.2
-    assert mw.backoff_factor == 2.0
-    assert mw.max_delay == 10.0
+    assert mw.initial_delay == pytest.approx(0.2)
+    assert mw.backoff_factor == pytest.approx(2.0)
+    assert mw.max_delay == pytest.approx(10.0)
 
 
-def test_retry_then_success(monkeypatch):
+def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
-    events = []
+    events: list[dict] = []
     calls = {"n": 0}
 
-    def handler(_req_arg):
+    def handler(_req_arg: object) -> str:
         calls["n"] += 1
         if calls["n"] < 3:
-            raise httpx.ReadError("boom")
+            raise _READ_ERROR
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=5)
@@ -190,13 +201,13 @@ def test_retry_then_success(monkeypatch):
     assert "retrying 1/5" in events[0]["message"]
 
 
-def test_exhaustion_reraises_original(monkeypatch):
+def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
-    def handler(_req_arg):
+    def handler(_req_arg: object) -> str:
         calls["n"] += 1
-        raise httpx.ReadError("boom")
+        raise _READ_ERROR
 
     mw = CodeModelRetryMiddleware(max_retries=2)
     with pytest.raises(httpx.ReadError):
@@ -204,44 +215,44 @@ def test_exhaustion_reraises_original(monkeypatch):
     assert calls["n"] == 3
 
 
-def test_non_retryable_raises_immediately():
+def test_non_retryable_raises_immediately() -> None:
     calls = {"n": 0}
 
-    def handler(_req_arg):
+    def handler(_req_arg: object) -> str:
         calls["n"] += 1
-        raise ValueError("bad request")
+        raise _VALUE_ERROR
 
     mw = CodeModelRetryMiddleware(max_retries=5)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="bad request"):
         mw.wrap_model_call(_req(), handler)
     assert calls["n"] == 1
 
 
-def test_zero_retries_calls_handler_once():
+def test_zero_retries_calls_handler_once() -> None:
     mw = CodeModelRetryMiddleware(max_retries=0)
     assert mw.max_retries == 0
     calls = {"n": 0}
 
-    def handler(_req_arg):
+    def handler(_req_arg: object) -> str:
         calls["n"] += 1
-        raise httpx.ReadError("boom")
+        raise _READ_ERROR
 
     with pytest.raises(httpx.ReadError):
         mw.wrap_model_call(_req(), handler)
     assert calls["n"] == 1
 
 
-def test_retry_scoped_to_model_node(monkeypatch):
+def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
     # Retries re-invoke only the model handler; a separate "tool_calls" ledger
     # is never touched, proving completed tool work is not replayed.
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     tool_calls: list[str] = []
     model_calls = {"n": 0}
 
-    def handler(_req_arg):
+    def handler(_req_arg: object) -> str:
         model_calls["n"] += 1
         if model_calls["n"] < 2:
-            raise httpx.ConnectError("boom")
+            raise _CONNECT_ERROR
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=3)
@@ -250,19 +261,17 @@ def test_retry_scoped_to_model_node(monkeypatch):
     assert tool_calls == []
 
 
-async def test_async_retry_then_success(monkeypatch):
-    import asyncio
-
-    async def _no_sleep(*_a, **_k):
+async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _no_sleep(*_a: object, **_k: object) -> None:  # noqa: RUF029  # async stub replacing asyncio.sleep
         return None
 
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     calls = {"n": 0}
 
-    async def handler(_req_arg):
+    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
         calls["n"] += 1
         if calls["n"] < 2:
-            raise httpx.ReadError("boom")
+            raise _READ_ERROR
         return "OK"
 
     mw = CodeModelRetryMiddleware(max_retries=3)
@@ -270,7 +279,7 @@ async def test_async_retry_then_success(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_status_helpers():
+def test_status_helpers() -> None:
     assert format_retry_status(1, 5) == "model connection dropped, retrying 1/5\u2026"
     event = build_retry_event(2, 5)
     assert event["type"] == "model_retry"

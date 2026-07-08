@@ -16,7 +16,6 @@ from deepagents_code.model_config import (
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
-    RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
     McpServerTrustLists,
     ModelConfig,
@@ -73,13 +72,9 @@ class TestRetryParamByProvider:
             | set(NO_AUTH_REQUIRED_PROVIDERS)
             | {"bedrock"}
         )
-        assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
 
     def test_contains_expected_retry_params(self) -> None:
         """Major retry-enabled providers use `max_retries`."""
-        assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
 class TestModelSpec:

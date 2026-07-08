@@ -362,6 +362,17 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs to their message widgets."""
 
+        self._checkpointed_tool_call_ids: set[str] = set()
+        """Tool-call ids whose parent AIMessage has already been checkpointed.
+
+        Populated when a main-namespace chunk arrives with
+        `chunk_position == "last"`: at that point the server has the full
+        `AIMessage` (text plus every `tool_use` block) that owned those ids. The
+        interrupt handler consults this set so `_build_interrupted_ai_message`
+        does not re-append the same `tool_calls` in a shadow `AIMessage` —
+        Anthropic rejects such requests with a `tool_use ids must be unique` 400.
+        """
+
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
@@ -389,6 +400,7 @@ class TextualUIAdapter:
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
         self._current_tool_messages.clear()
+        self._checkpointed_tool_call_ids.clear()
 
         # Clear active streaming message to avoid stale "active" state in the store.
         if self._set_active_message:
@@ -398,12 +410,19 @@ class TextualUIAdapter:
 def _build_interrupted_ai_message(
     pending_text_by_namespace: dict[tuple, str],
     current_tool_messages: dict[str, Any],
+    checkpointed_tool_call_ids: set[str] | None = None,
 ) -> AIMessage | None:
     """Build an AIMessage capturing interrupted state (text + tool calls).
 
     Args:
         pending_text_by_namespace: Dict of accumulated text by namespace
         current_tool_messages: Dict of tool_id -> ToolCallMessage widget
+        checkpointed_tool_call_ids: Ids whose owning `AIMessage` has already been
+            checkpointed on the server (the streaming turn's last chunk was
+            observed). These are skipped when reconstructing `tool_calls` so we
+            don't produce a shadow `AIMessage` that duplicates `tool_use` ids
+            already present in the graph state — Anthropic rejects such
+            requests on resume with a `tool_use ids must be unique` 400.
 
     Returns:
         AIMessage with accumulated content and tool calls, or None if empty.
@@ -413,9 +432,14 @@ def _build_interrupted_ai_message(
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
 
-    # Reconstruct tool_calls from displayed tool messages
+    already_checkpointed = checkpointed_tool_call_ids or set()
+
+    # Reconstruct tool_calls from displayed tool messages, excluding any whose
+    # parent AIMessage the server has already checkpointed (see arg docs).
     tool_calls = []
     for tool_id, tool_widget in list(current_tool_messages.items()):
+        if tool_id in already_checkpointed:
+            continue
         tool_calls.append(
             {
                 "id": tool_id,
@@ -979,6 +1003,7 @@ async def execute_task_textual(
                             # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
                             tool_msg = adapter._current_tool_messages.pop(tool_id)
+                            adapter._checkpointed_tool_call_ids.discard(tool_id)
                             # Dispatch the terminal hooks *before* touching the
                             # widget: a render failure must never drop this tool's
                             # tool.result/tool.error (which would leave its
@@ -1299,6 +1324,12 @@ async def execute_task_textual(
                             )
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
+                        # The server has now checkpointed this AIMessage (text +
+                        # any tool_use blocks). Latch each currently-open tool
+                        # id so a subsequent interrupt does not rebuild a shadow
+                        # AIMessage that re-emits the same tool_use ids.
+                        for latched_id in adapter._current_tool_messages:
+                            adapter._checkpointed_tool_call_ids.add(latched_id)
 
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
@@ -1684,6 +1715,7 @@ async def execute_task_textual(
                                         )
                                     )
                                     adapter._current_tool_messages.clear()
+                                    adapter._checkpointed_tool_call_ids.clear()
                                     any_rejected = True
                             else:
                                 logger.warning(
@@ -1705,6 +1737,7 @@ async def execute_task_textual(
                                     )
                                 )
                                 adapter._current_tool_messages.clear()
+                                adapter._checkpointed_tool_call_ids.clear()
                                 any_rejected = True
                         else:
                             logger.warning(
@@ -1725,6 +1758,7 @@ async def execute_task_textual(
                                 )
                             )
                             adapter._current_tool_messages.clear()
+                            adapter._checkpointed_tool_call_ids.clear()
                             any_rejected = True
 
                         resume_payload[interrupt_id] = {"decisions": decisions}
@@ -1778,6 +1812,7 @@ async def execute_task_textual(
                         "Stream ended before tool result",
                     )
                     adapter._current_tool_messages.clear()
+                    adapter._checkpointed_tool_call_ids.clear()
                 # The end-of-stream diagnostic for buffered tool calls that never
                 # fired a `tool.use` runs in the `finally` below, not here, so it
                 # fires on cancel and mid-stream error too (not only this clean
@@ -1978,6 +2013,7 @@ async def _handle_interrupt_cleanup(
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
         adapter._current_tool_messages,
+        adapter._checkpointed_tool_call_ids,
     )
 
     # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
@@ -2068,6 +2104,7 @@ async def _handle_interrupt_cleanup(
                 "Failed to mark tool row rejected during interrupt cleanup"
             )
     adapter._current_tool_messages.clear()
+    adapter._checkpointed_tool_call_ids.clear()
 
     # Keep the token count marked stale whenever interrupted state was captured,
     # including tool-only turns after assistant text was already flushed.

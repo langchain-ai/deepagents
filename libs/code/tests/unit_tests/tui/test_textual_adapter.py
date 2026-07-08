@@ -98,6 +98,15 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._current_tool_messages == {}
 
+    def test_checkpointed_tool_call_ids_initialized_empty(self) -> None:
+        """Verify `_checkpointed_tool_call_ids` is initialized as empty set."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._checkpointed_tool_call_ids == set()
+
     def test_token_callbacks_initialized_none(self) -> None:
         """Verify token callbacks are initialized as `None`."""
         adapter = TextualUIAdapter(
@@ -3943,6 +3952,45 @@ class TestDictIterationSafety:
         """Returns None when there is no text and no tool calls."""
         result = _build_interrupted_ai_message({}, {})
         assert result is None
+
+    def test_build_interrupted_ai_message_skips_checkpointed_ids(self) -> None:
+        """Tool ids marked as checkpointed are excluded from the shadow message.
+
+        Reproduces the duplicate `tool_use.id` shape from the Anthropic 400: the
+        server has already checkpointed the streaming AIMessage that owned these
+        tool_calls, so re-including them in a client-side interrupt-recovery
+        AIMessage would produce two `AIMessage`s that share a `tool_calls[].id`.
+        With the id in `checkpointed_tool_call_ids`, the helper drops it and —
+        with no remaining text or tool_calls — returns None rather than the
+        shadow message.
+        """
+        widgets = {
+            "toolu_01FGAZ6617sBneU8PTJ6dagk": _make_tool_widget(
+                "langsmith_fetch_runs", {"limit": 5}
+            ),
+        }
+        result = _build_interrupted_ai_message(
+            {},
+            widgets,
+            {"toolu_01FGAZ6617sBneU8PTJ6dagk"},
+        )
+        assert result is None
+
+    def test_build_interrupted_ai_message_partial_checkpointed(self) -> None:
+        """Only checkpointed ids are dropped; unchecked ones remain in the message."""
+        widgets = {
+            "toolu_checkpointed": _make_tool_widget("t1", {"k": 1}),
+            "toolu_streaming": _make_tool_widget("t2", {"k": 2}),
+        }
+        result = _build_interrupted_ai_message(
+            {(): "partial text"},
+            widgets,
+            {"toolu_checkpointed"},
+        )
+        assert result is not None
+        assert result.content == "partial text"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["id"] == "toolu_streaming"
 
 
 # ---------------------------------------------------------------------------

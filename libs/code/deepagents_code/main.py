@@ -3074,6 +3074,7 @@ async def _run_acp_cli_async(
                     store=store,
                     cwd=context.cwd,
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
+                    model_retries=session_model.model_retries,
                 )
                 return agent_graph
 

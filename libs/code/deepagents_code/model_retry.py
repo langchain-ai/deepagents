@@ -264,8 +264,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
-            Exception: The original error once retries are exhausted or the
-                error is not transient.
+            RuntimeError: If the retry loop unexpectedly completes without a
+                result.
         """
         for attempt in range(self.max_retries + 1):
             try:
@@ -295,8 +295,8 @@ class CodeModelRetryMiddleware(ModelRetryMiddleware):
             The successful `ModelResponse`.
 
         Raises:
-            Exception: The original error once retries are exhausted or the
-                error is not transient.
+            RuntimeError: If the retry loop unexpectedly completes without a
+                result.
         """
         import asyncio
 

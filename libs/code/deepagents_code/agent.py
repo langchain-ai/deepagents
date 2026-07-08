@@ -78,6 +78,7 @@ from deepagents_code.approval_mode import (
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
+    DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
     config,
     console,
@@ -2228,6 +2229,7 @@ def create_cli_agent(
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    model_retries: int = DEFAULT_MODEL_RETRIES,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2376,6 +2378,8 @@ def create_cli_agent(
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
+        model_retries: Model-node retry attempts after the first call. `0`
+            disables retries. Resolved upstream from config/CLI.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2582,6 +2586,13 @@ def create_cli_agent(
 
         if gated_names := gated_mcp_tool_names(mcp_tools):
             agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
+
+    # Model-node retry: wraps only the model call so transient connection
+    # failures are retried without replaying completed tool calls. `0` disables.
+    if model_retries > 0:
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

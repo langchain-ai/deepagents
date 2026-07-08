@@ -749,7 +749,6 @@ from naming. Providers absent from this map either lack an integer retry-count
 kwarg or are not yet wired as a credential-resolvable provider in this module;
 a `[retries]` config for them is ignored with a warning by `_resolve_retry_kwargs`.
 """
-
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain
     # integration and underlying SDK may read, canonical name first. Names were

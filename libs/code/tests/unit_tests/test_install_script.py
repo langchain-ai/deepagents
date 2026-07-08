@@ -2480,6 +2480,147 @@ def test_install_script_warns_when_original_path_shadows_uv_tool(
     assert "PATH order may run that binary instead of the uv tool" in proc.stderr
 
 
+def _run_detect_shadowing_install(
+    tmp_path: Path,
+    *,
+    original_path: str,
+    stage_shadow: bool = False,
+) -> str:
+    """Run the real `detect_shadowing_install` in isolation; return its stderr.
+
+    `HOME/.local/bin/dcode` is always created as the freshly-installed uv tool.
+    The caller controls `ORIGINAL_PATH` (the user's pre-installer PATH) to decide
+    what `command -v dcode` resolves to. With `stage_shadow`, a genuinely
+    different `dcode` (distinct inode) is also placed under `HOME/shadow` so the
+    caller can put it earlier on `ORIGINAL_PATH` to exercise the warning path.
+    """
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text("#!/usr/bin/env bash\nexit 0\n")
+    _make_executable(dcode)
+    # The intermediate `share` dir must exist for the kernel to resolve the
+    # `~/.local/share/../bin` alias; without it the path is ENOENT and
+    # `command -v` finds nothing, so the `-ef` branch would never be reached.
+    (home / ".local" / "share").mkdir()
+
+    if stage_shadow:
+        shadow_dir = home / "shadow"
+        shadow_dir.mkdir()
+        shadow = shadow_dir / "dcode"
+        shadow.write_text("#!/usr/bin/env bash\nexit 0\n")
+        _make_executable(shadow)
+
+    script = tmp_path / "shadowing_harness.sh"
+    script.write_text(
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        'OS="linux"\n'
+        f"HOME={str(home)!r}\n"
+        f"ORIGINAL_PATH={original_path!r}\n"
+        f"{_extract_shell_function('classify_shadowing_command')}\n"
+        f"{_extract_shell_function('detect_shadowing_install')}\n"
+        "detect_shadowing_install\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.stderr
+
+
+def test_detect_shadowing_install_skips_same_file_alias(tmp_path: Path) -> None:
+    """A same-file PATH alias of ~/.local/bin does not warn (the fixed bug).
+
+    `~/.local/share/../bin` collapses to `~/.local/bin`, so `command -v` resolves
+    to the very uv tool the installer just created. The `-ef` inode check must
+    short-circuit here; a string-only compare (the pre-fix behavior) would see a
+    different spelling and emit a spurious "existing install" warning.
+    """
+    home = tmp_path / "home"
+    stderr = _run_detect_shadowing_install(
+        tmp_path,
+        original_path=f"{home}/.local/share/../bin",
+    )
+
+    assert stderr.strip() == ""
+
+
+def test_detect_shadowing_install_warns_on_distinct_binary(tmp_path: Path) -> None:
+    """A genuinely different binary earlier on PATH still warns.
+
+    Positive control for the alias test above: it proves the harness does emit
+    a warning when it should, so the empty-stderr assertion there reflects the
+    `-ef` skip rather than a silent harness. The shadow binary is a distinct
+    inode, so both the string and `-ef` checks fail and the warning fires.
+    """
+    home = tmp_path / "home"
+    stderr = _run_detect_shadowing_install(
+        tmp_path,
+        original_path=f"{home}/shadow{os.pathsep}{home}/.local/bin",
+        stage_shadow=True,
+    )
+
+    assert "Detected existing dcode" in stderr
+    assert "PATH order may run that binary instead of the uv tool" in stderr
+
+
+def _eval_local_bin_in_profile(tmp_path: Path, profile_body: str) -> bool:
+    """Run the real `local_bin_in_profile` against a profile file's contents.
+
+    Returns True when the function reports ~/.local/bin as already configured
+    (exit 0).
+    """
+    profile = tmp_path / "profile"
+    profile.write_text(profile_body, encoding="utf-8")
+    script = tmp_path / "profile_harness.sh"
+    script.write_text(
+        f"{_extract_shell_function('local_bin_in_profile')}\n"
+        f"local_bin_in_profile {str(profile)!r}\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        env={**os.environ},
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("profile_body", "expected"),
+    [
+        # Canonical spelling (regression guard for the pre-existing behavior).
+        ('export PATH="$HOME/.local/bin:$PATH"\n', True),
+        # Un-normalized alias in a PATH assignment (share/.. collapses to .local).
+        ('export PATH="$HOME/.local/share/../bin:$PATH"\n', True),
+        # Same alias via fish_add_path.
+        ('fish_add_path "$HOME/.local/share/../bin"\n', True),
+        # Commented-out lines must not count as configured.
+        ('# export PATH="$HOME/.local/share/../bin:$PATH"\n', False),
+        # An unrelated directory is not a match.
+        ('export PATH="$HOME/somewhere/else:$PATH"\n', False),
+    ],
+)
+def test_local_bin_in_profile_recognizes_alias_spelling(
+    tmp_path: Path, profile_body: str, expected: bool
+) -> None:
+    """`local_bin_in_profile` recognizes the ~/.local/share/../bin alias too.
+
+    Without this, a profile written with the alias spelling would be treated as
+    not configured and the installer would append a duplicate PATH entry.
+    """
+    assert _eval_local_bin_in_profile(tmp_path, profile_body) is expected
+
+
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:
     """When `dcode` resolves via PATH, the not-on-PATH hint is suppressed."""
     proc, _ = _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")

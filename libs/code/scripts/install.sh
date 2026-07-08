@@ -1661,8 +1661,11 @@ detect_shadowing_install() {
     original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
     [ -n "$original" ] || continue
     # Same file reached via a different PATH spelling (e.g. ~/.local/share/../bin
-    # vs ~/.local/bin) is not a shadowing install. Compare by inode, not string,
-    # so `..`/symlink aliases don't trigger a false "existing install" warning.
+    # vs ~/.local/bin) is not a shadowing install. Keep the string equality as a
+    # fast path, but also accept `-ef` (true when both paths are the same device
+    # and inode, resolving `..` and symlinks) so aliases don't trigger a false
+    # "existing install" warning. A genuinely different binary has a distinct
+    # inode and still fails both checks, so only the false positive is skipped.
     { [ "$original" = "$expected" ] || [ "$original" -ef "$expected" ]; } && continue
     manager=$(classify_shadowing_command "$original")
     log_warn "Detected ${manager} ${candidate} at ${original}."

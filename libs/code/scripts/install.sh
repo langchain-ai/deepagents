@@ -190,6 +190,10 @@ done
 TEMP_FILES=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
+INSTALL_LOCK_TOKEN=""
+INSTALL_LOCK_STALE_ID=""
+INSTALL_LOCK_RECLAIM_DIR=""
+INSTALL_LOCK_RECLAIM_TOKEN=""
 # How old a mkdir-based lock (dead/unknown holder) must be before it's treated
 # as abandoned and reclaimed. 10 min comfortably exceeds a normal install.
 INSTALL_LOCK_STALE_AFTER_SECS=600
@@ -522,15 +526,48 @@ copy_install_log() {
 # Epoch mtime of the lock directory, used as a fallback reference time when the
 # started_at metadata is missing. Portable across BSD (macOS) and GNU stat.
 lock_dir_mtime() {
-  stat -f %m "$INSTALL_LOCK_DIR" 2>/dev/null \
-    || stat -c %Y "$INSTALL_LOCK_DIR" 2>/dev/null \
-    || printf '0'
+  local dir="${1:-$INSTALL_LOCK_DIR}"
+  local mtime
+  mtime="$(stat -f %m "$dir" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$mtime"; return 0 ;;
+  esac
+
+  mtime="$(stat -c %Y "$dir" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$mtime" ;;
+  esac
+}
+
+# A fingerprint of the lock instance currently at the canonical path, used to
+# detect whether it is still the same lock a prior check inspected (see the
+# reclaim path in acquire_install_lock). Prints four newline-separated fields —
+# token, pid, started_at, dir mtime — compared only by string equality, so the
+# field set and order are load-bearing. Returns 1 (empty output) when the lock
+# dir is gone; an unreadable field reads as empty, i.e. is treated as absent.
+install_lock_identity() {
+  [ -d "$INSTALL_LOCK_DIR" ] || return 1
+
+  local token pid started_at mtime
+  token="$(cat "$INSTALL_LOCK_DIR/token" 2>/dev/null || true)"
+  pid="$(cat "$INSTALL_LOCK_DIR/pid" 2>/dev/null || true)"
+  started_at="$(cat "$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true)"
+  mtime="$(lock_dir_mtime)"
+  printf '%s\n%s\n%s\n%s' "$token" "$pid" "$started_at" "$mtime"
 }
 
 # Decide whether an existing mkdir-based lock may be reclaimed. Only ever called
 # in the mkdir fallback path (kernel advisory locks self-release on holder death,
-# so they need no staleness heuristic).
+# so they need no staleness heuristic). On a "stale" result, also sets the global
+# INSTALL_LOCK_STALE_ID to the lock's identity fingerprint (consumed by the
+# reclaim path in acquire_install_lock); clears it otherwise. Must be called in a
+# condition context (`if install_lock_is_stale`) so `set -e` is suppressed for
+# its body: the bare `[ -n ... ]` test near the end returns non-zero on the
+# not-stale branch and would otherwise abort the script.
 install_lock_is_stale() {
+  INSTALL_LOCK_STALE_ID=""
   [ -d "$INSTALL_LOCK_DIR" ] || return 1
 
   local pid started_at now
@@ -562,7 +599,88 @@ install_lock_is_stale() {
     return 1
   fi
 
+  if [ $((now - started_at)) -ge "$INSTALL_LOCK_STALE_AFTER_SECS" ]; then
+    # Capture the identity for the reclaim guard. If the lock dir vanished
+    # between the age check and here, the fingerprint is empty; the bare test
+    # then returns non-zero, so `return` reports "not stale" (see header note on
+    # why this is safe under `set -e`).
+    INSTALL_LOCK_STALE_ID="$(install_lock_identity 2>/dev/null || true)"
+    [ -n "$INSTALL_LOCK_STALE_ID" ]
+    return
+  fi
+  return 1
+}
+
+install_lock_reclaim_guard_is_stale() {
+  local started_at
+  local now
+
+  started_at="$(cat "$INSTALL_LOCK_RECLAIM_DIR/started_at" 2>/dev/null || true)"
+  now="$(date +%s 2>/dev/null || printf '0')"
+
+  case "$started_at" in
+    ''|*[!0-9]*) started_at="$(lock_dir_mtime "$INSTALL_LOCK_RECLAIM_DIR")" ;;
+  esac
+  case "$started_at" in
+    ''|*[!0-9]*) started_at=0 ;;
+  esac
+
+  if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then
+    return 1
+  fi
+
   [ $((now - started_at)) -ge "$INSTALL_LOCK_STALE_AFTER_SECS" ]
+}
+
+wait_for_install_lock_reclaim_guard() {
+  if [ ! -d "$INSTALL_LOCK_RECLAIM_DIR" ]; then
+    return 0
+  fi
+
+  if install_lock_reclaim_guard_is_stale; then
+    log_error "Installer lock reclaim is stuck at $INSTALL_LOCK_RECLAIM_DIR."
+    log_error "Remove it manually, then retry."
+    exit 1
+  fi
+
+  sleep 1
+  return 1
+}
+
+acquire_install_lock_reclaim_guard() {
+  local token
+
+  token="$$:$(date +%s 2>/dev/null || printf '0'):${RANDOM:-0}"
+  if ! mkdir "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null; then
+    if [ -d "$INSTALL_LOCK_RECLAIM_DIR" ]; then
+      return 1
+    fi
+    log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+    log_error "Cannot create reclaim guard at $INSTALL_LOCK_RECLAIM_DIR."
+    exit 1
+  fi
+
+  if ! printf '%s\n' "$token" >"$INSTALL_LOCK_RECLAIM_DIR/token" 2>/dev/null; then
+    rm -rf "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null || true
+    log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+    log_error "Cannot write reclaim guard metadata at $INSTALL_LOCK_RECLAIM_DIR."
+    exit 1
+  fi
+
+  INSTALL_LOCK_RECLAIM_TOKEN="$token"
+  printf '%s\n' "$$" >"$INSTALL_LOCK_RECLAIM_DIR/pid" 2>/dev/null || true
+  date +%s >"$INSTALL_LOCK_RECLAIM_DIR/started_at" 2>/dev/null || true
+  return 0
+}
+
+release_install_lock_reclaim_guard() {
+  # Token-guarded like release_install_lock: only drop the guard if it is still
+  # ours (see that function for why an unreadable token errs toward keeping it).
+  if [ -n "${INSTALL_LOCK_RECLAIM_TOKEN:-}" ] && \
+    [ "$(cat "$INSTALL_LOCK_RECLAIM_DIR/token" 2>/dev/null || true)" = "$INSTALL_LOCK_RECLAIM_TOKEN" ]; then
+    rm -rf "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null || true
+  fi
+  INSTALL_LOCK_RECLAIM_TOKEN=""
 }
 
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
@@ -577,21 +695,41 @@ acquire_install_lock() {
   fix_owner "$lock_root"
 
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
+  INSTALL_LOCK_RECLAIM_DIR="$lock_root/install.lock.reclaim.d"
 
-  while ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; do
+  while true; do
+    wait_for_install_lock_reclaim_guard || continue
+
+    if mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+      break
+    fi
+
     if install_lock_is_stale; then
+      local _stale_id="${INSTALL_LOCK_STALE_ID:-}"
+      if [ -z "$_stale_id" ] || ! acquire_install_lock_reclaim_guard; then
+        continue
+      fi
+      if [ "$(install_lock_identity 2>/dev/null || true)" != "$_stale_id" ]; then
+        release_install_lock_reclaim_guard
+        continue
+      fi
+
       log_warn "Removing stale installer lock at $INSTALL_LOCK_DIR"
-      # Reclaim without clobbering a lock another installer may acquire
-      # concurrently: rename the stale directory to a private per-PID name and
-      # delete that, so our `rm` never targets the canonical path a fresh owner
-      # would occupy. The rename is atomic on POSIX filesystems. (It narrows,
-      # but cannot fully close, the check->reclaim race: a fresh owner that wins
-      # mkdir before our rename can still be moved aside — acceptable for a
-      # 10-minute-stale fallback lock.)
+      # Only reclaim the exact lock instance that was inspected as stale, so this
+      # rename can never move a fresh owner's lock aside. Two mechanisms cover
+      # the window: the identity re-check above rejects a lock that was already
+      # replaced before we took the reclaim guard, and the guard then blocks
+      # peers (via wait_for_install_lock_reclaim_guard) from creating a fresh
+      # lock at the canonical path until this rename completes.
       local _stale_reclaim="${INSTALL_LOCK_DIR}.reclaim.$$"
       if mv "$INSTALL_LOCK_DIR" "$_stale_reclaim" 2>/dev/null; then
         rm -rf "$_stale_reclaim" 2>/dev/null || true
-      elif install_lock_is_stale && ! rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null; then
+        release_install_lock_reclaim_guard
+      elif [ "$(install_lock_identity 2>/dev/null || true)" != "$_stale_id" ]; then
+        release_install_lock_reclaim_guard
+        continue
+      else
+        release_install_lock_reclaim_guard
         # The stale lock can be neither renamed nor removed (typically it is
         # owned by another user). Fail loudly rather than spin: `continue` skips
         # the `sleep` below, so silently swallowing this error would busy-loop
@@ -605,6 +743,12 @@ acquire_install_lock() {
     sleep 1
   done
 
+  INSTALL_LOCK_TOKEN="$$:$(date +%s 2>/dev/null || printf '0'):${RANDOM:-0}"
+  if ! printf '%s\n' "$INSTALL_LOCK_TOKEN" >"$INSTALL_LOCK_DIR/token" 2>/dev/null; then
+    rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
+    log_error "Cannot write installer lock metadata at $INSTALL_LOCK_DIR."
+    exit 1
+  fi
   printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
   date +%s >"$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true
   fix_owner "$INSTALL_LOCK_DIR"
@@ -614,10 +758,21 @@ acquire_install_lock() {
 release_install_lock() {
   case "${INSTALL_LOCK_KIND:-}" in
     mkdir)
-      rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
+      # Remove the lock only while the on-disk token is still ours. A clean read
+      # that differs means a reclaimer took over the canonical path — never
+      # delete their live lock. An unreadable token is treated the same (skip):
+      # we cannot prove ownership, and erring toward a leak is safe because a
+      # stale lock ages out via install_lock_is_stale, whereas removing on an
+      # unverifiable read could delete a reclaimer's lock. Do not turn this into
+      # an unconditional `rm -rf`.
+      if [ -n "${INSTALL_LOCK_TOKEN:-}" ] && [ "$(cat "$INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$INSTALL_LOCK_TOKEN" ]; then
+        rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
+      fi
       ;;
   esac
+  release_install_lock_reclaim_guard
   INSTALL_LOCK_KIND=""
+  INSTALL_LOCK_TOKEN=""
 }
 
 # ---------------------------------------------------------------------------

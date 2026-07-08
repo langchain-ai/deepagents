@@ -1258,6 +1258,7 @@ def _eval_install_lock_is_stale(
         f"INSTALL_LOCK_DIR={str(lock_dir)!r}\n"
         f"INSTALL_LOCK_STALE_AFTER_SECS={stale_after}\n"
         f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
         f"{_extract_shell_function('install_lock_is_stale')}\n"
         "install_lock_is_stale\n",
         encoding="utf-8",
@@ -1380,15 +1381,260 @@ def test_install_script_does_not_redirect_to_legacy_lock_file() -> None:
     assert '>"$HOME/.deepagents/install.lock"' not in script
 
 
+def test_install_script_reclaim_skips_new_lock_after_stale_check(
+    tmp_path: Path,
+) -> None:
+    """The reclaim re-check skips `mv` when the lock changed after stale detection.
+
+    Simulates a peer reclaimer that clears the stale lock between this process's
+    staleness check and its own identity re-check. `install_lock_identity` is
+    stubbed to report the inspected fingerprint on its first call (so the lock
+    reads as stale and that fingerprint is captured) and then, on the re-check,
+    to remove the lock dir and report a different (empty) fingerprint. The
+    mismatch must abort the rename so this process never moves a lock it did not
+    inspect aside; it then acquires the now-free path cleanly and `mv` is never
+    called. A filesystem marker sequences the two calls: each runs in a `$(...)`
+    subshell, so a shell-variable counter would not carry across them.
+    """
+    lock_root = tmp_path / ".deepagents"
+    lock_dir = lock_root / "install.lock.d"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
+    (lock_dir / "started_at").write_text("1\n")
+    marker = tmp_path / "mv-called"
+    checked = tmp_path / "identity-checked"
+    script = tmp_path / "reclaim_race_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_owner() { return 0; }\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        # First call (inside install_lock_is_stale) reports the inspected
+        # fingerprint so the lock reads as stale. The re-check call then clears
+        # the lock — as a racing reclaimer would — and reports a different
+        # (empty) fingerprint, which must make acquire_install_lock skip the mv.
+        "install_lock_identity() {\n"
+        f"  if [ ! -f {str(checked)!r} ]; then\n"
+        f"    : >{str(checked)!r}\n"
+        "    printf 'stale-fingerprint'\n"
+        "    return 0\n"
+        "  fi\n"
+        '  rm -rf "$INSTALL_LOCK_DIR"\n'
+        "  return 1\n"
+        "}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        f"{_extract_shell_function('release_install_lock')}\n"
+        "mv() {\n"
+        f"  printf 'called\\n' >{str(marker)!r}\n"
+        "  return 1\n"
+        "}\n"
+        "acquire_install_lock\n"
+        "release_install_lock\n"
+        f"test ! -f {str(marker)!r}\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_install_script_reclaim_holds_guard_while_renaming_stale_lock(
+    tmp_path: Path,
+) -> None:
+    """Stale reclaim renames the canonical lock only while peers are guarded."""
+    lock_root = tmp_path / ".deepagents"
+    lock_dir = lock_root / "install.lock.d"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pid").write_text(f"{_DEAD_PID}\n")
+    (lock_dir / "started_at").write_text("1\n")
+    missing_guard = tmp_path / "missing-guard"
+    script = tmp_path / "reclaim_guard_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_owner() { return 0; }\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        f"{_extract_shell_function('release_install_lock')}\n"
+        "mv() {\n"
+        '  if [ "$1" = "$INSTALL_LOCK_DIR" ] && \\\n'
+        '    [ ! -d "$INSTALL_LOCK_RECLAIM_DIR" ]; then\n'
+        f"    printf 'missing\\n' >{str(missing_guard)!r}\n"
+        "    return 1\n"
+        "  fi\n"
+        '  command mv "$@"\n'
+        "}\n"
+        "acquire_install_lock\n"
+        "release_install_lock\n"
+        f"test ! -f {str(missing_guard)!r}\n"
+        f"test ! -d {str(lock_root / 'install.lock.reclaim.d')!r}\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("our_token", "on_disk_token", "expected_removed"),
+    [
+        # We still hold the lock: the on-disk token matches ours -> remove it.
+        ("mine", "mine", True),
+        # A reclaimer took over the canonical path (different token) -> keep it.
+        ("mine", "other", False),
+        # We never recorded a token, so ownership is unprovable -> keep it.
+        ("", "mine", False),
+    ],
+)
+def test_install_script_release_removes_lock_only_when_token_matches(
+    tmp_path: Path, our_token: str, on_disk_token: str, expected_removed: bool
+) -> None:
+    """release_install_lock removes the lock dir iff the on-disk token is ours.
+
+    Guards the release ownership check: a regression to an unconditional
+    `rm -rf "$INSTALL_LOCK_DIR"` would let a slow installer delete a lock a fresh
+    owner now holds. The reclaim guard is left untouched here
+    (INSTALL_LOCK_RECLAIM_TOKEN empty), so only the canonical lock is exercised.
+    """
+    lock_root = tmp_path / ".deepagents"
+    lock_dir = lock_root / "install.lock.d"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "token").write_text(f"{on_disk_token}\n")
+    script = tmp_path / "release_harness.sh"
+    script.write_text(
+        f"INSTALL_LOCK_DIR={str(lock_dir)!r}\n"
+        f"INSTALL_LOCK_RECLAIM_DIR={str(lock_root / 'install.lock.reclaim.d')!r}\n"
+        "INSTALL_LOCK_KIND='mkdir'\n"
+        f"INSTALL_LOCK_TOKEN={our_token!r}\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock')}\n"
+        "release_install_lock\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert (not lock_dir.exists()) == expected_removed
+
+
+def test_install_script_aborts_when_lock_token_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    """A failed lock-token write aborts loudly and removes the half-made lock.
+
+    After winning `mkdir`, the metadata write must succeed or the acquire has to
+    `exit 1` and clean up. Here a stubbed `mkdir` plants a *directory* named
+    `token` inside the fresh lock so `>"$INSTALL_LOCK_DIR/token"` fails. Guards
+    against a regression that drops either the cleanup (orphan lock nobody can
+    release) or the `exit` (install proceeds tokenless, so release never matches
+    and the lock leaks permanently).
+    """
+    lock_root = tmp_path / ".deepagents"
+    lock_root.mkdir(parents=True)
+    script = tmp_path / "token_write_harness.sh"
+    script.write_text(
+        f"HOME={str(tmp_path)!r}\n"
+        "INSTALL_LOCK_KIND=''\n"
+        "INSTALL_LOCK_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_DIR=''\n"
+        "INSTALL_LOCK_RECLAIM_TOKEN=''\n"
+        "INSTALL_LOCK_STALE_AFTER_SECS=600\n"
+        "fix_owner() { return 0; }\n"
+        "log_warn() { return 0; }\n"
+        "log_error() { printf '%s\\n' \"$*\" >&2; }\n"
+        f"{_extract_shell_function('lock_dir_mtime')}\n"
+        f"{_extract_shell_function('install_lock_identity')}\n"
+        f"{_extract_shell_function('install_lock_is_stale')}\n"
+        f"{_extract_shell_function('install_lock_reclaim_guard_is_stale')}\n"
+        f"{_extract_shell_function('wait_for_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('release_install_lock_reclaim_guard')}\n"
+        f"{_extract_shell_function('acquire_install_lock')}\n"
+        # Win the mkdir, but plant a directory named `token` inside the lock so
+        # the metadata write `>"$INSTALL_LOCK_DIR/token"` fails.
+        "mkdir() {\n"
+        '  if [ "$1" = "$INSTALL_LOCK_DIR" ]; then\n'
+        '    command mkdir "$INSTALL_LOCK_DIR" || return 1\n'
+        '    command mkdir "$INSTALL_LOCK_DIR/token"\n'
+        "    return 0\n"
+        "  fi\n"
+        '  command mkdir "$@"\n'
+        "}\n"
+        "acquire_install_lock\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
+    )
+
+    assert proc.returncode == 1, proc.stderr
+    assert "Cannot write installer lock metadata" in proc.stderr
+    assert not (lock_root / "install.lock.d").exists()
+
+
 def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     """A stale mkdir lock left by a dead owner is reclaimed, and install proceeds.
 
     Drives the full `acquire_install_lock` mkdir path (not just the
     `install_lock_is_stale` predicate): a pre-existing `install.lock.d` with a
     dead PID and an old `started_at` must be renamed aside, removed, and the
-    install allowed to continue. Guards against a regression to a plain
-    `rm -rf "$INSTALL_LOCK_DIR"`, which would reintroduce the reclaim race the
-    rename-then-delete fixes.
+    install allowed to continue. The concurrent-replacement cases are covered
+    separately by test_install_script_reclaim_skips_new_lock_after_stale_check
+    (identity changed before reclaim) and
+    test_install_script_reclaim_holds_guard_while_renaming_stale_lock (peers held
+    by the reclaim guard during the rename).
     """
     bin_dir, home, uv = _write_fake_tools(
         tmp_path, installed_version="0.0.1", latest_version="0.1.0"
@@ -1424,6 +1670,7 @@ def test_install_script_reclaims_stale_mkdir_lock(tmp_path: Path) -> None:
     deepagents = home / ".deepagents"
     assert not (deepagents / "install.lock.d").exists()
     assert not list(deepagents.glob("install.lock.d.reclaim.*"))
+    assert not (deepagents / "install.lock.reclaim.d").exists()
 
 
 @pytest.mark.skipif(

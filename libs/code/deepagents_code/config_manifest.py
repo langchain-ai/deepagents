@@ -1180,6 +1180,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="managed",
         env_var=_env_vars.RIPGREP_INSTALLER,
     ),
+    # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.mode",
+        group="Startup",
+        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        kind=OptionKind.STR,
+        default="manual",
+        toml_keys=("startup", "mode"),
+        cli_flag="--auto-approve",
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",

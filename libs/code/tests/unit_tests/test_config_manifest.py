@@ -1448,6 +1448,28 @@ def test_resolve_toml_str_success_and_type_mismatch(caplog) -> None:
     assert any("sort_order" in r.getMessage() for r in caplog.records)
 
 
+def test_startup_mode_option_definition() -> None:
+    """`startup.mode` is a config.toml-only string option defaulting to 'manual'."""
+    opt = get_option("startup.mode")
+    assert opt is not None
+    assert opt.group == "Startup"
+    assert opt.kind is OptionKind.STR
+    assert opt.default == "manual"
+    assert opt.toml_keys == ("startup", "mode")
+    assert opt.env_var is None
+
+
+def test_resolve_startup_mode_from_toml() -> None:
+    """`startup.mode` resolves from config.toml and falls back to its default."""
+    opt = get_option("startup.mode")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"startup": {"mode": "dangerously-auto"}}) == (
+        "dangerously-auto",
+        "config.toml",
+    )
+    assert resolve_scalar(opt, toml_data={}) == ("manual", "default")
+
+
 def test_resolve_toml_float_success_non_bool() -> None:
     """A FLOAT option reads a real number from TOML and coerces an int to float."""
     opt = get_option("interpreter.timeout_seconds")

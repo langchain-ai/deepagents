@@ -1605,11 +1605,14 @@ def parse_args() -> argparse.Namespace:
         "-y",
         "--auto-approve",
         action="store_true",
+        default=None,
         help=(
             "Auto-approve all tool calls without prompting "
             "(disables human-in-the-loop). Affected tools: shell "
             "execution, file writes/edits, web search, and URL fetch. "
-            "Use with caution — the agent can execute arbitrary commands."
+            "Use with caution — the agent can execute arbitrary commands. "
+            "When omitted, the launch default comes from [startup].mode in "
+            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
         ),
     )
 
@@ -3634,10 +3637,22 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
+                # An explicit -y/--auto-approve wins; otherwise the persistent
+                # [startup].mode config default decides the launch mode.
+                if args.auto_approve is None:
+                    from deepagents_code.model_config import (
+                        STARTUP_MODE_DANGEROUSLY_AUTO,
+                        load_startup_mode,
+                    )
+
+                    auto_approve = load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+                else:
+                    auto_approve = args.auto_approve
+
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=args.auto_approve,
+                        auto_approve=auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,

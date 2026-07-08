@@ -118,6 +118,25 @@ def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> N
         assert parsed_args.auto_approve is True
 
 
+class TestAutoApproveArgument:
+    """Tests for -y / --auto-approve parsing and its config.toml default."""
+
+    def test_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing -y sets auto_approve to True."""
+        with mock_argv("-y"):
+            assert parse_args().auto_approve is True
+
+    def test_long_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing --auto-approve sets auto_approve to True."""
+        with mock_argv("--auto-approve"):
+            assert parse_args().auto_approve is True
+
+    def test_omitted_is_none(self, mock_argv: MockArgvType) -> None:
+        """Omitting the flag leaves auto_approve as None so config.toml decides."""
+        with mock_argv():
+            assert parse_args().auto_approve is None
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [

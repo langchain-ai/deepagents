@@ -142,11 +142,18 @@ def _configurable(config: dict[str, object] | None) -> dict[str, object]:
 def _model_kwargs(configurable: dict[str, object]) -> dict[str, Any]:
     value = configurable.get("model_kwargs")
     if value is None:
-        return {}
-    if not isinstance(value, dict):
+        kwargs: dict[str, Any] = {}
+    elif not isinstance(value, dict):
         msg = "`configurable.model_kwargs` must be a dictionary"
         raise TypeError(msg)
-    return {str(key): item for key, item in value.items()}
+    else:
+        kwargs = {str(key): item for key, item in value.items()}
+    # Harness defaults; explicit `configurable.model_kwargs` still win. Streaming keeps
+    # the connection active so slow generations don't hit the provider gateway's idle
+    # timeout (stream_usage stays on by default, so token accounting is preserved).
+    kwargs.setdefault("streaming", True)
+    kwargs.setdefault("max_retries", 3)
+    return kwargs
 
 
 def _model_name(configurable: dict[str, object]) -> str:

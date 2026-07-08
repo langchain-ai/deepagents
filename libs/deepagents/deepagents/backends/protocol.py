@@ -11,7 +11,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
@@ -442,6 +442,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -475,6 +477,15 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             - `'src/**/*.js'` - search JS files under src/
             - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
 
+            max_count: Optional total cap on the number of matches returned
+                across all files.
+
+                `None` (the default) preserves existing backend behavior and
+                returns every match. When set to an int, the search stops once
+                that many matches have been collected and the result is flagged
+                with `GrepResult.truncated=True`. Interpreted as a total cap, not
+                a per-file cap.
+
         Returns:
             `GrepResult` with matches or error.
 
@@ -492,6 +503,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             result = self.grep_raw(pattern, path, glob)
             if isinstance(result, str):
                 return GrepResult(error=result)
+            # `grep_raw` predates `max_count`, so enforce the cap post-hoc for
+            # legacy backends that only implement it.
+            if max_count is not None and result is not None and len(result) > max_count:
+                return GrepResult(matches=result[:max_count], truncated=True)
             return GrepResult(matches=result)
 
         raise NotImplementedError
@@ -501,6 +516,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
         """Async version of `grep`.
 
@@ -510,7 +527,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self.grep, pattern, path, glob),
+                asyncio.to_thread(partial(self.grep, pattern, path, glob, max_count=max_count)),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:

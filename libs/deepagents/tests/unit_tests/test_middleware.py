@@ -755,6 +755,75 @@ class TestFilesystemMiddleware:
         assert result.status == "success"
         assert SEARCH_TRUNCATION_NOTE not in result.content
 
+    def test_grep_forwards_default_max_count_to_backend(self):
+        """The grep tool forwards the middleware's `grep_max_count` default to the backend."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=250)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] == 250
+
+    def test_grep_per_call_max_count_overrides_default(self):
+        """A per-call `max_count` argument overrides the configured default."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=1000)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "max_count": 5, "runtime": _runtime()})
+
+        assert captured["max_count"] == 5
+
+    def test_grep_max_count_none_disables_default_cap(self):
+        """`grep_max_count=None` forwards no cap to the backend when no per-call value is given."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=None)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {"max_count": "unset"}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] is None
+
+    def test_invalid_grep_max_count_raises(self):
+        """A non-positive `grep_max_count` is rejected at construction."""
+        backend, _ = _make_backend()
+        with pytest.raises(ValueError, match="grep_max_count must be positive"):
+            FilesystemMiddleware(backend=backend, grep_max_count=0)
+
     def test_glob_not_truncated_omits_note(self):
         """A complete glob must not carry the truncation note."""
         backend, _ = _make_backend()

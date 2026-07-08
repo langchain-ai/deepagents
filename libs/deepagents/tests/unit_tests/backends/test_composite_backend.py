@@ -1370,6 +1370,62 @@ def test_grep_path_stripping_matches_get_backend_and_key() -> None:
     assert matches2 is not None
 
 
+def test_grep_max_count_enforced_across_routes() -> None:
+    """`max_count` caps total matches across the default and all routed backends."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=3)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_grep_max_count_short_circuits_routes() -> None:
+    """Once the default backend fills the cap, routed backends are not consulted."""
+    mem_store = InMemoryStore()
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    class _RaisingBackend(StoreBackend):
+        def grep(self, *_args: object, **_kwargs: object) -> GrepResult:
+            msg = "routed backend should not be queried once the cap is met"
+            raise AssertionError(msg)
+
+    route = _RaisingBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=state, routes={"/memories/": route})
+
+    comp.write("/root_a.txt", "hit\nhit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=2)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_grep_no_cap_returns_all_across_routes() -> None:
+    """`max_count=None` preserves prior behavior: every match across routes is returned."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/")
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 4
+
+
 def test_glob_path_stripping_matches_get_backend_and_key() -> None:
     """Verify glob strips route prefix the same way as _get_backend_and_key."""
     mem_store = InMemoryStore()

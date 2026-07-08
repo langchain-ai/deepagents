@@ -517,6 +517,39 @@ def test_build_grep_cmd_no_glob_uses_grep() -> None:
     assert "python3" not in cmd
 
 
+def test_build_grep_cmd_max_count_adds_head_guard() -> None:
+    """A `max_count` bounds output with `head -n <cap+1>` so grep stops early via SIGPIPE."""
+    cmd = _build_grep_cmd("needle", "/test", None, 10)
+    # One record beyond the cap so the parser can distinguish complete from capped.
+    assert "head -n 11" in cmd
+
+
+def test_build_grep_cmd_no_head_guard_without_max_count() -> None:
+    """Without `max_count`, the command carries no `head` guard (unchanged behavior)."""
+    cmd = _build_grep_cmd("needle", "/test", None)
+    assert "head -n" not in cmd
+
+
+def test_parse_grep_output_caps_and_flags_truncation() -> None:
+    """`_parse_grep_output` caps matches to `max_count` and flags truncation when exceeded."""
+    lines = [f"/test/f{i}.py\x001:needle" for i in range(5)]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+    result = _parse_grep_output(resp, "/test", 3)
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_parse_grep_output_below_cap_not_truncated() -> None:
+    """When matches are at or below the cap, the result is not flagged truncated."""
+    lines = [f"/test/f{i}.py\x001:needle" for i in range(3)]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+    result = _parse_grep_output(resp, "/test", 3)
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
 def test_grep_slash_glob_returns_matches_from_python_template() -> None:
     """grep() with a slash-containing glob parses output from the Python template."""
     sandbox = MockSandbox()

@@ -2494,6 +2494,130 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert "could not be saved to config.toml" in capsys.readouterr().err
 
+    def test_always_allow_custom_persists_only_selected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom selection persists only the chosen server, not the full list."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "reference": {"command": "echo"},
+                    }
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            # Allow -> always; choose custom; select only the 2nd server.
+            patch("builtins.input", side_effect=["a", "custom", "2"]),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert lists.enabled == frozenset({"reference"})
+
+    def test_always_allow_none_saves_nothing(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Choosing "none" allows the session but writes no config.toml entry."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "reference": {"command": "echo"},
+                    }
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", side_effect=["a", "none"]),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        assert not user_config.exists()
+        assert "Nothing saved to config.toml" in capsys.readouterr().err
+
     def test_all_servers_list_resolved_shows_context_without_prompt(
         self,
         capsys: pytest.CaptureFixture[str],
@@ -2714,6 +2838,81 @@ class TestCheckMcpProjectTrustPrompt:
         flattened = err.replace("\n", "")
         assert "treating project MCP servers as untrusted" in flattened
         assert "require approval" not in err
+
+
+class TestSelectProjectServersToPersist:
+    """Tests for the "always allow" subset selection helpers."""
+
+    @pytest.mark.parametrize(
+        ("raw", "count", "expected"),
+        [
+            ("1,3", 3, [1, 3]),
+            ("1 3", 3, [1, 3]),
+            ("2, 2, 1", 3, [2, 1]),  # dedupe, preserve order
+            ("0,4,x", 3, []),  # out-of-range and non-numeric ignored
+            ("", 3, []),
+        ],
+    )
+    def test_parse_server_number_selection(
+        self, raw: str, count: int, expected: list[int]
+    ) -> None:
+        """The index parser drops invalid/duplicate tokens and keeps order."""
+        from deepagents_code.main import _parse_server_number_selection
+
+        assert _parse_server_number_selection(raw, count) == expected
+
+    def test_single_server_skips_menu(self) -> None:
+        """A lone prompted server is returned without asking anything."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "no prompt expected for a single server"
+            raise AssertionError(msg)
+
+        with patch("builtins.input", _no_input):
+            names = _select_project_servers_to_persist(
+                [("fs", "stdio", "node")], Console(stderr=True)
+            )
+
+        assert names == ["fs"]
+
+    def test_all_returns_every_name(self) -> None:
+        """Choosing "all" persists the whole prompted list."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        with patch("builtins.input", return_value="all"):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == ["docs", "reference"]
+
+    def test_custom_selects_subset(self) -> None:
+        """Choosing "custom" and entering a number persists only that server."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        with patch("builtins.input", side_effect=["custom", "1"]):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == ["docs"]
+
+    def test_none_returns_empty(self) -> None:
+        """An unrecognized/"none" answer persists nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        with patch("builtins.input", return_value="none"):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == []
 
 
 class TestCheckMcpProjectTrustDedupe:

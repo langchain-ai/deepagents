@@ -2348,6 +2348,84 @@ def _debug_mcp_project_trust_enabled() -> bool:
     return is_env_truthy(DEBUG_MCP_PROJECT_TRUST)
 
 
+def _parse_server_number_selection(raw: str, count: int) -> list[int]:
+    """Parse a `1,3`-style selection into unique, in-range 1-based indices.
+
+    Accepts comma- and/or whitespace-separated tokens. Non-integer or
+    out-of-range tokens are ignored; the result preserves input order and
+    drops duplicates.
+
+    Args:
+        raw: The user's raw selection input.
+        count: The number of choices (valid indices are `1..count`).
+
+    Returns:
+        The selected 1-based indices.
+    """
+    selected: list[int] = []
+    for token in raw.replace(",", " ").split():
+        try:
+            index = int(token)
+        except ValueError:
+            continue
+        if 1 <= index <= count and index not in selected:
+            selected.append(index)
+    return selected
+
+
+def _select_project_servers_to_persist(
+    prompt_servers: list[tuple[str, str, str]], console: "Console"
+) -> list[str]:
+    """Ask which prompted project MCP servers to persist to config.toml.
+
+    Shows an all/custom/none menu so the user isn't forced to save the whole
+    list. "custom" reprints the servers numbered and reads a `1,3`-style
+    selection. A single prompted server skips the menu (there is nothing to
+    choose between).
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print the selection UI to (stderr).
+
+    Returns:
+        The chosen server names. Empty when the user picks "none" or makes no
+            valid selection (the caller then allows only for this session).
+    """
+    from rich.markup import escape
+
+    names = [name for name, _kind, _summary in prompt_servers]
+    if len(names) <= 1:
+        return names
+
+    try:
+        choice = (
+            input("Save to config.toml? [a]ll / [c]ustom / [n]one: ").strip().lower()
+        )
+    except (EOFError, KeyboardInterrupt):
+        choice = ""
+
+    if choice in {"a", "all"}:
+        return names
+    if choice not in {"c", "custom"}:
+        # "none" or an unrecognized answer persists nothing (fail-safe).
+        return []
+
+    console.print()
+    for index, (name, kind, summary) in enumerate(prompt_servers, start=1):
+        console.print(
+            f'  [bold]{index}.[/bold] "{escape(name)}" ({escape(kind)}):  '
+            f"{escape(summary)}",
+            highlight=False,
+        )
+    try:
+        raw = input("Enter numbers to always-allow (comma-separated, e.g. 1,3): ")
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    return [
+        names[index - 1] for index in _parse_server_number_selection(raw, len(names))
+    ]
+
+
 def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     """Check whether project-level MCP servers should be trusted.
 
@@ -2360,9 +2438,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     `None` (no gate needed). When `--trust-project-mcp` was passed,
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt. The prompt accepts
-    "y" (trust this config by fingerprint), "a"/"always" (persist the prompted
-    server names to `[mcp].enabled_project_servers` in the user-level
-    config.toml so they load by name without re-prompting), or "N" (deny).
+    "y" (trust this config by fingerprint), "a"/"always" (persist a chosen
+    subset — all, custom, or none — of the prompted server names to
+    `[mcp].enabled_project_servers` in the user-level config.toml so they load
+    by name without re-prompting), or "N" (deny).
 
     Servers already resolved by the user's `enabled_project_servers` /
     `disabled_project_servers` lists are shown for transparency but not
@@ -2523,8 +2602,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
-        "[dim]y = allow this time · a = always allow (save to config.toml) · "
-        "N = deny[/dim]",
+        "[dim]y = allow this time · a = always allow (choose which to save to "
+        "config.toml) · N = deny[/dim]",
         highlight=False,
     )
     prompt_console.print(
@@ -2539,19 +2618,25 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer in {"a", "always"}:
-        # "Always allow" persists the prompted server names to the user-level
-        # config.toml allowlist (by name, not fingerprint), so these servers
+        # "Always allow" persists selected server names to the user-level
+        # config.toml allowlist (by name, not fingerprint), so those servers
         # load on future runs without re-prompting even if the config changes.
+        # The user picks which to save — the full list is not presumed.
         from deepagents_code.model_config import add_enabled_project_mcp_servers
 
-        names = [name for name, _kind, _summary in prompt_servers]
-        if debug_prompt or add_enabled_project_mcp_servers(names):
-            return True
-        prompt_console.print(
-            "[yellow]Approved for this session, but the choice could not be "
-            "saved to config.toml — you'll be asked again next time.[/yellow]",
-            highlight=False,
-        )
+        names = _select_project_servers_to_persist(prompt_servers, prompt_console)
+        if not names:
+            prompt_console.print(
+                "[dim]Nothing saved to config.toml; allowed for this session "
+                "only.[/dim]",
+                highlight=False,
+            )
+        elif not debug_prompt and not add_enabled_project_mcp_servers(names):
+            prompt_console.print(
+                "[yellow]Approved for this session, but the choice could not be "
+                "saved to config.toml — you'll be asked again next time.[/yellow]",
+                highlight=False,
+            )
         return True
 
     if answer == "y":

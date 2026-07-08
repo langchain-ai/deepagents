@@ -275,8 +275,14 @@ class ContextHubBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
-        """Search contents for `pattern` (optional `path` / `glob` filters)."""
+        """Search contents for `pattern` (optional `path` / `glob` filters).
+
+        When `max_count` is set, the search stops once that many total matches
+        have been collected and the result is flagged `truncated=True`.
+        """
         try:
             cache = self._ensure_cache()
         except LangSmithError as exc:
@@ -301,6 +307,8 @@ class ContextHubBackend(BackendProtocol):
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):
                     matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
+                    if max_count is not None and len(matches) >= max_count:
+                        return GrepResult(matches=matches, truncated=True)
 
         return GrepResult(matches=matches)
 

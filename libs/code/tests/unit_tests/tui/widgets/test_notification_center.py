@@ -13,6 +13,7 @@ from deepagents_code.notifications import (
     UpdateAvailablePayload,
 )
 from deepagents_code.tui.widgets.notification_center import (
+    NotificationActionRequested,
     NotificationActionResult,
     NotificationCenterScreen,
     NotificationSuppressRequested,
@@ -36,6 +37,20 @@ def _dep_entry(key: str = "dep:ripgrep") -> PendingNotification:
         payload=MissingDepPayload(
             tool="ripgrep", install_command="brew install ripgrep"
         ),
+    )
+
+
+def _service_entry(key: str = "dep:tavily") -> PendingNotification:
+    return PendingNotification(
+        key=key,
+        title="Web search disabled",
+        body="No Tavily API key is set.",
+        actions=(
+            NotificationAction(ActionId.ENTER_API_KEY, "Enter API key", primary=True),
+            NotificationAction(ActionId.OPEN_WEBSITE, "Open tavily.com"),
+            NotificationAction(ActionId.SUPPRESS, "Don't show notification again"),
+        ),
+        payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
     )
 
 
@@ -156,6 +171,35 @@ class TestNotificationCenterScreen:
             assert isinstance(app.screen, NotificationCenterScreen)
 
         assert [m.key for m in messages] == ["dep:ripgrep"]
+
+    async def test_in_place_action_keeps_center_open_and_posts_message(self) -> None:
+        """ENTER_API_KEY posts a request message and leaves the center up."""
+        messages: list[NotificationActionRequested] = []
+
+        class _App(App):
+            def on_notification_action_requested(
+                self, message: NotificationActionRequested
+            ) -> None:
+                messages.append(message)
+
+        app = _App()
+        screen = NotificationCenterScreen([_service_entry()])
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")  # drill into the tavily entry
+            await pilot.pause()
+            assert isinstance(app.screen, NotificationDetailScreen)
+            # ENTER_API_KEY is the primary (first) action, selected on mount.
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Center is still the active screen; no dismissal fired.
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+        assert [(m.key, m.action_id) for m in messages] == [
+            ("dep:tavily", ActionId.ENTER_API_KEY)
+        ]
 
     async def test_reload_rebuilds_rows_and_preserves_selection_by_key(self) -> None:
         """`reload` re-renders the list and keeps the cursor on the same entry."""

@@ -357,6 +357,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
+        NotificationActionRequested,
         NotificationSuppressRequested,
     )
     from deepagents_code.tui.widgets.restart_prompt import RestartChoice
@@ -13800,6 +13801,65 @@ class DeepAgentsApp(App):
             # so the failure surfaces instead of vanishing into a worker.
             logger.warning(
                 "Failed to refresh notification center after suppress: %s",
+                exc,
+                exc_info=True,
+            )
+            self.notify(
+                f"Could not refresh notifications: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+    def on_notification_action_requested(
+        self,
+        message: NotificationActionRequested,
+    ) -> None:
+        """Dispatch an in-place notification action, keeping the center open.
+
+        The action (e.g. `ENTER_API_KEY`) pushes a follow-up modal on top
+        of the still-mounted center, so it must run in a worker rather than
+        block the message pump while that modal awaits input.
+        """
+        message.stop()
+        self.run_worker(
+            self._dispatch_in_place_notification_action(
+                message.key,
+                message.action_id,
+            ),
+            exclusive=False,
+            group=f"notification-action-{message.key}",
+        )
+
+    async def _dispatch_in_place_notification_action(
+        self,
+        key: str,
+        action_id: ActionId,
+    ) -> None:
+        """Run an in-place action, then refresh the still-open center.
+
+        The action's follow-up modal (e.g. the API-key prompt) stacks on
+        top of the center so Esc returns to it. Once the action resolves,
+        the center is reloaded so any handled entry drops out; reloading an
+        empty list dismisses the center.
+        """
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        await self._dispatch_notification_action(key, action_id)
+        screen = self.screen
+        if not isinstance(screen, NotificationCenterScreen):
+            return
+        try:
+            await screen.reload(self._notice_registry.list_all())
+        except Exception as exc:  # defend against dismiss/mount races
+            # A concurrent dismissal can detach the VerticalScroll before
+            # `reload` queries it. The worst case is a stale row list,
+            # which the next open of the center will heal. Log + toast
+            # so the failure surfaces instead of vanishing into a worker.
+            logger.warning(
+                "Failed to refresh notification center after in-place action: %s",
                 exc,
                 exc_info=True,
             )

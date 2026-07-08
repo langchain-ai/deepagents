@@ -4,11 +4,14 @@ Surfaces a list of `PendingNotification` entries as single-line rows.
 Selecting a row drills into a dedicated detail modal
 (`UpdateAvailableScreen` for update entries, `NotificationDetailScreen`
 otherwise) stacked on top of the center. When the detail modal
-dismisses with any non-SUPPRESS action the center dismisses with a
-`NotificationActionResult` so the app layer can dispatch; SUPPRESS is
-handled in place via `NotificationSuppressRequested` so the remaining
-notifications stay reachable. When the detail cancels, the center
-stays open on the list.
+dismisses with a terminal action the center dismisses with a
+`NotificationActionResult` so the app layer can dispatch. Actions that
+must keep the center open are handled in place: SUPPRESS via
+`NotificationSuppressRequested` (so the remaining notifications stay
+reachable) and actions in `IN_PLACE_ACTIONS` via
+`NotificationActionRequested` (so a follow-up modal, e.g. the API-key
+prompt, stacks on top and Esc returns to the center). When the detail
+cancels, the center stays open on the list.
 """
 
 from __future__ import annotations
@@ -86,6 +89,39 @@ class NotificationSuppressRequested(Message):
         """
         super().__init__()
         self.key = key
+
+
+class NotificationActionRequested(Message):
+    """Posted for an action that opens a follow-up modal in place.
+
+    Some actions (currently `ENTER_API_KEY`) push another modal, such
+    as the API-key prompt, on top of the still-open center. Dismissing
+    the center first would drop that stack, so Esc in the follow-up
+    modal would fall through to the base screen instead of returning
+    here. The app handles this message by dispatching the action while
+    the center stays mounted, then reloading it with the refreshed
+    registry snapshot.
+    """
+
+    def __init__(self, key: str, action_id: ActionId) -> None:
+        """Initialize the message.
+
+        Args:
+            key: Registry key of the notification the action targets.
+            action_id: The in-place action the user selected.
+        """
+        super().__init__()
+        self.key = key
+        self.action_id = action_id
+
+
+IN_PLACE_ACTIONS: frozenset[ActionId] = frozenset({ActionId.ENTER_API_KEY})
+"""Actions handled without dismissing the center (excluding SUPPRESS).
+
+These open a follow-up modal on top of the center; the center stays
+mounted so Esc in that modal returns here. SUPPRESS is also handled in
+place but has its own dedicated message (`NotificationSuppressRequested`).
+"""
 
 
 class _NotificationRow(Static):
@@ -331,6 +367,12 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
                 # calls `reload` with the refreshed list. Rationale is
                 # in `NotificationSuppressRequested`'s class docstring.
                 self.post_message(NotificationSuppressRequested(entry.key))
+                return
+            if action_id in IN_PLACE_ACTIONS:
+                # Keep the center open so the follow-up modal (e.g. the
+                # API-key prompt) stacks on top and Esc returns here.
+                # Rationale is in `NotificationActionRequested`'s docstring.
+                self.post_message(NotificationActionRequested(entry.key, action_id))
                 return
             self.dismiss(NotificationActionResult(entry.key, action_id))
 

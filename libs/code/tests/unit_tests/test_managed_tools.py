@@ -309,6 +309,35 @@ async def test_ensure_ripgrep_reports_unsupported_arch(
     assert exc_info.value.reason == "unsupported"
 
 
+async def test_ensure_ripgrep_uses_system_rg_when_managed_symlink_unsupported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if os.name == "nt":
+        pytest.skip("creating symlinks is not reliably available on Windows")
+
+    bin_dir = tmp_path / "managed-bin"
+    system_bin = tmp_path / "system-bin"
+    bin_dir.mkdir()
+    system_bin.mkdir()
+    managed = bin_dir / "rg"
+    system_rg = system_bin / "rg"
+    managed.symlink_to(bin_dir / "missing-rg")
+    system_rg.write_bytes(b"system-rg")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: None)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{system_bin}")
+
+    def _which(cmd: str, path: str | None = None) -> str | None:
+        assert cmd == "rg"
+        assert path == str(system_bin)
+        return str(system_rg)
+
+    with mock.patch("shutil.which", side_effect=_which):
+        assert await managed_tools.ensure_ripgrep() == system_rg
+
+
 async def test_ensure_ripgrep_reports_missing_asset_entry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -371,6 +400,7 @@ async def test_ensure_ripgrep_preserves_stale_on_unsupported_arch(
     fake.stdout = "ripgrep 1.0.0 (rev stale)\n"
     with (
         mock.patch.object(subprocess, "run", return_value=fake),
+        mock.patch("shutil.which", return_value=None),
         pytest.raises(ManagedToolUnavailableError),
     ):
         await managed_tools.ensure_ripgrep()

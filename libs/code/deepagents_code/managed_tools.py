@@ -505,7 +505,8 @@ async def ensure_ripgrep() -> Path | None:
         stays deterministic.
     4. If offline, return `None` so callers fall back to the existing
         notification + slow path.
-    5. If no managed asset matches the platform/arch, raise
+    5. If no managed asset matches the platform/arch, return a non-managed
+        `rg` on `PATH` when one exists; otherwise raise
         `ManagedToolUnavailableError` so callers can explain that retrying will
         not help.
     6. Otherwise download → SHA-256 verify → extract → install →
@@ -532,10 +533,17 @@ async def ensure_ripgrep() -> Path | None:
 
     managed = managed_rg_path()
     managed_exists = managed.exists() or managed.is_symlink()
-    if prefers_system_ripgrep():
+
+    def non_managed_rg() -> Path | None:
         system_rg = shutil.which("rg", path=_path_without_managed_bin())
         if system_rg is not None:
             return Path(system_rg)
+        return None
+
+    if prefers_system_ripgrep():
+        system_rg_path = non_managed_rg()
+        if system_rg_path is not None:
+            return system_rg_path
         logger.debug(
             "Skipping managed ripgrep download: %s=%s",
             RIPGREP_INSTALLER,
@@ -556,6 +564,9 @@ async def ensure_ripgrep() -> Path | None:
         return None
     if sys.platform == "android":
         logger.debug("Skipping ripgrep install: unsupported platform 'android'")
+        system_rg_path = non_managed_rg()
+        if system_rg_path is not None:
+            return system_rg_path
         error = _unsupported_ripgrep_error(sys.platform, None)
         raise error
 
@@ -564,6 +575,9 @@ async def ensure_ripgrep() -> Path | None:
         logger.debug(
             "Skipping ripgrep install: unsupported arch %r", platform.machine()
         )
+        system_rg_path = non_managed_rg()
+        if system_rg_path is not None:
+            return system_rg_path
         error = _unsupported_ripgrep_error(sys.platform, platform.machine())
         raise error
 
@@ -572,6 +586,9 @@ async def ensure_ripgrep() -> Path | None:
         logger.debug(
             "Skipping ripgrep install: no asset for (%s, %s)", sys.platform, arch
         )
+        system_rg_path = non_managed_rg()
+        if system_rg_path is not None:
+            return system_rg_path
         error = _unsupported_ripgrep_error(sys.platform, arch)
         raise error
     asset, sha256 = asset_entry

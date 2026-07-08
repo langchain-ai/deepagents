@@ -1216,6 +1216,48 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_result is AuthResult.DELETED
         assert auth_store.get_stored_key("openai") is None
 
+    async def test_successful_delete_notifies_with_provider_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completed delete surfaces a confirmation toast naming the provider."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        # `openai` resolves to "OpenAI" via the built-in display-name map but
+        # would title-case to "Openai" via the bare fallback, so asserting on it
+        # proves the label is resolved through `provider_display_name` rather
+        # than the raw provider key.
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        auth_store.set_stored_key("openai", "to-be-removed")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.DELETED
+        # `markup=False` is load-bearing: a user-configured display name can
+        # contain Textual markup metacharacters (e.g. `[`).
+        assert (
+            "Successfully removed key for OpenAI.",
+            "information",
+            False,
+        ) in notices
+
     async def test_ctrl_d_then_escape_keeps_credential(self) -> None:
         """Esc on the confirm modal returns to the prompt without deleting."""
         from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen

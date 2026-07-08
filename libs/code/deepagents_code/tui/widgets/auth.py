@@ -1331,12 +1331,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
             self._show_error("Could not delete credential: $exc", exc=str(exc))
             return
+        provider_label = provider_display_name(self._provider, self._config)
         if not removed:
             # The entry was gone — likely a concurrent delete from another
             # app instance. Surface that fact so "delete" UX doesn't lie when
             # nothing actually happened on disk.
             self.app.notify(
-                f"No stored credential for {self._provider} — already removed.",
+                f"No stored credential for {provider_label} — already removed.",
+                severity="information",
+                markup=False,
+            )
+        else:
+            # Mirror the save path: a successful delete otherwise closes the
+            # modal silently, giving no confirmation that anything happened.
+            self.app.notify(
+                f"Successfully removed key for {provider_label}.",
                 severity="information",
                 markup=False,
             )

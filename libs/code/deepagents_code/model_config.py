@@ -26,7 +26,7 @@ import tomli_w
 from deepagents_code import _env_vars, auth_store
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -3287,6 +3287,90 @@ def load_mcp_server_trust_lists(
     return McpServerTrustLists(
         enabled=enabled, disabled=disabled, read_error=read_error
     )
+
+
+def add_enabled_project_mcp_servers(
+    names: Iterable[str], config_path: Path | None = None
+) -> bool:
+    """Persist project MCP server names to `[mcp].enabled_project_servers`.
+
+    Backs the interactive approval prompt's "always allow" choice: the given
+    names are added to the user-level `config.toml` allowlist so the matching
+    project servers load by name on future runs without re-prompting (a command
+    or URL change under the same name still matches — this is by name, not by
+    fingerprint).
+
+    Writes only to the user-level config (`DEFAULT_CONFIG_PATH` by default),
+    never a repo file, preserving the trust boundary in
+    `load_mcp_server_trust_lists`: an approval must live in the user's home
+    config so a committed `.mcp.json` can never self-approve. Names already in
+    the list are deduplicated (order preserved); a non-list existing value is
+    replaced with a fresh list. The write is atomic (`tempfile.mkstemp` +
+    `Path.replace`), matching `suppress_warning`.
+
+    Args:
+        names: Server names to add to the allowlist. Blank/whitespace-only
+            names are ignored; a call with no usable names is a no-op success.
+        config_path: Config file to write. Defaults to `DEFAULT_CONFIG_PATH`
+            (`~/.deepagents/config.toml`). Callers should not point this at a
+            project path — doing so would defeat the boundary above.
+
+    Returns:
+        `True` if the save succeeded (or there was nothing to add), `False` on
+            I/O or parse failure.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    clean_names = [name.strip() for name in names if name and name.strip()]
+    if not clean_names:
+        return True
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        mcp_section = data.get("mcp")
+        if not isinstance(mcp_section, dict):
+            mcp_section = {}
+        enabled_list = mcp_section.get("enabled_project_servers")
+        if not isinstance(enabled_list, list):
+            logger.debug(
+                "[mcp].enabled_project_servers in %s should be a list, got %s; "
+                "replacing it",
+                config_path,
+                type(enabled_list).__name__,
+            )
+            enabled_list = []
+        # Keep only string entries; a stray non-string would break the later
+        # dedupe/write and is not a valid server name anyway.
+        merged = [item for item in enabled_list if isinstance(item, str)]
+        for name in clean_names:
+            if name not in merged:
+                merged.append(name)
+        mcp_section["enabled_project_servers"] = merged
+        data["mcp"] = mcp_section
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception(
+            "Could not save enabled project MCP servers to %s", config_path
+        )
+        return False
+    return True
 
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {

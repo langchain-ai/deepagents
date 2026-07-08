@@ -2359,7 +2359,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     When the project has no servers in project-level configs, returns
     `None` (no gate needed). When `--trust-project-mcp` was passed,
     returns `True`. Otherwise checks the persistent trust store; if
-    untrusted, shows an interactive approval prompt.
+    untrusted, shows an interactive approval prompt. The prompt accepts
+    "y" (trust this config by fingerprint), "a"/"always" (persist the prompted
+    server names to `[mcp].enabled_project_servers` in the user-level
+    config.toml so they load by name without re-prompting), or "N" (deny).
 
     Servers already resolved by the user's `enabled_project_servers` /
     `disabled_project_servers` lists are shown for transparency but not
@@ -2520,15 +2523,36 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
+        "[dim]y = allow this time · a = always allow (save to config.toml) · "
+        "N = deny[/dim]",
+        highlight=False,
+    )
+    prompt_console.print(
         f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
         highlight=False,
     )
     prompt_console.print()
 
     try:
-        answer = input("Allow? [y/N]: ").strip().lower()
+        answer = input("Allow? [y]es / [a]lways / [N]o: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         answer = ""
+
+    if answer in {"a", "always"}:
+        # "Always allow" persists the prompted server names to the user-level
+        # config.toml allowlist (by name, not fingerprint), so these servers
+        # load on future runs without re-prompting even if the config changes.
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        names = [name for name, _kind, _summary in prompt_servers]
+        if debug_prompt or add_enabled_project_mcp_servers(names):
+            return True
+        prompt_console.print(
+            "[yellow]Approved for this session, but the choice could not be "
+            "saved to config.toml — you'll be asked again next time.[/yellow]",
+            highlight=False,
+        )
+        return True
 
     if answer == "y":
         if not debug_prompt and not trust_project_mcp(project_root, fingerprint):

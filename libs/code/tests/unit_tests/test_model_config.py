@@ -5881,3 +5881,83 @@ enabled = false
         assert not any(
             spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
         )
+
+
+class TestAddEnabledProjectMcpServers:
+    """Tests for persisting the approval prompt's "always allow" choice."""
+
+    def _enabled(self, config_path: Path) -> list[str]:
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        return data["mcp"]["enabled_project_servers"]
+
+    def test_creates_file_and_list(self, tmp_path: Path) -> None:
+        """A missing config gets a fresh `[mcp].enabled_project_servers` list."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        assert add_enabled_project_mcp_servers(["docs", "reference"], config_path)
+        assert self._enabled(config_path) == ["docs", "reference"]
+
+    def test_appends_and_dedupes(self, tmp_path: Path) -> None:
+        """New names append to an existing list without duplicating entries."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        assert add_enabled_project_mcp_servers(["docs", "reference"], config_path)
+        assert self._enabled(config_path) == ["docs", "reference"]
+
+    def test_preserves_other_sections_and_disabled(self, tmp_path: Path) -> None:
+        """Writing the allowlist leaves other config and the deny list intact."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+            "[mcp]\n"
+            'disabled_project_servers = ["evil"]\n'
+        )
+        assert add_enabled_project_mcp_servers(["docs"], config_path)
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["mcp"]["enabled_project_servers"] == ["docs"]
+        assert data["mcp"]["disabled_project_servers"] == ["evil"]
+
+    def test_ignores_blank_names_and_empty_is_noop(self, tmp_path: Path) -> None:
+        """Blank names are skipped and an all-blank call writes nothing."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        assert add_enabled_project_mcp_servers(["", "  "], config_path)
+        assert not config_path.exists()
+
+        assert add_enabled_project_mcp_servers([" docs ", ""], config_path)
+        assert self._enabled(config_path) == ["docs"]
+
+    def test_non_list_value_is_replaced(self, tmp_path: Path) -> None:
+        """A wrong-typed existing value is replaced with a fresh list."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\nenabled_project_servers = 123\n")
+        assert add_enabled_project_mcp_servers(["docs"], config_path)
+        assert self._enabled(config_path) == ["docs"]
+
+    def test_round_trips_through_loader(self, tmp_path: Path) -> None:
+        """Persisted names are read back by `load_mcp_server_trust_lists`."""
+        from deepagents_code.model_config import (
+            add_enabled_project_mcp_servers,
+            load_mcp_server_trust_lists,
+        )
+
+        config_path = tmp_path / "config.toml"
+        assert add_enabled_project_mcp_servers(["docs", "reference"], config_path)
+        lists = load_mcp_server_trust_lists(config_path)
+        assert lists.enabled == frozenset({"docs", "reference"})

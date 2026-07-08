@@ -58,6 +58,7 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.media_utils import ImageData
 from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -2376,7 +2377,7 @@ class TestCtrlCCopySelection:
             assert app._quit_pending is False
 
     async def test_ctrl_c_interrupt_marks_active_user_message_cancelled(self) -> None:
-        """Ctrl+C dims the prompt for the interrupted turn."""
+        """Ctrl+C dims the prompt but, unlike Esc, does not restore it."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2390,13 +2391,24 @@ class TestCtrlCCopySelection:
             mock_worker = MagicMock()
             app._agent_worker = mock_worker
             app._active_user_message = user_message
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
 
-            app.action_quit_or_interrupt()
+            with patch.object(app, "notify") as mock_notify:
+                app.action_quit_or_interrupt()
             await pilot.pause()
 
             assert user_message.has_class("-cancelled")
             mock_worker.cancel.assert_called_once()
             assert app._quit_pending is False
+            # Ctrl+C is the quit/copy flow: the prompt must NOT be restored to
+            # the input (that behavior is exclusive to the Esc path).
+            assert chat.value == ""
+            assert not any(
+                call.args and call.args[0] == "Message restored to input"
+                for call in mock_notify.call_args_list
+            )
 
     async def test_ctrl_c_non_input_focus_falls_through(self) -> None:
         """Ctrl+C with a non-Input/TextArea widget focused never copies."""
@@ -3445,6 +3457,46 @@ class TestMessageQueue:
             assert active.has_class("-cancelled")
             mock_notify.assert_called_once_with("Message restored to input", timeout=2)
 
+    async def test_escape_restores_interrupted_message_media(self) -> None:
+        """Restored multimodal prompts keep their backing media attachments."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            image = ImageData(
+                base64_data="abc123",
+                format="png",
+                placeholder="",
+            )
+            placeholder = app._image_tracker.add_image(image)
+            app._image_tracker.sync_to_text(f"describe {placeholder}")
+            with patch.object(
+                app, "_send_to_agent", new_callable=AsyncMock
+            ) as mock_send:
+                await app._handle_user_message(f"describe {placeholder}")
+
+            mock_send.assert_awaited_once_with("describe [image 1]")
+            active = app._active_user_message
+            assert active is not None
+            app._image_tracker.clear()
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            images = app._image_tracker.get_images()
+            assert chat.value == "describe [image 1]"
+            assert len(images) == 1
+            assert images[0].base64_data == "abc123"
+            assert images[0].placeholder == "[image 1]"
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
+            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+
     async def test_escape_interrupt_keeps_existing_input_draft(self) -> None:
         """A non-empty draft is preserved when the agent is interrupted."""
         app = DeepAgentsApp()
@@ -3464,6 +3516,86 @@ class TestMessageQueue:
             assert chat.value == "draft text"
             worker.cancel.assert_called_once()
             mock_notify.assert_not_called()
+
+    async def test_escape_interrupt_whitespace_only_input_is_restored(self) -> None:
+        """A whitespace-only draft counts as empty, so the prompt is restored."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            app._active_user_message = UserMessage("do the thing")
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = "   "
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == "do the thing"
+            worker.cancel.assert_called_once()
+            mock_notify.assert_called_once_with("Message restored to input", timeout=2)
+
+    async def test_escape_interrupt_without_active_message_cancels_only(self) -> None:
+        """Interrupting with no tracked prompt cancels without restoring."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            app._active_user_message = None
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == ""
+            worker.cancel.assert_called_once()
+            mock_notify.assert_not_called()
+
+    async def test_escape_drains_queue_before_restoring_interrupted_prompt(
+        self,
+    ) -> None:
+        """ESC pops queued messages first; the queued text wins the input.
+
+        Branch 7 (queue pop) runs before branch 8 (interrupt), so the first
+        ESC restores the *queued* text — not the in-flight prompt — and does
+        not cancel. The queued text then occupies the input, so the second
+        ESC interrupts without overwriting it with the active prompt.
+        """
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            active = UserMessage("in flight")
+            app._active_user_message = active
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+            app._queued_widgets.append(MagicMock())
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            # First ESC: pop the queued message into the empty input; the
+            # in-flight prompt is untouched and the worker is not cancelled.
+            app.action_interrupt()
+            assert chat.value == "queued"
+            assert len(app._pending_messages) == 0
+            worker.cancel.assert_not_called()
+            assert not active.has_class("-cancelled")
+
+            # Second ESC: queue drained and the input now holds the queued
+            # text, so the agent is interrupted but the active prompt is NOT
+            # restored over the existing draft.
+            app.action_interrupt()
+            assert chat.value == "queued"
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
 
     async def test_escape_pop_single_then_interrupt(self) -> None:
         """Single queued message is popped, then next ESC interrupts agent."""

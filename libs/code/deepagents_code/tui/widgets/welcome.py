@@ -110,6 +110,23 @@ def _langsmith_project_link_style(
     return TStyle(foreground=TColor.parse(colors.primary), link=link)
 
 
+def _local_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
+    """Build the style for the editable-install `(local)` tag.
+
+    Args:
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        A bold markup style under ANSI themes (whose palette the terminal owns,
+            so a parsed color could be invisible) or a bold themed
+            color otherwise.
+    """
+    if ansi:
+        return "bold"
+    return TStyle(foreground=TColor.parse(colors.tool), bold=True)
+
+
 def _home_prefixed(cwd: str) -> str:
     """Format a directory path, using `~` for the home directory when possible.
 
@@ -362,13 +379,8 @@ class WelcomeBanner(Static):
         ]
         if not self._hide_version:
             parts.append((f"  v{__version__}", "dim"))
-            if not ansi and _is_editable_install():
-                parts.append(
-                    (
-                        " (local)",
-                        TStyle(foreground=TColor.parse(colors.tool), bold=True),
-                    )
-                )
+            if _is_editable_install():
+                parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
 
         # Row labels share a common column width so values stay aligned; the
         # longest label ("directory:") needs 11 columns including its space.

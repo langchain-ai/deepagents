@@ -8682,9 +8682,10 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = objective
         self._pending_goal_rubric = rubric
         persisted = await self._persist_goal_rubric_state()
-        # Revision cycles remount the review widget with the updated criteria,
-        # so re-announcing readiness would duplicate the message already shown
-        # for the first proposal. Keep the unsaved-state warning either way.
+        # On a revision the remounted review widget already shows the updated
+        # criteria, so re-announcing readiness is redundant and would duplicate
+        # the message from the first proposal. The unsaved-state warning still
+        # surfaces regardless (see `_mount_goal_rubric_result`).
         await self._mount_goal_rubric_result(
             "Proposed acceptance criteria are ready.",
             persisted=persisted,

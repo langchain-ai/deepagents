@@ -1555,8 +1555,14 @@ def create_cli_agent(
         custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
+    from deepagents_code.google_reasoning_fix import GoogleReasoningFixMiddleware
+
+    # `GoogleReasoningFixMiddleware` runs immediately after the model swap so
+    # it inspects the effective (post-swap) model and normalizes reasoning
+    # blocks in outbound history before `langchain_google_genai` parses them.
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
+        GoogleReasoningFixMiddleware(),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

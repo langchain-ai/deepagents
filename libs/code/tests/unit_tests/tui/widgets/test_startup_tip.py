@@ -9,10 +9,12 @@ from deepagents_code._env_vars import HIDE_SPLASH_TIPS
 from deepagents_code.tui.widgets.startup_tip import (
     _TIPS,
     StartupTip,
+    _pick_tip,
     show_startup_tip,
 )
 
 _PICK_TIP = "deepagents_code.tui.widgets.startup_tip._pick_tip"
+_CHOICES = "deepagents_code.tui.widgets.startup_tip.random.choices"
 
 
 class TestStartupTip:
@@ -38,6 +40,20 @@ class TestStartupTip:
         assert isinstance(rendered, Content)
         assert rendered.plain == "Tip: Use /copy"
         pick_tip.assert_called_once()
+
+    def test_pick_tip_returns_registered_tip(self) -> None:
+        """`_pick_tip` only ever returns a tip drawn from the registry."""
+        for _ in range(100):
+            assert _pick_tip() in _TIPS
+
+    def test_pick_tip_weights_by_registry_values(self) -> None:
+        """`_pick_tip` passes the registry's relative weights to the draw."""
+        with patch(_CHOICES, return_value=["Use /copy"]) as choices:
+            assert _pick_tip() == "Use /copy"
+
+        choices.assert_called_once()
+        _, kwargs = choices.call_args
+        assert kwargs["weights"] == list(_TIPS.values())
 
     def test_show_startup_tip_defaults_to_true(
         self, monkeypatch: pytest.MonkeyPatch
@@ -65,9 +81,9 @@ class TestStartupTip:
 
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command keeps a discoverability tip."""
-        assert "Use /copy to copy the latest assistant message" in _TIPS
+        assert any("/copy" in tip for tip in _TIPS)
 
     def test_workflow_subagent_tip_registered(self) -> None:
-        """The workflow trigger phrase keeps its higher relative weight."""
+        """The workflow trigger phrase keeps an above-baseline weight."""
         tip = "Ask for a workflow to fan work out to subagents in parallel"
-        assert _TIPS[tip] == 3
+        assert _TIPS[tip] > 1

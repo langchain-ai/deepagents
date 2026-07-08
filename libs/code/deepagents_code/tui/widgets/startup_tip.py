@@ -37,7 +37,19 @@ _TIPS: dict[str, int] = {
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
-"""Rotating tips shown above the chat input, with relative selection weights."""
+"""Tips shown above the chat input. One is chosen at random per launch,
+weighted by these relative selection weights."""
+
+# Fail fast at import if the registry is ever emptied or given a non-positive
+# weight: `random.choices` would otherwise raise a cryptic error at widget
+# construction. `_TIPS` is a hardcoded constant, so this never fires in
+# practice — it just guards future edits.
+if not _TIPS:
+    msg = "_TIPS must not be empty"
+    raise ValueError(msg)
+if any(weight <= 0 for weight in _TIPS.values()):
+    msg = "_TIPS weights must be positive"
+    raise ValueError(msg)
 
 
 def _pick_tip() -> str:
@@ -79,8 +91,7 @@ class StartupTip(Static):
             tip: Tip text to display. When omitted, one weighted tip is selected.
             **kwargs: Additional arguments passed to `Static`.
         """
-        self.tip = tip if tip is not None else _pick_tip()
-        super().__init__(
-            Content.assemble(("Tip: ", "dim italic"), (self.tip, "dim italic")),
-            **kwargs,
-        )
+        self.tip: str = tip if tip is not None else _pick_tip()
+        # Styling (dim italic, muted color) is owned by DEFAULT_CSS, which
+        # applies to the whole widget — no need to restyle the spans here.
+        super().__init__(Content.assemble("Tip: ", self.tip), **kwargs)

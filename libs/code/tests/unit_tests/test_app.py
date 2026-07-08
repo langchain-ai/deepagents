@@ -3218,23 +3218,39 @@ class TestMessageQueue:
 
             assert not app.query(StartupTip)
 
-    async def test_startup_tip_removed_after_first_submission(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The startup tip disappears after the first chat input submission."""
+    async def test_startup_tip_removed_after_first_submission(self) -> None:
+        """The startup tip disappears once the first prompt is submitted."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             assert len(app.query(StartupTip)) == 1
-            submit = AsyncMock()
-            monkeypatch.setattr(app, "_submit_input", submit)
+            # Force the queue path so the real submission flow runs (and
+            # dismisses the tip) without kicking off actual agent work.
+            app._agent_running = True
 
             app.post_message(ChatInput.Submitted("hello", "normal"))
             await pilot.pause()
 
             assert not app.query(StartupTip)
-            submit.assert_awaited_once_with("hello", "normal")
+            assert app._pending_messages[0].text == "hello"
+
+    async def test_startup_tip_removed_on_external_input(self) -> None:
+        """External prompts dismiss the tip too, via the shared submit path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert len(app.query(StartupTip)) == 1
+            app._agent_running = True
+
+            app.post_message(
+                ExternalInput(
+                    ExternalEvent(kind="prompt", payload="task", source="test")
+                )
+            )
+            await pilot.pause()
+
+            assert not app.query(StartupTip)
+            assert app._pending_messages[0].text == "task"
 
     async def test_message_queued_when_agent_running(self) -> None:
         """Messages should be queued when agent is running."""

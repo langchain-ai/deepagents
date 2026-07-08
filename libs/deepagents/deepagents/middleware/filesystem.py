@@ -775,7 +775,7 @@ Usage:
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
     - Omit `limit` to use the default window; increase it only when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
-- Results are returned using cat -n format, with line numbers starting at 1
+- Results are returned with line numbers starting at 1, followed by two spaces and the source content
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.

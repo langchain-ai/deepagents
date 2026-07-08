@@ -2760,14 +2760,14 @@ class TestToolCallMessageFileOutput:
     def test_format_output_compacts_line_number_gutter(self) -> None:
         r"""Line-number gutters are tightened, all rows aligned to one column.
 
-        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — which renders far from the line numbers and (when
-        the first row's padding was stripped) misaligned. The TUI recomputes a
-        compact gutter: numbers right-justified to the widest number present,
-        two spaces, then the original source indentation.
+        Legacy `read_file` output used `f"{line_num:6d}\t{line}"` — a 6-wide
+        right-justified number plus a tab — which renders far from the line
+        numbers and (when the first row's padding was stripped) misaligned. The
+        TUI recomputes a compact gutter: numbers right-justified to the widest
+        number present, two spaces, then the original source indentation.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
-        # cat -n style: 6-wide right-justified number + tab + source line.
+        # Legacy cat-n style: 6-wide right-justified number + tab + source line.
         output = '     1\t"""doc"""\n     2\t\n     3\t    indented'
         result = msg._format_output(output, is_preview=False)
 

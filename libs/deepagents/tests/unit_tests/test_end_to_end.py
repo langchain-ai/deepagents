@@ -475,7 +475,7 @@ class TestDeepAgentEndToEnd:
         assert "short line 0" in file_content
         assert "xxx" in file_content
         # All four wrapped chunks of source line 2 render in order.
-        for marker in ("2\t", "2.1\t", "2.2\t", "2.3\t"):
+        for marker in ("  2  ", "2.1  ", "2.2  ", "2.3  "):
             assert marker in file_content, f"missing continuation marker {marker!r}"
         # Source line 3 is the third source line and must be included.
         assert "short line 2" in file_content
@@ -1313,11 +1313,11 @@ class TestDeepAgentEndToEnd:
         # All three continuation chunks of the wrapped line 2 must render in
         # order, before `important instruction`, with nothing dropped at the
         # page boundary.
-        for marker in ("2\t", "2.1\t", "2.2\t"):
+        for marker in ("  2  ", "2.1  ", "2.2  "):
             assert marker in combined, f"missing continuation marker {marker!r}"
-        idx_first = combined.index("2\t")
-        idx_cont1 = combined.index("2.1\t")
-        idx_cont2 = combined.index("2.2\t")
+        idx_first = combined.index("  2  ")
+        idx_cont1 = combined.index("2.1  ")
+        idx_cont2 = combined.index("2.2  ")
         idx_next = combined.index("important instruction")
         assert idx_first < idx_cont1 < idx_cont2 < idx_next
 

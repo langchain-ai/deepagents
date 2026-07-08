@@ -419,7 +419,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers (`cat -n` format),
+            String containing file content formatted with line numbers,
                 starting at line 1.
 
                 Lines longer than 2000 characters are truncated.

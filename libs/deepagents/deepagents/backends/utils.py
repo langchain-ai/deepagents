@@ -70,7 +70,6 @@ Derived from Google's multimodal API supported formats:
 """
 
 MAX_LINE_LENGTH = 5000
-LINE_NUMBER_WIDTH = 6
 TOOL_RESULT_TOKEN_LIMIT = 20000  # Same threshold as eviction
 TRUNCATION_GUIDANCE = "... [results truncated, try being more specific with your parameters]"
 
@@ -203,10 +202,11 @@ def format_content_with_line_numbers(
     content: str | list[str],
     start_line: int = 1,
 ) -> str:
-    """Format file content with line numbers (`cat -n` style).
+    """Format file content with line numbers.
 
     Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
-    (e.g., `5.1`, `5.2`).
+    (e.g., `5.1`, `5.2`). Line markers are separated from source content
+    with two spaces so source tabs cannot be confused with a gutter separator.
 
     Args:
         content: File content as string or list of lines
@@ -222,28 +222,26 @@ def format_content_with_line_numbers(
     else:
         lines = content
 
-    result_lines = []
+    rows: list[tuple[str, str]] = []
+    marker_width = 0
     for i, line in enumerate(lines):
         line_num = i + start_line
 
         if len(line) <= MAX_LINE_LENGTH:
-            result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{line}")
+            marker = str(line_num)
+            rows.append((marker, line))
+            marker_width = max(marker_width, len(marker))
         else:
-            # Split long line into chunks with continuation markers
             num_chunks = (len(line) + MAX_LINE_LENGTH - 1) // MAX_LINE_LENGTH
             for chunk_idx in range(num_chunks):
                 start = chunk_idx * MAX_LINE_LENGTH
                 end = min(start + MAX_LINE_LENGTH, len(line))
                 chunk = line[start:end]
-                if chunk_idx == 0:
-                    # First chunk: use normal line number
-                    result_lines.append(f"{line_num:{LINE_NUMBER_WIDTH}d}\t{chunk}")
-                else:
-                    # Continuation chunks: use decimal notation (e.g., 5.1, 5.2)
-                    continuation_marker = f"{line_num}.{chunk_idx}"
-                    result_lines.append(f"{continuation_marker:>{LINE_NUMBER_WIDTH}}\t{chunk}")
+                marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
+                rows.append((marker, chunk))
+                marker_width = max(marker_width, len(marker))
 
-    return "\n".join(result_lines)
+    return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 
 def check_empty_content(content: str) -> str | None:

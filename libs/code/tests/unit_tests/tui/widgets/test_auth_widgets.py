@@ -636,6 +636,29 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
 
+    async def test_successful_save_notifies_with_provider_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful save surfaces a confirmation toast naming the provider."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-ant-test"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        assert ("Successfully saved key for Anthropic.", "information") in notices
+
     async def test_langsmith_submit_applies_tracing_env_immediately(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

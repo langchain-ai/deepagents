@@ -1286,6 +1286,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         if self._is_langsmith:
             apply_stored_langsmith_auth(replace_project=True)
         clear_caches()
+        provider_label = provider_display_name(self._provider, self._config)
+        self.app.notify(
+            f"Successfully saved key for {provider_label}.",
+            severity="information",
+            markup=False,
+        )
         self.dismiss(AuthResult.SAVED)
 
     def action_cancel(self) -> None:

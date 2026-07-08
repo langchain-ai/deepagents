@@ -6987,6 +6987,7 @@ class DeepAgentsApp(App):
 
             model_spec, provider = result
             await self._prompt_launch_tavily()
+            await self._prompt_launch_tracing()
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -7123,6 +7124,68 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
+
+    async def _prompt_launch_tracing(self) -> None:
+        """Optionally enable LangSmith tracing during onboarding.
+
+        Skipped when a LangSmith key is already configured (env or stored). A
+        blank submission or Escape stores nothing; a non-empty key is persisted
+        via the same `auth_store` path `/auth` uses, and saving turns tracing on
+        for the session (`AuthPromptScreen` applies the stored LangSmith auth,
+        bridging the key onto `LANGSMITH_API_KEY` and enabling tracing).
+        """
+        if self._langsmith_already_configured():
+            return
+
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                "langsmith",
+                "LANGSMITH_API_KEY",
+                reason=(
+                    "Tracing is optional but recommended — it records your agent "
+                    "runs in LangSmith for debugging and evaluation."
+                ),
+                allow_empty_submit=True,
+                input_placeholder="LangSmith API key (optional)",
+                submit_label="Enter save/skip",
+            )
+        )
+        if result is not AuthResult.SAVED:
+            return
+
+        # `AuthPromptScreen` already applied the stored LangSmith auth on save,
+        # bridging the key onto `LANGSMITH_API_KEY` and enabling tracing. That
+        # apply path is best-effort and only logs on a corrupt store, which is
+        # invisible inside Textual, so confirm the key reached the environment
+        # and warn if it didn't rather than letting tracing silently stay off.
+        if not os.environ.get("LANGSMITH_API_KEY"):
+            self.notify(
+                "Saved your LangSmith key, but couldn't activate tracing this "
+                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                severity="warning",
+                markup=False,
+            )
+
+    @staticmethod
+    def _langsmith_already_configured() -> bool:
+        """Return whether a LangSmith key is already stored or set in the env.
+
+        Returns:
+            `True` when a stored or environment LangSmith API key exists. An
+            unreadable credential store is treated as not configured so the
+            prompt still surfaces.
+        """
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import LANGSMITH_SERVICE, resolve_env_var
+
+        try:
+            if auth_store.get_stored_key(LANGSMITH_SERVICE) is not None:
+                return True
+        except RuntimeError:
+            return False
+        return bool(resolve_env_var("LANGSMITH_API_KEY"))
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.

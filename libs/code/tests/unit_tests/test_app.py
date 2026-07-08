@@ -1013,6 +1013,7 @@ class TestStartupSequence:
         # name/model orchestration test stays isolated from the credential
         # store (and the real modal push) regardless of the ambient env.
         app._prompt_launch_tavily = AsyncMock()  # ty: ignore
+        app._prompt_launch_tracing = AsyncMock()  # ty: ignore
 
         with (
             patch(
@@ -1108,6 +1109,7 @@ class TestStartupSequence:
         # harness the real `_push_screen_wait` would block forever, and on
         # CI (no TAVILY_API_KEY) `has_tavily` is False so the step would run.
         app._prompt_launch_tavily = AsyncMock()  # ty: ignore
+        app._prompt_launch_tracing = AsyncMock()  # ty: ignore
         # The fallback prompt must NOT run when a result is injected.
         prompt_flow_mock = AsyncMock()
         app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
@@ -1153,6 +1155,9 @@ class TestStartupSequence:
         app._prompt_launch_tavily = AsyncMock(  # ty: ignore
             side_effect=lambda: order.append("tavily")
         )
+        app._prompt_launch_tracing = AsyncMock(  # ty: ignore
+            side_effect=lambda: order.append("tracing")
+        )
         app._switch_or_install_launch_model = AsyncMock(  # ty: ignore
             side_effect=lambda *_args: order.append("switch")
         )
@@ -1175,7 +1180,8 @@ class TestStartupSequence:
             )
 
         app._prompt_launch_tavily.assert_awaited_once_with()  # ty: ignore
-        assert order == ["tavily", "switch"]
+        app._prompt_launch_tracing.assert_awaited_once_with()  # ty: ignore
+        assert order == ["tavily", "tracing", "switch"]
 
     async def test_launch_init_wires_name_screen_to_model_selector(self) -> None:
         """On mount, submitting the name switches straight into the selector.
@@ -1340,6 +1346,7 @@ class TestStartupSequence:
         app._mount_message = mount_message_mock  # ty: ignore
         # Tavily step covered separately; stub for isolation.
         app._prompt_launch_tavily = AsyncMock()  # ty: ignore
+        app._prompt_launch_tracing = AsyncMock()  # ty: ignore
 
         with (
             patch(
@@ -1491,6 +1498,113 @@ class TestStartupSequence:
         assert "/auth" in message
         assert notify_mock.call_args.kwargs.get("severity") == "warning"
 
+    async def test_prompt_launch_tracing_uses_auth_prompt(self) -> None:
+        """Onboarding should reuse the `/auth` prompt for LangSmith credentials."""
+        from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        pushed: list[AuthPromptScreen] = []
+
+        def capture_prompt(screen: object) -> AuthResult:
+            assert isinstance(screen, AuthPromptScreen)
+            pushed.append(screen)
+            return AuthResult.CANCELLED
+
+        app._push_screen_wait = AsyncMock(side_effect=capture_prompt)  # ty: ignore
+        app._langsmith_already_configured = MagicMock(return_value=False)  # ty: ignore
+
+        await app._prompt_launch_tracing()
+
+        prompt = pushed[0]
+        assert prompt._provider == "langsmith"
+        assert prompt._env_var == "LANGSMITH_API_KEY"
+        assert prompt._allow_empty_submit is True
+        assert prompt._input_placeholder == "LangSmith API key (optional)"
+        assert prompt._submit_label == "Enter save/skip"
+        assert "Tracing is optional" in (prompt._reason or "")
+
+    async def test_prompt_launch_tracing_skips_when_configured(self) -> None:
+        """Onboarding should not prompt when LangSmith is already configured."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        push_screen_wait = AsyncMock(return_value="lsv2-key")
+        app._push_screen_wait = push_screen_wait  # ty: ignore
+        app._langsmith_already_configured = MagicMock(return_value=True)  # ty: ignore
+
+        await app._prompt_launch_tracing()
+
+        push_screen_wait.assert_not_awaited()
+
+    async def test_prompt_launch_tracing_warns_when_activation_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A saved key that never reaches the env warns instead of failing silently."""
+        from deepagents_code.tui.widgets.auth import AuthResult
+
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        app._langsmith_already_configured = MagicMock(return_value=False)  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        await app._prompt_launch_tracing()
+
+        notify_mock.assert_called_once()
+        message = str(notify_mock.call_args.args[0])
+        assert "/auth" in message
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+
+    async def test_prompt_launch_tracing_clean_save_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clean save that lands the key in the env shows no toast."""
+        from deepagents_code.tui.widgets.auth import AuthResult
+
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-real")
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        app._langsmith_already_configured = MagicMock(return_value=False)  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        await app._prompt_launch_tracing()
+
+        notify_mock.assert_not_called()
+
+    async def test_langsmith_already_configured_detects_stored_key(self) -> None:
+        """A stored LangSmith key reports tracing as already configured."""
+        with patch(
+            "deepagents_code.auth_store.get_stored_key",
+            return_value="lsv2-stored",
+        ):
+            assert DeepAgentsApp._langsmith_already_configured() is True
+
+    async def test_langsmith_already_configured_detects_env_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An environment LangSmith key reports tracing as already configured."""
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-env")
+        with patch(
+            "deepagents_code.auth_store.get_stored_key",
+            return_value=None,
+        ):
+            assert DeepAgentsApp._langsmith_already_configured() is True
+
+    async def test_langsmith_already_configured_false_when_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No stored or env LangSmith key reports tracing as unconfigured."""
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+        with patch(
+            "deepagents_code.auth_store.get_stored_key",
+            return_value=None,
+        ):
+            assert DeepAgentsApp._langsmith_already_configured() is False
+
     async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
         """Writing the optional name should not hold the dependency/model transition."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -1631,6 +1745,7 @@ class TestStartupSequence:
         # Tavily step covered separately; stub so its toasts can't be
         # mistaken for the switch-failure toast this test asserts on.
         app._prompt_launch_tavily = AsyncMock()  # ty: ignore
+        app._prompt_launch_tracing = AsyncMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
         app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
         notify_mock = MagicMock()
@@ -1750,6 +1865,7 @@ class TestStartupSequence:
         # Tavily step (before the connection wait) is covered separately;
         # stub so its toasts can't be mistaken for the timeout toast.
         app._prompt_launch_tavily = AsyncMock()  # ty: ignore
+        app._prompt_launch_tracing = AsyncMock()  # ty: ignore
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()

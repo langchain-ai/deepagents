@@ -862,6 +862,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
     ),
     ConfigOption(
+        key="display.hide_splash_tips",
+        group="Display",
+        summary="Hide the startup tip shown above the chat input.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.HIDE_SPLASH_TIPS,
+    ),
+    ConfigOption(
         key="display.hide_splash_version",
         group="Display",
         summary="Hide version and local-install details in the splash screen.",

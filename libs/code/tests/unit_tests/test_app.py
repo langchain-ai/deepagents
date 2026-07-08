@@ -19957,6 +19957,7 @@ class TestCanBypassQueue:
 
         app._process_message = _process  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
 
         await app._submit_input("/install baseten", "command")
 
@@ -19975,6 +19976,7 @@ class TestCanBypassQueue:
 
         app._process_message = _process  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app._dismiss_startup_tip = AsyncMock()  # ty: ignore
 
         await app._submit_input("/clear", "command")
 

@@ -113,5 +113,9 @@ def install_log_buffer(
 
 
 def get_log_buffer() -> InMemoryLogBuffer | None:
-    """Return the installed buffer handler, or `None` if not yet installed."""
+    """Return the installed buffer handler.
+
+    Returns:
+        The installed buffer handler, or `None` if not yet installed.
+    """
     return _buffer

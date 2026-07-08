@@ -98,7 +98,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._view_floor = 0
 
     def compose(self) -> ComposeResult:
-        """Lay out the title, snapshot, log tail, and key-hint footer."""
+        """Lay out the title, snapshot, log tail, and key-hint footer.
+
+        Yields:
+            The child widgets composing the console.
+        """
         with Vertical():
             yield Static("Debug Console", classes="debug-console-title")
             yield Static(self._render_snapshot(), classes="debug-console-snapshot")
@@ -118,7 +122,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._poll_logs()
 
     def _render_snapshot(self) -> Content:
-        """Build the right-aligned `label: value` snapshot block."""
+        """Build the right-aligned `label: value` snapshot block.
+
+        Returns:
+            The formatted snapshot block.
+        """
         if not self._snapshot:
             return Content.styled("(no session data)", "dim italic")
         width = max(len(label) for label, _ in self._snapshot)
@@ -128,8 +136,13 @@ class DebugConsoleScreen(ModalScreen[None]):
         ]
         return Content("\n").join(lines)
 
-    def _render_help(self) -> Content:
-        """Build the footer key-hint line."""
+    @staticmethod
+    def _render_help() -> Content:
+        """Build the footer key-hint line.
+
+        Returns:
+            The formatted key-hint line.
+        """
         return Content.styled(
             "Esc close \u00b7 Ctrl+L clear view \u00b7 c copy", "dim italic"
         )

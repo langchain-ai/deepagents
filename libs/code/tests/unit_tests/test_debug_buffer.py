@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +13,9 @@ from deepagents_code._debug_buffer import (
     get_log_buffer,
     install_log_buffer,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 def _record(name: str, message: str, level: int = logging.INFO) -> logging.LogRecord:
@@ -29,7 +32,11 @@ def _record(name: str, message: str, level: int = logging.INFO) -> logging.LogRe
 
 @pytest.fixture
 def _restore_global_buffer() -> Generator[None]:
-    """Preserve the module-level singleton across install-mutating tests."""
+    """Preserve the module-level singleton across install-mutating tests.
+
+    Yields:
+        None; the original singleton is restored on teardown.
+    """
     original = debug_buffer._buffer
     try:
         yield
@@ -76,7 +83,8 @@ class TestInMemoryLogBuffer:
 
 
 class TestInstallLogBuffer:
-    def test_install_is_idempotent(self, _restore_global_buffer: None) -> None:
+    @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_install_is_idempotent(self) -> None:
         logger = logging.getLogger("deepagents_code._test_idempotent")
         logger.handlers = []
         first = install_log_buffer(logger)
@@ -86,23 +94,24 @@ class TestInstallLogBuffer:
         assert len(installed) == 1
         assert get_log_buffer() is first
 
-    def test_install_lowers_level_to_info_only(
-        self, _restore_global_buffer: None
-    ) -> None:
+    @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_install_lowers_level_to_info_only(self) -> None:
         logger = logging.getLogger("deepagents_code._test_level_notset")
         logger.handlers = []
         logger.setLevel(logging.NOTSET)
         install_log_buffer(logger)
         assert logger.level == logging.INFO
 
-    def test_install_preserves_debug_level(self, _restore_global_buffer: None) -> None:
+    @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_install_preserves_debug_level(self) -> None:
         logger = logging.getLogger("deepagents_code._test_level_debug")
         logger.handlers = []
         logger.setLevel(logging.DEBUG)
         install_log_buffer(logger)
         assert logger.level == logging.DEBUG
 
-    def test_captures_propagated_records(self, _restore_global_buffer: None) -> None:
+    @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_captures_propagated_records(self) -> None:
         logger = logging.getLogger("deepagents_code._test_capture")
         logger.handlers = []
         logger.setLevel(logging.NOTSET)

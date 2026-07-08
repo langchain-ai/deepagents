@@ -26,6 +26,10 @@ from langchain.agents.middleware.types import (
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.model_capabilities import (
+    check_multimodal_compatibility,
+    translate_multimodal_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -453,7 +457,16 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        check_multimodal_compatibility(
+            resolved.request.model, resolved.request.messages
+        )
+        try:
+            response = handler(resolved.request)
+        except Exception as exc:
+            translated = translate_multimodal_error(exc, resolved.request.model)
+            if translated is not None:
+                raise translated from exc
+            raise
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -471,7 +484,16 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        check_multimodal_compatibility(
+            resolved.request.model, resolved.request.messages
+        )
+        try:
+            response = await handler(resolved.request)
+        except Exception as exc:
+            translated = translate_multimodal_error(exc, resolved.request.model)
+            if translated is not None:
+                raise translated from exc
+            raise
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

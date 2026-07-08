@@ -24,6 +24,7 @@ from deepagents_code.configurable_model import (
     _is_anthropic_model,
     _is_fireworks_model,
 )
+from deepagents_code.model_capabilities import UserFacingModelError
 
 
 def _make_model(name: str) -> MagicMock:
@@ -980,3 +981,140 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+def _image_message() -> HumanMessage:
+    return HumanMessage(
+        content=[
+            {"type": "text", "text": "what is in this image?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ]
+    )
+
+
+def _make_vision_model(name: str, *, image_inputs: bool) -> MagicMock:
+    model = _make_model(name)
+    model.profile = {"image_inputs": image_inputs, "tool_calling": True}
+    return model
+
+
+class _FakeBadRequestError(Exception):
+    """Duck-typed stand-in for provider `BadRequestError` classes."""
+
+
+_FakeBadRequestError.__name__ = "BadRequestError"
+
+_MULTIMODAL_ERROR_MSG = (
+    "400 Bad Request: This model does not support multimodal "
+    "(image/video/audio) inputs."
+)
+_NETWORK_ERROR_MSG = "network error"
+
+
+class TestMultimodalCompatibility:
+    """Wiring tests for the multimodal pre-check and error translator."""
+
+    def test_pre_check_raises_when_model_lacks_vision(self) -> None:
+        model = _make_vision_model("zai-org/GLM-5.2", image_inputs=False)
+        request = ModelRequest(
+            model=model,
+            messages=[_image_message()],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+        called = False
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            nonlocal called
+            called = True
+            return _make_response()
+
+        with pytest.raises(UserFacingModelError) as excinfo:
+            _mw.wrap_model_call(request, handler)
+        assert "zai-org/GLM-5.2" in str(excinfo.value)
+        assert called is False
+
+    def test_pre_check_passes_when_model_supports_vision(self) -> None:
+        model = _make_vision_model("gpt-5", image_inputs=True)
+        request = ModelRequest(
+            model=model,
+            messages=[_image_message()],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+        _mw.wrap_model_call(request, lambda _r: _make_response())
+
+    def test_translates_raw_provider_error(self) -> None:
+        model = _make_vision_model("baseten:zai-org/GLM-5.2", image_inputs=True)
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="plain text")],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            raise _FakeBadRequestError(_MULTIMODAL_ERROR_MSG)
+
+        with pytest.raises(UserFacingModelError) as excinfo:
+            _mw.wrap_model_call(request, handler)
+        assert "baseten:zai-org/GLM-5.2" in str(excinfo.value)
+
+    def test_unrelated_error_propagates_unchanged(self) -> None:
+        model = _make_vision_model("gpt-5", image_inputs=True)
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="hi")],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            raise RuntimeError(_NETWORK_ERROR_MSG)
+
+        with pytest.raises(RuntimeError, match=_NETWORK_ERROR_MSG):
+            _mw.wrap_model_call(request, handler)
+
+    async def test_async_pre_check_raises_when_model_lacks_vision(self) -> None:
+        model = _make_vision_model("zai-org/GLM-5.2", image_inputs=False)
+        request = ModelRequest(
+            model=model,
+            messages=[_image_message()],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+        called = False
+
+        async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            nonlocal called
+            called = True
+            return _make_response()
+
+        with pytest.raises(UserFacingModelError):
+            await _mw.awrap_model_call(request, handler)
+        assert called is False
+
+    async def test_async_translates_raw_provider_error(self) -> None:
+        model = _make_vision_model("baseten:zai-org/GLM-5.2", image_inputs=True)
+        request = ModelRequest(
+            model=model,
+            messages=[HumanMessage(content="plain text")],
+            tools=[],
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            model_settings=None,
+        )
+
+        async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            raise _FakeBadRequestError(_MULTIMODAL_ERROR_MSG)
+
+        with pytest.raises(UserFacingModelError) as excinfo:
+            await _mw.awrap_model_call(request, handler)
+        assert "baseten:zai-org/GLM-5.2" in str(excinfo.value)

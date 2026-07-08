@@ -13548,6 +13548,27 @@ class TestStartMcpLogin:
         assert action.kind == "mcp_login"
         app.run_worker.assert_not_called()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
+        # The deferred-branch toast is informational (not a warning) and
+        # auto-dismisses, unlike the hard-reject guards above it.
+        notify_kwargs = app.notify.call_args.kwargs  # ty: ignore
+        assert notify_kwargs.get("timeout") == 5
+        assert notify_kwargs.get("severity") != "warning"
+
+    async def test_rejects_login_during_agent_switch_even_while_connecting(
+        self,
+    ) -> None:
+        """Agent-swap reconnects warn instead of queueing a stranded login."""
+        app = self._make_app()
+        app._agent_switching = True
+        app._connecting = True
+        app._server_proc = object()  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        app._defer_action.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
+        app.notify.assert_called_once()  # ty: ignore
+        assert "agent switch" in app.notify.call_args.args[0].lower()  # ty: ignore
 
     async def test_queues_login_when_server_proc_missing(self) -> None:
         """A login sent before the subprocess exists is deferred, not dropped."""
@@ -13587,6 +13608,11 @@ class TestStartMcpLogin:
 
         app.run_worker.assert_called_once()  # ty: ignore
         app._defer_action.assert_not_called()  # ty: ignore
+        # Each server logs in under its own worker group, and non-exclusively
+        # so a login never cancels an unrelated in-flight worker.
+        run_worker_kwargs = app.run_worker.call_args.kwargs  # ty: ignore
+        assert run_worker_kwargs["group"] == "mcp-login-provider"
+        assert run_worker_kwargs["exclusive"] is False
 
 
 class TestBuildModelSwitchErrorBody:
@@ -18474,8 +18500,8 @@ class TestMCPLoginCommand:
             assert kwargs.get("severity") == "warning"
             assert kwargs.get("markup") is False
 
-    async def test_mcp_login_rejects_while_connecting(self) -> None:
-        """`_connecting=True` prevents login until the server is ready."""
+    async def test_mcp_login_defers_while_connecting(self) -> None:
+        """`_connecting=True` defers login until the server is ready."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -18492,12 +18518,47 @@ class TestMCPLoginCommand:
                     app._start_mcp_login("notion")
                 notify.assert_called_once()
                 assert "server is ready" in notify.call_args.args[0].lower()
-                assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
+                assert any(a.kind == "mcp_login" for a in app._deferred_actions)
             finally:
                 app._connecting = False
 
-    async def test_mcp_login_rejects_while_server_proc_is_none(self) -> None:
-        """`_server_proc=None` prevents login until the server process exists."""
+    async def test_deferred_login_runs_after_server_ready(self) -> None:
+        """A login queued during connect drains and runs once the server is ready.
+
+        Regression guard: an `/mcp login` deferred while connecting must
+        actually execute when the startup backlog drains, not sit in
+        `_deferred_actions` until some later agent turn.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._agent_running = False
+            app._shell_running = False
+            app._startup_sequence_running = False
+            app._pending_messages.clear()
+
+            # Queue a login while the server is still connecting.
+            app._connecting = True
+            app._server_proc = None
+            with patch.object(app, "notify"):
+                app._start_mcp_login("notion")
+            assert any(a.kind == "mcp_login" for a in app._deferred_actions)
+
+            # Server becomes ready; draining the backlog runs the queued login.
+            app._connecting = False
+            with patch.object(app, "_run_mcp_login_worker", new=AsyncMock()) as worker:
+                await app._drain_startup_backlog()
+            worker.assert_awaited_once_with("notion")
+            assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
+
+    async def test_mcp_login_defers_while_server_proc_is_none(self) -> None:
+        """`_server_proc=None` defers login until the server process exists."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -18517,6 +18578,7 @@ class TestMCPLoginCommand:
             run_worker.assert_not_called()
             notify.assert_called_once()
             assert "server is ready" in notify.call_args.args[0].lower()
+            assert any(a.kind == "mcp_login" for a in app._deferred_actions)
 
     async def test_mcp_login_rejects_while_agent_switching(self) -> None:
         """`_agent_switching=True` refuses login with a distinct message."""

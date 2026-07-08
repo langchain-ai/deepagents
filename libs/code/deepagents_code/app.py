@@ -6663,6 +6663,7 @@ class DeepAgentsApp(App):
 
         self._initial_session_started = True
         self._startup_sequence_running = True
+        initial_submitted = False
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
                 self._resume_thread_intent is not None
@@ -6697,14 +6698,26 @@ class DeepAgentsApp(App):
 
             if self._has_initial_submission():
                 await self._submit_initial_submission()
-                return
+                initial_submitted = True
         finally:
             self._startup_sequence_running = False
 
-        await self._drain_startup_backlog()
+        # Drain after the sequence completes. When an initial submission was
+        # dispatched it owns the session, so skip queued-input processing — but
+        # still drain deferred actions so an `/mcp login` queued during connect
+        # runs once the server is ready instead of being stranded.
+        await self._drain_startup_backlog(process_queue=not initial_submitted)
 
-    async def _drain_startup_backlog(self) -> None:
-        """Drain deferred actions and queued input after server readiness."""
+    async def _drain_startup_backlog(self, *, process_queue: bool = True) -> None:
+        """Drain deferred actions and queued input after server readiness.
+
+        Args:
+            process_queue: Whether to also process queued user input. Pass
+                `False` when an initial submission was just dispatched: it owns
+                the session, so queued input must wait, but deferred actions
+                (e.g. an `/mcp login` queued during connect) still need to run
+                rather than be stranded until the next agent turn.
+        """
         if self._agent_running or self._shell_running:
             return
 
@@ -6722,7 +6735,7 @@ class DeepAgentsApp(App):
                     ),
                 )
 
-        if self._pending_messages:
+        if process_queue and self._pending_messages:
             await self._process_next_from_queue()
 
     def _schedule_session_start_after_launch_init(
@@ -14736,11 +14749,12 @@ class DeepAgentsApp(App):
     def _start_mcp_login(self, server_name: str) -> None:
         """Begin in-TUI OAuth login for `server_name`.
 
-        Guards against remote-server mode (no owned server to restart),
-        missing MCP config, an unknown server name, and busy states.
-        When the local server is still connecting or the session is
-        mid-run, the login is queued via `_defer_action` and runs once
-        the server is ready and the user is idle.
+        Rejects when MCP is disabled, in remote-server mode (no owned server
+        to restart), or while an agent switch is in progress. When the local
+        server is still connecting or the session is mid-run, the login is
+        queued via `_defer_action` and runs once the server is ready and the
+        user is idle. Config resolution and server-name validation happen
+        later, in `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -14764,12 +14778,21 @@ class DeepAgentsApp(App):
             )
             return
 
+        if self._agent_switching:
+            self.notify(
+                "An agent switch is in progress; try again once it completes.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
         if self._connecting or self._server_proc is None:
             # The server is still coming up (initial connect, a reconnect,
             # or waiting on a model/credentials before startup). Queue the
             # login instead of dropping the command so it runs once the
-            # server is ready; deferred actions drain from
-            # `_drain_startup_backlog` after connecting finishes.
+            # server is ready; the queued action drains via
+            # `_maybe_drain_deferred` after connecting (and any startup
+            # submission) finishes.
             self.notify(
                 "MCP login will start once the local server is ready.",
                 timeout=5,
@@ -14780,14 +14803,6 @@ class DeepAgentsApp(App):
                     kind="mcp_login",
                     execute=lambda: self._run_mcp_login_worker(server_name),
                 ),
-            )
-            return
-
-        if self._agent_switching:
-            self.notify(
-                "An agent switch is in progress; try again once it completes.",
-                severity="warning",
-                markup=False,
             )
             return
 

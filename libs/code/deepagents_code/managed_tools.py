@@ -88,6 +88,33 @@ class ChecksumMismatchError(Exception):
     """
 
 
+UnavailableReason = Literal["unsupported", "artifact_not_found"]
+"""Stable reason token for logging and telemetry."""
+
+
+class ManagedToolUnavailableError(Exception):
+    """Raised when no managed helper binary is available for this system.
+
+    Distinct from transient network/download failures so callers can tell users
+    whether retrying can help or whether they need a different install path.
+    """
+
+    def __init__(
+        self, *, tool: Literal["ripgrep"], reason: UnavailableReason, message: str
+    ) -> None:
+        """Initialize the unavailable-tool error.
+
+        Args:
+            tool: Managed helper name.
+            reason: Stable reason token for logging and telemetry.
+            message: User-facing remediation message.
+        """
+        super().__init__(message)
+        self.tool = tool
+        self.reason = reason
+        self.message = message
+
+
 def _normalized_arch() -> str | None:
     """Return a normalized arch key matching `RIPGREP_ASSETS`.
 
@@ -97,6 +124,36 @@ def _normalized_arch() -> str | None:
 
     raw = platform.machine().lower()
     return _ARCH_ALIASES.get(raw)
+
+
+def _unsupported_ripgrep_error(
+    platform_name: str, arch: str | None
+) -> ManagedToolUnavailableError:
+    """Return a clear unsupported-platform error for managed ripgrep."""
+    target = platform_name if arch is None else f"{platform_name}/{arch}"
+    return ManagedToolUnavailableError(
+        tool="ripgrep",
+        reason="unsupported",
+        message=(
+            f"Managed ripgrep is not available for this system ({target}). "
+            "Install ripgrep manually, or set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        ),
+    )
+
+
+def _artifact_not_found_error(
+    platform_name: str, arch: str
+) -> ManagedToolUnavailableError:
+    """Return a clear missing-artifact error for managed ripgrep."""
+    return ManagedToolUnavailableError(
+        tool="ripgrep",
+        reason="artifact_not_found",
+        message=(
+            f"Managed ripgrep artifact for {platform_name}/{arch} was not found "
+            f"in pinned ripgrep {RIPGREP_VERSION}. Install ripgrep manually, or "
+            "try a newer dcode version."
+        ),
+    )
 
 
 def managed_rg_path() -> Path:
@@ -396,15 +453,17 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
     """Download, verify, extract, and install ripgrep atomically.
 
     Staging happens *inside* `BIN_DIR` so the final rename is on the same
-    filesystem and therefore atomic on POSIX. On Windows it is also atomic
-    when the destination is not in use; a process holding the existing
-    `rg.exe` open will see `PermissionError`, which the caller surfaces
-    rather than silently corrupts. `_verify_sha256` propagates
+    filesystem and therefore atomic on POSIX. Windows keeps replacing the
+    user-facing `rg.exe` directly because symlink support varies by developer
+    mode and policy. POSIX installs use a versioned real binary plus a relative
+    `rg` symlink so moving or bind-mounting `~/.deepagents` does not bake in
+    the original home directory path. `_verify_sha256` propagates
     `ChecksumMismatchError` to abort install before any move.
 
     Returns:
-        Absolute path to the installed `rg` binary.
+        Absolute path to the installed `rg` entrypoint.
     """
+    import os
     import tempfile
 
     BIN_DIR.mkdir(parents=True, exist_ok=True)
@@ -418,7 +477,15 @@ def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
         if sys.platform != "win32":
             extracted.chmod(0o755)
         dest = managed_rg_path()
-        extracted.replace(dest)
+        if sys.platform == "win32":
+            extracted.replace(dest)
+            return dest
+
+        real = BIN_DIR / f"rg-{RIPGREP_VERSION}"
+        extracted.replace(real)
+        link = tmp / "rg-link"
+        link.symlink_to(os.path.relpath(real, start=BIN_DIR))
+        link.replace(dest)
         return dest
 
 
@@ -436,13 +503,16 @@ async def ensure_ripgrep() -> Path | None:
         version always wins, so a stale managed binary is re-fetched
         rather than deferring to a system `rg` and the resolved version
         stays deterministic.
-    4. If offline, on an unsupported platform, or no asset matches the
-        platform/arch, return `None` so callers fall back to the existing
+    4. If offline, return `None` so callers fall back to the existing
         notification + slow path.
-    5. Otherwise download → SHA-256 verify → extract → install →
+    5. If no managed asset matches the platform/arch, raise
+        `ManagedToolUnavailableError` so callers can explain that retrying will
+        not help.
+    6. Otherwise download → SHA-256 verify → extract → install →
         prepend `BIN_DIR` to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
-        surface a loud notice; other failures log and return `None`.
+        surface a loud notice. On a 404, raises `ManagedToolUnavailableError`;
+        other failures log and return `None`.
 
     A stale managed binary is never proactively deleted. The atomic
     replace in `_install_ripgrep_sync` overwrites it on success, and on
@@ -461,7 +531,7 @@ async def ensure_ripgrep() -> Path | None:
     import zipfile
 
     managed = managed_rg_path()
-    managed_exists = managed.exists()
+    managed_exists = managed.exists() or managed.is_symlink()
     if prefers_system_ripgrep():
         system_rg = shutil.which("rg", path=_path_without_managed_bin())
         if system_rg is not None:
@@ -486,21 +556,24 @@ async def ensure_ripgrep() -> Path | None:
         return None
     if sys.platform == "android":
         logger.debug("Skipping ripgrep install: unsupported platform 'android'")
-        return None
+        error = _unsupported_ripgrep_error(sys.platform, None)
+        raise error
 
     arch = _normalized_arch()
     if arch is None:
         logger.debug(
             "Skipping ripgrep install: unsupported arch %r", platform.machine()
         )
-        return None
+        error = _unsupported_ripgrep_error(sys.platform, platform.machine())
+        raise error
 
     asset_entry = RIPGREP_ASSETS.get((sys.platform, arch))
     if asset_entry is None:
         logger.debug(
             "Skipping ripgrep install: no asset for (%s, %s)", sys.platform, arch
         )
-        return None
+        error = _unsupported_ripgrep_error(sys.platform, arch)
+        raise error
     asset, sha256 = asset_entry
 
     if managed_exists:
@@ -516,6 +589,17 @@ async def ensure_ripgrep() -> Path | None:
         # until the verified replacement is ready. A failed download must
         # not strand the user with no `rg` at all.
         installed = await asyncio.to_thread(_install_ripgrep_sync, asset, sha256)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:  # noqa: PLR2004  # HTTP 404 Not Found
+            logger.warning(
+                "Managed ripgrep artifact was not found: %s/%s", sys.platform, arch
+            )
+            error = _artifact_not_found_error(sys.platform, arch)
+            raise error from exc
+        logger.warning(
+            "Could not download ripgrep from %s", _RELEASE_URL_PREFIX, exc_info=True
+        )
+        return None
     except (urllib.error.URLError, TimeoutError):
         logger.warning(
             "Could not download ripgrep from %s", _RELEASE_URL_PREFIX, exc_info=True

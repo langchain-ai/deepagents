@@ -127,6 +127,22 @@ class TestToolsInstall:
         assert code == 1
         assert "SHA-256" in output
 
+    def test_install_unavailable_returns_specific_message(self, tmp_path: Path) -> None:
+        args = argparse.Namespace(tools_command="install", output_format="text")
+        error = managed_tools.ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="artifact_not_found",
+            message="Managed ripgrep artifact for linux/x86_64 was not found.",
+        )
+        with (
+            patch.object(managed_tools, "ensure_ripgrep", side_effect=error),
+            patch.object(managed_tools, "managed_rg_path", return_value=tmp_path / "x"),
+        ):
+            code, output = _run_text(args)
+        assert code == 1
+        assert "linux/x86_64" in output
+        assert "unexpectedly" not in output
+
     def test_install_unexpected_error_returns_nonzero(self, tmp_path: Path) -> None:
         """An unexpected exception degrades to a clean error, not a traceback."""
         args = argparse.Namespace(tools_command="install", output_format="text")

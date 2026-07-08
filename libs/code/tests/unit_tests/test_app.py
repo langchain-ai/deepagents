@@ -21626,6 +21626,42 @@ class TestEnsureManagedRipgrep:
         assert any(note.get("severity") == "error" for note in notices), notices
         assert app._ripgrep_install_failed is True
 
+    async def test_managed_tool_unavailable_notifies_message(self) -> None:
+        """Permanent managed-tool gaps surface their remediation message."""
+        from deepagents_code.managed_tools import ManagedToolUnavailableError
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        notices: list[dict[str, Any]] = []
+        message = (
+            "Managed ripgrep is not available for this system. "
+            "Set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        )
+        error = ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="unsupported",
+            message=message,
+        )
+
+        def _capture(message: str, **kwargs: Any) -> None:
+            notices.append({"message": message, **kwargs})
+
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(side_effect=error),
+            ),
+            patch.object(app, "notify", _capture),
+        ):
+            assert await app._ensure_managed_ripgrep() is False
+
+        assert any(note["message"] == message for note in notices), notices
+        assert any(note.get("severity") == "warning" for note in notices), notices
+        assert app._ripgrep_install_failed is True
+
     async def test_unexpected_failure_notifies_warning(self) -> None:
         """An unexpected install error warns the user, not just the log.
 

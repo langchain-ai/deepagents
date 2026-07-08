@@ -1682,6 +1682,30 @@ class TestAutoInstallRipgrepCli:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "SHA-256" in printed
 
+    def test_managed_tool_unavailable_keeps_ripgrep_and_reports(self) -> None:
+        """Permanent managed-tool gaps report remediation and keep fallback active."""
+        from deepagents_code.managed_tools import ManagedToolUnavailableError
+
+        message = (
+            "Managed ripgrep is not available for this system. "
+            "Set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        )
+        error = ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="unsupported",
+            message=message,
+        )
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=error),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert f"[yellow]Warning:[/yellow] {message}" in printed
+
     def test_unexpected_failure_keeps_ripgrep(self) -> None:
         """An unexpected error degrades gracefully to the missing-tool path."""
         console = MagicMock()

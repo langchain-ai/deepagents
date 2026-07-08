@@ -9,6 +9,7 @@ import subprocess
 import tarfile
 import warnings
 import zipfile
+from email.message import Message
 from pathlib import Path
 from unittest import mock
 
@@ -16,7 +17,10 @@ import pytest
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
-from deepagents_code.managed_tools import ChecksumMismatchError
+from deepagents_code.managed_tools import (
+    ChecksumMismatchError,
+    ManagedToolUnavailableError,
+)
 
 _EXPECTED_PLATFORM_ARCHS = {
     ("darwin", "arm64"),
@@ -269,20 +273,25 @@ def test_path_without_managed_bin_preserves_empty_entries(
     assert managed_tools._path_without_managed_bin() == f"{os.pathsep}{other}"
 
 
-async def test_ensure_ripgrep_short_circuits_on_android(
+async def test_ensure_ripgrep_reports_unsupported_android(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
     monkeypatch.delenv(OFFLINE, raising=False)
     monkeypatch.setattr(managed_tools.sys, "platform", "android")
-    with mock.patch("shutil.which", return_value=None):
-        assert await managed_tools.ensure_ripgrep() is None
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+    assert exc_info.value.reason == "unsupported"
+    assert "android" in exc_info.value.message
 
 
-async def test_ensure_ripgrep_short_circuits_on_unsupported_arch(
+async def test_ensure_ripgrep_reports_unsupported_arch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Unsupported arch (e.g. s390x) returns `None` before any download."""
+    """Unsupported arch (e.g. s390x) raises before any download."""
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
     monkeypatch.delenv(OFFLINE, raising=False)
     monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: None)
@@ -292,8 +301,31 @@ async def test_ensure_ripgrep_short_circuits_on_unsupported_arch(
         raise AssertionError(msg)
 
     monkeypatch.setattr(managed_tools, "_download_to", _no_download)
-    with mock.patch("shutil.which", return_value=None):
-        assert await managed_tools.ensure_ripgrep() is None
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+    assert exc_info.value.reason == "unsupported"
+
+
+async def test_ensure_ripgrep_reports_missing_asset_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A supported arch with no pinned asset is a permanent unavailable state."""
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+    monkeypatch.delitem(managed_tools.RIPGREP_ASSETS, ("linux", "x86_64"))
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+    assert exc_info.value.reason == "unsupported"
+    assert "linux/x86_64" in exc_info.value.message
 
 
 async def test_ensure_ripgrep_preserves_stale_when_offline(
@@ -337,8 +369,11 @@ async def test_ensure_ripgrep_preserves_stale_on_unsupported_arch(
     fake = mock.Mock()
     fake.returncode = 0
     fake.stdout = "ripgrep 1.0.0 (rev stale)\n"
-    with mock.patch.object(subprocess, "run", return_value=fake):
-        assert await managed_tools.ensure_ripgrep() is None
+    with (
+        mock.patch.object(subprocess, "run", return_value=fake),
+        pytest.raises(ManagedToolUnavailableError),
+    ):
+        await managed_tools.ensure_ripgrep()
     assert managed.exists()
 
 
@@ -580,7 +615,46 @@ async def test_ensure_ripgrep_downloads_when_missing(
     assert result is not None
     assert result == bin_dir / "rg"
     assert result.exists()
+    assert result.is_symlink()
+    assert result.readlink() == Path(f"rg-{managed_tools.RIPGREP_VERSION}")
+    versioned = bin_dir / f"rg-{managed_tools.RIPGREP_VERSION}"
+    assert versioned.read_bytes() == rg_payload
     assert os.environ["PATH"].split(os.pathsep)[0] == str(bin_dir)
+
+
+async def test_ensure_ripgrep_repairs_dangling_managed_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.symlink_to("missing-rg")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    rg_payload = b"repaired-binary"
+    tar_bytes = _make_fake_tarball(rg_payload)
+    sha = hashlib.sha256(tar_bytes).hexdigest()
+    monkeypatch.setitem(
+        managed_tools.RIPGREP_ASSETS,
+        ("linux", "x86_64"),
+        ("ripgrep-test.tar.gz", sha),
+    )
+    monkeypatch.setattr(
+        managed_tools,
+        "_download_to",
+        lambda _url, dest: dest.write_bytes(tar_bytes),
+    )
+
+    with mock.patch("shutil.which", return_value="/usr/bin/rg"):
+        result = await managed_tools.ensure_ripgrep()
+
+    assert result == managed
+    assert managed.read_bytes() == rg_payload
+    assert managed.is_symlink()
 
 
 async def test_ensure_ripgrep_redownloads_stale_managed_binary(
@@ -628,6 +702,36 @@ async def test_ensure_ripgrep_redownloads_stale_managed_binary(
 
     assert result == managed
     assert managed.read_bytes() == new_payload
+    assert managed.is_symlink()
+
+
+async def test_ensure_ripgrep_reports_missing_artifact_on_404(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    import urllib.error
+
+    err = urllib.error.HTTPError(
+        "https://example.test/rg.tar.gz", 404, "Not Found", hdrs=Message(), fp=None
+    )
+
+    def _boom(_url: str, _dest: Path) -> None:
+        raise err
+
+    monkeypatch.setattr(managed_tools, "_download_to", _boom)
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ManagedToolUnavailableError) as exc_info,
+    ):
+        await managed_tools.ensure_ripgrep()
+    assert exc_info.value.reason == "artifact_not_found"
+    assert "linux/x86_64" in exc_info.value.message
 
 
 async def test_ensure_ripgrep_returns_none_on_download_failure(
@@ -643,6 +747,35 @@ async def test_ensure_ripgrep_returns_none_on_download_failure(
     import urllib.error
 
     err = urllib.error.URLError("connection refused")
+
+    def _boom(_url: str, _dest: Path) -> None:
+        raise err
+
+    monkeypatch.setattr(managed_tools, "_download_to", _boom)
+    with mock.patch("shutil.which", return_value=None):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+async def test_ensure_ripgrep_returns_none_on_http_download_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-404 HTTP failures are transient download failures, not unavailability."""
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    import urllib.error
+
+    err = urllib.error.HTTPError(
+        "https://example.test/rg.tar.gz",
+        503,
+        "Service Unavailable",
+        hdrs=Message(),
+        fp=None,
+    )
 
     def _boom(_url: str, _dest: Path) -> None:
         raise err

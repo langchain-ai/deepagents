@@ -64,6 +64,7 @@ class _AuthHostApp(App[None]):
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
+        self.last_saved_service: str | None = None
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -102,10 +103,11 @@ class _AuthHostApp(App[None]):
         self.push_screen(AuthManagerScreen(initial_provider=initial_provider))
 
     def on_auth_manager_screen_credential_saved(
-        self, _event: AuthManagerScreen.CredentialSaved
+        self, event: AuthManagerScreen.CredentialSaved
     ) -> None:
         """Record credential-save notifications from the manager."""
         self.credential_saved_count += 1
+        self.last_saved_service = event.service
 
 
 class TestCodexAuthScreen:
@@ -1380,10 +1382,11 @@ class TestAuthManagerScreen:
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
 
-            screen._on_prompt_closed(AuthResult.SAVED)
+            screen._on_prompt_closed("openai", AuthResult.SAVED)
             await pilot.pause()
 
         assert app.credential_saved_count == 1
+        assert app.last_saved_service == "openai"
 
     async def test_prompt_cancel_does_not_post_credential_saved_event(self) -> None:
         """Cancelling or deleting credentials should not trigger startup recovery."""
@@ -1393,8 +1396,8 @@ class TestAuthManagerScreen:
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
 
-            screen._on_prompt_closed(AuthResult.CANCELLED)
-            screen._on_prompt_closed(AuthResult.DELETED)
+            screen._on_prompt_closed("openai", AuthResult.CANCELLED)
+            screen._on_prompt_closed("openai", AuthResult.DELETED)
             await pilot.pause()
 
         assert app.credential_saved_count == 0

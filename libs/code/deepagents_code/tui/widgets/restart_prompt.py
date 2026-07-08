@@ -75,14 +75,30 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
     }
     """
 
-    def __init__(self, label: str) -> None:
+    _DEFAULT_BODY = "Restart the server to load it now, or defer with `/restart`."
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        verb: str = "Installed",
+        body: str | None = None,
+    ) -> None:
         """Initialize the prompt.
 
         Args:
-            label: Installed extra/package name, surfaced in the title.
+            label: The subject surfaced in the title (e.g. an installed extra
+                name, or a saved credential like ``"Tavily API key"``).
+            verb: Past-tense action shown before `label` in the title. Defaults
+                to `"Installed"` for the post-install flow; callers that saved a
+                key rather than installed a package can pass e.g. `"Saved"`.
+            body: Optional override for the explanatory line under the title.
+                Defaults to the post-install copy.
         """
         super().__init__()
         self._label = label
+        self._verb = verb
+        self._body = body or self._DEFAULT_BODY
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -94,15 +110,16 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
         with Vertical():
             yield Static(
                 Content.from_markup(
-                    "$check Installed [bold]$name[/bold]",
+                    "$check $verb [bold]$name[/bold]",
                     check=glyphs.checkmark,
+                    verb=self._verb,
                     name=self._label,
                 ),
                 classes="restart-prompt-title",
                 markup=False,
             )
             yield Static(
-                "Restart the server to load it now, or defer with `/restart`.",
+                self._body,
                 classes="restart-prompt-body",
                 markup=False,
             )

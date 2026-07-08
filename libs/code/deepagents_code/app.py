@@ -354,6 +354,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
@@ -2238,6 +2239,16 @@ class DeepAgentsApp(App):
 
         self._pending_mcp_login_reconnect = False
         """Whether a successful MCP login is waiting for reconnect."""
+
+        self._pending_web_search_restart = False
+        """Whether a Tavily key saved via `/auth` is awaiting an offered restart.
+
+        `web_search` is bound only when Tavily is configured at server spawn
+        time (see `server_graph._build_tools`), so a key added to a running
+        server takes effect only after a respawn. Set when the saved key gates
+        a tool the running server lacks; consumed when the `/auth` manager
+        closes so the restart prompt never stacks over the still-open manager.
+        """
 
         self._pending_mcp_disable_reconnect_servers: set[str] = set()
         """MCP servers with disable-state changes waiting for reconnect."""
@@ -13083,14 +13094,58 @@ class DeepAgentsApp(App):
                 return
             task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
+            # A saved Tavily key only enables `web_search` after a respawn.
+            # Offer the restart now that the manager has closed, so the prompt
+            # never stacks over the still-open manager.
+            if self._pending_web_search_restart:
+                self._pending_web_search_restart = False
+                self.call_after_refresh(self._launch_web_search_restart_prompt)
 
         screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
 
-    def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
-        """Retry credentials-blocked startup immediately after `/auth` saves a key."""
+    def on_auth_manager_screen_credential_saved(
+        self, event: AuthManagerScreen.CredentialSaved
+    ) -> None:
+        """Retry credentials-blocked startup immediately after `/auth` saves a key.
+
+        A saved Tavily key additionally gates the spawn-time `web_search` tool,
+        so flag that a restart should be offered once the manager closes.
+        """
         event.stop()
+        self._note_web_search_restart_if_needed(event.service)
         task = asyncio.create_task(self._resume_server_after_auth_change())
+        task.add_done_callback(_log_task_exception)
+
+    def _note_web_search_restart_if_needed(self, service: str) -> None:
+        """Flag an offered restart when a saved key enables `web_search`.
+
+        `web_search` is bound only when Tavily is configured at server spawn
+        time. A server that already spawned with Tavily has the tool bound, so
+        only a running server that lacks it needs a respawn. The stored key is
+        exported to the environment eagerly (as onboarding does) so a later
+        `/restart` — or the offered one — picks it up on reload.
+
+        Args:
+            service: The `/auth` config key that was just saved.
+        """
+        if service != "tavily":
+            return
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            return
+        if self._server_proc is None or self._server_kwargs is None:
+            return
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        apply_stored_service_credentials()
+        if os.environ.get("TAVILY_API_KEY"):
+            self._pending_web_search_restart = True
+
+    def _launch_web_search_restart_prompt(self) -> None:
+        """Kick off the deferred web-search restart offer after the manager closes."""
+        task = asyncio.create_task(self._offer_restart_for_web_search())
         task.add_done_callback(_log_task_exception)
 
     async def _resume_server_after_auth_change(self) -> None:
@@ -15122,23 +15177,89 @@ class DeepAgentsApp(App):
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
         """
+        await self._offer_server_restart(
+            label=label,
+            verb="Installed",
+            relaunch_hint=f"Relaunch dcode to load '{label}'.",
+            busy_hint=(
+                f"Run `/restart` to load '{label}' once the current task finishes."
+            ),
+            manual_hint=f"Run `/restart` to load '{label}' now.",
+            fail_hint=(
+                f"Couldn't restart the server automatically to load "
+                f"'{label}'. Run `/restart` to load it."
+            ),
+        )
+
+    async def _offer_restart_for_web_search(self) -> None:
+        """Offer a restart so a Tavily key saved via `/auth` enables `web_search`.
+
+        The app-owned server binds `web_search` only when Tavily is configured
+        at spawn time (see `server_graph._build_tools`), so a key added
+        mid-session takes effect only after the server respawns. Mirrors the
+        post-install offer: same guards, watchdog, and fallback messaging, with
+        web-search-specific copy.
+        """
+        await self._offer_server_restart(
+            label="Tavily API key",
+            verb="Saved",
+            prompt_body=(
+                "Restart the server to enable web search, or defer with `/restart`."
+            ),
+            relaunch_hint="Relaunch dcode to enable web search with your Tavily key.",
+            busy_hint=(
+                "Run `/restart` to enable web search once the current task finishes."
+            ),
+            manual_hint="Run `/restart` to enable web search now.",
+            fail_hint=(
+                "Couldn't restart the server automatically to enable web "
+                "search. Run `/restart` to enable it."
+            ),
+        )
+
+    async def _offer_server_restart(
+        self,
+        *,
+        label: str,
+        verb: str,
+        relaunch_hint: str,
+        busy_hint: str,
+        manual_hint: str,
+        fail_hint: str,
+        prompt_body: str | None = None,
+    ) -> None:
+        """Offer a one-keypress owned-server restart with caller-supplied copy.
+
+        Shared by the post-install offer and the post-`/auth` web-search offer:
+        both prompt to respawn the app-owned LangGraph subprocess so a change
+        that only takes effect at spawn time (a newly installed package, a
+        newly configured Tavily key) applies without exiting the TUI.
+
+        Owns all of its own follow-up messaging so callers never append a
+        redundant hint:
+
+        - Owned + idle: show the prompt (its button is the call to action). If
+            the prompt can't be shown, fall back to `manual_hint`.
+        - Owned + busy/connecting: a restart cancels in-flight work, so surface
+            `busy_hint`.
+        - No owned subprocess (remote server): surface `relaunch_hint`.
+
+        Args:
+            label: Subject surfaced in the prompt title (e.g. an extra name or
+                `"Tavily API key"`).
+            verb: Past-tense action shown before `label` in the prompt title.
+            relaunch_hint: Message shown when there is no owned subprocess.
+            busy_hint: Message shown when the server is busy/connecting.
+            manual_hint: Fallback shown when the prompt can't be displayed.
+            fail_hint: Message shown when a chosen restart could not run.
+            prompt_body: Optional override for the prompt's explanatory line.
+        """
         if self._server_proc is None or self._server_kwargs is None:
-            await self._mount_message(
-                AppMessage(f"Relaunch dcode to load '{label}'."),
-            )
+            await self._mount_message(AppMessage(relaunch_hint))
             return
         if self._agent_running or self._connecting:
-            await self._mount_message(
-                AppMessage(
-                    f"Run `/restart` to load '{label}' once the current task finishes.",
-                ),
-            )
+            await self._mount_message(AppMessage(busy_hint))
             return
-
-        # Owned + idle. A `/restart` respawns the subprocess (same effect as a
-        # relaunch, without exiting), so every couldn't-show-the-prompt path
-        # below degrades to this hint rather than mentioning a relaunch.
-        manual_hint = f"Run `/restart` to load '{label}' now."
 
         try:
             from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
@@ -15152,7 +15273,7 @@ class DeepAgentsApp(App):
             # deliberately narrow — a genuine `ImportError` from a broken modal
             # still propagates rather than being mistaken for an upgrade race.
             logger.warning(
-                "restart_prompt unavailable after installing %r; falling back "
+                "restart_prompt unavailable for %r restart; falling back "
                 "to the manual /restart hint",
                 label,
                 exc_info=True,
@@ -15166,12 +15287,14 @@ class DeepAgentsApp(App):
             # (compose crash, programmatic teardown that skips the dismiss
             # callback).
             choice = await asyncio.wait_for(
-                self._push_screen_wait(RestartPromptScreen(label)),
+                self._push_screen_wait(
+                    RestartPromptScreen(label, verb=verb, body=prompt_body)
+                ),
                 timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(
-                "Restart prompt after installing %r timed out; falling back to "
+                "Restart prompt for %r timed out; falling back to "
                 "the manual /restart hint",
                 label,
             )
@@ -15180,9 +15303,7 @@ class DeepAgentsApp(App):
         except Exception:
             # Modal could not be mounted (e.g. another modal hijacked the
             # stack). Fall back to the manual `/restart` hint.
-            logger.exception(
-                "Failed to mount restart prompt after installing %r", label
-            )
+            logger.exception("Failed to mount restart prompt for %r", label)
             await self._mount_message(AppMessage(manual_hint))
             return
 
@@ -15192,12 +15313,7 @@ class DeepAgentsApp(App):
         # log. Surface a message so an explicit "restart" choice never looks
         # like a silent no-op. Mirrors the `auto_restart` path.
         if choice == "restart" and not await self._restart_after_install(label):
-            await self._mount_message(
-                AppMessage(
-                    f"Couldn't restart the server automatically to load "
-                    f"'{label}'. Run `/restart` to load it.",
-                ),
-            )
+            await self._mount_message(AppMessage(fail_hint))
         # Otherwise the prompt was shown and the user made an informed choice;
         # no further hint is needed.
 
@@ -15222,13 +15338,11 @@ class DeepAgentsApp(App):
                 not currently available or fails.
         """
         if self._server_proc is None or self._server_kwargs is None:
-            logger.info(
-                "Cannot auto-restart after installing %s: no app-owned server", label
-            )
+            logger.info("Cannot auto-restart to load %s: no app-owned server", label)
             return False
         if self._agent_running or self._connecting:
             logger.info(
-                "Cannot auto-restart after installing %s: server is busy",
+                "Cannot auto-restart to load %s: server is busy",
                 label,
             )
             return False

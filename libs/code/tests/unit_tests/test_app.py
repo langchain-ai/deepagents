@@ -13087,7 +13087,7 @@ class TestDeferredActions:
             app._resume_server_after_auth_change = resume  # ty: ignore
 
             app.on_auth_manager_screen_credential_saved(
-                AuthManagerScreen.CredentialSaved()
+                AuthManagerScreen.CredentialSaved("openai")
             )
             await asyncio.sleep(0)
 

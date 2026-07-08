@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from enum import StrEnum
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar, NamedTuple
 from urllib.parse import urlsplit
 
@@ -1364,7 +1365,22 @@ class AuthManagerScreen(ModalScreen[None]):
     """
 
     class CredentialSaved(Message):
-        """Posted when a key prompt successfully persists credentials."""
+        """Posted when a key prompt successfully persists credentials.
+
+        Carries the `/auth` config key that was saved so the app can react to
+        credentials that gate spawn-time behavior — e.g. a Tavily key that
+        enables the `web_search` tool only after the server respawns.
+        """
+
+        def __init__(self, service: str) -> None:
+            """Store the saved provider/service identifier.
+
+            Args:
+                service: The `/auth` config key that was saved (a model
+                    provider name or a service key such as `"tavily"`).
+            """
+            super().__init__()
+            self.service = service
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
@@ -1561,13 +1577,13 @@ class AuthManagerScreen(ModalScreen[None]):
             # same way as a model-provider key.
             self.app.push_screen(
                 AuthPromptScreen(provider, SERVICE_API_KEY_ENV[provider]),
-                self._on_prompt_closed,
+                partial(self._on_prompt_closed, provider),
             )
             return
         env_var = get_credential_env_var(provider)
         self.app.push_screen(
             AuthPromptScreen(provider, env_var),
-            self._on_prompt_closed,
+            partial(self._on_prompt_closed, provider),
         )
 
     def _prompt_install_provider(self, provider: str, extra: str) -> None:
@@ -1664,11 +1680,16 @@ class AuthManagerScreen(ModalScreen[None]):
         """Move the option-list cursor up."""
         self.query_one("#auth-manager-options", OptionList).action_cursor_up()
 
-    def _on_prompt_closed(self, result: AuthResult | None) -> None:
-        """Refresh the option list once the prompt dismisses."""
+    def _on_prompt_closed(self, provider: str, result: AuthResult | None) -> None:
+        """Refresh the option list once the prompt dismisses.
+
+        Args:
+            provider: The provider/service whose prompt just closed.
+            result: Outcome of the prompt interaction.
+        """
         self._refresh_options()
         if result is AuthResult.SAVED:
-            self.post_message(self.CredentialSaved())
+            self.post_message(self.CredentialSaved(provider))
 
     def _refresh_options(self) -> None:
         """Rebuild option labels from current store state."""

@@ -610,6 +610,7 @@ jobs:
           echo ""
 
           uv run harbor run \
+            --yes \
             --agent langgraph \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \

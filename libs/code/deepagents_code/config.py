@@ -3796,7 +3796,7 @@ def detect_provider(model_name: str) -> str | None:
 
     Returns:
         Provider name (openai, anthropic, google_genai, google_vertexai,
-            nvidia, xai) or `None` if the provider cannot be determined from the
+            nvidia) or `None` if the provider cannot be determined from the
             name alone.
     """
     model_lower = model_name.lower()
@@ -3818,9 +3818,6 @@ def detect_provider(model_name: str) -> str | None:
 
     if model_lower.startswith(("nemotron", "nvidia/")):
         return "nvidia"
-
-    if model_lower.startswith("grok-"):
-        return "xai"
 
     return None
 

@@ -14280,17 +14280,8 @@ class DeepAgentsApp(App):
         self._open_debug_console()
 
     def _open_debug_console(self) -> None:
-        """Push the read-only Debug Console modal, or toast if a modal is open."""
+        """Push the read-only Debug Console modal."""
         from deepagents_code.widgets.debug_console import DebugConsoleScreen
-
-        if isinstance(self.screen, ModalScreen):
-            self.notify(
-                "Close the current dialog to open the debug console.",
-                severity="information",
-                timeout=3,
-                markup=False,
-            )
-            return
 
         def handle_result(_: None) -> None:
             if self._chat_input:

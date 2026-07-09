@@ -450,7 +450,7 @@ class TestDebugConsoleToggle:
             await pilot.pause()
             assert isinstance(app.screen, DebugConsoleScreen)
 
-    async def test_does_not_stack_on_open_modal(self) -> None:
+    async def test_opens_over_existing_modal(self) -> None:
         class _OtherModal(ModalScreen[None]):
             def compose(self) -> ComposeResult:
                 yield Static("other")
@@ -460,13 +460,15 @@ class TestDebugConsoleToggle:
             await pilot.pause()
             app.push_screen(_OtherModal())
             await pilot.pause()
+            modal = app.screen
 
             await pilot.press("ctrl+backslash")
             await pilot.pause()
 
-            assert isinstance(app.screen, _OtherModal)
-            latest = list(app._notifications)[-1]
-            assert "debug console" in latest.message.lower()
+            assert isinstance(app.screen, DebugConsoleScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is modal
 
     async def test_build_snapshot_contains_core_fields(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz", cwd="/tmp/work")

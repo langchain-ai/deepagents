@@ -125,7 +125,8 @@
             "type": "string"
           },
           "old_string": {
-            "description": "The exact text to find and replace. Must be unique in the file unless replace_all is True.",
+            "description": "The exact text to find and replace. Must be NON-EMPTY and unique in the file unless replace_all is True. To insert or prepend content, include an existing anchor line as old_string and put the new content around it in new_string.",
+            "minLength": 1,
             "type": "string"
           },
           "replace_all": {

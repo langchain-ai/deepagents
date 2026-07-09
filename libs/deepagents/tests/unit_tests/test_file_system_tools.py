@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.backends.state import StateBackend
+from deepagents.backends.utils import perform_string_replacement
 from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -293,6 +294,68 @@ def test_edit_file_string_not_found() -> None:
     tool_message = result["messages"][-2]
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.content == "Error: String not found in file: 'goodbye'"
+
+
+def test_edit_file_empty_old_string_schema_rejects() -> None:
+    """Verify that edit_file with an empty old_string is rejected without the misleading replace_all suggestion."""
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/test.txt", "content": "hello world"},
+                            "id": "call_write_1",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {
+                                "file_path": "/test.txt",
+                                "old_string": "",
+                                "new_string": "prepended\n",
+                            },
+                            "id": "call_edit_1",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="I tried to edit the file."),
+            ]
+        )
+    )
+
+    agent = create_deep_agent(
+        model=fake_model,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="Edit with empty string")]},
+        config={"configurable": {"thread_id": "test_thread_edit_empty"}},
+    )
+
+    tool_message = result["messages"][-2]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.status == "error"
+    # The catastrophic replace_all=True path must never be suggested for an empty old_string.
+    assert "replace_all=True" not in tool_message.content
+
+
+def test_perform_string_replacement_empty_old_string() -> None:
+    """Verify perform_string_replacement emits a distinct error for an empty old_string and never suggests replace_all."""
+    result = perform_string_replacement("hello world", "", "prepended")
+
+    assert isinstance(result, str)
+    assert "matches every position" in result
+    assert "replace_all" not in result or "Do not use" in result
 
 
 def test_grep_finds_written_file() -> None:

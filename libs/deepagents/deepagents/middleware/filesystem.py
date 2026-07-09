@@ -709,7 +709,10 @@ class EditFileSchema(BaseModel):
 
     file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
 
-    old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
+    old_string: str = Field(
+        min_length=1,
+        description="The exact text to find and replace. Must be NON-EMPTY and unique in the file unless replace_all is True. To insert or prepend content, include an existing anchor line as old_string and put the new content around it in new_string.",
+    )
 
     new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
 
@@ -1755,7 +1758,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=WriteFileSchema,
         )
 
-    def _create_edit_file_tool(self) -> BaseTool:
+    def _create_edit_file_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission handling + empty old_string guard
         """Create the edit_file tool."""
         tool_description = self._custom_tool_descriptions.get("edit_file") or EDIT_FILE_TOOL_DESCRIPTION
 
@@ -1768,6 +1771,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
+            if old_string == "":
+                return ToolMessage(
+                    content=(
+                        "Error: old_string cannot be empty. Provide the exact text to find, "
+                        "with surrounding context if needed. To insert or prepend content, "
+                        "match an existing anchor line and include it in new_string."
+                    ),
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)
@@ -1810,6 +1824,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
+            if old_string == "":
+                return ToolMessage(
+                    content=(
+                        "Error: old_string cannot be empty. Provide the exact text to find, "
+                        "with surrounding context if needed. To insert or prepend content, "
+                        "match an existing anchor line and include it in new_string."
+                    ),
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             resolved_backend = self._get_backend(runtime)
             try:
                 validated_path = validate_path(file_path)

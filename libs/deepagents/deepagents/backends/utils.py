@@ -453,6 +453,13 @@ def perform_string_replacement(
     """
     occurrences = content.count(old_string)
 
+    if old_string == "":
+        return (
+            "Error: old_string is empty, which matches every position in the file. "
+            "Provide a non-empty old_string with surrounding context. Do not use "
+            "replace_all with an empty string."
+        )
+
     if occurrences == 0:
         # Detect a common EOF mismatch: `old_string` carries a trailing
         # newline that the file lacks at the same position. Models infer a

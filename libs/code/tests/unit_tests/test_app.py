@@ -23134,6 +23134,35 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
+    async def test_write_todos_row_is_excluded_from_grouping(self) -> None:
+        """`write_todos` stays standalone; groupable neighbors still collapse."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-todos")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            read_tool, todo_tool = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("g1", "read_file", {"file_path": "a.py"}, "success"),
+                    (
+                        "g2",
+                        "write_todos",
+                        {"todos": [{"content": "x", "status": "pending"}]},
+                        "success",
+                    ),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            # The groupable read_file folds away; write_todos is left visible.
+            assert read_tool.display is False
+            assert todo_tool.display is True
+            assert not todo_tool.has_class("-grouped")
+
     async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
         """A timestamp footer between two tools does not split the run.
 

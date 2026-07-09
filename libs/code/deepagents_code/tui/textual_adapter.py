@@ -309,6 +309,7 @@ class TextualUIAdapter:
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
         on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
+        on_todos: Callable[[Any], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -360,6 +361,14 @@ class TextualUIAdapter:
         Drives the live subagent fan-out panel. Events originate from the
         QuickJS `task()` bridge during a `js_eval` call; payload strings are
         LLM/JS-authored and treated as untrusted by the panel renderer.
+        """
+
+        self._on_todos = on_todos
+        """Sync callback fired with the authoritative `todos` graph-state value.
+
+        Drives the persistent todo panel above the input. The payload is the
+        raw `todos` channel value (model-authored, treated as untrusted and
+        re-validated by the panel).
         """
 
         # State tracking
@@ -892,14 +901,20 @@ async def execute_task_textual(
                                     except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
                                         raise
 
-                    # Check for todo updates (not yet implemented in Textual UI)
+                    # Route authoritative todo state to the persistent panel.
                     chunk_data = next(iter(data.values())) if data else None
                     if (
                         chunk_data
                         and isinstance(chunk_data, dict)
                         and "todos" in chunk_data
+                        and adapter._on_todos is not None
                     ):
-                        pass  # Future: render todo list widget
+                        todos_value = chunk_data.get("todos")
+                        try:
+                            adapter._on_todos(todos_value)
+                        except Exception:
+                            # Panel rendering must never crash the stream loop.
+                            logger.exception("todo panel update handler failed")
 
                 # Handle MESSAGES stream - for content and tool calls
                 elif current_stream_mode == "messages":

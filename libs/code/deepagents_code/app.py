@@ -94,6 +94,7 @@ from deepagents_code.tui.widgets.messages import (
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
+from deepagents_code.tui.widgets.todo_panel import TodoPanel
 from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -2947,6 +2948,9 @@ class DeepAgentsApp(App):
             yield SubagentPanel(id="subagent-panel")
             if show_startup_tip():
                 yield StartupTip(id="startup-tip")
+            # Persistent todo checklist docked directly above the input; hidden
+            # until the agent writes its first todo list.
+            yield TodoPanel(id="todo-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -3306,6 +3310,7 @@ class DeepAgentsApp(App):
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
+            on_todos=self._on_todos_update,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -9679,6 +9684,10 @@ class DeepAgentsApp(App):
             subagent_panel = self._get_subagent_panel()
             if subagent_panel is not None:
                 subagent_panel.reset()
+            # ...and any todos from the prior conversation.
+            todo_panel = self._get_todo_panel()
+            if todo_panel is not None:
+                todo_panel.reset()
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
@@ -11706,8 +11715,11 @@ class DeepAgentsApp(App):
         # then snapping shut. A groupable tool joins (or opens) the current
         # step's group; a diff folds into it; anything else is a step boundary
         # that closes the group.
-        is_groupable_tool = (
-            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+        # `write_todos` is special-cased out of the collapsing tool group: the
+        # current plan now lives in the persistent todo panel above the input,
+        # so its transcript row is left standalone rather than folded away.
+        is_groupable_tool = isinstance(widget, ToolCallMessage) and (
+            widget.tool_name not in {"ask_user", "write_todos"}
         )
         is_diff = isinstance(widget, DiffMessage)
 
@@ -11917,7 +11929,7 @@ class DeepAgentsApp(App):
                     continue  # footers are transparent to grouping
                 if isinstance(child, ToolCallMessage):
                     groupable = (
-                        child.tool_name != "ask_user"
+                        child.tool_name not in {"ask_user", "write_todos"}
                         and child.is_success
                         and not child.has_class("-grouped")
                     )
@@ -12803,6 +12815,28 @@ class DeepAgentsApp(App):
         panel = self._get_subagent_panel()
         if panel is not None:
             panel.toggle()
+
+    def _get_todo_panel(self) -> TodoPanel | None:
+        """Return the persistent todo panel, or None if not yet mounted.
+
+        Returns:
+            The mounted `TodoPanel`, or None during early startup.
+        """
+        try:
+            return self.query_one("#todo-panel", TodoPanel)
+        except Exception:  # noqa: BLE001 — not mounted during early startup
+            return None
+
+    def _on_todos_update(self, todos: Any) -> None:  # noqa: ANN401 — untrusted graph-state value
+        """Forward authoritative `todos` graph state to the todo panel.
+
+        Runs on the Textual event loop (same loop as the stream consumer), so
+        the panel widget can be updated directly. The payload is re-validated by
+        the panel before rendering.
+        """
+        panel = self._get_todo_panel()
+        if panel is not None:
+            panel.set_todos(todos)
 
     async def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.

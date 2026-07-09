@@ -2336,8 +2336,9 @@ class ModelConfig:
 
         Returns:
             Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, or contains
-                invalid TOML syntax.
+                Returns empty config if file is missing, unreadable, contains
+                invalid TOML syntax, or is structurally invalid (valid TOML of
+                the wrong shape, e.g. a scalar `[models]`).
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2356,6 +2357,12 @@ class ModelConfig:
         try:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
+            models_section = data.get("models", {})
+            config = cls(
+                default_model=models_section.get("default"),
+                recent_model=models_section.get("recent"),
+                providers=models_section.get("providers", {}),
+            )
         except tomllib.TOMLDecodeError as e:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
@@ -2363,23 +2370,24 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+            config = cls()
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-
-        models_section = data.get("models", {})
-        config = cls(
-            default_model=models_section.get("default"),
-            recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
-        )
+            config = cls()
+        except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape — a scalar
+            # `[models]`, a non-table `providers` — which surfaces here as an
+            # AttributeError from `.get(...)` or a TypeError from the dataclass
+            # constructor. Treat it like any other unreadable config rather than
+            # letting it crash callers (e.g. the /auth modal on Ctrl+R) that
+            # assume load() is total and never raises.
+            logger.warning(
+                "Config file %s is structurally invalid: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
+                e,
+            )
+            config = cls()
 
         # Validate config consistency
         config._validate()

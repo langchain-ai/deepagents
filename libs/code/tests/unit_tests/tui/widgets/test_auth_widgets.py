@@ -7,6 +7,7 @@ from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -1153,16 +1154,59 @@ api_key_url = "javascript:alert(1)"
     async def test_ctrl_r_reload_continues_when_env_now_resolves(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ctrl+R dismisses with SAVED once a credential becomes resolvable."""
+        """Ctrl+R dismisses with SAVED (and clears caches) once creds resolve."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        # Spy on cache invalidation: get_provider_auth_status reads os.environ
+        # directly, so a missing clear_caches would still let this test pass on
+        # the dismiss outcome while silently breaking downstream model lookups.
+        cache_clears = 0
+        real_clear = model_config.clear_caches
+
+        def _spy_clear() -> None:
+            nonlocal cache_clears
+            cache_clears += 1
+            real_clear()
+
+        monkeypatch.setattr("deepagents_code.tui.widgets.auth.clear_caches", _spy_clear)
         app = _AuthHostApp()
         async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
             app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
             await pilot.pause()
             monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
             await pilot.press("ctrl+r")
             await pilot.pause()
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.SAVED
+        assert cache_clears >= 1
+        assert any("Continuing" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_continues_when_store_is_corrupt_but_env_resolves(
+        self, fake_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt store must not hide a newly resolvable env credential."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        store_dir = anyio.Path(fake_state_dir)
+        await store_dir.mkdir(parents=True, exist_ok=True)
+        await (store_dir / "auth.json").write_text("{", encoding="utf-8")
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            monkeypatch.setenv("ANTHROPIC_API_KEY", "test-env-key")
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
         assert app.prompt_dismissed is True
         assert app.prompt_result is AuthResult.SAVED
 
@@ -1172,14 +1216,51 @@ api_key_url = "javascript:alert(1)"
         """Ctrl+R with nothing newly set keeps the modal open (no false SAVED)."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
         app = _AuthHostApp()
         async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
             app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
             await pilot.pause()
             await pilot.press("ctrl+r")
             await pilot.pause()
             assert app.prompt_dismissed is False
             assert isinstance(app.screen, AuthPromptScreen)
+        assert any("No credentials detected" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_when_not_blocking_stays_open_and_toasts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R on a non-blocking modal never false-dismisses with SAVED.
+
+        A stored key means the modal opened in a replace/edit flow (not
+        blocking start), so reload must refresh in place and toast "Environment
+        reloaded." rather than hand control back as if a fresh key resolved.
+        """
+        auth_store.set_stored_key("anthropic", "sk-ant-stored")
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+        assert any(msg == "Environment reloaded." for msg, _ in notices)
 
     async def test_ctrl_r_reload_preserves_typed_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1200,9 +1281,17 @@ api_key_url = "javascript:alert(1)"
     async def test_ctrl_r_reload_surfaces_config_errors(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A malformed reload is caught and never crashes the modal."""
+        """A malformed reload is caught, toasted as an error, and never crashes."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
         app = _AuthHostApp()
         async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
             app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
             await pilot.pause()
 
@@ -1217,6 +1306,73 @@ api_key_url = "javascript:alert(1)"
             await pilot.pause()
             assert app.prompt_dismissed is False
             assert isinstance(app.screen, AuthPromptScreen)
+        # The failure must reach the user as an error toast, not just a log line.
+        assert any(
+            "Could not reload configuration" in msg and severity == "error"
+            for msg, severity in notices
+        )
+
+    async def test_ctrl_r_reload_survives_structurally_invalid_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A config.toml that parses but is structurally wrong must not crash.
+
+        `ModelConfig.load()` swallows TOML *syntax* errors but lets a clean
+        parse with the wrong shape (here a scalar `models`) raise
+        AttributeError from the subsequent `.get(...)`. Since Ctrl+R clears
+        caches and re-parses live, the probe must catch it at both construction
+        and reload rather than take down the modal.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('models = "oops"\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            # Construction path: show_prompt instantiates the screen, which
+            # probes credentials synchronously — a raise here would surface as a
+            # test error, not a caught fallback.
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthPromptScreen)
+            # Live reload path: re-parses the bad config after clearing caches.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+    async def test_ctrl_r_reload_refreshes_langsmith_endpoint_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A LangSmith endpoint set via reload surfaces its precedence notice.
+
+        The notice is derived in `__init__` and must be recomputed on reload;
+        otherwise the recompose would render the construction-time (absent)
+        notice while the region radio reflects the new endpoint.
+        """
+        for var in (
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "LANGSMITH_ENDPOINT",
+            "LANGCHAIN_ENDPOINT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert not app.screen.query("#auth-prompt-endpoint-env-notice")
+            monkeypatch.setenv(
+                "LANGSMITH_ENDPOINT", "https://eu.api.smith.langchain.com"
+            )
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            # Still blocking (no key), so the modal recomposed in place — and the
+            # notice now reflects the endpoint the reload picked up.
+            assert app.screen.query("#auth-prompt-endpoint-env-notice")
 
     async def test_help_line_advertises_reload(self) -> None:
         """The modal help line tells users Ctrl+R reloads the environment."""
@@ -1314,9 +1470,11 @@ api_key_url = "javascript:alert(1)"
             assert "stored" not in str(title.content)
 
     async def test_init_does_not_crash_on_corrupt_store(
-        self, fake_state_dir: Path
+        self, fake_state_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A corrupt auth.json must not crash the prompt at construction."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
         path = fake_state_dir / "auth.json"
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
@@ -1330,9 +1488,8 @@ api_key_url = "javascript:alert(1)"
             error_widgets = app.screen.query(".auth-prompt-error")
             warning_text = " ".join(str(w.render()) for w in error_widgets)
             assert "unreadable" in warning_text
-            # The MISSING fallback renders no env-source block and an unprefixed
-            # title (no warning/checkmark glyph), confirming the cosmetic-only
-            # degradation the construction guard promises.
+            # With no environment credential, the missing status renders no
+            # env-source block and an unprefixed title.
             assert not app.screen.query("#auth-prompt-env-status")
             title_text = str(app.screen.query_one(".auth-prompt-title", Static).content)
             glyphs = get_glyphs()

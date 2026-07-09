@@ -720,7 +720,7 @@ def uninstall_plugin(
         if scope is not None and scopes.get(plugin_id) == scope:
             scopes[plugin_id] = remaining[0].scope
     else:
-        enabled_plugins[plugin_id] = False
+        enabled_plugins.pop(plugin_id, None)
         scopes.pop(plugin_id, None)
         favorites.discard(plugin_id)
 

@@ -1,23 +1,18 @@
 """Tests for the root GitHub Action wrapper."""
 
-import argparse
+import ast
 import os
 import re
 import shutil
 import subprocess
-import sys
-from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
-from unittest.mock import patch
 
 import pytest
 import yaml
 
-from deepagents_code.main import parse_args
-
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ROOT / "action.yml"
+MAIN_PATH = ROOT / "libs" / "code" / "deepagents_code" / "main.py"
 
 EXPECTED_DCODE_INPUT_FLAGS = {
     "agent_name": ("--agent",),
@@ -73,30 +68,50 @@ def _run_dcode_body() -> str:
 
 
 def _root_parser_flags() -> set[str]:
-    original = argparse.ArgumentParser.parse_args
-    parsers: list[argparse.ArgumentParser] = []
+    tree = ast.parse(MAIN_PATH.read_text())
+    parse_args = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "parse_args"
+    )
+    flags: set[str] = set()
 
-    def spy(
-        self: argparse.ArgumentParser,
-        args: Sequence[str] | None = None,
-        namespace: argparse.Namespace | None = None,
-    ) -> argparse.Namespace:
-        parsers.append(self)
-        return cast("argparse.Namespace", original(self, args, namespace))
+    for node in ast.walk(parse_args):
+        if not isinstance(node, ast.Call):
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "parser"
+        ):
+            options = {
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.startswith("--")
+            }
+            flags.update(options)
+            if any(
+                keyword.arg == "action"
+                and isinstance(keyword.value, ast.Attribute)
+                and keyword.value.attr == "BooleanOptionalAction"
+                for keyword in node.keywords
+            ):
+                flags.update(
+                    f"--no-{option.removeprefix('--')}" for option in options
+                )
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "add_json_output_arg"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "parser"
+        ):
+            flags.add("--json")
 
-    with (
-        patch.object(argparse.ArgumentParser, "parse_args", spy),
-        patch.object(sys, "argv", ["deepagents", "--non-interactive", "noop"]),
-    ):
-        parse_args()
-
-    root = parsers[0]
-    return {
-        option
-        for action in root._actions
-        for option in action.option_strings
-        if option.startswith("--")
-    }
+    return flags
 
 
 def test_root_action_dcode_flags_match_parser() -> None:

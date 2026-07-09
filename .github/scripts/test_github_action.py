@@ -420,7 +420,7 @@ def test_full_run_stdin_ignores_producer_sigpipe(tmp_path: Path) -> None:
     rc, out = _run_full(
         tmp_path,
         INPUT_STDIN="true",
-        INPUT_PROMPT="x" * 200_000,
+        INPUT_PROMPT="x" * 100_000,
         dcode_body="head -c 1 >/dev/null; exit 0",
     )
     assert rc == 0

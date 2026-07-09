@@ -127,6 +127,24 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._on_tool_complete is callback
 
+    def test_on_output_started_defaults_to_none_and_accepts_callback(self) -> None:
+        """Verify `on_output_started` is optional and can be assigned via init."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._on_output_started is None
+
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_output_started=callback,
+        )
+        assert adapter._on_output_started is callback
+
     def test_set_token_callbacks(self) -> None:
         """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
@@ -2147,6 +2165,80 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+class TestExecuteTaskTextualOutputStarted:
+    """`on_output_started` fires once per turn on the first model output."""
+
+    async def test_fires_once_on_first_streamed_text(self) -> None:
+        """Streaming text triggers `on_output_started` a single time."""
+        output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("hello"), {})),
+            ((), "messages", (_text_message(" world"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_output_started=output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        output_started.assert_called_once_with()
+
+    async def test_fires_on_first_tool_call_without_text(self) -> None:
+        """A turn that opens with a tool call still reports output started."""
+        output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_output_started=output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        output_started.assert_called_once_with()
+
+    async def test_not_fired_when_no_output_is_produced(self) -> None:
+        """A turn that streams no text or tool call never reports output."""
+        output_started = MagicMock()
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_output_started=output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent([]),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        output_started.assert_not_called()
 
 
 class TestExecuteTaskTextualParallelToolSpinner:

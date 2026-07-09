@@ -3621,6 +3621,34 @@ class TestMessageQueue:
             worker.cancel.assert_called_once()
             mock_notify.assert_not_called()
 
+    async def test_escape_after_output_started_does_not_restore_prompt(self) -> None:
+        """Once the model has produced output, ESC interrupts without restoring.
+
+        The prompt has already produced work, so returning it to the input
+        would invite a confusing re-submission of an already-answered request.
+        """
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            active = UserMessage("do the thing")
+            app._active_user_message = active
+            # Simulate the adapter reporting the first streamed output.
+            app._on_agent_output_started()
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == ""
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
+            mock_notify.assert_not_called()
+
     async def test_escape_drains_queue_before_restoring_interrupted_prompt(
         self,
     ) -> None:

@@ -2520,6 +2520,12 @@ class DeepAgentsApp(App):
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
 
+        self._active_turn_output_started = False
+        """True once the current turn's model has emitted any output (streamed
+        text or a tool call). Gates the Esc prompt-restore: once generation has
+        begun the interrupted prompt is left consumed rather than returned to
+        the input."""
+
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
         it as they stream and it is closed at the next step boundary."""
@@ -3301,6 +3307,7 @@ class DeepAgentsApp(App):
             on_auto_approve_enabled=self._on_auto_approve_enabled,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
+            on_output_started=self._on_agent_output_started,
             sync_message_content=self._sync_message_content,
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
@@ -10563,6 +10570,9 @@ class DeepAgentsApp(App):
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
+            # Fresh turn: no output has streamed yet, so an Esc interrupt may
+            # still return this prompt to the input.
+            self._active_turn_output_started = False
 
             # Flush any buffered non-incognito `!` shell output into thread
             # state so this turn's model sees commands run since the last turn.
@@ -11958,6 +11968,15 @@ class DeepAgentsApp(App):
             for widget in collapsible:
                 widget.remove_class("-grouped")
 
+    def _on_agent_output_started(self) -> None:
+        """Record that the current turn's model has begun generating output.
+
+        Fired by the adapter on the first streamed text or tool call of a turn.
+        Once set, an Esc interrupt no longer returns the prompt to the input:
+        generation has begun, so the prompt is treated as consumed.
+        """
+        self._active_turn_output_started = True
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -12092,7 +12111,14 @@ class DeepAgentsApp(App):
         the message — the interrupted `UserMessage` stays visible in the
         transcript, dimmed via `set_cancelled()` — so when it does not restore
         it stays silent rather than reporting a "discarded" outcome.
+
+        Restore is also skipped once the model has begun generating output for
+        the turn (`_active_turn_output_started`): at that point the prompt has
+        produced work, so returning it to the input would invite a confusing
+        re-submission of an already-answered request.
         """
+        if self._active_turn_output_started:
+            return
         chat_input = self._chat_input
         if chat_input is None:
             logger.debug(
@@ -12430,7 +12456,8 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it (restoring the interrupted prompt
-           to the chat input when it is empty)
+           to the chat input when it is empty and the model has not yet started
+           generating output for the turn)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen

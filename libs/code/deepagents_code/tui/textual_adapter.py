@@ -298,6 +298,7 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
+        on_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
         request_ask_user: (
@@ -333,6 +334,13 @@ class TextualUIAdapter:
 
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
+
+        self._on_output_started = on_output_started
+        """Callback fired once per turn when the model emits its first output.
+
+        Signals the app that streamed text or a tool call has begun, so an Esc
+        interrupt should no longer restore the prompt to the input.
+        """
 
         self._sync_message_content = sync_message_content
         """Callback to sync final message content back to the store after streaming."""
@@ -654,6 +662,18 @@ async def execute_task_textual(
         adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
+    # Fires `on_output_started` at most once per turn, on the first streamed
+    # text or tool call, so the app can gate Esc's prompt-restore.
+    output_started = False
+
+    def _notify_output_started() -> None:
+        nonlocal output_started
+        if output_started:
+            return
+        output_started = True
+        if adapter._on_output_started:
+            adapter._on_output_started()
+
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
     # Tool-call ids that already received terminal hooks before a resumed
@@ -1155,6 +1175,7 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                _notify_output_started()
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -1249,6 +1270,7 @@ async def execute_task_textual(
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
                             ):
+                                _notify_output_started()
                                 displayed_tool_ids.add(buffer_id)
                                 file_op_tracker.start_operation(
                                     buffer_name, parsed_args, buffer_id

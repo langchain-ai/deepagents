@@ -27,11 +27,11 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
-    "fireworks": ("accounts/fireworks/models/",),
+    "fireworks": ("accounts/fireworks/models/", "accounts/fireworks/routers/"),
 }
 """Some providers (e.g. Fireworks) require fully-qualified IDs like
-`accounts/fireworks/models/...` that crowd out the rest of the status bar;
-strip the registered prefixes before display."""
+`accounts/fireworks/models/...` or `accounts/fireworks/routers/...` that crowd
+out the rest of the status bar; strip the registered prefixes before display."""
 
 ConnectionState = Literal["", "connecting", "reconnecting", "resuming"]
 """Connection states the status bar can display (`''` means cleared)."""

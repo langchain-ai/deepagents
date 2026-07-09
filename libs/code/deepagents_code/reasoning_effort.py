@@ -112,6 +112,16 @@ FIREWORKS_GLM_EFFORTS: tuple[EffortLabel, ...] = ("none", "high", "max")
 See https://docs.fireworks.ai/guides/reasoning.
 """
 
+_FIREWORKS_MODEL_ID_PREFIXES: tuple[str, ...] = (
+    "accounts/fireworks/models/",
+    "accounts/fireworks/routers/",
+)
+"""Fully-qualified Fireworks model-id prefixes that carry reasoning support.
+
+Fireworks exposes both individual models (`accounts/fireworks/models/...`) and
+routers that dispatch across models (`accounts/fireworks/routers/...`); both
+forms accept the `reasoning_effort` param, so `/effort` gates on either."""
+
 _REASONING_KEYS: frozenset[str] = frozenset(
     {
         "effort",
@@ -403,7 +413,7 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
         return "anthropic"
     if provider == "google_genai" and model_lower.startswith("gemini-3"):
         return "google_genai"
-    if provider == "fireworks" and model_lower.startswith("accounts/fireworks/models/"):
+    if provider == "fireworks" and model_lower.startswith(_FIREWORKS_MODEL_ID_PREFIXES):
         return "fireworks"
     return None
 

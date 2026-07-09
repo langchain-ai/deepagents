@@ -1328,6 +1328,20 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         if self._is_langsmith:
             apply_stored_langsmith_auth(replace_project=True)
         clear_caches()
+        if not outcome.warnings:
+            # Only claim a clean save when the store locked the file down. When
+            # chmod warnings fired above, they *are* the outcome message — an
+            # extra "success" toast on top would compete with (and visually
+            # bury) the one signal that the key isn't secured.
+            provider_label = provider_display_name(self._provider, self._config)
+            # `markup=False`: a configured display name can contain markup
+            # metacharacters (e.g. `[`) that must not be interpreted here. The
+            # same guard applies to every interpolated toast below.
+            self.app.notify(
+                f"Successfully saved key for {provider_label}.",
+                severity="information",
+                markup=False,
+            )
         self.dismiss(AuthResult.SAVED)
 
     def action_cancel(self) -> None:
@@ -1420,23 +1434,41 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         if not confirmed:
             return
         try:
-            removed = auth_store.delete_stored_key(self._provider)
+            result = auth_store.delete_stored_key(self._provider)
         except RuntimeError as exc:
             logger.warning(
                 "Failed to delete credential for %s: %s", self._provider, exc
             )
             self._show_error("Could not delete credential: $exc", exc=str(exc))
             return
-        if not removed:
+        for warning in result.warnings:
+            # The rewritten store still holds other providers' secrets, so a
+            # chmod failure here is the same security regression as on save —
+            # surface it rather than dropping it on the floor.
+            self.app.notify(warning, severity="warning", markup=False)
+        # Toast after `clear_caches` (like the save path) so the confirmation
+        # reflects fully-settled state rather than firing before the cache is
+        # invalidated.
+        clear_caches()
+        if not result.removed:
             # The entry was gone — likely a concurrent delete from another
             # app instance. Surface that fact so "delete" UX doesn't lie when
             # nothing actually happened on disk.
+            provider_label = provider_display_name(self._provider, self._config)
             self.app.notify(
-                f"No stored credential for {self._provider} — already removed.",
+                f"No stored credential for {provider_label} — already removed.",
                 severity="information",
                 markup=False,
             )
-        clear_caches()
+        elif not result.warnings:
+            # Mirror the save path: a silent successful delete gives no
+            # confirmation, and the toast is suppressed when warnings fired.
+            provider_label = provider_display_name(self._provider, self._config)
+            self.app.notify(
+                f"Successfully removed key for {provider_label}.",
+                severity="information",
+                markup=False,
+            )
         self.dismiss(AuthResult.DELETED)
 
     def _show_error(self, template: str, /, **substitutions: str) -> None:

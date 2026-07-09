@@ -15507,9 +15507,12 @@ class TestNotificationCenterIntegration:
         assert isinstance(screen, AuthPromptScreen)
         assert screen._provider == "tavily"
         assert screen._env_var == "TAVILY_API_KEY"
-        # ... and on save the stale notice is gone and the user is told to restart.
+        # ... and on save the stale notice is gone and the user is told to
+        # restart. The modal owns the "saved" confirmation now, so this path
+        # emits only the restart hint — no duplicate "Saved ... API key" toast.
         assert app._notice_registry.get("dep:tavily") is None
-        assert any("Restart to apply." in m for m in messages)
+        assert any(m == "Restart to apply your new key." for m in messages)
+        assert not any("Saved" in m and "API key" in m for m in messages)
 
     async def test_enter_api_key_unknown_service_is_a_noop(
         self, caplog: pytest.LogCaptureFixture

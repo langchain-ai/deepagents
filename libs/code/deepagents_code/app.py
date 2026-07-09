@@ -7389,7 +7389,7 @@ class DeepAgentsApp(App):
         if not os.environ.get("TAVILY_API_KEY"):
             self.notify(
                 "Saved your Tavily key, but couldn't activate it this "
-                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                "session. Restart dcode, or re-add it with /auth.",
                 severity="warning",
                 markup=False,
             )

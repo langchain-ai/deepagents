@@ -802,9 +802,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     "This scoped env var takes priority. A saved key will be used "
                     f"only when {env_var} is unset."
                     if is_scoped_env
-                    else (
-                        "Paste a key below to use a different key for Deep Agents Code."
-                    )
+                    else ("Paste a key below to use a different key for dcode.")
                 )
                 yield Static(
                     Content.assemble(
@@ -848,7 +846,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             storage_note: Content | None
             if self._is_langsmith:
                 storage_note = Content.from_markup(
-                    "Deep Agents Code stores the above key locally and turns on "
+                    "dcode stores the above key locally and turns on "
                     "LangSmith tracing. To pause tracing without removing the key, "
                     "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
                 )
@@ -859,7 +857,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 storage_note = None
             else:
                 storage_note = Content.from_markup(
-                    "Deep Agents Code stores the above key locally and uses it "
+                    "dcode stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
                 )
@@ -880,8 +878,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                         "Alternatively, environment variables can be used in place "
                         "of the key stored above. Set ",
                         (f"DEEPAGENTS_CODE_{self._env_var}", TStyle(bold=True)),
-                        " for a Deep Agents Code-only key; it has the highest "
-                        "priority. Set ",
+                        " for a dcode-only key; it has the highest priority. Set ",
                         (self._env_var, TStyle(bold=True)),
                         " to share a key with other provider SDK tools; it is used "
                         "only when no scoped or stored key exists. After setting one "
@@ -1078,7 +1075,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 (
                     (
                         "Subscription plans (Claude Pro/Max, Claude Code) cannot "
-                        "be used for Anthropic calls in Deep Agents Code. Only a "
+                        "be used for Anthropic calls in dcode. Only a "
                         "standard API key with pay-as-you-go billing works here."
                     ),
                     "italic $text-muted",

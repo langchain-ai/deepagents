@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
 )
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -36,6 +37,50 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """Return an HTTP status code carried by a provider exception, if any."""
+    for attr in ("status_code", "http_status", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _is_model_not_found(exc: BaseException) -> bool:
+    """Return whether a provider exception means the model is missing/undeployed.
+
+    Provider-agnostic: matches any exception named `NotFoundError` or carrying an
+    HTTP 404, then confirms the body/message names a not-found model rather than
+    some other 404 resource.
+    """
+    is_not_found = type(exc).__name__ == "NotFoundError" or _http_status(exc) == 404  # noqa: PLR2004
+    if not is_not_found:
+        return False
+    text = str(exc).lower()
+    return "not found" in text or "not_found" in text
+
+
+def _model_not_found_message(model_spec: str | None, exc: BaseException) -> str:
+    """Build the actionable user-facing message for a model-not-found error.
+
+    Returns:
+        A concise message naming the configured model id and how to fix it.
+    """
+    model_id = model_spec or "unknown"
+    logger.error(
+        "Configured model '%s' was not found or is not deployed/accessible: %s",
+        model_id,
+        exc,
+    )
+    return (
+        f"The configured model '{model_id}' was not found or is not "
+        "deployed/accessible. Verify the model id and that it is deployed on "
+        "your provider account."
+    )
 
 
 @dataclass(frozen=True)
@@ -453,7 +498,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        try:
+            response = handler(resolved.request)
+        except Exception as exc:
+            if not _is_model_not_found(exc):
+                raise
+            message = _model_not_found_message(resolved.model_spec, exc)
+            return ModelResponse(result=[AIMessage(content=message)])
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -471,7 +522,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        try:
+            response = await handler(resolved.request)
+        except Exception as exc:
+            if not _is_model_not_found(exc):
+                raise
+            message = _model_not_found_message(resolved.model_spec, exc)
+            return ModelResponse(result=[AIMessage(content=message)])
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

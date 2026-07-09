@@ -980,3 +980,75 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class _FakeNotFoundError(Exception):
+    """Mimics a provider `NotFoundError` (e.g. openai) with a 404 status."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.status_code = 404
+
+
+class _FakeRateLimitError(Exception):
+    """Unrelated provider error that must not be swallowed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.status_code = 429
+
+
+_FIREWORKS_404 = (
+    "Error code: 404 - {'error': {'message': 'Model not found, inaccessible, "
+    "and/or not deployed', 'code': 'NOT_FOUND', 'type': 'error'}}"
+)
+
+
+class TestModelNotFound:
+    """Model-not-found (404) errors become an actionable message, not a crash."""
+
+    def _raise(self, exc: Exception) -> Callable[[ModelRequest], ModelResponse[Any]]:
+        def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            raise exc
+
+        return handler
+
+    def test_sync_returns_actionable_message(self) -> None:
+        request = _make_request(_make_model("kimi-k2-instruct"), context=CLIContext())
+
+        result = _mw.wrap_model_call(
+            request, self._raise(_FakeNotFoundError(_FIREWORKS_404))
+        )
+
+        assert isinstance(result, ModelResponse)
+        message = result.result[0]
+        assert isinstance(message, AIMessage)
+        assert "openai:kimi-k2-instruct" in message.content
+        assert "not found or is not deployed/accessible" in message.content
+
+    def test_async_returns_actionable_message(self) -> None:
+        request = _make_request(_make_model("kimi-k2-instruct"), context=CLIContext())
+
+        async def run() -> ModelResponse[Any] | ExtendedModelResponse[Any]:
+            return await _mw.awrap_model_call(
+                request, self._async_raise(_FakeNotFoundError(_FIREWORKS_404))
+            )
+
+        result = asyncio.run(run())
+
+        assert isinstance(result, ModelResponse)
+        message = result.result[0]
+        assert isinstance(message, AIMessage)
+        assert "not found or is not deployed/accessible" in message.content
+
+    def test_unrelated_error_propagates(self) -> None:
+        request = _make_request(_make_model("gpt-5.5"), context=CLIContext())
+
+        with pytest.raises(_FakeRateLimitError):
+            _mw.wrap_model_call(request, self._raise(_FakeRateLimitError("slow down")))
+
+    def _async_raise(self, exc: Exception) -> Callable[[ModelRequest], Any]:
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            raise exc
+
+        return handler

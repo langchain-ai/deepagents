@@ -2639,9 +2639,8 @@ def _check_mcp_project_trust(
     definition), or "N" (deny).
 
     Servers already resolved by the user's scoped approvals or
-    `disabled_project_servers` list are shown for transparency but not prompted
-    for (approved ones load when the project/fingerprint still matches;
-    disabled ones never load).
+    `disabled_project_servers` list are not prompted for (approved ones load when
+    the project/fingerprint still matches; disabled ones never load).
     `None` is returned when that leaves nothing to decide. If the user's own
     allow/deny policy cannot be read, returns `False` (fail closed) rather than
     prompting under an unknown deny list.
@@ -2709,8 +2708,7 @@ def _check_mcp_project_trust(
     # Partition by the user's own allow/deny policy (read only from home config,
     # never the repo — the same boundary the loader enforces). Scoped approvals
     # load only while the project root and server fingerprint match; disabled
-    # names never load. The prompt must not *ask* about resolved servers, but it
-    # still *shows* them so the user sees what their config decided.
+    # names never load. The prompt asks only about unresolved servers.
     from deepagents_code.model_config import load_mcp_server_trust_lists
 
     trust_lists = load_mcp_server_trust_lists()
@@ -2719,41 +2717,17 @@ def _check_mcp_project_trust(
 
     prompt_console = _Console(stderr=True)
     prompt_servers: list[tuple[str, str, str]] = []
-    preapproved: list[tuple[str, str, str]] = []
-    blocked: list[tuple[str, str, str]] = []
     for name, kind, summary in all_servers:
         # Disabled first: reject precedence (a name in both lists is disabled).
         if name in trust_lists.disabled:
-            blocked.append((name, kind, summary))
-        elif trust_lists.is_enabled(
+            continue
+        if trust_lists.is_enabled(
             name,
             project_root=project_root,
             server=server_configs.get(name, {}),
         ):
-            preapproved.append((name, kind, summary))
-        else:
-            prompt_servers.append((name, kind, summary))
-
-    def _print_auto_resolved() -> None:
-        """List servers the config already decided, without asking about them."""
-        if not preapproved and not blocked:
-            return
-        prompt_console.print()
-        prompt_console.print(
-            "[dim]Resolved by your config (not prompted):[/dim]", highlight=False
-        )
-        for name, kind, summary in preapproved:
-            prompt_console.print(
-                f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
-                f"(enabled_project_server_approvals):  {escape(summary)}",
-                highlight=False,
-            )
-        for name, kind, summary in blocked:
-            prompt_console.print(
-                f'  [red]"{escape(name)}"[/red] ({escape(kind)}): blocked '
-                f"(disabled_project_servers):  {escape(summary)}",
-                highlight=False,
-            )
+            continue
+        prompt_servers.append((name, kind, summary))
 
     if trust_lists.read_error is not None:
         # The user's allow/deny policy could not be read. Fail closed here too
@@ -2766,13 +2740,9 @@ def _check_mcp_project_trust(
             "project MCP servers as untrusted.[/yellow]",
             highlight=False,
         )
-        _print_auto_resolved()
         return False
 
     if not prompt_servers:
-        # Nothing left to decide interactively, but surface what the lists
-        # resolved so a load driven purely by config is never fully silent.
-        _print_auto_resolved()
         return None
 
     docs_url = (
@@ -2787,7 +2757,6 @@ def _check_mcp_project_trust(
         prompt_console.print(
             f'  [bold]"{escape(name)}"[/bold] ({escape(kind)}):  {escape(summary)}'
         )
-    _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
         "[dim]y = allow this time · a = remember for this project · "

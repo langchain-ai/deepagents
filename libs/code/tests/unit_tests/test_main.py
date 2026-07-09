@@ -2694,13 +2694,13 @@ class TestCheckMcpProjectTrustPrompt:
         )
         assert lists.disabled == frozenset({"reference"})
 
-    def test_all_servers_list_resolved_shows_context_without_prompt(
+    def test_all_servers_list_resolved_skip_prompt_without_noise(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """List-resolved server rows escape project-controlled Rich markup."""
+        """List-resolved server rows skip the approval prompt without extra output."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2764,26 +2764,15 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is None
         err = capsys.readouterr().err
-        flattened = err.replace("\n", "")
-        # No approval question, but the config's decisions are surfaced.
-        assert "require approval" not in err
-        assert "Resolved by your config" in err
-        assert (
-            '"docs[/green]" (stdio[/green]): pre-approved '
-            "(enabled_project_server_approvals):  echo [/green]" in flattened
-        )
-        assert (
-            '"blocked[/red]" (http[/red]): blocked '
-            "(disabled_project_servers):  https://x.test/[/red]" in flattened
-        )
+        assert err == ""
 
-    def test_prompt_asks_only_about_unlisted_but_shows_preapproved(
+    def test_prompt_asks_only_about_unlisted_and_hides_preapproved(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The prompt asks only about unlisted servers; pre-approved ones show."""
+        """Pre-approved servers stay hidden when unlisted servers are prompted."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2840,11 +2829,9 @@ class TestCheckMcpProjectTrustPrompt:
         err = capsys.readouterr().err
         # The unlisted server is the one actually being asked about.
         assert '  "other" (stdio):  echo other' in err
-        # The pre-approved server is shown as resolved, not asked about.
-        assert (
-            '  "docs" (stdio): pre-approved '
-            "(enabled_project_server_approvals):  echo docs" in err
-        )
+        # The pre-approved server is not repeated in the prompt.
+        assert '  "docs" (stdio)' not in err
+        assert "Resolved by your config" not in err
 
     def test_ctrl_c_returns_interrupted_outcome(self, tmp_path: Path) -> None:
         """Ctrl+C at the approval prompt cancels launch instead of denying MCP."""

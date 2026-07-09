@@ -13,8 +13,11 @@ record to a bounded `deque`, so the buffer is cheap enough to keep always on.
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass
+
+from deepagents_code._env_vars import LOG_LEVEL
 
 DEFAULT_CAPACITY = 1000
 """Maximum number of records retained in the ring buffer."""
@@ -171,8 +174,9 @@ def install_log_buffer(
     """Attach the in-memory buffer handler to *target* (idempotent).
 
     Lowers *target*'s level to at most `INFO` so the console shows a useful tail
-    even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level, so the
-    `DEBUG` level set by `configure_debug_logging` is preserved.
+    even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level, so a
+    lower level set by `configure_debug_logging` is preserved. If
+    `DEEPAGENTS_CODE_LOG_LEVEL` is set, that explicit runtime level is preserved.
 
     Lowering the level does not spill log output onto the terminal: because this
     handler is present in the propagation chain, `Logger.callHandlers` finds a
@@ -201,7 +205,9 @@ def install_log_buffer(
     handler = InMemoryLogBuffer(capacity)
     handler.setLevel(logging.DEBUG)
     target.addHandler(handler)
-    if target.level == logging.NOTSET or target.level > logging.INFO:
+    if target.level == logging.NOTSET or (
+        target.level > logging.INFO and not os.environ.get(LOG_LEVEL)
+    ):
         target.setLevel(logging.INFO)
     _buffer = handler
     return handler

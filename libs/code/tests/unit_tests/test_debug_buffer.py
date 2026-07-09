@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
@@ -161,6 +163,15 @@ class TestInstallLogBuffer:
         logger.setLevel(logging.DEBUG)
         install_log_buffer(logger)
         assert logger.level == logging.DEBUG
+
+    @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_install_preserves_explicit_env_log_level(self) -> None:
+        logger = logging.getLogger("deepagents_code._test_level_warning")
+        logger.handlers = []
+        logger.setLevel(logging.WARNING)
+        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "WARNING"}):
+            install_log_buffer(logger)
+        assert logger.level == logging.WARNING
 
     @pytest.mark.usefixtures("_restore_global_buffer")
     def test_captures_propagated_records(self) -> None:

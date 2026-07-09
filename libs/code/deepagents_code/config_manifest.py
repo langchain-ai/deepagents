@@ -1244,6 +1244,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.DEBUG_FILE,
     ),
     ConfigOption(
+        key="debug.log_level",
+        group="Debug",
+        summary="Minimum runtime log level (DEBUG, INFO, WARNING, ERROR, or CRITICAL).",
+        kind=OptionKind.STR,
+        default="DEBUG when debug.enabled is true, otherwise INFO",
+        env_var=_env_vars.LOG_LEVEL,
+    ),
+    ConfigOption(
         key="debug.onboarding",
         group="Debug",
         summary="Force the onboarding flow to open on every interactive startup.",

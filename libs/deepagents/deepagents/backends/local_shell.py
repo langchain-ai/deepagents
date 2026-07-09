@@ -364,16 +364,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated=truncated,
             )
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             if timeout is not None:
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
-            return ExecuteResponse(
-                output=msg,
-                exit_code=124,  # Standard timeout exit code
-                truncated=False,
-            )
+            # Raise so the tool layer sets ToolMessage.status="error". Returning
+            # a normal ExecuteResponse marks the timeout as a success, hiding the
+            # failure from the agent, which then hallucinates completion.
+            raise TimeoutError(msg) from e
         except Exception as e:  # noqa: BLE001
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions

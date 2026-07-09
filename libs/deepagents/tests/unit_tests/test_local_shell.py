@@ -59,9 +59,8 @@ class TestPerCommandTimeout:
     def test_per_command_timeout_actually_expires(self) -> None:
         """A per-command timeout should actually terminate long-running commands."""
         backend = LocalShellBackend(timeout=60, inherit_env=True)
-        result = backend.execute(f'"{sys.executable}" -c "import time; time.sleep(30)"', timeout=1)
-        assert result.exit_code == 124
-        assert "timed out" in result.output.lower()
+        with pytest.raises(TimeoutError, match="timed out"):
+            backend.execute(f'"{sys.executable}" -c "import time; time.sleep(30)"', timeout=1)
 
     def test_per_command_zero_timeout_raises(self) -> None:
         """Zero per-command timeout should raise ValueError."""
@@ -80,19 +79,26 @@ class TestTimeoutErrorMessage:
     """Tests for timeout error message with retry guidance."""
 
     def test_default_timeout_error_includes_retry_guidance(self) -> None:
-        """Default timeout error should guide the LLM to use the timeout parameter."""
+        """Default timeout should raise TimeoutError guiding the LLM to use the timeout parameter."""
         backend = LocalShellBackend(timeout=1, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
-            result = backend.execute("sleep 10")
-            assert "timed out" in result.output.lower()
-            assert "timeout parameter" in result.output.lower()
-            assert result.exit_code == 124
+        with (
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)),
+            pytest.raises(TimeoutError) as exc_info,
+        ):
+            backend.execute("sleep 10")
+        message = str(exc_info.value).lower()
+        assert "timed out" in message
+        assert "timeout parameter" in message
 
     def test_custom_timeout_error_shows_effective_value(self) -> None:
-        """Custom timeout error should show the value used and not suggest re-using timeout."""
+        """Custom timeout should raise TimeoutError showing the value used, not suggest re-using timeout."""
         backend = LocalShellBackend(timeout=60, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
-            result = backend.execute("sleep 10", timeout=5)
-            assert "5" in result.output
-            assert "custom timeout" in result.output.lower()
-            assert "may be stuck" in result.output.lower()
+        with (
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)),
+            pytest.raises(TimeoutError) as exc_info,
+        ):
+            backend.execute("sleep 10", timeout=5)
+        message = str(exc_info.value).lower()
+        assert "5" in message
+        assert "custom timeout" in message
+        assert "may be stuck" in message

@@ -182,14 +182,14 @@ class TestRoundTrip:
         assert any("malformed base_url" in r.getMessage() for r in caplog.records)
 
     def test_delete_returns_true_when_removed(self) -> None:
-        """Deleting an existing entry returns `True` and clears the value."""
+        """Deleting an existing entry reports `removed=True` and clears the value."""
         auth_store.set_stored_key("openai", "k")
-        assert auth_store.delete_stored_key("openai") is True
+        assert auth_store.delete_stored_key("openai").removed is True
         assert auth_store.get_stored_key("openai") is None
 
     def test_delete_missing_returns_false(self) -> None:
-        """Deleting an unknown provider is a no-op."""
-        assert auth_store.delete_stored_key("anthropic") is False
+        """Deleting an unknown provider is a no-op that reports `removed=False`."""
+        assert auth_store.delete_stored_key("anthropic").removed is False
 
 
 @pytest.mark.usefixtures("fake_home")

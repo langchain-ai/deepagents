@@ -110,6 +110,24 @@ class WriteOutcome:
     """User-visible warning strings (e.g., chmod failures). Empty on success."""
 
 
+@dataclass(frozen=True, slots=True)
+class DeleteOutcome:
+    """Result of a credential delete that may have warnings to surface.
+
+    A delete rewrites the whole store, so it can hit the same chmod failures as
+    a write. `warnings` carries them symmetrically with `WriteOutcome` so a
+    caller's "removed" confirmation doesn't paper over a store the delete left
+    world-readable.
+    """
+
+    removed: bool
+    """`True` if a credential was removed, `False` if none was stored."""
+
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+    """chmod-failure warnings from the rewrite. Always empty for a no-op delete
+    (`removed=False`), which performs no write."""
+
+
 def auth_path() -> Path:
     """Return the resolved path to the credential store (`auth.json`).
 
@@ -473,14 +491,16 @@ def set_stored_key(
     return WriteOutcome(warnings=warnings)
 
 
-def delete_stored_key(provider: str) -> bool:
+def delete_stored_key(provider: str) -> DeleteOutcome:
     """Remove a stored credential for `provider`.
 
     Args:
         provider: Provider identifier.
 
     Returns:
-        `True` if a credential was removed, `False` if none was stored.
+        A `DeleteOutcome` whose `removed` flag reports whether a credential was
+        present, and whose `warnings` tuple lists chmod failures from the
+        rewrite (empty for a no-op delete, which performs no write).
 
     Raises:
         RuntimeError: If the credential file is corrupt and cannot be read, or
@@ -489,16 +509,16 @@ def delete_stored_key(provider: str) -> bool:
     """  # noqa: DOC502 - re-raised from `_read_raw`/`_write_raw_or_raise`
     data = _read_raw()
     if data is None:
-        return False
+        return DeleteOutcome(removed=False)
     creds = data.get("credentials")
     if not isinstance(creds, dict) or provider not in creds:
-        return False
+        return DeleteOutcome(removed=False)
     del creds[provider]
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds
-    _write_raw_or_raise(data)
+    warnings = _write_raw_or_raise(data)
     logger.debug("Deleted credential for provider %s", provider)
-    return True
+    return DeleteOutcome(removed=True, warnings=warnings)
 
 
 def list_configured_providers() -> list[str]:

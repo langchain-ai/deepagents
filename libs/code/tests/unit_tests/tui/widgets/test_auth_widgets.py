@@ -642,8 +642,8 @@ api_key_url = "javascript:alert(1)"
         """A successful save surfaces a confirmation toast naming the provider."""
         # `openai` resolves to "OpenAI" via the built-in display-name map but
         # would title-case to "Openai" via the bare fallback, so asserting on it
-        # proves the label is resolved through `provider_display_name` (with the
-        # screen's config) rather than the raw provider key.
+        # proves the label is resolved through `provider_display_name` rather
+        # than the raw provider key.
         notices: list[tuple[str, str | None, bool]] = []
 
         def _capture_notify(
@@ -670,6 +670,48 @@ api_key_url = "javascript:alert(1)"
         # interpret its interpolated label as markup.
         assert (
             "Successfully saved key for OpenAI.",
+            "information",
+            False,
+        ) in notices
+
+    async def test_langsmith_save_notifies_with_service_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The save toast fires on the service path with the service's label."""
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        # Stub the tracing activation so the test stays hermetic (no process
+        # env mutation); the toast runs immediately after it on the LangSmith
+        # branch, so the branch is still exercised end to end.
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.apply_stored_langsmith_auth",
+            lambda **_kwargs: None,
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        # "LangSmith (tracing)" carries a parenthetical the bare provider key
+        # never would, proving the service branch resolves its label through
+        # `provider_display_name` rather than echoing "langsmith".
+        assert (
+            "Successfully saved key for LangSmith (tracing).",
             "information",
             False,
         ) in notices
@@ -1183,6 +1225,9 @@ api_key_url = "javascript:alert(1)"
 
         assert ("credential file is not private", "warning") in notices
         assert app.prompt_result is AuthResult.SAVED
+        # When the store warns, the plain "success" toast is suppressed so it
+        # can't visually bury (or seem to contradict) the security warning.
+        assert not any(msg.startswith("Successfully saved key") for msg, _ in notices)
 
     async def test_escape_cancels(self) -> None:
         """Escape dismisses with `CANCELLED` and writes nothing."""
@@ -1257,6 +1302,146 @@ api_key_url = "javascript:alert(1)"
             "information",
             False,
         ) in notices
+
+    async def test_delete_failure_does_not_notify_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed delete shows an inline error and fires no success toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        def _raise(*_args: object, **_kwargs: object) -> auth_store.DeleteOutcome:
+            msg = "credential store is not writable"
+            raise RuntimeError(msg)
+
+        # Seed a key so Ctrl+D opens the confirm modal, then fail the delete
+        # itself — the mirror of `test_optional_prompt_surfaces_save_failure`.
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(auth_store, "delete_stored_key", _raise)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+            err = app.screen.query_one("#auth-prompt-error", Static)
+            error_text = str(err.content)
+
+        # Surfaced in-modal; the prompt stays open rather than dismissing
+        # DELETED as if the removal had happened.
+        assert "Could not delete credential" in error_text
+        assert "credential store is not writable" in error_text
+        assert app.prompt_dismissed is False
+        # The success toast must never fire when the delete raised — it would
+        # claim a removal that did not occur.
+        assert not any(msg.startswith("Successfully removed key") for msg, _ in notices)
+
+    async def test_noop_delete_notifies_already_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delete that finds nothing surfaces only the 'already removed' toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        # The key exists when the modal opens (so Ctrl+D confirms) but is gone
+        # by the time the delete runs — e.g. a concurrent delete from another
+        # app instance. `removed=False` drives the "already removed" branch.
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(
+            auth_store,
+            "delete_stored_key",
+            lambda *_a, **_k: auth_store.DeleteOutcome(removed=False),
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        # The no-op path still dismisses DELETED (shared with the success path),
+        # surfaces the resolved label, and never claims a real removal.
+        assert app.prompt_result is AuthResult.DELETED
+        assert (
+            "No stored credential for OpenAI — already removed.",
+            "information",
+            False,
+        ) in notices
+        assert not any(
+            msg.startswith("Successfully removed key") for msg, _, _ in notices
+        )
+
+    async def test_delete_store_warning_suppresses_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Store warnings on the delete rewrite fire and suppress the success toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        warning = "Could not set mode 0600 on auth.json: denied. World-readable."
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(
+            auth_store,
+            "delete_stored_key",
+            lambda *_a, **_k: auth_store.DeleteOutcome(
+                removed=True, warnings=(warning,)
+            ),
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.DELETED
+        # The security warning is surfaced...
+        assert (warning, "warning", False) in notices
+        # ...and the clean "success" toast is suppressed so it can't bury it.
+        assert not any(
+            msg.startswith("Successfully removed key") for msg, _, _ in notices
+        )
 
     async def test_ctrl_d_then_escape_keeps_credential(self) -> None:
         """Esc on the confirm modal returns to the prompt without deleting."""

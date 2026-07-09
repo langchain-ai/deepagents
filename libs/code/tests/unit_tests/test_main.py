@@ -132,6 +132,8 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "tail -f /tmp/dcode-update.log" in printed
         restart.assert_called_once_with()
 
     def test_successful_update_skips_restart_when_shadowed(self) -> None:

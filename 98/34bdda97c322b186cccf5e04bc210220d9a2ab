@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-09-tau3-conversation-subset-report.md
+  s_0b8bbcc97a5d01::t_315fd6f433d292 1-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9834bdda97c322b186cccf5e04bc210220d9a2ab",
+  "prompts": {},
+  "sessions": {
+    "s_0b8bbcc97a5d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee9ab0ef-332e-4beb-8f46-81ead6f6d627",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

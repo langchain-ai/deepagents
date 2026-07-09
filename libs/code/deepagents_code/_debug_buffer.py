@@ -1,12 +1,12 @@
 r"""In-memory ring buffer of recent log records for the in-app Debug Console.
 
-A lightweight `logging.Handler` keeps the most recent formatted log records in a
+A lightweight `logging.Handler` keeps the most recent structured log records in a
 bounded `deque` so the Debug Console (`Ctrl+\`) can show a live tail without
 requiring the opt-in file logging from `_debug.configure_debug_logging`. The
 handler is installed once on the `deepagents_code` package logger (see
 `__init__.py`); child module loggers reach it via propagation.
 
-Installation is negligible, and each emitted record only appends a formatted
+Installation is negligible, and each emitted record only appends a structured
 record to a bounded `deque`, so the buffer is cheap enough to keep always on.
 """
 
@@ -32,6 +32,7 @@ class InMemoryLogRecord:
 
     timestamp: str
     level: str
+    levelno: int
     logger: str
     message: str
 
@@ -42,20 +43,28 @@ class InMemoryLogRecord:
 
 
 class InMemoryLogBuffer(logging.Handler):
-    """Logging handler retaining the most recent formatted records in memory."""
+    """Logging handler retaining the most recent structured records in memory."""
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
         """Create the handler with a bounded backing `deque`.
 
         Args:
             capacity: Maximum records to retain; oldest are dropped first.
+
+        Raises:
+            ValueError: If *capacity* is less than 1. A zero-capacity buffer
+                would silently discard every record while `total_emitted` kept
+                climbing, so it is rejected at the boundary.
         """
+        if capacity < 1:
+            msg = f"capacity must be >= 1, got {capacity}"
+            raise ValueError(msg)
         super().__init__()
         self._records: deque[InMemoryLogRecord] = deque(maxlen=capacity)
         self._total = 0
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Append the formatted *record* to the ring buffer."""
+        """Append the structured *record* to the ring buffer."""
         self.acquire()
         try:
             self._records.append(self._make_record(record))
@@ -74,57 +83,21 @@ class InMemoryLogBuffer(logging.Handler):
         finally:
             self.release()
 
-    def lines_since(self, index: int) -> list[str]:
-        """Return retained plain-text lines whose absolute emission index is `>= index`.
-
-        Absolute indices are stable even as old records are evicted, so callers
-        can poll incrementally without re-reading lines they already consumed.
-
-        Args:
-            index: Absolute emission index to start from.
-
-        Returns:
-            The formatted lines from *index* onward that are still retained.
-        """
-        lines, _total = self.snapshot_since(index)
-        return lines
-
-    def snapshot_since(self, index: int) -> tuple[list[str], int]:
-        """Return retained plain-text lines and the next absolute emission index.
-
-        Callers that poll incrementally need both the retained lines and the
-        index to resume from. Returning both under the handler lock prevents a
-        concurrent append from being skipped between separate reads.
-
-        Args:
-            index: Absolute emission index to start from.
-
-        Returns:
-            A tuple of formatted lines and the current total emitted count.
-        """
-        records, total = self.snapshot_records_since(index)
-        return [record.plain_line for record in records], total
-
-    def records_since(self, index: int) -> list[InMemoryLogRecord]:
-        """Return retained structured records whose absolute index is `>= index`.
-
-        Args:
-            index: Absolute emission index to start from.
-
-        Returns:
-            Structured records from *index* onward that are still retained.
-        """
-        records, _total = self.snapshot_records_since(index)
-        return records
-
     def snapshot_records_since(self, index: int) -> tuple[list[InMemoryLogRecord], int]:
         """Return retained structured records and the next absolute index.
 
+        Absolute indices are stable even as old records are evicted, so callers
+        can poll incrementally without re-reading records they already consumed.
+        Returning the records and the resume index together under the handler
+        lock prevents a concurrent append from being skipped between separate
+        reads.
+
         Args:
             index: Absolute emission index to start from.
 
         Returns:
-            A tuple of structured records and the current total emitted count.
+            A tuple of the structured records from *index* onward that are still
+            retained, and the current total emitted count to resume from.
         """
         self.acquire()
         try:
@@ -160,6 +133,7 @@ class InMemoryLogBuffer(logging.Handler):
         return InMemoryLogRecord(
             timestamp=_FORMATTER.formatTime(record, _DATE_FORMAT),
             level=record.levelname,
+            levelno=record.levelno,
             logger=record.name,
             message=message,
         )
@@ -175,8 +149,11 @@ def install_log_buffer(
 
     Lowers *target*'s level to at most `INFO` so the console shows a useful tail
     even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level, so a
-    lower level set by `configure_debug_logging` is preserved. If
-    `DEEPAGENTS_CODE_LOG_LEVEL` is set, that explicit runtime level is preserved.
+    lower level set by `configure_debug_logging` is preserved. When installed
+    after `configure_debug_logging` (as in `__init__.py`), an explicit
+    `DEEPAGENTS_CODE_LOG_LEVEL` is also preserved. The `NOTSET` branch does not
+    consult `DEEPAGENTS_CODE_LOG_LEVEL`, so calling this on a fresh unconfigured
+    logger would force `INFO` regardless of that variable.
 
     Lowering the level does not spill log output onto the terminal: because this
     handler is present in the propagation chain, `Logger.callHandlers` finds a

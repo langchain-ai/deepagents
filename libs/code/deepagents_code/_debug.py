@@ -22,13 +22,19 @@ from deepagents_code._env_vars import (
 )
 
 _DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
-_LOG_LEVELS = {
+LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "WARNING": logging.WARNING,
     "ERROR": logging.ERROR,
     "CRITICAL": logging.CRITICAL,
 }
+"""Canonical level-name to `logging` level mapping.
+
+The single source of truth for level names and their numeric values, shared with
+the Debug Console's level filter so severity ordering is never re-derived from
+hardcoded integers.
+"""
 
 
 def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
@@ -48,10 +54,10 @@ def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
     raw = os.environ.get(LOG_LEVEL)
     if raw is None or not raw.strip():
         return fallback
-    level = _LOG_LEVELS.get(raw.strip().upper())
+    level = LOG_LEVELS.get(raw.strip().upper())
     if level is not None:
         return level
-    valid = ", ".join(_LOG_LEVELS)
+    valid = ", ".join(LOG_LEVELS)
     print(  # noqa: T201
         f"Warning: ignoring invalid {LOG_LEVEL}={raw!r}; expected one of {valid}",
         file=sys.stderr,

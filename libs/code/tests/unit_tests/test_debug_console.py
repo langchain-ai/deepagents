@@ -12,10 +12,15 @@ from textual.screen import ModalScreen
 from textual.widgets import Select, Static
 from textual.widgets._select import SelectOverlay
 
-import deepagents_code.widgets.debug_console as debug_console_mod
-from deepagents_code._debug_buffer import get_log_buffer
+import deepagents_code.tui.widgets.debug_console as debug_console_mod
+from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.widgets.debug_console import DebugConsoleScreen, _DebugLogView
+from deepagents_code.tui.widgets.debug_console import (
+    DebugConsoleScreen,
+    SnapshotField,
+    _DebugLogView,
+    _record_matches_filter,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -27,6 +32,18 @@ def _widget_text(widget: Static) -> str:
     return str(widget.render())
 
 
+def _log_record(
+    message: str, *, level: str = "INFO", levelno: int = logging.INFO
+) -> InMemoryLogRecord:
+    return InMemoryLogRecord(
+        timestamp="12:00:00",
+        level=level,
+        levelno=levelno,
+        logger="deepagents_code._test_console",
+        message=message,
+    )
+
+
 class _Harness(App[None]):
     """Minimal app wrapper for testing `DebugConsoleScreen` in isolation."""
 
@@ -34,11 +51,11 @@ class _Harness(App[None]):
         yield Static("base")
 
 
-def _snapshot() -> list[tuple[str, str]]:
+def _snapshot() -> list[SnapshotField]:
     return [
-        ("Version", "9.9.9"),
-        ("Model", "openai:gpt-test"),
-        ("CWD", "/tmp/[brackets]/work"),
+        SnapshotField("Version", "9.9.9"),
+        SnapshotField("Model", "openai:gpt-test"),
+        SnapshotField("CWD", "/tmp/[brackets]/work"),
     ]
 
 
@@ -82,6 +99,238 @@ class TestDebugConsoleScreen:
             # Exactly one new record appended; already-consumed records not re-written.
             assert len(log.records) == before + 1
 
+    async def test_live_tail_stays_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        records = [_log_record(f"debug-console-bounded-{index}") for index in range(5)]
+
+        class FakeBuffer:
+            total_emitted = len(records)
+
+            def snapshot_records_since(
+                self, index: int
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                if index >= self.total_emitted:
+                    return [], self.total_emitted
+                return records[index:], self.total_emitted
+
+        monkeypatch.setattr(debug_console_mod, "_RECORD_LIMIT", 3)
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", lambda: FakeBuffer())
+
+        class FakeLog:
+            is_vertical_scroll_end = True
+
+            def __init__(self) -> None:
+                self.records: list[InMemoryLogRecord] = []
+
+            def append_records(self, records: list[InMemoryLogRecord]) -> None:
+                self.records.extend(records)
+
+            def set_records(
+                self,
+                records: list[InMemoryLogRecord],
+                *,
+                scroll_end: bool,
+            ) -> None:
+                _ = scroll_end
+                self.records = list(records)
+
+        def fake_query_one(*args: object) -> FakeLog:
+            _ = args
+            return log
+
+        log = FakeLog()
+        screen = DebugConsoleScreen(_snapshot())
+        monkeypatch.setattr(screen, "query_one", fake_query_one)
+
+        screen._poll_logs()
+
+        messages = [record.message for record in screen._records]
+        visible_messages = [record.message for record in log.records]
+
+        assert messages == [
+            "debug-console-bounded-2",
+            "debug-console-bounded-3",
+            "debug-console-bounded-4",
+        ]
+        assert visible_messages == messages
+
+    async def test_poll_degrades_on_buffer_failure_without_crashing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+
+            class BoomBuffer:
+                total_emitted = 0
+
+                def snapshot_records_since(
+                    self, _index: int
+                ) -> tuple[list[InMemoryLogRecord], int]:
+                    msg = "poll boom"
+                    raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                debug_console_mod, "get_log_buffer", lambda: BoomBuffer()
+            )
+
+            # Must not raise: the repeating timer would otherwise crash the app.
+            screen._poll_logs()
+            await pilot.pause()
+
+            assert log._notice is not None
+            assert isinstance(app.screen, DebugConsoleScreen)  # app still alive
+
+    async def test_notice_replaced_by_incoming_records(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+
+            log.show_notice("(log buffer unavailable)")
+            await pilot.pause()
+            assert log._notice is not None
+
+            log.append_records([_log_record("debug-console-recovery-marker")])
+            await pilot.pause()
+
+            assert log._notice is None
+            assert any(
+                "debug-console-recovery-marker" in record.message
+                for record in log.records
+            )
+
+    async def test_poll_applies_active_filter_to_new_records(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: True)
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            select = screen.query_one("#debug-level-filter", Select)
+            select.value = "min:WARNING"
+            await pilot.pause()
+            before = len(log.records)
+
+            logger.info("debug-console-poll-filter-info")
+            logger.error("debug-console-poll-filter-error")
+            screen._poll_logs()
+            await pilot.pause()
+
+            new_messages = [record.message for record in log.records[before:]]
+            assert any("poll-filter-error" in message for message in new_messages)
+            assert not any("poll-filter-info" in message for message in new_messages)
+
+    async def test_empty_filtered_copy_notifies_information(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail_copy(_app: App, _text: str) -> tuple[bool, str | None]:
+            msg = "copy should not be attempted for an empty selection"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fail_copy)
+
+        logger.info("debug-console-empty-copy-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            # No CRITICAL records exist, so the filtered view is empty.
+            screen.query_one("#debug-level-filter", Select).value = "only:CRITICAL"
+            await pilot.pause()
+
+            await pilot.press("c")
+            await pilot.pause()
+
+            latest = list(app._notifications)[-1]
+            assert latest.severity == "information"
+            assert "No visible log lines" in latest.message
+
+    async def test_wrapped_record_maps_clicks_and_arrows_as_one_unit(self) -> None:
+        logger.info("W" * 240)  # long enough to wrap to multiple visual lines
+        logger.info("debug-console-after-wrap-marker")
+        app = _Harness()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            wrap_index = next(
+                index
+                for index, record in enumerate(log.records)
+                if record.message.startswith("WWW")
+            )
+            start = log._wrap_prefix[wrap_index]
+            span = log._wrap_prefix[wrap_index + 1] - start
+
+            # The record occupies more visual lines than it is logical records.
+            assert span > 1
+            assert log.line_count > len(log.records)
+
+            # A click on the continuation line maps back to the same record.
+            assert log._record_at_visual_y(start + 1) is log.records[wrap_index]
+
+            # Selecting it highlights every visual row it spans, not just the first.
+            log._select_record(wrap_index)
+            await pilot.pause()
+            scroll_y = log.scroll_offset.y
+            for visual_y in (start, start + 1):
+                strip = log.render_line(visual_y - scroll_y)
+                assert strip._segments[0].style is not None
+                assert strip._segments[0].style.bgcolor is not None
+
+            # One arrow press moves a whole logical record across the wrap.
+            log.focus()
+            log._select_record(wrap_index + 1)
+            await pilot.press("up")
+            await pilot.pause()
+            assert log._selected_index == wrap_index
+
+    async def test_multiline_record_spans_multiple_visual_lines(self) -> None:
+        record = _log_record("first-line\nsecond-line\nthird-line")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            log.set_records([record])
+            await pilot.pause()
+
+            # One logical record, three visual lines from the embedded newlines.
+            assert len(log.records) == 1
+            assert log.line_count >= 3
+
+    async def test_selecting_offscreen_record_scrolls_into_view(self) -> None:
+        for index in range(120):
+            logger.info("debug-console-scroll-marker-%s", index)
+        app = _Harness()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert log.line_count > log.size.height  # content overflows the viewport
+            log.focus()
+
+            log._select_record(0)  # jump to the top
+            await pilot.pause()
+            assert log.scroll_offset.y == 0
+
+            log._select_record(len(log.records) - 1)  # jump to the bottom
+            await pilot.pause()
+            assert log.scroll_offset.y > 0
+
     async def test_empty_snapshot_renders_placeholder(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -122,7 +371,6 @@ class TestDebugConsoleScreen:
             log = screen.query_one("#debug-log", _DebugLogView)
             assert log.line_count == 0
             assert screen._rendered_upto == buffer.total_emitted
-            assert screen._view_floor == buffer.total_emitted
 
     async def test_copy_key_invokes_clipboard_with_retained_lines(
         self, monkeypatch: pytest.MonkeyPatch
@@ -413,6 +661,27 @@ class TestDebugConsoleScreen:
             await pilot.press("escape")
             await pilot.pause()
             assert not isinstance(app.screen, DebugConsoleScreen)
+
+
+class TestRecordMatchesFilter:
+    def test_all_matches_everything(self) -> None:
+        record = _log_record("x", level="DEBUG", levelno=logging.DEBUG)
+        assert _record_matches_filter(record, "all")
+
+    def test_min_and_only_modes(self) -> None:
+        info = _log_record("i", level="INFO", levelno=logging.INFO)
+        warning = _log_record("w", level="WARNING", levelno=logging.WARNING)
+        assert not _record_matches_filter(info, "min:WARNING")
+        assert _record_matches_filter(warning, "min:WARNING")
+        assert _record_matches_filter(warning, "only:WARNING")
+        assert not _record_matches_filter(info, "only:WARNING")
+
+    def test_custom_numeric_level_sorts_by_levelno(self) -> None:
+        # A custom level between INFO and WARNING. The old name-based lookup
+        # mapped unknown names to 0 and mis-sorted them below DEBUG.
+        notice = _log_record("n", level="NOTICE", levelno=25)
+        assert _record_matches_filter(notice, "min:INFO")
+        assert not _record_matches_filter(notice, "min:WARNING")
 
 
 class TestDebugConsoleToggle:

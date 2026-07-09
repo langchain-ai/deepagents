@@ -365,6 +365,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
+    from deepagents_code.tui.widgets.debug_console import SnapshotField
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
@@ -1953,6 +1954,9 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding(
+            # Mirrors DEBUG_TOGGLE_KEY in tui.widgets.debug_console; the literal
+            # is repeated here to avoid an eager import at class-body scope (see
+            # the startup-performance rules in AGENTS.md).
             "ctrl+backslash",
             "toggle_debug_console",
             "Debug Console",
@@ -14270,7 +14274,7 @@ class DeepAgentsApp(App):
 
     def action_toggle_debug_console(self) -> None:
         """Toggle the Debug Console overlay via keybind or the `/debug` command."""
-        from deepagents_code.widgets.debug_console import DebugConsoleScreen
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         if isinstance(self.screen, DebugConsoleScreen):
             self.pop_screen()
@@ -14281,7 +14285,7 @@ class DeepAgentsApp(App):
 
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
-        from deepagents_code.widgets.debug_console import DebugConsoleScreen
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         def handle_result(_: None) -> None:
             if self._chat_input:
@@ -14291,7 +14295,7 @@ class DeepAgentsApp(App):
             DebugConsoleScreen(self._build_debug_snapshot()), handle_result
         )
 
-    def _build_debug_snapshot(self) -> list[tuple[str, str]]:
+    def _build_debug_snapshot(self) -> list[SnapshotField]:
         """Capture a point-in-time session/runtime snapshot for the console.
 
         Each field is captured defensively: a subsystem that raises degrades to
@@ -14299,17 +14303,23 @@ class DeepAgentsApp(App):
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
-            Ordered ``(label, value)`` pairs for the console header.
+            Ordered ``(label, value)`` fields for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._version import __version__
+        from deepagents_code.tui.widgets.debug_console import SnapshotField
 
-        def _safe(label: str, fn: Callable[[], str]) -> tuple[str, str]:
+        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
             try:
-                return (label, fn())
+                return SnapshotField(label=label, value=fn())
             except Exception as exc:  # a diagnostic must still open on a bad field
-                logger.debug("Debug snapshot field %r failed", label, exc_info=True)
-                return (label, f"(unavailable: {type(exc).__name__})")
+                # WARNING (not DEBUG) so the traceback lands in the always-on
+                # in-memory buffer and is visible in the console itself; the
+                # package logger sits at INFO by default, which drops DEBUG.
+                logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                return SnapshotField(
+                    label=label, value=f"(unavailable: {type(exc).__name__})"
+                )
 
         def _mcp() -> str:
             servers = self._mcp_server_info or []

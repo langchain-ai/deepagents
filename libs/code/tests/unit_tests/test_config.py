@@ -3229,13 +3229,17 @@ class TestQuietSdkTracingLogging:
 
         monkeypatch.delenv(DEBUG, raising=False)
         for name in ("langsmith", "langchain"):
-            logging.getLogger(name).handlers.clear()
+            logger = logging.getLogger(name)
+            logger.handlers.clear()
+            logger.setLevel(logging.NOTSET)
 
         _quiet_sdk_tracing_logging()
 
         for name in ("langsmith", "langchain"):
-            handlers = logging.getLogger(name).handlers
+            logger = logging.getLogger(name)
+            handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
+            assert logger.level == logging.NOTSET
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""

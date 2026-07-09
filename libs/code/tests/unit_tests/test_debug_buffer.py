@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -33,6 +34,12 @@ def _record(name: str, message: str, level: int = logging.INFO) -> logging.LogRe
     )
 
 
+def _lines(buffer: InMemoryLogBuffer, index: int) -> list[str]:
+    """Return the retained plain-text lines from *index* onward."""
+    records, _total = buffer.snapshot_records_since(index)
+    return [record.plain_line for record in records]
+
+
 @pytest.fixture
 def _restore_global_buffer() -> Generator[None]:
     """Preserve the module-level singleton across install-mutating tests.
@@ -51,50 +58,88 @@ class TestInMemoryLogBuffer:
     def test_captures_and_formats_records(self) -> None:
         buffer = InMemoryLogBuffer()
         buffer.emit(_record("deepagents_code.x", "hello"))
-        lines = buffer.lines_since(0)
+        lines = _lines(buffer, 0)
         assert len(lines) == 1
         assert "hello" in lines[0]
         assert "INFO" in lines[0]
         assert "deepagents_code.x" in lines[0]
 
+    def test_rejects_non_positive_capacity(self) -> None:
+        with pytest.raises(ValueError, match="capacity must be >= 1"):
+            InMemoryLogBuffer(capacity=0)
+        with pytest.raises(ValueError, match="capacity must be >= 1"):
+            InMemoryLogBuffer(capacity=-1)
+
+    def test_records_carry_numeric_level(self) -> None:
+        buffer = InMemoryLogBuffer()
+        buffer.emit(_record("deepagents_code.x", "hello", level=logging.WARNING))
+        records, _total = buffer.snapshot_records_since(0)
+        assert records[0].level == "WARNING"
+        assert records[0].levelno == logging.WARNING
+
+    def test_captures_exception_traceback_in_message(self) -> None:
+        buffer = InMemoryLogBuffer()
+        try:
+            msg = "boom-detail"
+            raise ValueError(msg)  # noqa: TRY301  # deliberately raised to capture a traceback
+        except ValueError:
+            record = logging.LogRecord(
+                name="deepagents_code.x",
+                level=logging.ERROR,
+                pathname=__file__,
+                lineno=1,
+                msg="handler failed",
+                args=(),
+                exc_info=sys.exc_info(),
+            )
+        buffer.emit(record)
+
+        records, _total = buffer.snapshot_records_since(0)
+        message = records[0].message
+        # The exception text is appended to the message as multiple lines.
+        assert "handler failed" in message
+        assert "Traceback" in message
+        assert "boom-detail" in message
+        assert "\n" in message
+
     def test_is_bounded_dropping_oldest(self) -> None:
         buffer = InMemoryLogBuffer(capacity=3)
         for i in range(5):
             buffer.emit(_record("deepagents_code", f"msg{i}"))
-        lines = buffer.lines_since(0)
+        lines = _lines(buffer, 0)
         assert len(lines) == 3
         assert "msg2" in lines[0]
         assert "msg4" in lines[-1]
         assert buffer.total_emitted == 5
 
-    def test_lines_since_uses_absolute_index(self) -> None:
+    def test_snapshot_uses_absolute_index(self) -> None:
         buffer = InMemoryLogBuffer(capacity=10)
         for i in range(4):
             buffer.emit(_record("deepagents_code", f"msg{i}"))
-        tail = buffer.lines_since(2)
+        tail = _lines(buffer, 2)
         assert len(tail) == 2
         assert "msg2" in tail[0]
-        assert buffer.lines_since(4) == []
-        assert len(buffer.lines_since(-5)) == 4
+        assert _lines(buffer, 4) == []
+        assert len(_lines(buffer, -5)) == 4
 
-    def test_lines_since_after_eviction(self) -> None:
+    def test_snapshot_after_eviction(self) -> None:
         buffer = InMemoryLogBuffer(capacity=2)
         for i in range(5):
             buffer.emit(_record("deepagents_code", f"msg{i}"))
-        assert len(buffer.lines_since(0)) == 2
-        assert buffer.lines_since(4) == [buffer.lines_since(0)[-1]]
+        assert len(_lines(buffer, 0)) == 2
+        assert _lines(buffer, 4) == [_lines(buffer, 0)[-1]]
 
-    def test_snapshot_since_returns_lines_and_next_index(self) -> None:
+    def test_snapshot_since_returns_records_and_next_index(self) -> None:
         buffer = InMemoryLogBuffer(capacity=10)
         for i in range(3):
             buffer.emit(_record("deepagents_code", f"msg{i}"))
 
-        lines, total = buffer.snapshot_since(1)
+        records, total = buffer.snapshot_records_since(1)
 
         assert total == 3
-        assert len(lines) == 2
-        assert "msg1" in lines[0]
-        assert "msg2" in lines[1]
+        assert len(records) == 2
+        assert "msg1" in records[0].message
+        assert "msg2" in records[1].message
 
     def test_snapshot_records_since_returns_structured_records(self) -> None:
         buffer = InMemoryLogBuffer(capacity=10)
@@ -107,9 +152,9 @@ class TestInMemoryLogBuffer:
         assert records[0].level == "WARNING"
         assert records[0].logger == "deepagents_code.x"
         assert records[0].message == "hello"
-        assert records[0].plain_line in buffer.lines_since(0)
+        assert records[0].plain_line in _lines(buffer, 0)
 
-    def test_lines_since_is_safe_during_concurrent_emit(self) -> None:
+    def test_snapshot_is_safe_during_concurrent_emit(self) -> None:
         buffer = InMemoryLogBuffer(capacity=50)
         stop = threading.Event()
         errors: list[BaseException] = []
@@ -128,7 +173,9 @@ class TestInMemoryLogBuffer:
         thread.start()
         try:
             for _ in range(500):
-                _lines, _total = buffer.snapshot_since(0)
+                records, total = buffer.snapshot_records_since(0)
+                # No torn read: the resume index is never behind the records.
+                assert total >= len(records)
         finally:
             stop.set()
             thread.join(timeout=1)
@@ -165,6 +212,17 @@ class TestInstallLogBuffer:
         assert logger.level == logging.DEBUG
 
     @pytest.mark.usefixtures("_restore_global_buffer")
+    def test_install_lowers_high_level_without_env(self) -> None:
+        # A logger above INFO with no explicit env override drops to INFO so the
+        # always-on tail stays useful even when DEEPAGENTS_CODE_DEBUG is off.
+        logger = logging.getLogger("deepagents_code._test_level_high_no_env")
+        logger.handlers = []
+        logger.setLevel(logging.WARNING)
+        with patch.dict(os.environ, {}, clear=True):
+            install_log_buffer(logger)
+        assert logger.level == logging.INFO
+
+    @pytest.mark.usefixtures("_restore_global_buffer")
     def test_install_preserves_explicit_env_log_level(self) -> None:
         logger = logging.getLogger("deepagents_code._test_level_warning")
         logger.handlers = []
@@ -182,4 +240,4 @@ class TestInstallLogBuffer:
         before = buffer.total_emitted
         logger.info("captured-line")
         assert buffer.total_emitted == before + 1
-        assert any("captured-line" in line for line in buffer.lines_since(before))
+        assert any("captured-line" in line for line in _lines(buffer, before))

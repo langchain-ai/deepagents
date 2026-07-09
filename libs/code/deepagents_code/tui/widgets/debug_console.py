@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import bisect
 import logging
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, cast
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -29,7 +29,12 @@ from textual.widgets._select import (  # noqa: PLC2701  # needed to keep Tab nav
 )
 
 from deepagents_code import theme
-from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
+from deepagents_code._debug import LOG_LEVELS
+from deepagents_code._debug_buffer import (
+    DEFAULT_CAPACITY,
+    InMemoryLogRecord,
+    get_log_buffer,
+)
 from deepagents_code.clipboard import copy_text_to_clipboard
 from deepagents_code.unicode_security import sanitize_control_chars
 
@@ -39,11 +44,28 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+logger = logging.getLogger(__name__)
+
 DEBUG_TOGGLE_KEY = "ctrl+backslash"
 r"""Textual key name for the `Ctrl+\` chord that toggles the console."""
 
+
+class SnapshotField(NamedTuple):
+    """A single `label`/`value` row in the console's session snapshot.
+
+    A named pair (rather than a bare ``tuple[str, str]``) so the two display-only
+    string slots cannot be silently transposed at the construction site.
+    """
+
+    label: str
+    value: str
+
+
 _REFRESH_INTERVAL = 0.5
 """Seconds between log-tail refresh ticks."""
+
+_RECORD_LIMIT = DEFAULT_CAPACITY
+"""Maximum records retained by an open debug console view."""
 
 _FILTER_SELECT_ID = "debug-level-filter"
 FilterValue = Literal[
@@ -74,13 +96,6 @@ _DEBUG_FILTER_OPTIONS: tuple[tuple[str, FilterValue], ...] = (
     ("DEBUG", "min:DEBUG"),
     ("Only DEBUG", "only:DEBUG"),
 )
-_LEVEL_VALUES = {
-    "DEBUG": 10,
-    "INFO": 20,
-    "WARNING": 30,
-    "ERROR": 40,
-    "CRITICAL": 50,
-}
 _LEVEL_STYLES = {
     "DEBUG": "dim",
     "INFO": "cyan",
@@ -123,7 +138,7 @@ def _record_matches_filter(
     mode, selected_level = level_filter.split(":", maxsplit=1)
     if mode == "only":
         return record.level == selected_level
-    return _LEVEL_VALUES.get(record.level, 0) >= _LEVEL_VALUES[selected_level]
+    return record.levelno >= LOG_LEVELS[selected_level]
 
 
 def _record_to_content(record: InMemoryLogRecord) -> Content:
@@ -527,9 +542,13 @@ class DebugConsoleScreen(ModalScreen[None]):
         Binding("escape", "close", "Close", show=False),
         Binding(DEBUG_TOGGLE_KEY, "close", "Close", show=False, priority=True),
         Binding("ctrl+l", "clear_view", "Clear view", show=False, priority=True),
-        Binding("c", "copy", "Copy", show=False, priority=True),
+        # Not `priority`: a priority `c` would pre-empt type-to-search in the
+        # open level dropdown (e.g. typing "c" to reach CRITICAL). The log view
+        # has no `c` binding, so it still bubbles up to this copy action.
+        Binding("c", "copy", "Copy", show=False),
     ]
-    """Close, clear-the-view, and copy bindings (all `priority` for the modal)."""
+    """Close and clear-view are `priority`; copy bubbles so it never steals keys
+    from the level dropdown's type-to-search."""
 
     CSS = """
     DebugConsoleScreen {
@@ -595,19 +614,17 @@ class DebugConsoleScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, snapshot: Sequence[tuple[str, str]]) -> None:
+    def __init__(self, snapshot: Sequence[SnapshotField]) -> None:
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
-            snapshot: Ordered `(label, value)` pairs rendered in the header.
+            snapshot: Ordered `(label, value)` fields rendered in the header.
         """
         super().__init__()
         self._snapshot = list(snapshot)
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes).
         self._rendered_upto = 0
-        # Absolute index floor for Copy: records retained since the last clear.
-        self._view_floor = 0
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
@@ -697,6 +714,31 @@ class DebugConsoleScreen(ModalScreen[None]):
         )
 
     def _poll_logs(self) -> None:
+        """Append log records emitted since the last tick, guarding the timer.
+
+        Runs on a repeating `set_interval` timer, so an unhandled exception here
+        would propagate out of the callback and tear down the whole host app.
+        A diagnostic overlay must degrade instead: a tick that races teardown
+        (`NoMatches`) is a no-op, and any other failure degrades the tail to a
+        notice rather than crashing the app it exists to inspect.
+        """
+        from textual.css.query import NoMatches
+
+        try:
+            self._poll_logs_once()
+        except NoMatches:
+            # A queued tick fired after the console was dismissed; nothing to do.
+            return
+        except Exception:  # a diagnostic must never crash the app it inspects
+            logger.warning("Debug console log poll failed", exc_info=True)
+            try:
+                self.query_one("#debug-log", _DebugLogView).show_notice(
+                    "(log tail unavailable; see debug log)"
+                )
+            except Exception:  # best-effort notice; never re-raise from here
+                logger.debug("Debug console poll-error notice failed", exc_info=True)
+
+    def _poll_logs_once(self) -> None:
         """Append any log records emitted since the last tick to the log view."""
         log = self.query_one("#debug-log", _DebugLogView)
         buffer = get_log_buffer()
@@ -707,13 +749,29 @@ class DebugConsoleScreen(ModalScreen[None]):
             return
         records, total = buffer.snapshot_records_since(self._rendered_upto)
         self._records.extend(records)
+        pruned = self._prune_records()
         self._rendered_upto = total
         visible_records = [
             record
             for record in records
             if _record_matches_filter(record, self._level_filter)
         ]
+        if pruned:
+            self._refresh_log_view(scroll_end=log.is_vertical_scroll_end)
+            return
         log.append_records(visible_records)
+
+    def _prune_records(self) -> bool:
+        """Trim retained records to the in-memory ring buffer capacity.
+
+        Returns:
+            `True` when records were pruned.
+        """
+        overflow = len(self._records) - _RECORD_LIMIT
+        if overflow <= 0:
+            return False
+        del self._records[:overflow]
+        return True
 
     def _refresh_log_view(self, *, scroll_end: bool) -> None:
         """Rebuild the log view using the current filter."""
@@ -732,9 +790,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._records.clear()
         buffer = get_log_buffer()
         if buffer is not None:
-            total = buffer.total_emitted
-            self._rendered_upto = total
-            self._view_floor = total
+            self._rendered_upto = buffer.total_emitted
 
     def action_copy(self) -> None:
         """Copy visible retained log records since the last clear to the clipboard."""

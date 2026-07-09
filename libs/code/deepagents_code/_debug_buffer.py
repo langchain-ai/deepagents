@@ -6,17 +6,14 @@ requiring the opt-in file logging from `_debug.configure_debug_logging`. The
 handler is installed once on the `deepagents_code` package logger (see
 `__init__.py`); child module loggers reach it via propagation.
 
-The buffer only appends in-memory strings, so it is cheap enough to keep always
-on without affecting startup performance.
+Installation is negligible, and each emitted record only appends a formatted
+string to a bounded `deque`, so the buffer is cheap enough to keep always on.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import deque
-
-_BUFFER_HANDLER_ATTR = "_deepagents_code_log_buffer_handler"
-"""Marker attribute tagging the handler so install is idempotent."""
 
 DEFAULT_CAPACITY = 1000
 """Maximum number of records retained in the ring buffer."""
@@ -41,16 +38,23 @@ class InMemoryLogBuffer(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """Append the formatted *record* to the ring buffer."""
+        self.acquire()
         try:
             self._records.append(self.format(record))
             self._total += 1
         except Exception:  # noqa: BLE001  # never let logging crash the app
             self.handleError(record)
+        finally:
+            self.release()
 
     @property
     def total_emitted(self) -> int:
         """Total records ever emitted (monotonic; survives buffer eviction)."""
-        return self._total
+        self.acquire()
+        try:
+            return self._total
+        finally:
+            self.release()
 
     def lines_since(self, index: int) -> list[str]:
         """Return retained lines whose absolute emission index is `>= index`.
@@ -64,6 +68,30 @@ class InMemoryLogBuffer(logging.Handler):
         Returns:
             The formatted lines from *index* onward that are still retained.
         """
+        lines, _total = self.snapshot_since(index)
+        return lines
+
+    def snapshot_since(self, index: int) -> tuple[list[str], int]:
+        """Return retained lines and the next absolute emission index.
+
+        Callers that poll incrementally need both the retained lines and the
+        index to resume from. Returning both under the handler lock prevents a
+        concurrent append from being skipped between separate reads.
+
+        Args:
+            index: Absolute emission index to start from.
+
+        Returns:
+            A tuple of formatted lines and the current total emitted count.
+        """
+        self.acquire()
+        try:
+            return self._lines_since_unlocked(index), self._total
+        finally:
+            self.release()
+
+    def _lines_since_unlocked(self, index: int) -> list[str]:
+        """Return retained lines from *index* while the handler lock is held."""
         start_abs = self._total - len(self._records)
         offset = index - start_abs
         if offset <= 0:
@@ -83,9 +111,18 @@ def install_log_buffer(
 
     Lowers *target*'s level to at most `INFO` so the console shows a useful tail
     even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level, so the
-    `DEBUG` level set by `configure_debug_logging` is preserved. Records that
-    propagate to the root logger stay invisible because the root's
-    last-resort handler only emits `WARNING` and above.
+    `DEBUG` level set by `configure_debug_logging` is preserved.
+
+    Lowering the level does not spill log output onto the terminal: because this
+    handler is present in the propagation chain, `Logger.callHandlers` finds a
+    handler (`found > 0`) and Python's `lastResort` stderr handler is never
+    consulted. The exception is an embedding process that attaches its own
+    `INFO`-or-lower handler to the root logger, which would then see the
+    propagated records.
+
+    Note: this runs as an import-time side effect (see `__init__.py`), so every
+    `import deepagents_code` attaches the handler and may lower the package
+    logger's level to `INFO` for the lifetime of the process.
 
     Args:
         target: Logger to attach the buffer to (the package logger).
@@ -96,14 +133,11 @@ def install_log_buffer(
     """
     global _buffer  # noqa: PLW0603  # module-level singleton accessor
     for existing in target.handlers:
-        if isinstance(existing, InMemoryLogBuffer) and getattr(
-            existing, _BUFFER_HANDLER_ATTR, False
-        ):
+        if isinstance(existing, InMemoryLogBuffer):
             _buffer = existing
             return existing
 
     handler = InMemoryLogBuffer(capacity)
-    setattr(handler, _BUFFER_HANDLER_ATTR, True)
     handler.setLevel(logging.DEBUG)
     target.addHandler(handler)
     if target.level == logging.NOTSET or target.level > logging.INFO:

@@ -94,8 +94,10 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._snapshot = list(snapshot)
         # Absolute index of the next unrendered log line (incremental writes).
         self._rendered_upto = 0
-        # Absolute index floor for what "Copy" considers visible; raised on clear.
+        # Absolute index floor for Copy: lines retained since the last clear.
         self._view_floor = 0
+        # One-shot guard so the "buffer unavailable" notice is written only once.
+        self._missing_notice_shown = False
 
     def compose(self) -> ComposeResult:
         """Lay out the title, snapshot, log tail, and key-hint footer.
@@ -152,27 +154,34 @@ class DebugConsoleScreen(ModalScreen[None]):
         log = self.query_one("#debug-log", RichLog)
         buffer = get_log_buffer()
         if buffer is None:
-            if self._rendered_upto == 0:
+            if not self._missing_notice_shown:
                 log.write("(log buffer unavailable)")
-                self._rendered_upto = -1
+                self._missing_notice_shown = True
             return
-        for line in buffer.lines_since(self._rendered_upto):
+        lines, total = buffer.snapshot_since(self._rendered_upto)
+        for line in lines:
             log.write(line)
-        self._rendered_upto = buffer.total_emitted
+        self._rendered_upto = total
 
     def action_clear_view(self) -> None:
         """Clear the on-screen log view; the in-memory buffer keeps accruing."""
         self.query_one("#debug-log", RichLog).clear()
         buffer = get_log_buffer()
         if buffer is not None:
-            self._rendered_upto = buffer.total_emitted
-            self._view_floor = buffer.total_emitted
+            total = buffer.total_emitted
+            self._rendered_upto = total
+            self._view_floor = total
 
     def action_copy(self) -> None:
-        """Copy the currently-visible log lines to the clipboard."""
+        """Copy the log lines retained since the last clear to the clipboard."""
         buffer = get_log_buffer()
-        lines = buffer.lines_since(self._view_floor) if buffer is not None else []
+        lines = buffer.snapshot_since(self._view_floor)[0] if buffer is not None else []
         text = "\n".join(lines)
+        if not text:
+            self.app.notify(
+                "No log lines to copy", severity="information", timeout=2, markup=False
+            )
+            return
         success, error = copy_text_to_clipboard(self.app, text)
         if success:
             self.app.notify(

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 configure_debug_logging(logging.getLogger(__name__))  # noqa: RUF067  # package logger must be configured before child modules emit logs
-install_log_buffer(logging.getLogger(__name__))  # noqa: RUF067  # always-on in-memory tail for the Debug Console
+install_log_buffer(logging.getLogger(__name__))  # noqa: RUF067  # always-on tail must attach at import so early logs are captured
 
 __all__ = [
     "__version__",

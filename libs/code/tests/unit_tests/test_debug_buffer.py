@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 import pytest
@@ -80,6 +81,44 @@ class TestInMemoryLogBuffer:
             buffer.emit(_record("deepagents_code", f"msg{i}"))
         assert len(buffer.lines_since(0)) == 2
         assert buffer.lines_since(4) == [buffer.lines_since(0)[-1]]
+
+    def test_snapshot_since_returns_lines_and_next_index(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=10)
+        for i in range(3):
+            buffer.emit(_record("deepagents_code", f"msg{i}"))
+
+        lines, total = buffer.snapshot_since(1)
+
+        assert total == 3
+        assert len(lines) == 2
+        assert "msg1" in lines[0]
+        assert "msg2" in lines[1]
+
+    def test_lines_since_is_safe_during_concurrent_emit(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=50)
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def emit_records() -> None:
+            i = 0
+            while not stop.is_set():
+                try:
+                    buffer.emit(_record("deepagents_code", f"msg{i}"))
+                except BaseException as exc:  # noqa: BLE001  # report thread failures
+                    errors.append(exc)
+                    stop.set()
+                i += 1
+
+        thread = threading.Thread(target=emit_records)
+        thread.start()
+        try:
+            for _ in range(500):
+                _lines, _total = buffer.snapshot_since(0)
+        finally:
+            stop.set()
+            thread.join(timeout=1)
+
+        assert not errors
 
 
 class TestInstallLogBuffer:

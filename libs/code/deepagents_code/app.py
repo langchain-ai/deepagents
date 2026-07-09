@@ -13758,33 +13758,50 @@ class DeepAgentsApp(App):
     def _build_debug_snapshot(self) -> list[tuple[str, str]]:
         """Capture a point-in-time session/runtime snapshot for the console.
 
+        Each field is captured defensively: a subsystem that raises degrades to
+        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        because a diagnostic tool must still open when the app is misbehaving.
+
         Returns:
             Ordered ``(label, value)`` pairs for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._version import __version__
 
-        servers = self._mcp_server_info or []
-        if servers:
-            mcp_str = ", ".join(f"{s.name} ({s.status})" for s in servers)
-        else:
-            mcp_str = "none"
-        stats = self._session_stats
-        log_path = installed_debug_log_path()
-        tokens = (
-            f"{stats.input_tokens} in / {stats.output_tokens} out "
-            f"/ {stats.request_count} req"
-        )
+        def _safe(label: str, fn: Callable[[], str]) -> tuple[str, str]:
+            try:
+                return (label, fn())
+            except Exception as exc:  # a diagnostic must still open on a bad field
+                logger.debug("Debug snapshot field %r failed", label, exc_info=True)
+                return (label, f"(unavailable: {type(exc).__name__})")
+
+        def _mcp() -> str:
+            servers = self._mcp_server_info or []
+            if not servers:
+                return "none"
+            return ", ".join(f"{s.name} ({s.status})" for s in servers)
+
+        def _tokens() -> str:
+            stats = self._session_stats
+            return (
+                f"{stats.input_tokens} in / {stats.output_tokens} out "
+                f"/ {stats.request_count} req"
+            )
+
+        def _log_path() -> str:
+            path = installed_debug_log_path()
+            return str(path) if path else "in-memory only"
+
         return [
-            ("Version", __version__),
-            ("Model", self._effective_model_spec() or "(not configured)"),
-            ("Thread", self._lc_thread_id or "(none)"),
-            ("CWD", self._cwd),
-            ("Auto-approve", "on" if self._auto_approve else "off"),
-            ("Sandbox", self._sandbox_type or "local"),
-            ("MCP servers", mcp_str),
-            ("Tokens", tokens),
-            ("Debug log", str(log_path) if log_path else "in-memory only"),
+            _safe("Version", lambda: __version__),
+            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _safe("CWD", lambda: self._cwd),
+            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Sandbox", lambda: self._sandbox_type or "local"),
+            _safe("MCP servers", _mcp),
+            _safe("Tokens", _tokens),
+            _safe("Debug log", _log_path),
         ]
 
     def _open_notification_center(self) -> None:

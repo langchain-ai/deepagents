@@ -2225,13 +2225,23 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         # initial_prompt = "{contents of error.log}\n\nexplain this"
         ```
 
-    - If `initial_skill` is already set (`--skill`, but not `-n`), stores the
-        piped text in `initial_prompt` so the skill receives it as the
-        startup request:
+    - If `initial_skill` is already set (`--skill`, but not `-n`/`-m`) and the
+        pipe was auto-detected (no explicit `--stdin`), stores the piped text in
+        `initial_prompt` so the skill receives it as the seed for the
+        interactive TUI:
 
         ```bash
         cat diff.txt | dcode --skill code-review
         # initial_prompt = "{contents of diff.txt}"
+        ```
+
+        When `--stdin` is passed explicitly, this convenience is skipped: the
+        piped text falls through to `non_interactive_message` so the skill runs
+        headless (see below):
+
+        ```bash
+        cat diff.txt | dcode --skill code-review --stdin
+        # non_interactive_message = "{contents of diff.txt}"
         ```
 
     - Otherwise, sets `non_interactive_message` to the piped text, causing
@@ -2315,6 +2325,13 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     # in initial_prompt even when the explicit value is empty.  The --skill
     # branch only fires when -m was NOT provided; when both -m and --skill
     # are set, stdin merges with the -m value (previous branch).
+    #
+    # The --skill -> interactive `initial_prompt` routing applies only to
+    # auto-detected pipes (no explicit `--stdin`), where seeding an interactive
+    # TUI is a deliberate convenience.  When the user passes `--stdin`
+    # explicitly, that signals non-interactive intent, so we skip this branch
+    # and fall through to `non_interactive_message` (headless), which also
+    # supports `--skill`.
     if args.non_interactive_message:
         args.non_interactive_message = f"{stdin_text}\n\n{args.non_interactive_message}"
     elif args.initial_prompt is not None:
@@ -2322,7 +2339,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             args.initial_prompt = f"{stdin_text}\n\n{args.initial_prompt}"
         else:
             args.initial_prompt = stdin_text
-    elif getattr(args, "initial_skill", None):
+    elif getattr(args, "initial_skill", None) and not explicit_stdin:
         args.initial_prompt = stdin_text
     else:
         args.non_interactive_message = stdin_text

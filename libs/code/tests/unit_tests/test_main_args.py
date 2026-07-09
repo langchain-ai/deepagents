@@ -1090,6 +1090,46 @@ class TestApplyStdinPipe:
         assert args.initial_prompt == "diff contents\n\nreview this"
         assert args.non_interactive_message is None
 
+    def test_explicit_stdin_with_skill_runs_headless(self) -> None:
+        """Explicit `--stdin` + `--skill` runs headless, not the seeded TUI."""
+        args = _make_args(initial_skill="code-review", stdin=True)
+        fake_stdin = io.StringIO("review this repo")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "review this repo"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_without_skill_sets_non_interactive(self) -> None:
+        """Explicit `--stdin` with no skill/`-n`/`-m` sets non_interactive_message."""
+        args = _make_args(stdin=True)
+        fake_stdin = io.StringIO("my prompt")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "my prompt"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_prepends_to_non_interactive(self) -> None:
+        """Explicit `--stdin` still prepends to an existing -n message."""
+        args = _make_args(non_interactive_message="do something", stdin=True)
+        fake_stdin = io.StringIO("context from pipe")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.non_interactive_message == "context from pipe\n\ndo something"
+        assert args.initial_prompt is None
+
+    def test_explicit_stdin_prepends_to_initial_prompt(self) -> None:
+        """Explicit `--stdin` still merges into an existing -m message."""
+        args = _make_args(initial_prompt="explain this", stdin=True)
+        fake_stdin = io.StringIO("error log contents")
+        fake_stdin.isatty = lambda: False  # ty: ignore
+        with patch.object(sys, "stdin", fake_stdin):
+            apply_stdin_pipe(args)
+        assert args.initial_prompt == "error log contents\n\nexplain this"
+        assert args.non_interactive_message is None
+
     def test_non_interactive_takes_priority_over_initial_prompt(self) -> None:
         """When both -n and -m are set, stdin is prepended to -n."""
         args = _make_args(non_interactive_message="task", initial_prompt="ignored")

@@ -11,10 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.runtime import Runtime
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
-from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
+from deepagents.middleware.skills import SkillsMiddleware, SkillsState, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -406,6 +407,33 @@ async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -
 
     # Should return None, not load new skills
     assert result is None
+
+
+async def test_abefore_agent_reloads_when_source_token_changes(
+    tmp_path: Path,
+) -> None:
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_path = tmp_path / "skills" / "test" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        make_skill_content("test", "Test skill"),
+        encoding="utf-8",
+    )
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(tmp_path / "skills")],
+        source_version="new-version",
+    )
+    state: SkillsState = {
+        "skills_metadata": [],
+        "skills_source_version": "old-version",
+    }
+
+    result = await middleware.abefore_agent(state, Runtime(), {})
+
+    assert result is not None
+    assert result["skills_source_version"] == "new-version"
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["test"]
 
 
 async def test_agent_with_skills_middleware_multiple_sources_async(tmp_path: Path) -> None:

@@ -137,6 +137,11 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     name = "ReadFileContinuationNoticeMiddleware"
 
     @staticmethod
+    def _is_numbered_read_file_row(row: str) -> bool:
+        """Return whether `row` looks like a formatted `read_file` source line."""
+        return re.match(r"^\s*\d+(?:\.\d+)?(?:\t|\s{2,})", row) is not None
+
+    @staticmethod
     def _annotate(
         request: ToolCallRequest,
         result: ToolMessage | Command[Any],
@@ -159,7 +164,7 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             limit = _DEFAULT_READ_LIMIT
 
-        n_lines = sum(1 for row in content.split("\n") if "\t" in row and row.split("\t", 1)[0].strip().isdigit())
+        n_lines = sum(1 for row in content.split("\n") if ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row(row))
         if n_lines < limit:
             return result
 

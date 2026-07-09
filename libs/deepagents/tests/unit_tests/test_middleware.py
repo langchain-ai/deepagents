@@ -1248,15 +1248,50 @@ class TestFilesystemMiddleware:
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
     def test_format_content_with_line_numbers_short_lines(self):
-        """Test that short lines (<=10000 chars) are displayed normally."""
+        """Test that short lines (<=5000 chars) are displayed normally."""
         content = ["short line 1", "short line 2", "short line 3"]
         result = format_content_with_line_numbers(content, start_line=1)
 
+        assert result.split("\n") == [
+            "1  short line 1",
+            "2  short line 2",
+            "3  short line 3",
+        ]
+
+    def test_format_content_with_line_numbers_empty_and_single(self):
+        """Empty content yields an empty string; a single line needs no padding."""
+        assert format_content_with_line_numbers("") == ""
+        assert format_content_with_line_numbers([]) == ""
+        assert format_content_with_line_numbers(["only"]) == "1  only"
+
+    def test_format_content_with_line_numbers_aligns_across_magnitude(self):
+        """Markers right-justify to a shared width when line counts cross 9->10.
+
+        The gutter is exactly `marker_width + 2` spaces, so an over-wide gutter
+        (a `marker_width` bug) is caught here that substring checks would miss.
+        """
+        content = [f"line{i}" for i in range(12)]
+        result = format_content_with_line_numbers(content, start_line=1)
+
         lines = result.split("\n")
-        assert len(lines) == 3
-        assert "1  short line 1" in lines[0]
-        assert "2  short line 2" in lines[1]
-        assert "3  short line 3" in lines[2]
+        # Widest marker is "12" (width 2), so single-digit markers get one pad.
+        assert lines[0] == " 1  line0"
+        assert lines[8] == " 9  line8"
+        assert lines[9] == "10  line9"
+        assert lines[11] == "12  line11"
+
+    def test_format_content_with_line_numbers_offset_crosses_magnitude(self):
+        """A `start_line` offset that pushes numbers past 9 widens the gutter."""
+        content = ["a", "b", "c", "d", "e"]
+        result = format_content_with_line_numbers(content, start_line=8)
+
+        assert result.split("\n") == [
+            " 8  a",
+            " 9  b",
+            "10  c",
+            "11  d",
+            "12  e",
+        ]
 
     def test_format_content_with_line_numbers_preserves_source_tabs(self):
         """Test that source tabs remain source content after the gutter."""
@@ -1264,6 +1299,18 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(content, start_line=1)
 
         assert result.split("\n") == ["1  \tif config:", "2  \t\tbilling_cfg = {}"]
+
+    def test_format_content_with_line_numbers_preserves_source_spaces(self):
+        """Leading source spaces survive intact after the two-space gutter.
+
+        The gutter itself is spaces, so this documents that space-indented
+        source is preserved byte-for-byte even though the boundary is not
+        marked by a distinct separator character.
+        """
+        content = ["    def foo():", "        return 1"]
+        result = format_content_with_line_numbers(content, start_line=1)
+
+        assert result.split("\n") == ["1      def foo():", "2          return 1"]
 
     def test_format_content_with_line_numbers_long_line_with_continuation(self):
         """Test that long lines (>5000 chars) are split with continuation markers."""
@@ -1316,7 +1363,7 @@ class TestFilesystemMiddleware:
 
         lines = result.split("\n")
         assert len(lines) == 1
-        assert "1  " in lines[0]
+        assert lines[0].startswith("1  b")
         assert lines[0].count("b") == 5000
 
     def test_read_file_with_long_lines_shows_continuation_markers(self):

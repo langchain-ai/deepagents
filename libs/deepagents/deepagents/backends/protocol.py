@@ -420,9 +420,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Returns:
             String containing file content formatted with line numbers,
-                starting at line 1.
+                starting at `offset + 1`.
 
-                Lines longer than 2000 characters are truncated.
+                Lines longer than 5000 characters are split into multiple rows
+                with continuation markers (e.g., `5.1`, `5.2`).
 
                 Returns an error string if the file doesn't exist or can't be read.
         """

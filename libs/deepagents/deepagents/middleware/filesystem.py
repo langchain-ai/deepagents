@@ -534,7 +534,6 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
-LINE_NUMBER_WIDTH = 6
 SEARCH_TRUNCATION_NOTE = (
     "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
     "Narrow the search (a more specific pattern or a narrower path) to see the rest."

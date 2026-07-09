@@ -98,6 +98,23 @@ def _local_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
     return TStyle(foreground=TColor.parse(colors.tool), bold=True)
 
 
+def _debug_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
+    """Build the style for the `(debug enabled)` tag.
+
+    Args:
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        A bold yellow markup style under ANSI themes (whose palette the terminal
+            owns, so a parsed color could be invisible) or a bold themed warning
+            color otherwise.
+    """
+    if ansi:
+        return "bold yellow"
+    return TStyle(foreground=TColor.parse(colors.warning), bold=True)
+
+
 def _home_prefixed(cwd: str) -> str:
     """Format a directory path, using `~` for the home directory when possible.
 
@@ -125,7 +142,9 @@ def _home_prefixed(cwd: str) -> str:
 class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
-    Renders a bordered box with the product title and version, followed by rows
+    Renders a bordered box with the product title and version (annotated with
+    `(debug enabled)` when `DEEPAGENTS_CODE_DEBUG` is set and `(local)` for
+    editable installs), followed by rows
     that appear only when their data (and any env gate) is present. In render
     order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
     (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
@@ -208,7 +227,8 @@ class WelcomeBanner(Static):
             else None
         )
         self._project_urls: dict[str, str] = {}
-        self._show_thread_id = is_env_truthy(DEBUG)
+        self._debug_enabled = is_env_truthy(DEBUG)
+        self._show_thread_id = self._debug_enabled
         super().__init__(self._build_banner(), **kwargs)
 
     def on_mount(self) -> None:
@@ -350,6 +370,13 @@ class WelcomeBanner(Static):
         ]
         if not self._hide_version:
             parts.append((f"  v{__version__}", "dim"))
+            if self._debug_enabled:
+                parts.append(
+                    (
+                        " (debug enabled)",
+                        _debug_tag_style(ansi=ansi, colors=colors),
+                    )
+                )
             if _is_editable_install():
                 parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
 

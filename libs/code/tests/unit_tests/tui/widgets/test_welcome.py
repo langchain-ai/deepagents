@@ -18,6 +18,7 @@ from deepagents_code._env_vars import (
 from deepagents_code._version import __version__
 from deepagents_code.tui.widgets.welcome import (
     WelcomeBanner,
+    _debug_tag_style,
     _home_prefixed,
     _langsmith_project_link,
     _langsmith_project_link_style,
@@ -185,6 +186,28 @@ class TestLocalTagStyle:
         assert style.foreground == TColor.parse(DARK_COLORS.tool)
 
 
+class TestDebugTagStyle:
+    """Tests for the `(debug enabled)` tag style."""
+
+    def test_ansi_uses_bold_yellow_markup(self) -> None:
+        """Under ANSI themes the tag stays visible via bold yellow terminal text."""
+        from deepagents_code.theme import DARK_COLORS
+
+        assert _debug_tag_style(ansi=True, colors=DARK_COLORS) == "bold yellow"
+
+    def test_non_ansi_uses_themed_warning_color(self) -> None:
+        """Non-ANSI themes color the tag with the theme's warning color."""
+        from textual.color import Color as TColor
+        from textual.style import Style as TStyle
+
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _debug_tag_style(ansi=False, colors=DARK_COLORS)
+        assert isinstance(style, TStyle)
+        assert style.bold is True
+        assert style.foreground == TColor.parse(DARK_COLORS.warning)
+
+
 class TestTitle:
     """Tests for the banner title line."""
 
@@ -211,6 +234,37 @@ class TestTitle:
             plain = _make_banner()._build_banner().plain
         assert f"v{__version__}" in plain
         assert "(local)" in plain
+
+    def test_no_debug_tag_by_default(self) -> None:
+        """No `(debug enabled)` tag when `DEEPAGENTS_CODE_DEBUG` is unset."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner()._build_banner().plain
+        assert "(debug enabled)" not in plain
+
+    def test_marks_debug_enabled_when_env_set(self) -> None:
+        """`DEEPAGENTS_CODE_DEBUG` appends a `(debug enabled)` tag to the version."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert f"v{__version__}" in plain
+        assert "(debug enabled)" in plain
+        assert "(local)" not in plain
+
+    def test_debug_tag_precedes_local_tag(self) -> None:
+        """`(debug enabled)` renders before `(local)` when both apply."""
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert "(debug enabled)" in plain
+        assert "(local)" in plain
+        assert plain.index("(debug enabled)") < plain.index("(local)")
+
+    def test_no_debug_tag_when_version_hidden(self) -> None:
+        """`HIDE_SPLASH_VERSION` also suppresses the `(debug enabled)` tag."""
+        plain = (
+            _make_banner(env={DEBUG: "1", HIDE_SPLASH_VERSION: "1"})
+            ._build_banner()
+            .plain
+        )
+        assert "(debug enabled)" not in plain
 
 
 class TestModelLine:

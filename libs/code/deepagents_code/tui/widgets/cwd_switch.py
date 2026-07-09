@@ -20,8 +20,17 @@ if TYPE_CHECKING:
 CwdSwitchChoice = Literal["switch", "stay", "abort"]
 """Outcome of the cwd switch prompt.
 
-`"abort"` is only offered when the prompt is opened with `allow_abort=True`
-(launch-time `-r` resume) and means "don't resume; start a new session".
+`"abort"` is only offered when the prompt is opened with `allow_abort=True`.
+Its meaning depends on `abort_mode`: at launch-time `-r` resume (`"resume"`) it
+means "don't resume; start a new session", and in the in-session `/threads`
+switcher (`"switch"`) it means "cancel; keep the current thread".
+"""
+
+CwdSwitchAbortMode = Literal["resume", "switch"]
+"""Which flow opened the abort-capable prompt, selecting the abort wording.
+
+`"resume"` is the launch-time `-r` resume (abort starts a new session);
+`"switch"` is the in-session `/threads` switcher (abort cancels the switch).
 """
 
 
@@ -87,6 +96,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         thread_cwd: str,
         project_settings_change_detected: bool = False,
         allow_abort: bool = False,
+        abort_mode: CwdSwitchAbortMode = "resume",
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
@@ -94,6 +104,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
         self._allow_abort = allow_abort
+        self._abort_mode: CwdSwitchAbortMode = abort_mode
 
     def _body_text(self) -> str:
         """Return the prompt body text."""
@@ -105,11 +116,13 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             if self._project_settings_change_detected
             else ""
         )
-        abort_note = (
-            "\n\nOr abort to start a new session instead of resuming."
-            if self._allow_abort
-            else ""
-        )
+        abort_note = ""
+        if self._allow_abort:
+            abort_note = (
+                "\n\nOr abort to start a new session instead of resuming."
+                if self._abort_mode == "resume"
+                else "\n\nOr abort to cancel and keep your current thread."
+            )
         return (
             "This thread was last used from:\n"
             f"  {target}\n\n"
@@ -138,11 +151,12 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 classes="cwd-switch-body",
                 markup=False,
             )
-            help_text = (
-                "Enter: switch · Esc: stay here · A: don't resume"
-                if self._allow_abort
-                else "Enter: switch · Esc: stay here"
-            )
+            help_text = "Enter: switch · Esc: stay here"
+            if self._allow_abort:
+                abort_help = (
+                    "A: don't resume" if self._abort_mode == "resume" else "A: cancel"
+                )
+                help_text = f"{help_text} · {abort_help}"
             yield Static(
                 help_text,
                 classes="cwd-switch-help",
@@ -181,7 +195,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self.dismiss("stay")
 
     def action_abort(self) -> None:
-        """Dismiss with `abort` to skip the resume, when the prompt allows it."""
+        """Dismiss with `abort` to skip the resume/switch, when the prompt allows it."""
         if not self._allow_abort:
             return
         self.dismiss("abort")

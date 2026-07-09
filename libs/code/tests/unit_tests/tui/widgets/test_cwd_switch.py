@@ -115,6 +115,20 @@ class TestCwdSwitchAbortOption:
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
+    def test_switch_mode_uses_cancel_wording(self) -> None:
+        """The in-session `/threads` abort describes cancelling, not a new session."""
+        switch = CwdSwitchPromptScreen(
+            current_cwd="/a",
+            thread_cwd="/b",
+            allow_abort=True,
+            abort_mode="switch",
+        )
+
+        body = switch._body_text()
+        assert "new session" not in body
+        assert "cancel" in body
+        assert "keep your current thread" in body
+
     def test_action_abort_dismisses_abort_when_allowed(self) -> None:
         """Abort resolves the prompt to `abort` when offered."""
         screen = CwdSwitchPromptScreen(

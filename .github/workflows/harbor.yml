@@ -293,6 +293,7 @@ jobs:
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
       LANGSMITH_TRACING: "true"
+      OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -580,6 +581,10 @@ jobs:
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
+            --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
+          )
+          verifier_env_args=(
+            --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -617,6 +622,7 @@ jobs:
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
+            "${verifier_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \

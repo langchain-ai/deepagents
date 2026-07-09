@@ -855,16 +855,16 @@ class TestRefreshTokenSerialization:
         )
         return provider, storage
 
-    async def test_lock_timeout_falls_back_to_best_effort_refresh(
+    async def test_lock_timeout_skips_refresh_token_reuse(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A peer-held lock times out into an unlocked best-effort refresh.
+        """A peer-held lock timeout avoids replaying the refresh token.
 
         The wait is shrunk so the contended acquire times out promptly; the
-        provider must still fire the refresh (best-effort) and warn about the
-        reuse risk rather than hang or silently skip the refresh.
+        provider must not fire either its locked refresh or the delegated SDK
+        refresh while a peer may still be using the same rotating refresh token.
         """
         from filelock import FileLock
 
@@ -882,15 +882,15 @@ class TestRefreshTokenSerialization:
             flow = provider.async_auth_flow(
                 httpx.Request("POST", "https://mcp.notion.com/mcp")
             )
-            refresh_request = await anext(flow)
-            assert str(refresh_request.url) == "https://auth.example/token"
-            assert "grant_type=refresh_token" in refresh_request.content.decode()
+            actual_request = await anext(flow)
+            assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+            assert "Authorization" not in actual_request.headers
             await flow.aclose()
         finally:
             peer_lock.release()
 
         assert any(
-            "refreshing unlocked as a fallback" in record.getMessage()
+            "skipping refresh to avoid refresh-token reuse" in record.getMessage()
             for record in caplog.records
         )
 

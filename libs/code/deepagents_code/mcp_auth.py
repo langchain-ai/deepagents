@@ -186,8 +186,8 @@ _REFRESH_LOCK_TIMEOUT_SECONDS = 60.0
 Bounds the wait so a live-but-stuck peer (e.g. one whose refresh network call
 hangs) can't block tool calls indefinitely. A peer that outright crashes is not
 the concern: the OS releases an `fcntl` lock when the holding process exits. On
-timeout the provider reloads tokens from disk and refreshes best-effort (see
-`_acquire_refresh_lock`).
+timeout the provider reloads tokens from disk and avoids using any still-stale
+refresh token (see `_acquire_refresh_lock`).
 """
 
 
@@ -1266,8 +1266,8 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
 
         Returns:
             `True` when the lock was acquired; `False` when the wait timed out
-            or the lock could not be created, signalling the caller to refresh
-            best-effort after reloading.
+            or the lock could not be created, signalling the caller to avoid
+            using the possibly in-flight refresh token after reloading.
         """
         try:
             await asyncio.to_thread(
@@ -1275,27 +1275,24 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                 timeout=_REFRESH_LOCK_TIMEOUT_SECONDS,
             )
         except Timeout:
-            # Best-effort refresh keeps tool calls moving, but if a peer is
-            # genuinely mid-refresh this risks replaying an already-rotated
-            # refresh token — which the server may punish by revoking the whole
-            # token family. The caller's reload-and-recheck narrows the window;
-            # it cannot fully close it.
+            # A timeout means a peer may still be mid-refresh with this same
+            # token. Do not refresh unlocked: rotating-token servers can treat
+            # the second grant as reuse and revoke the whole token family.
             logger.warning(
                 "Timed out after %.0fs waiting for the MCP token refresh lock "
-                "for %s; refreshing unlocked as a fallback. If a peer is "
-                "mid-refresh this risks refresh-token reuse.",
+                "for %s; skipping refresh to avoid refresh-token reuse.",
                 _REFRESH_LOCK_TIMEOUT_SECONDS,
                 self.context.server_url,
             )
             return False
         except OSError as exc:
             # Creating/locking the sidecar can fail (read-only or missing
-            # tokens dir, permission denial on a hardened host). Degrade to an
-            # unlocked best-effort refresh rather than failing every MCP
-            # request on a filesystem hiccup.
+            # tokens dir, permission denial on a hardened host). Avoid an
+            # unlocked refresh so we do not replay a rotating refresh token if a
+            # peer did manage to take the lock.
             logger.warning(
                 "Could not acquire the MCP token refresh lock for %s (%s); "
-                "refreshing unlocked as a fallback.",
+                "skipping refresh to avoid refresh-token reuse.",
                 self.context.server_url,
                 type(exc).__name__,
             )
@@ -1303,25 +1300,27 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         return True
 
     @contextlib.asynccontextmanager
-    async def _refresh_lock_guard(self, lock_path: Path) -> AsyncIterator[None]:
+    async def _refresh_lock_guard(self, lock_path: Path) -> AsyncIterator[bool]:
         """Hold the cross-process refresh lock across the serialized refresh.
 
         Acquires the lock (waiting up to `_REFRESH_LOCK_TIMEOUT_SECONDS`; on
-        timeout it proceeds unlocked — see `_acquire_refresh_lock`) and always
-        releases it on exit. Release is gated on `lock.is_locked` rather than
-        the acquire result, so a cancellation that lands *after* the worker
+        timeout it yields `False` so the caller can avoid the refresh grant) and
+        always releases it on exit. Release is gated on `lock.is_locked` rather
+        than the acquire result, so a cancellation that lands *after* the worker
         thread took the lock still frees it instead of orphaning it until GC.
 
         Args:
             lock_path: Sibling `.lock` path from `FileTokenStorage`.
+
+        Yields:
+            Whether the refresh lock was acquired.
         """
         # `thread_local=False` because acquire and release run in different
         # `asyncio.to_thread` worker threads; the default would refuse the
         # cross-thread release and leak the OS lock until process exit.
         lock = FileLock(str(lock_path), thread_local=False)
         try:
-            await self._acquire_refresh_lock(lock)
-            yield
+            yield await self._acquire_refresh_lock(lock)
         finally:
             if lock.is_locked:
                 await asyncio.to_thread(lock.release)
@@ -1449,7 +1448,7 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                 # so a file lock is required for the cross-process case.
                 async with self._refresh_lock_guard(
                     self.context.storage.refresh_lock_path
-                ):
+                ) as refresh_lock_acquired:
                     # A peer may have rotated the token while we waited for the
                     # lock; reload so a now-valid token skips the refresh.
                     await self._reload_tokens_from_storage()
@@ -1457,15 +1456,22 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         not self.context.is_token_valid()
                         and self.context.can_refresh_token()
                     ):
-                        # ASYNC119: the refresh lock must stay held across this
-                        # yield — the request/response round-trip is the
-                        # critical section being serialized. Release is safe
-                        # because httpx deterministically drives and
-                        # `aclose()`s this generator (see the delegation note
-                        # below), so the guard's `finally` runs rather than
-                        # deferring cleanup to GC.
-                        refresh_response = yield await self._refresh_token()  # noqa: ASYNC119
-                        await self._handle_locked_refresh_response(refresh_response)
+                        if refresh_lock_acquired:
+                            # ASYNC119: the refresh lock must stay held across this
+                            # yield — the request/response round-trip is the
+                            # critical section being serialized. Release is safe
+                            # because httpx deterministically drives and
+                            # `aclose()`s this generator (see the delegation note
+                            # below), so the guard's `finally` runs rather than
+                            # deferring cleanup to GC.
+                            refresh_response = yield await self._refresh_token()  # noqa: ASYNC119
+                            await self._handle_locked_refresh_response(refresh_response)
+                        else:
+                            # The delegated SDK flow has its own refresh branch;
+                            # clear only in-memory tokens so this request falls
+                            # through to re-auth instead of replaying the refresh
+                            # token while another process may still be using it.
+                            self.context.clear_tokens()
 
         # Delegate to the SDK flow by manually pumping the inner generator so
         # the HTTP responses httpx feeds back via `auth_flow.asend(response)`

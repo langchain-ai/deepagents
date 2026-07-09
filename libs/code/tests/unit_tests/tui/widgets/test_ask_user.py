@@ -531,6 +531,92 @@ class TestAskUserMenu:
             assert qw0.has_class("ask-user-question-active")
             assert qw1.has_class("ask-user-question-inactive")
 
+    async def test_clicking_text_question_moves_active_highlight(self) -> None:
+        """Clicking a dimmed text question makes it the active/highlighted one."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+            qw1 = menu._question_widgets[1]
+            assert qw0.has_class("ask-user-question-active")
+
+            second_input = qw1.query_one(".ask-user-text-input", AskUserTextArea)
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            assert menu._current_question == 1
+            assert qw1.has_class("ask-user-question-active")
+            assert qw0.has_class("ask-user-question-inactive")
+            assert not qw0.has_class("ask-user-question-active")
+            assert second_input.has_focus
+
+    async def test_clicking_multiple_choice_question_moves_active_highlight(
+        self,
+    ) -> None:
+        """Clicking a dimmed multiple-choice question highlights it."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {
+                    "question": "Size?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "S"}, {"value": "M"}],
+                },
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw0 = menu._question_widgets[0]
+            qw1 = menu._question_widgets[1]
+            assert qw0.has_class("ask-user-question-active")
+
+            await pilot.click(qw1)
+            await pilot.pause()
+
+            assert menu._current_question == 1
+            assert qw1.has_class("ask-user-question-active")
+            assert qw0.has_class("ask-user-question-inactive")
+
+    async def test_focus_sync_does_not_steal_focus_from_clicked_widget(self) -> None:
+        """Syncing the highlight must not move focus off the clicked question."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Q1?", "type": "text"},
+                {"question": "Q2?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw1 = menu._question_widgets[1]
+            second_input = qw1.query_one(".ask-user-text-input", AskUserTextArea)
+
+            await pilot.click(second_input)
+            await pilot.pause()
+
+            # Typing lands in the clicked question's input, not the first one.
+            await pilot.press("h", "i")
+            await pilot.pause()
+            assert second_input.text == "hi"
+            first_input = menu._question_widgets[0].query_one(
+                ".ask-user-text-input", AskUserTextArea
+            )
+            assert first_input.text == ""
+
     async def test_previous_question_clamps_at_first(self) -> None:
         """At first question: previous is a no-op."""
         app = _AskUserTestApp(

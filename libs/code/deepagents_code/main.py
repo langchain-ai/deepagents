@@ -876,6 +876,7 @@ def _auto_install_ripgrep_cli(
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
+        ManagedToolUnavailableError,
         ensure_ripgrep,
         managed_rg_path,
         prepend_managed_bin_to_path,
@@ -892,6 +893,10 @@ def _auto_install_ripgrep_cli(
             "[bold red]Error:[/bold red] ripgrep auto-install aborted: downloaded "
             "archive failed SHA-256 verification. Refusing to install."
         )
+        return missing_tools
+    except ManagedToolUnavailableError as exc:
+        logger.info("ripgrep auto-install unavailable: %s", exc.reason)
+        warn_console.print(f"[yellow]Warning:[/yellow] {exc.message}")
         return missing_tools
     except Exception:
         logger.warning("ripgrep auto-install failed unexpectedly", exc_info=True)

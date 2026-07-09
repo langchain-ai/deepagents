@@ -3427,6 +3427,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.main import _should_ensure_managed_ripgrep
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
+                    ManagedToolUnavailableError,
                     ensure_ripgrep,
                     managed_rg_path,
                     prepend_managed_bin_to_path,
@@ -3460,6 +3461,14 @@ class DeepAgentsApp(App):
                 self.notify(
                     "ripgrep auto-install aborted: checksum verification failed.",
                     severity="error",
+                    timeout=15,
+                    markup=False,
+                )
+            except ManagedToolUnavailableError as exc:
+                logger.info("ripgrep auto-install unavailable: %s", exc.reason)
+                self.notify(
+                    exc.message,
+                    severity="warning",
                     timeout=15,
                     markup=False,
                 )

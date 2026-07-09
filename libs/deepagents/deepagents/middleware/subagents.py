@@ -610,7 +610,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
 
         structured = result.get("structured_response")
         if structured is not None:

@@ -15020,6 +15020,8 @@ class TestNotificationCenterIntegration:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._push_screen_wait = AsyncMock()  # ty: ignore
+            messages: list[str] = []
+            app.notify = lambda message, **_: messages.append(message)  # ty: ignore
             with caplog.at_level(logging.WARNING):
                 await app._dispatch_notification_action(
                     entry.key, ActionId.ENTER_API_KEY
@@ -15027,9 +15029,11 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
 
         app._push_screen_wait.assert_not_awaited()  # ty: ignore
-        # Non-service tool: nothing opened, entry untouched, dev-facing log only.
+        # Non-service tool: nothing opened and the entry is untouched, but the
+        # user is told why (dev-facing log) plus a warning toast.
         assert app._notice_registry.get("dep:ripgrep") is entry
         assert "Unknown action_id" in caplog.text
+        assert any("No API-key entry is available" in m for m in messages)
 
     async def test_enter_api_key_esc_returns_to_notification_center(self) -> None:
         """Esc in the API-key prompt returns to the center, not the base screen."""
@@ -15122,6 +15126,84 @@ class TestNotificationCenterIntegration:
 
             assert app._notice_registry.get("dep:tavily") is None
             assert not isinstance(app.screen, NotificationCenterScreen)
+
+    async def test_enter_api_key_reload_failure_surfaces_toast(self) -> None:
+        """A reload race after saving logs and toasts instead of vanishing."""
+        from textual.css.query import NoMatches
+
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.tui.widgets.auth import AuthResult
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationActionRequested,
+            NotificationCenterScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._notice_registry.add(_service_dep_entry("tavily"))
+        app._notice_registry.add(_missing_dep_entry("ripgrep"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._open_notification_center()
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+            toasts: list[tuple[str, object]] = []
+            app.notify = lambda message, **kw: toasts.append(  # ty: ignore
+                (message, kw.get("severity"))
+            )
+
+            assert isinstance(app.screen, NotificationCenterScreen)
+            race = NoMatches("scroll detached")
+            app.screen.reload = AsyncMock(side_effect=race)  # ty: ignore
+            app.screen.post_message(
+                NotificationActionRequested("dep:tavily", ActionId.ENTER_API_KEY)
+            )
+            for _ in range(6):
+                await pilot.pause()
+
+            # The save side effect still applied, and the failed refresh
+            # surfaced as a warning toast rather than vanishing in the worker.
+            assert app._notice_registry.get("dep:tavily") is None
+            assert any(
+                sev == "warning" and "Could not refresh notifications" in msg
+                for msg, sev in toasts
+            )
+
+    async def test_refresh_open_center_noops_when_center_not_top(self) -> None:
+        """The guard skips reload when the center is no longer the active screen."""
+        from textual.screen import ModalScreen
+        from textual.widgets import Static
+
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        class _Blocker(ModalScreen[None]):
+            def compose(self):  # noqa: ANN202
+                yield Static("blocker")
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._notice_registry.add(_service_dep_entry("tavily"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._open_notification_center()
+            await pilot.pause()
+            center = app.screen
+            assert isinstance(center, NotificationCenterScreen)
+
+            center.reload = AsyncMock()  # ty: ignore
+
+            # Push another modal so the center is no longer on top, then run
+            # the shared refresh directly: it must see a non-center screen
+            # and skip the reload entirely.
+            await app.push_screen(_Blocker())
+            await pilot.pause()
+            assert not isinstance(app.screen, NotificationCenterScreen)
+
+            await app._refresh_open_center()
+
+            center.reload.assert_not_awaited()  # ty: ignore
 
     async def test_suppress_message_reloads_center_in_place(self) -> None:
         """Posting NotificationSuppressRequested refreshes the open center."""

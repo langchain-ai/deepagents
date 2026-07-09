@@ -201,6 +201,11 @@ class TestNotificationCenterScreen:
             ("dep:tavily", ActionId.ENTER_API_KEY)
         ]
 
+    def test_action_requested_rejects_non_in_place_action(self) -> None:
+        """Constructing the message with a terminal action fails fast."""
+        with pytest.raises(ValueError, match="not an in-place action"):
+            NotificationActionRequested("dep:ripgrep", ActionId.INSTALL)
+
     async def test_reload_rebuilds_rows_and_preserves_selection_by_key(self) -> None:
         """`reload` re-renders the list and keeps the cursor on the same entry."""
         dep = _dep_entry()

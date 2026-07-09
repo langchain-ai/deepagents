@@ -13783,33 +13783,9 @@ class DeepAgentsApp(App):
         message: NotificationSuppressRequested,
     ) -> None:
         """Suppress the notice in place and refresh the open center."""
-        from deepagents_code.tui.widgets.notification_center import (
-            NotificationCenterScreen,
-        )
-
         message.stop()
         await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
-        screen = self.screen
-        if not isinstance(screen, NotificationCenterScreen):
-            return
-        try:
-            await screen.reload(self._notice_registry.list_all())
-        except Exception as exc:  # defend against dismiss/mount races
-            # A concurrent dismissal can detach the VerticalScroll before
-            # `reload` queries it. The worst case is a stale row list,
-            # which the next open of the center will heal. Log + toast
-            # so the failure surfaces instead of vanishing into a worker.
-            logger.warning(
-                "Failed to refresh notification center after suppress: %s",
-                exc,
-                exc_info=True,
-            )
-            self.notify(
-                f"Could not refresh notifications: {type(exc).__name__}: {exc}",
-                severity="warning",
-                timeout=6,
-                markup=False,
-            )
+        await self._refresh_open_center()
 
     def on_notification_action_requested(
         self,
@@ -13822,6 +13798,10 @@ class DeepAgentsApp(App):
         block the message pump while that modal awaits input.
         """
         message.stop()
+        # `group` is for observability only; with `exclusive=False` it does
+        # not single-flight. `exclusive=True` would be wrong here — a
+        # re-trigger for the same key would cancel an in-progress API-key
+        # prompt mid-entry.
         self.run_worker(
             self._dispatch_in_place_notification_action(
                 message.key,
@@ -13843,21 +13823,36 @@ class DeepAgentsApp(App):
         the center is reloaded so any handled entry drops out; reloading an
         empty list dismisses the center.
         """
+        await self._dispatch_notification_action(key, action_id)
+        await self._refresh_open_center()
+
+    async def _refresh_open_center(self) -> None:
+        """Reload the notification center if it is still the active screen.
+
+        Shared tail of the in-place action handlers (SUPPRESS and the
+        `IN_PLACE_ACTIONS` worker). No-ops when the center is no longer on
+        top — e.g. concurrently dismissed — because the registry is already
+        authoritative and the next open re-renders from it.
+
+        A `NoMatches` from a dismiss/mount race — a concurrent dismissal can
+        detach the `VerticalScroll` before `reload` queries it — is
+        downgraded to a warning toast; the worst case is a stale or
+        partially-rebuilt row list, which the next open heals. Any other
+        exception is a genuine `reload` bug and propagates so it surfaces
+        instead of being mischaracterized as a transient race.
+        """
+        from textual.css.query import NoMatches
+
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
-        await self._dispatch_notification_action(key, action_id)
         screen = self.screen
         if not isinstance(screen, NotificationCenterScreen):
             return
         try:
             await screen.reload(self._notice_registry.list_all())
-        except Exception as exc:  # defend against dismiss/mount races
-            # A concurrent dismissal can detach the VerticalScroll before
-            # `reload` queries it. The worst case is a stale row list,
-            # which the next open of the center will heal. Log + toast
-            # so the failure surfaces instead of vanishing into a worker.
+        except NoMatches as exc:  # dismiss/mount race detached the scroll
             logger.warning(
                 "Failed to refresh notification center after in-place action: %s",
                 exc,
@@ -14094,7 +14089,17 @@ class DeepAgentsApp(App):
         # exactly membership in `SERVICE_API_KEY_ENV`.
         env_var = SERVICE_API_KEY_ENV.get(service)
         if env_var is None:
+            # Misconfiguration: an ENTER_API_KEY action on a tool with no
+            # known env var. Log for devs, and tell the user why nothing
+            # opened — via the in-place path the center would otherwise just
+            # reload unchanged with no explanation.
             self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            self.notify(
+                f"No API-key entry is available for {service}.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
             return
 
         from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult

@@ -4,9 +4,10 @@ Surfaces a list of `PendingNotification` entries as single-line rows.
 Selecting a row drills into a dedicated detail modal
 (`UpdateAvailableScreen` for update entries, `NotificationDetailScreen`
 otherwise) stacked on top of the center. When the detail modal
-dismisses with a terminal action the center dismisses with a
-`NotificationActionResult` so the app layer can dispatch. Actions that
-must keep the center open are handled in place: SUPPRESS via
+dismisses with a terminal action (one that closes the center) the
+center dismisses with a `NotificationActionResult` so the app layer can
+dispatch. Actions that must keep the center open are handled in place:
+SUPPRESS via
 `NotificationSuppressRequested` (so the remaining notifications stay
 reachable) and actions in `IN_PLACE_ACTIONS` via
 `NotificationActionRequested` (so a follow-up modal, e.g. the API-key
@@ -91,16 +92,27 @@ class NotificationSuppressRequested(Message):
         self.key = key
 
 
+IN_PLACE_ACTIONS: frozenset[ActionId] = frozenset({ActionId.ENTER_API_KEY})
+"""Actions handled in place without dismissing the center.
+
+Each opens a follow-up modal on top of the center, so the center stays
+mounted and Esc in that modal returns here (rationale in
+`NotificationActionRequested`). SUPPRESS is also handled in place but
+routes through its own `NotificationSuppressRequested` message, so it is
+deliberately excluded from this set.
+"""
+
+
 class NotificationActionRequested(Message):
     """Posted for an action that opens a follow-up modal in place.
 
-    Some actions (currently `ENTER_API_KEY`) push another modal, such
-    as the API-key prompt, on top of the still-open center. Dismissing
-    the center first would drop that stack, so Esc in the follow-up
-    modal would fall through to the base screen instead of returning
-    here. The app handles this message by dispatching the action while
-    the center stays mounted, then reloading it with the refreshed
-    registry snapshot.
+    Some actions (those in `IN_PLACE_ACTIONS`, currently `ENTER_API_KEY`)
+    push another modal, such as the API-key prompt, on top of the
+    still-open center. Dismissing the center first would drop that stack,
+    so Esc in the follow-up modal would fall through to the base screen
+    instead of returning here. The app handles this message by dispatching
+    the action while the center stays mounted, then reloading it with the
+    refreshed registry snapshot.
     """
 
     def __init__(self, key: str, action_id: ActionId) -> None:
@@ -108,20 +120,20 @@ class NotificationActionRequested(Message):
 
         Args:
             key: Registry key of the notification the action targets.
-            action_id: The in-place action the user selected.
+            action_id: The in-place action the user selected. Must be a
+                member of `IN_PLACE_ACTIONS`.
+
+        Raises:
+            ValueError: If `action_id` is not an in-place action, which
+                would be a programmer error (the message is only meant to
+                carry actions that keep the center open).
         """
         super().__init__()
+        if action_id not in IN_PLACE_ACTIONS:
+            msg = f"{action_id} is not an in-place action"
+            raise ValueError(msg)
         self.key = key
         self.action_id = action_id
-
-
-IN_PLACE_ACTIONS: frozenset[ActionId] = frozenset({ActionId.ENTER_API_KEY})
-"""Actions handled without dismissing the center (excluding SUPPRESS).
-
-These open a follow-up modal on top of the center; the center stays
-mounted so Esc in that modal returns here. SUPPRESS is also handled in
-place but has its own dedicated message (`NotificationSuppressRequested`).
-"""
 
 
 class _NotificationRow(Static):

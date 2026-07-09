@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_TASK_CALLS_PER_THREAD = 32
+_DEFAULT_MAX_ACTIVE_THREADS = 128
 _TASK_FUNCTION_NAME = "task"
 
 
@@ -932,6 +934,7 @@ class _Slot:
     worker: ThreadWorker
     runtime: Runtime
     repl: _ThreadREPL
+    last_used: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -949,22 +952,34 @@ class _Registry:
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
+    max_active_threads: int | None = _DEFAULT_MAX_ACTIVE_THREADS
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        if self.max_active_threads is not None and self.max_active_threads < 1:
+            msg = "`max_active_threads` must be >= 1 or None"
+            raise ValueError(msg)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
             slot = self._slots.get(thread_id)
             if slot is None:
+                self._evict_for_cap_locked()
                 slot = self._build_slot_locked(thread_id)
                 self._slots[thread_id] = slot
+            else:
+                slot.last_used = time.monotonic()
             return slot.repl
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""
         with self._lock:
             slot = self._slots.get(thread_id)
-            return slot.repl if slot is not None else None
+            if slot is None:
+                return None
+            slot.last_used = time.monotonic()
+            return slot.repl
 
     def evict(self, thread_id: str) -> None:
         """Close and remove the slot for `thread_id`. No-op if absent."""
@@ -1007,6 +1022,14 @@ class _Registry:
         # Slot was removed/replaced while rebuilding.
         with contextlib.suppress(Exception):
             new_repl.close()
+
+    def _evict_for_cap_locked(self) -> None:
+        if self.max_active_threads is None:
+            return
+        while len(self._slots) >= self.max_active_threads:
+            oldest_thread_id = min(self._slots, key=lambda t: self._slots[t].last_used)
+            slot = self._slots.pop(oldest_thread_id)
+            self._close_slot(slot)
 
     def _build_slot_locked(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"

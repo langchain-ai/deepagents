@@ -864,6 +864,70 @@ class TestOffloadingBasic:
         assert 'error="failed_to_offload"' in archive_write[1]
         assert malformed not in archive_write[1]
 
+    def test_offload_oversized_base64_writes_placeholder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Oversized inline media is rejected before upload and rewritten safely."""
+        monkeypatch.setattr("deepagents.middleware.summarization._MAX_INLINE_MEDIA_BYTES", 4)
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        raw_png = b"x" * 5
+        b64 = _base64.b64encode(raw_png).decode()
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": b64, "mime_type": "image/png"}], id="big-img"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+            call_wrap_model_call(middleware, state, runtime)
+
+        assert not [p for p, _ in backend.write_calls if p.startswith("/conversation_history/media/")]
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert 'error="failed_to_offload"' in archive_write[1]
+        assert b64 not in archive_write[1]
+
+    def test_offload_batch_size_limit_writes_placeholder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Cumulative media offload is capped across otherwise valid images."""
+        monkeypatch.setattr("deepagents.middleware.summarization._MAX_INLINE_MEDIA_BYTES", 10)
+        monkeypatch.setattr("deepagents.middleware.summarization._MAX_INLINE_MEDIA_BATCH_BYTES", 6)
+        backend = MockBackend()
+        middleware = SummarizationMiddleware(
+            model=make_mock_model(),
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        first = b"abc"
+        second = b"defg"
+        first_b64 = _base64.b64encode(first).decode()
+        second_b64 = _base64.b64encode(second).decode()
+        first_key = hashlib.sha256(first).hexdigest()[:16]
+        first_path = f"/conversation_history/media/{first_key}.png"
+        messages: list[BaseMessage] = [
+            HumanMessage(content=[{"type": "image", "base64": first_b64, "mime_type": "image/png"}], id="img-1"),
+            HumanMessage(content=[{"type": "image", "base64": second_b64, "mime_type": "image/png"}], id="img-2"),
+            *make_conversation_messages(num_old=5, num_recent=2),
+        ]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), pytest.warns(UserWarning, match="could not be offloaded"):
+            call_wrap_model_call(middleware, state, runtime)
+
+        image_uploads = [(p, c) for p, c in backend.write_calls if p.startswith("/conversation_history/media/")]
+        assert image_uploads == [(first_path, "<binary>")]
+        archive_write = next((p, c) for p, c in backend.write_calls if p.endswith(".md"))
+        assert first_path in archive_write[1]
+        assert second_b64 not in archive_write[1]
+        assert 'error="failed_to_offload"' in archive_write[1]
+
     def test_offload_non_av_media_uses_file_reference(self) -> None:
         """Non-(image/audio/video) media falls back to an XML-escaped `<file>` reference.
 

@@ -40,7 +40,7 @@ from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from langchain_quickjs._repl import _Registry
+from langchain_quickjs._repl import _DEFAULT_MAX_ACTIVE_THREADS, _Registry
 from langchain_quickjs._snapshot import encode_snapshot, replay_snapshot_chain
 from langchain_quickjs._subagent import find_subagent_task_tool
 
@@ -217,6 +217,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
+        max_active_threads: int | None = _DEFAULT_MAX_ACTIVE_THREADS,
         subagents: bool = True,
         ptc: PTCOption | None = None,
         mode: PersistenceMode | None = None,
@@ -229,6 +230,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             raise ValueError(msg)
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
+            raise ValueError(msg)
+        if max_active_threads is not None and max_active_threads < 1:
+            msg = "`max_active_threads` must be >= 1 or None"
             raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
@@ -249,6 +253,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
+            max_active_threads=max_active_threads,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}

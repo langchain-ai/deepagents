@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import inspect
 import logging
@@ -305,6 +306,19 @@ Marks the spot so the saved history shows a block was present rather than
 silently omitting it.
 """
 
+_MAX_INLINE_MEDIA_BYTES = 20 * 1024 * 1024
+"""Maximum decoded size for one inline media block during offload."""
+
+_MAX_INLINE_MEDIA_BATCH_BYTES = 200 * 1024 * 1024
+"""Maximum cumulative decoded inline media bytes per summarization offload."""
+
+
+def _estimated_base64_decoded_size(payload: str) -> int:
+    """Return an upper-bound decoded size for a base64 payload."""
+    stripped = payload.strip()
+    padding = len(stripped) - len(stripped.rstrip("="))
+    return (len(stripped) * 3 // 4) - min(padding, 2)
+
 
 def _is_data_url(url: str) -> bool:
     """Return whether `url` is an inline `data:` URL.
@@ -376,25 +390,50 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
 
     Handles both encodings a `data:` URL can use: a `;base64,` payload is
     base64-decoded, while a plain `data:<mime>,<payload>` payload is treated as
-    percent-encoded text (e.g. an inline SVG).
+    percent-encoded text (e.g. an inline SVG). Decoded media is capped so a
+    single content block cannot force unbounded allocations during summarization.
 
     Args:
         data_url: A `data:<mime>[;base64],<payload>` URL.
 
     Returns:
         A `(raw_bytes, extension, mime_type)` tuple, or `None` if decoding fails
-            (including a malformed URL with no `,` payload separator). A failure
-            is logged here and, like an upload failure, surfaces as a
-            failed-offload placeholder that counts toward the caller's aggregate
-            warning -- it is never swallowed silently.
+            (including a malformed URL with no `,` payload separator or an
+            oversized payload). A failure is logged here and, like an upload
+            failure, surfaces as a failed-offload placeholder that counts toward
+            the caller's aggregate warning -- it is never swallowed silently.
     """
     try:
         header, payload = data_url.split(",", 1)
         mime = header.split(":")[1].split(";")[0] if ":" in header else "application/octet-stream"
         ext = (mimetypes.guess_extension(mime) or ".bin").lstrip(".")
         is_base64 = "base64" in header.lower().split(";")
-        raw = base64.b64decode(payload) if is_base64 else urllib.parse.unquote_to_bytes(payload)
-    except Exception as e:  # noqa: BLE001
+
+        if is_base64:
+            if _estimated_base64_decoded_size(payload) > _MAX_INLINE_MEDIA_BYTES:
+                logger.warning(
+                    "Skipping oversized base64 media block while offloading conversation history"
+                )
+                return None
+            raw = base64.b64decode(payload.strip(), validate=True)
+        else:
+            # Percent-decoding can only shrink the payload length. Allow some
+            # expansion for percent-encoded bytes but reject clearly unbounded
+            # inline data before allocating the decoded bytes.
+            if len(payload) > _MAX_INLINE_MEDIA_BYTES * 3:
+                logger.warning(
+                    "Skipping oversized data URL media block while offloading conversation history"
+                )
+                return None
+            raw = urllib.parse.unquote_to_bytes(payload)
+
+        if len(raw) > _MAX_INLINE_MEDIA_BYTES:
+            logger.warning(
+                "Skipping decoded media block of %d bytes while offloading conversation history",
+                len(raw),
+            )
+            return None
+    except (binascii.Error, ValueError) as e:
         logger.warning("Failed to decode data: content block (%s): %s", type(e).__name__, e)
         return None
     else:
@@ -1128,6 +1167,7 @@ A condensed summary follows:
         path_map: dict[str, str] = {}  # key -> backend path (successfully uploaded)
         failed_keys: set[str] = set()  # keys whose upload failed
         saw_inline_media = False
+        uploaded_bytes = 0
 
         # First pass: upload each unique media file individually for per-block failure tracking.
         for msg in messages:
@@ -1143,6 +1183,13 @@ A condensed summary follows:
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
+                if uploaded_bytes + len(raw) > _MAX_INLINE_MEDIA_BATCH_BYTES:
+                    logger.warning(
+                        "Skipping inline media block because summarization media offload exceeded %d bytes",
+                        _MAX_INLINE_MEDIA_BATCH_BYTES,
+                    )
+                    failed_keys.add(key)
+                    continue
                 img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
                     responses = backend.upload_files([(img_path, raw)])
@@ -1155,6 +1202,7 @@ A condensed summary follows:
                         failed_keys.add(key)
                         continue
                     path_map[key] = img_path
+                    uploaded_bytes += len(raw)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "Failed to upload media %s to backend: %s: %s",
@@ -1182,6 +1230,7 @@ A condensed summary follows:
         path_map: dict[str, str] = {}
         failed_keys: set[str] = set()
         saw_inline_media = False
+        uploaded_bytes = 0
 
         for msg in messages:
             for block in msg.content_blocks:
@@ -1196,6 +1245,13 @@ A condensed summary follows:
                 key = hashlib.sha256(raw).hexdigest()[:16]
                 if key in path_map or key in failed_keys:
                     continue
+                if uploaded_bytes + len(raw) > _MAX_INLINE_MEDIA_BATCH_BYTES:
+                    logger.warning(
+                        "Skipping inline media block because summarization media offload exceeded %d bytes",
+                        _MAX_INLINE_MEDIA_BATCH_BYTES,
+                    )
+                    failed_keys.add(key)
+                    continue
                 img_path = f"{self._media_prefix}/{key}.{ext}"
                 try:
                     responses = await backend.aupload_files([(img_path, raw)])
@@ -1208,6 +1264,7 @@ A condensed summary follows:
                         failed_keys.add(key)
                         continue
                     path_map[key] = img_path
+                    uploaded_bytes += len(raw)
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "Failed to upload media %s to backend: %s: %s",

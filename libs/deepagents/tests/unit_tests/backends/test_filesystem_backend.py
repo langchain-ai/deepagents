@@ -389,6 +389,18 @@ def test_filesystem_upload_multiple_files(tmp_path: Path):
     assert (root / "subdir" / "file3.bin").read_bytes() == b"Content 3"
 
 
+def test_filesystem_upload_rejects_files_over_size_limit(tmp_path: Path):
+    """Uploads reject files larger than max_file_size_mb before writing."""
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True, max_file_size_mb=1)
+
+    responses = be.upload_files([("/too-large.bin", b"x" * (1024 * 1024 + 1))])
+
+    assert len(responses) == 1
+    assert responses[0].path == "/too-large.bin"
+    assert responses[0].error == "file_too_large:max_size_bytes=1048576"
+    assert not (tmp_path / "too-large.bin").exists()
+
+
 def test_filesystem_download_single_file(tmp_path: Path):
     """Test downloading a single file."""
     root = tmp_path

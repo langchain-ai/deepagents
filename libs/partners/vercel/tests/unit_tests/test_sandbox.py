@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from langchain_vercel_sandbox import VercelSandbox
-from langchain_vercel_sandbox.sandbox import MAX_OUTPUT_BYTES
+from langchain_vercel_sandbox.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES
 
 if TYPE_CHECKING:
     from vercel.sandbox import Sandbox
@@ -271,6 +271,16 @@ def test_download_files_rejects_relative_paths_and_preserves_order() -> None:
     assert responses[1].error is None
     assert responses[2].content is None
     assert responses[2].error == "file_not_found"
+
+
+def test_download_files_rejects_large_files() -> None:
+    sandbox = _Sandbox()
+    sandbox.files["/vercel/sandbox/large.bin"] = b"x" * (MAX_BINARY_BYTES + 1)
+
+    response = sandbox.as_backend().download_files(["/vercel/sandbox/large.bin"])[0]
+
+    assert response.content is None
+    assert response.error == f"file_too_large:max_size_bytes={MAX_BINARY_BYTES}"
 
 
 def test_download_files_surfaces_missing_sandbox() -> None:

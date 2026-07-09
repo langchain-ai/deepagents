@@ -587,6 +587,28 @@ def test_registry_reuses_thread_repl() -> None:
         reg.close()
 
 
+def test_registry_evicts_oldest_slot_when_thread_cap_reached() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_active_threads=2,
+    )
+    try:
+        thread_a = reg.get("thread-a")
+        reg.get("thread-b")
+        # Refresh thread-a so thread-b is the least recently used slot.
+        assert reg.get("thread-a") is thread_a
+
+        reg.get("thread-c")
+
+        assert set(reg._slots) == {"thread-a", "thread-c"}
+        assert "thread-b" not in reg._slots
+    finally:
+        reg.close()
+
+
 def test_registry_get_if_exists_does_not_create_slot() -> None:
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,

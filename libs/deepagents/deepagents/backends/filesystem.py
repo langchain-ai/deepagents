@@ -1086,6 +1086,15 @@ class FilesystemBackend(BackendProtocol):
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:
+                if len(content) > self.max_file_size_bytes:
+                    responses.append(
+                        FileUploadResponse(
+                            path=path,
+                            error=f"file_too_large:max_size_bytes={self.max_file_size_bytes}",
+                        )
+                    )
+                    continue
+
                 resolved_path = self._resolve_path(path)
 
                 # Create parent directories if needed

@@ -18,7 +18,7 @@ from deepagents.backends.protocol import (
     FileOperationError,
     FileUploadResponse,
 )
-from deepagents.backends.sandbox import BaseSandbox
+from deepagents.backends.sandbox import MAX_BINARY_BYTES, BaseSandbox
 
 if TYPE_CHECKING:
     from vercel.sandbox import Command, CommandFinished, Sandbox, WriteFile
@@ -162,6 +162,14 @@ class VercelSandbox(BaseSandbox):
                         path=path,
                         content=None,
                         error="sandbox not found",
+                    )
+                )
+            elif len(content) > MAX_BINARY_BYTES:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=None,
+                        error=f"file_too_large:max_size_bytes={MAX_BINARY_BYTES}",
                     )
                 )
             else:

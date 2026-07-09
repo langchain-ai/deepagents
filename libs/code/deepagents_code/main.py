@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import shlex
 import shutil
 import sys
 import traceback
@@ -38,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def _tail_log_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file."""
+    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def build_version_text() -> str:
@@ -371,7 +377,7 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         log_path = create_update_log_path()
         console.print(
-            f"Progress: tail -f {log_path}",
+            f"Update log: {_tail_log_command(log_path)}",
             style="dim",
             highlight=False,
             markup=False,
@@ -2973,7 +2979,7 @@ def cli_main() -> None:
                     sys.exit(0)
                 log_path = create_update_log_path()
                 console.print(
-                    f"Update log: {log_path} (tail -f to follow)",
+                    f"Update log: {_tail_log_command(log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3094,7 +3100,7 @@ def cli_main() -> None:
                 console.print(f"Installing package '{package}'...")
                 pkg_log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {pkg_log_path} (tail -f to follow)",
+                    f"Install log: {_tail_log_command(pkg_log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3204,7 +3210,7 @@ def cli_main() -> None:
                 console.print(f"Installing extra '{extra}'...")
                 log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {log_path} (tail -f to follow)",
+                    f"Install log: {_tail_log_command(log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,

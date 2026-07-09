@@ -1937,6 +1937,7 @@ class TestInstallExtraSubcommand:
         assert code == 0
         text = self._printed_text(console_mock)
         assert "Installed extra 'quickjs'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_failure_renders_log_path_and_manual_command(self) -> None:
         """A failed install surfaces both the log path and manual script command."""
@@ -2106,6 +2107,7 @@ class TestInstallPackageSubcommand:
         perform_mock.assert_awaited_once()
         text = self._printed_text(console_mock)
         assert "Installed package 'langchain-custom'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_package_non_interactive_without_yes_refuses(self) -> None:
         """Non-TTY stdin + no --yes must exit 2 without installing."""

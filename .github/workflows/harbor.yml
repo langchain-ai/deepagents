@@ -40,6 +40,11 @@ on:
         required: false
         default: ""
         type: string
+      dataset_path:
+        description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
+        required: false
+        default: ""
+        type: string
       models:
         description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
         required: false
@@ -191,6 +196,7 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  HARBOR_DATASET_PATH: ${{ inputs.dataset_path || '' }}
 
 jobs:
   prep:
@@ -447,7 +453,29 @@ jobs:
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
 
-          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+          dataset_args=(--dataset "$HARBOR_DATASET")
+          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          if [ -n "$HARBOR_DATASET_PATH" ]; then
+            if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
+              echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            if ! dataset_path=$(realpath "$HARBOR_DATASET_PATH"); then
+              echo "::error::Local Harbor dataset path does not exist: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            datasets_root=$(realpath datasets)
+            if [[ "$dataset_path" != "$datasets_root"/* ]] || [ ! -f "$dataset_path/dataset.toml" ]; then
+              echo "::error::Local Harbor dataset path must identify a dataset under datasets/: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            if [ "$HARBOR_N_SHARDS" != "1" ]; then
+              echo "::error::Local Harbor datasets do not support sharding; set n_shards to 1"
+              exit 1
+            fi
+            dataset_args=(--path "$dataset_path")
+            HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
+          elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
           fi
@@ -569,7 +597,6 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
@@ -609,7 +636,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET" \
+            "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \

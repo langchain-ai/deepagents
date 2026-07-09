@@ -49,6 +49,7 @@ Use a **plain tool** when:
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.fireworks import FireworksPromptCachingMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
     GRADER_SYSTEM_PROMPT,
@@ -88,6 +89,7 @@ __all__ = [
     "CriterionPass",
     "FilesystemMiddleware",
     "FilesystemPermission",
+    "FireworksPromptCachingMiddleware",
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",

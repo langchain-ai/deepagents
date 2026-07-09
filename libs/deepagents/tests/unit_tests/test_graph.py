@@ -34,6 +34,7 @@ from deepagents.graph import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.fireworks import FireworksPromptCachingMiddleware
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
@@ -435,6 +436,24 @@ class TestPromptCachingWiring:
             pytest.raises(ImportError),
         ):
             _create_bedrock_prompt_caching_middleware()
+
+    def test_main_and_general_purpose_agents_get_fireworks_prompt_caching(self) -> None:
+        """FireworksPromptCachingMiddleware is in the main and general-purpose stacks by default."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model=model)
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        assert any(isinstance(m, FireworksPromptCachingMiddleware) for m in main_stack)
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert any(isinstance(m, FireworksPromptCachingMiddleware) for m in general_purpose["middleware"])
 
 
 class TestSystemPromptAssembly:

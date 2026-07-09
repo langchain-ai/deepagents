@@ -49,6 +49,7 @@ from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.fireworks import FireworksPromptCachingMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -268,6 +269,7 @@ def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any,
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)
+    middleware.append(FireworksPromptCachingMiddleware())
 
 
 def _merge_fs_interrupt_on(

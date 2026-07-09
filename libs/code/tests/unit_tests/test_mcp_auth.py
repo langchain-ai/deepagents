@@ -759,6 +759,221 @@ class TestRefreshTokenSerialization:
         assert persisted.access_token == "at-rotated"
         assert persisted.refresh_token == "rt-rotated"
 
+    async def test_locked_refresh_rejection_delegates_to_sdk_reauth_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rejected locked refresh does not bypass the SDK re-auth fallback."""
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        delegated: dict[str, bool] = {}
+
+        async def fake_sdk_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            delegated["entered"] = True
+            assert self.context.current_tokens is None
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_sdk_flow)
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+
+        async def raise_refresh_failure(response: httpx.Response) -> bool:
+            msg = "refresh token rejected"
+            raise httpx.HTTPStatusError(
+                msg,
+                request=response.request,
+                response=response,
+            )
+
+        monkeypatch.setattr(
+            provider,
+            "_handle_refresh_response",
+            raise_refresh_failure,
+        )
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+
+        refresh_request = await anext(flow)
+        assert str(refresh_request.url) == "https://auth.example/token"
+
+        actual_request = await flow.asend(httpx.Response(401, request=refresh_request))
+
+        assert delegated == {"entered": True}
+        assert str(actual_request.url) == "https://mcp.notion.com/mcp"
+        await flow.aclose()
+
+    async def _build_stale_refreshable_provider(
+        self,
+    ) -> tuple[Any, FileTokenStorage]:
+        """Build a provider whose on-disk token is expired but refreshable.
+
+        Shared setup for the lock-behavior tests: client info and OAuth
+        metadata are persisted and the sidecar expiry is backdated so the
+        refresh branch fires against `https://auth.example/token`.
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_oauth_metadata(
+            _make_oauth_metadata("https://auth.example/token")
+        )
+        await storage.set_tokens(_make_tokens(access_token="stale"))
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        return provider, storage
+
+    async def test_lock_timeout_falls_back_to_best_effort_refresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A peer-held lock times out into an unlocked best-effort refresh.
+
+        The wait is shrunk so the contended acquire times out promptly; the
+        provider must still fire the refresh (best-effort) and warn about the
+        reuse risk rather than hang or silently skip the refresh.
+        """
+        from filelock import FileLock
+
+        from deepagents_code import mcp_auth
+
+        provider, storage = await self._build_stale_refreshable_provider()
+        monkeypatch.setattr(mcp_auth, "_REFRESH_LOCK_TIMEOUT_SECONDS", 0.1)
+
+        # A peer holds the refresh lock for the duration of this flow, forcing
+        # the provider's acquire to time out.
+        peer_lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer_lock.acquire()
+        try:
+            caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_auth")
+            flow = provider.async_auth_flow(
+                httpx.Request("POST", "https://mcp.notion.com/mcp")
+            )
+            refresh_request = await anext(flow)
+            assert str(refresh_request.url) == "https://auth.example/token"
+            assert "grant_type=refresh_token" in refresh_request.content.decode()
+            await flow.aclose()
+        finally:
+            peer_lock.release()
+
+        assert any(
+            "refreshing unlocked as a fallback" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_refresh_waits_for_peer_holding_lock_then_proceeds(self) -> None:
+        """The flow blocks on the refresh lock until the peer releases it.
+
+        Proves the serialization the PR exists for: while a peer holds the file
+        lock the provider cannot reach the refresh, and it proceeds only once
+        the lock is free. Guards against a regression that drops the file lock
+        (e.g. reverting to the per-provider `context.lock`).
+        """
+        from filelock import FileLock
+
+        provider, storage = await self._build_stale_refreshable_provider()
+
+        async def drive_to_refresh() -> httpx.Request:
+            # Keep the whole generator lifecycle on one task: its inner
+            # `anyio` lock is task-affine, so driving `anext` here and
+            # `aclose` on another task would raise on release.
+            flow = provider.async_auth_flow(
+                httpx.Request("POST", "https://mcp.notion.com/mcp")
+            )
+            try:
+                return await anext(flow)
+            finally:
+                await flow.aclose()
+
+        peer_lock = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        peer_lock.acquire()
+        task = asyncio.ensure_future(drive_to_refresh())
+        try:
+            # While the peer holds the lock, the flow can't reach the refresh.
+            await asyncio.sleep(0.2)
+            assert not task.done()
+
+            peer_lock.release()
+
+            # Once the lock frees, the provider acquires it and yields the refresh.
+            refresh_request = await asyncio.wait_for(task, timeout=5)
+            assert str(refresh_request.url) == "https://auth.example/token"
+        finally:
+            if peer_lock.is_locked:
+                peer_lock.release()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_refresh_lock_released_after_successful_refresh(self) -> None:
+        """A completed locked refresh frees the lock for the next caller.
+
+        Defends against a self-deadlock regression: if the guard failed to
+        release, the next process to refresh this server would hang.
+        """
+        from filelock import FileLock, Timeout
+
+        provider, storage = await self._build_stale_refreshable_provider()
+
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        refresh_request = await anext(flow)
+        token_response = httpx.Response(
+            200,
+            json={
+                "access_token": "at-rotated",
+                "token_type": "Bearer",
+                "refresh_token": "rt-rotated",
+                "expires_in": 3600,
+            },
+            request=refresh_request,
+        )
+        await flow.asend(token_response)
+        await flow.aclose()
+
+        # The guard must have released; a fresh holder takes the lock at once.
+        probe = FileLock(str(storage.refresh_lock_path), thread_local=False)
+        try:
+            await asyncio.to_thread(probe.acquire, timeout=0)
+        except Timeout:
+            pytest.fail("refresh lock was not released after a successful refresh")
+        else:
+            probe.release()
+
 
 @pytest.mark.usefixtures("fake_home")
 class TestBasicAuthClientIdStripping:

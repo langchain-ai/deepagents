@@ -94,6 +94,19 @@ class TestInMemoryLogBuffer:
         assert "msg1" in lines[0]
         assert "msg2" in lines[1]
 
+    def test_snapshot_records_since_returns_structured_records(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=10)
+        buffer.emit(_record("deepagents_code.x", "hello", level=logging.WARNING))
+
+        records, total = buffer.snapshot_records_since(0)
+
+        assert total == 1
+        assert len(records) == 1
+        assert records[0].level == "WARNING"
+        assert records[0].logger == "deepagents_code.x"
+        assert records[0].message == "hello"
+        assert records[0].plain_line in buffer.lines_since(0)
+
     def test_lines_since_is_safe_during_concurrent_emit(self) -> None:
         buffer = InMemoryLogBuffer(capacity=50)
         stop = threading.Event()

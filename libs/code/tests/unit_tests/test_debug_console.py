@@ -9,12 +9,13 @@ from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import RichLog, Static
+from textual.widgets import Select, Static
+from textual.widgets._select import SelectOverlay
 
 import deepagents_code.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import get_log_buffer
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.widgets.debug_console import DebugConsoleScreen
+from deepagents_code.widgets.debug_console import DebugConsoleScreen, _DebugLogView
 
 if TYPE_CHECKING:
     import pytest
@@ -62,8 +63,8 @@ class TestDebugConsoleScreen:
             screen = DebugConsoleScreen(_snapshot())
             app.push_screen(screen)
             await pilot.pause()
-            log = screen.query_one("#debug-log", RichLog)
-            assert len(log.lines) > 0
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert log.line_count > 0
 
     async def test_live_tail_appends_new_records_incrementally(self) -> None:
         app = _Harness()
@@ -71,15 +72,15 @@ class TestDebugConsoleScreen:
             screen = DebugConsoleScreen(_snapshot())
             app.push_screen(screen)
             await pilot.pause()
-            log = screen.query_one("#debug-log", RichLog)
-            before = len(log.lines)
+            log = screen.query_one("#debug-log", _DebugLogView)
+            before = len(log.records)
 
             logger.info("debug-console-incremental-marker")
             screen._poll_logs()
             await pilot.pause()
 
-            # Exactly one new line appended; already-consumed lines not re-written.
-            assert len(log.lines) == before + 1
+            # Exactly one new record appended; already-consumed records not re-written.
+            assert len(log.records) == before + 1
 
     async def test_empty_snapshot_renders_placeholder(self) -> None:
         app = _Harness()
@@ -99,12 +100,12 @@ class TestDebugConsoleScreen:
             screen = DebugConsoleScreen(_snapshot())
             app.push_screen(screen)
             await pilot.pause()
-            log = screen.query_one("#debug-log", RichLog)
-            assert len(log.lines) == 1  # on_mount poll writes the notice
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert log.line_count == 1  # on_mount poll writes the notice
 
             screen._poll_logs()
             await pilot.pause()
-            assert len(log.lines) == 1  # one-shot guard: notice not repeated
+            assert log.line_count == 1  # one-shot guard: notice not repeated
 
     async def test_clear_view_key_empties_log_and_advances_pointer(self) -> None:
         logger.info("debug-console-clear-marker")
@@ -118,8 +119,8 @@ class TestDebugConsoleScreen:
 
             await pilot.press("ctrl+l")
             await pilot.pause()
-            log = screen.query_one("#debug-log", RichLog)
-            assert len(log.lines) == 0
+            log = screen.query_one("#debug-log", _DebugLogView)
+            assert log.line_count == 0
             assert screen._rendered_upto == buffer.total_emitted
             assert screen._view_floor == buffer.total_emitted
 
@@ -144,6 +145,243 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
         assert "debug-console-copy-marker" in captured["text"]
+
+    async def test_level_filter_supports_threshold_and_exact_modes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: True)
+        logger.info("debug-console-filter-info-marker")
+        logger.warning("debug-console-filter-warning-marker")
+        logger.error("debug-console-filter-error-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            select = screen.query_one("#debug-level-filter", Select)
+
+            select.value = "min:WARNING"
+            await pilot.pause()
+
+            assert not any(
+                "debug-console-filter-info-marker" in record.message
+                for record in log.records
+            )
+            assert any(
+                "debug-console-filter-warning-marker" in record.message
+                for record in log.records
+            )
+            assert any(
+                "debug-console-filter-error-marker" in record.message
+                for record in log.records
+            )
+
+            select.value = "min:DEBUG"
+            await pilot.pause()
+
+            assert any(
+                "debug-console-filter-info-marker" in record.message
+                for record in log.records
+            )
+            assert any(
+                "debug-console-filter-error-marker" in record.message
+                for record in log.records
+            )
+
+            select.value = "only:WARNING"
+            await pilot.pause()
+
+            assert any(
+                "debug-console-filter-warning-marker" in record.message
+                for record in log.records
+            )
+            assert not any(
+                "debug-console-filter-error-marker" in record.message
+                for record in log.records
+            )
+
+    async def test_level_filter_hides_debug_when_runtime_level_excludes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: False)
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            select = screen.query_one("#debug-level-filter", Select)
+            values = {value for _prompt, value in select._options}
+
+        assert "min:DEBUG" not in values
+        assert "only:DEBUG" not in values
+        assert "min:INFO" in values
+
+    async def test_arrow_keys_move_between_logical_records(self) -> None:
+        logger.info("debug-console-arrow-first-marker")
+        logger.info("debug-console-arrow-second-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            log.focus()
+            second_index = next(
+                index
+                for index, record in enumerate(log.records)
+                if "debug-console-arrow-second-marker" in record.message
+            )
+            log._select_record(second_index)
+
+            await pilot.press("up")
+            await pilot.pause()
+            assert log._selected_index == second_index - 1
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert log._selected_index == second_index
+
+    async def test_selected_row_highlight_extends_to_full_width(self) -> None:
+        logger.info("debug-console-full-width-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            index = next(
+                index
+                for index, record in enumerate(log.records)
+                if "debug-console-full-width-marker" in record.message
+            )
+            log._select_record(index)
+            strip = log.render_line(int(log._wrap_prefix[index] - log.scroll_y))
+
+        first_segment = strip._segments[0]
+        trailing_segment = strip._segments[-1]
+        assert trailing_segment.text
+        assert first_segment.style is not None
+        assert trailing_segment.style is not None
+        assert first_segment.style.bgcolor is not None
+        assert trailing_segment.style.bgcolor == first_segment.style.bgcolor
+
+    async def test_enter_copies_selected_logical_record(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        logger.info("debug-console-enter-copy-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            log.focus()
+            index = next(
+                index
+                for index, record in enumerate(log.records)
+                if "debug-console-enter-copy-marker" in record.message
+            )
+            log._select_record(index)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert "debug-console-enter-copy-marker" in captured["text"]
+
+    async def test_tab_cycles_between_level_filter_and_log_lines(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            select = screen.query_one("#debug-level-filter", Select)
+            log.focus()
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen.focused is select
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is log
+
+    async def test_tab_moves_open_level_dropdown_highlight(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            select = screen.query_one("#debug-level-filter", Select)
+            select.action_show_overlay()
+            await pilot.pause()
+            overlay = select.query_one(SelectOverlay)
+            assert overlay.highlighted is not None
+            before = overlay.highlighted
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert overlay.highlighted == before + 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert overlay.highlighted == before
+            assert select.expanded
+
+    async def test_escape_collapses_level_dropdown_before_dismissing(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            select = screen.query_one("#debug-level-filter", Select)
+            select.action_show_overlay()
+            await pilot.pause()
+            assert select.expanded
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not select.expanded
+            assert isinstance(app.screen, DebugConsoleScreen)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, DebugConsoleScreen)
+
+    async def test_click_copy_invokes_clipboard_with_logical_record(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        logger.info("debug-console-click-copy-marker")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            record = log._record_at_visual_y(log.line_count - 1)
+            assert record is not None
+            assert "debug-console-click-copy-marker" in record.message
+            screen._copy_record(record)
+            await pilot.pause()
+
+        assert "debug-console-click-copy-marker" in captured["text"]
 
     async def test_copy_failure_notifies_warning(
         self, monkeypatch: pytest.MonkeyPatch

@@ -7,19 +7,35 @@ handler is installed once on the `deepagents_code` package logger (see
 `__init__.py`); child module loggers reach it via propagation.
 
 Installation is negligible, and each emitted record only appends a formatted
-string to a bounded `deque`, so the buffer is cheap enough to keep always on.
+record to a bounded `deque`, so the buffer is cheap enough to keep always on.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import deque
+from dataclasses import dataclass
 
 DEFAULT_CAPACITY = 1000
 """Maximum number of records retained in the ring buffer."""
 
-_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 _DATE_FORMAT = "%H:%M:%S"
+_FORMATTER = logging.Formatter(datefmt=_DATE_FORMAT)
+
+
+@dataclass(frozen=True, slots=True)
+class InMemoryLogRecord:
+    """Structured log record retained by the in-memory debug buffer."""
+
+    timestamp: str
+    level: str
+    logger: str
+    message: str
+
+    @property
+    def plain_line(self) -> str:
+        """The record in the legacy plain-text debug-console format."""
+        return f"{self.timestamp} {self.level} {self.logger} {self.message}"
 
 
 class InMemoryLogBuffer(logging.Handler):
@@ -32,15 +48,14 @@ class InMemoryLogBuffer(logging.Handler):
             capacity: Maximum records to retain; oldest are dropped first.
         """
         super().__init__()
-        self._records: deque[str] = deque(maxlen=capacity)
+        self._records: deque[InMemoryLogRecord] = deque(maxlen=capacity)
         self._total = 0
-        self.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT))
 
     def emit(self, record: logging.LogRecord) -> None:
         """Append the formatted *record* to the ring buffer."""
         self.acquire()
         try:
-            self._records.append(self.format(record))
+            self._records.append(self._make_record(record))
             self._total += 1
         except Exception:  # noqa: BLE001  # never let logging crash the app
             self.handleError(record)
@@ -57,7 +72,7 @@ class InMemoryLogBuffer(logging.Handler):
             self.release()
 
     def lines_since(self, index: int) -> list[str]:
-        """Return retained lines whose absolute emission index is `>= index`.
+        """Return retained plain-text lines whose absolute emission index is `>= index`.
 
         Absolute indices are stable even as old records are evicted, so callers
         can poll incrementally without re-reading lines they already consumed.
@@ -72,7 +87,7 @@ class InMemoryLogBuffer(logging.Handler):
         return lines
 
     def snapshot_since(self, index: int) -> tuple[list[str], int]:
-        """Return retained lines and the next absolute emission index.
+        """Return retained plain-text lines and the next absolute emission index.
 
         Callers that poll incrementally need both the retained lines and the
         index to resume from. Returning both under the handler lock prevents a
@@ -84,14 +99,38 @@ class InMemoryLogBuffer(logging.Handler):
         Returns:
             A tuple of formatted lines and the current total emitted count.
         """
+        records, total = self.snapshot_records_since(index)
+        return [record.plain_line for record in records], total
+
+    def records_since(self, index: int) -> list[InMemoryLogRecord]:
+        """Return retained structured records whose absolute index is `>= index`.
+
+        Args:
+            index: Absolute emission index to start from.
+
+        Returns:
+            Structured records from *index* onward that are still retained.
+        """
+        records, _total = self.snapshot_records_since(index)
+        return records
+
+    def snapshot_records_since(self, index: int) -> tuple[list[InMemoryLogRecord], int]:
+        """Return retained structured records and the next absolute index.
+
+        Args:
+            index: Absolute emission index to start from.
+
+        Returns:
+            A tuple of structured records and the current total emitted count.
+        """
         self.acquire()
         try:
-            return self._lines_since_unlocked(index), self._total
+            return self._records_since_unlocked(index), self._total
         finally:
             self.release()
 
-    def _lines_since_unlocked(self, index: int) -> list[str]:
-        """Return retained lines from *index* while the handler lock is held."""
+    def _records_since_unlocked(self, index: int) -> list[InMemoryLogRecord]:
+        """Return retained records from *index* while the handler lock is held."""
         start_abs = self._total - len(self._records)
         offset = index - start_abs
         if offset <= 0:
@@ -99,6 +138,28 @@ class InMemoryLogBuffer(logging.Handler):
         if offset >= len(self._records):
             return []
         return list(self._records)[offset:]
+
+    @staticmethod
+    def _make_record(record: logging.LogRecord) -> InMemoryLogRecord:
+        """Convert a standard logging record into a structured debug record.
+
+        Returns:
+            Structured record for display and filtering.
+        """
+        message = record.getMessage()
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = _FORMATTER.formatException(record.exc_info)
+            if record.exc_text:
+                message = f"{message}\n{record.exc_text}"
+        if record.stack_info:
+            message = f"{message}\n{_FORMATTER.formatStack(record.stack_info)}"
+        return InMemoryLogRecord(
+            timestamp=_FORMATTER.formatTime(record, _DATE_FORMAT),
+            level=record.levelname,
+            logger=record.name,
+            message=message,
+        )
 
 
 _buffer: InMemoryLogBuffer | None = None

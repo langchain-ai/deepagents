@@ -1,11 +1,25 @@
 from pathlib import Path
 
+from textual.content import Content
+from textual.widget import Widget
+
 from deepagents_code.tui.widgets.tool_renderers import get_renderer
 from deepagents_code.tui.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
     WriteFileApprovalWidget,
 )
+
+_CREDENTIAL_NOTICE_FRAGMENT = "may contain credentials"
+
+
+def _widget_texts(widgets: list[Widget]) -> list[str]:
+    """Return the plain text rendered by each widget, ignoring styles."""
+    texts: list[str] = []
+    for widget in widgets:
+        rendered = widget.render()
+        texts.append(rendered.plain if isinstance(rendered, Content) else str(rendered))
+    return texts
 
 
 def test_write_renderer_formats_non_string_content() -> None:
@@ -36,6 +50,22 @@ def test_write_widget_formats_non_string_content() -> None:
     assert len(widgets) == 3
 
 
+def test_write_widget_redacts_credential_file_content() -> None:
+    widgets = list(
+        WriteFileApprovalWidget(
+            {
+                "file_path": ".env",
+                "content": "SECRET_KEY=supersecret",
+                "file_extension": "text",
+            }
+        ).compose()
+    )
+
+    texts = _widget_texts(widgets)
+    assert any(_CREDENTIAL_NOTICE_FRAGMENT in text for text in texts)
+    assert all("supersecret" not in text for text in texts)
+
+
 def test_edit_renderer_formats_non_string_content() -> None:
     widget_class, data = get_renderer("edit_file").get_approval_widget(
         {
@@ -64,6 +94,23 @@ def test_edit_widget_formats_non_string_content() -> None:
     )
 
     assert widgets
+
+
+def test_edit_widget_redacts_credential_file_diff() -> None:
+    widgets = list(
+        EditFileApprovalWidget(
+            {
+                "file_path": "config/.env.local",
+                "diff_lines": ["+API_TOKEN=leaked"],
+                "old_string": "",
+                "new_string": "API_TOKEN=leaked",
+            }
+        ).compose()
+    )
+
+    texts = _widget_texts(widgets)
+    assert any(_CREDENTIAL_NOTICE_FRAGMENT in text for text in texts)
+    assert all("leaked" not in text for text in texts)
 
 
 def test_delete_renderer_shows_removed_file_diff(tmp_path: Path) -> None:

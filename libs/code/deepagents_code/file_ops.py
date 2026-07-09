@@ -149,6 +149,61 @@ def resolve_physical_path(
         return None
 
 
+_SENSITIVE_FILE_NAMES = frozenset(
+    {
+        ".envrc",
+        ".netrc",
+        "_netrc",
+        ".pgpass",
+        ".npmrc",
+        ".pypirc",
+        ".htpasswd",
+        "credentials",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    }
+)
+"""Basenames (lowercased) that commonly hold secrets and must not be rendered."""
+
+_SENSITIVE_FILE_SUFFIXES = (
+    ".pem",
+    ".key",
+    ".pfx",
+    ".p12",
+    ".keystore",
+    ".jks",
+)
+"""File suffixes (lowercased) for private keys / keystores that hold secrets."""
+
+
+def is_sensitive_file_path(path_str: str | None) -> bool:
+    """Return whether a path points at a credential/secret file.
+
+    The check is filename-based and case-insensitive. It matches `.env` and
+    its variants (e.g. `.env.local`), well-known credential filenames, and
+    private-key/keystore suffixes. Used to suppress diff/content rendering so
+    secrets never reach the terminal UI or scrollback.
+
+    Returns:
+        True if the file should be treated as sensitive.
+    """
+    if not path_str:
+        return False
+    try:
+        name = Path(path_str).name.lower()
+    except (OSError, ValueError):
+        return False
+    if not name:
+        return False
+    if name == ".env" or name.startswith(".env."):
+        return True
+    if name in _SENSITIVE_FILE_NAMES:
+        return True
+    return name.endswith(_SENSITIVE_FILE_SUFFIXES)
+
+
 def format_display_path(path_str: str | None) -> str:
     """Format a path for display.
 

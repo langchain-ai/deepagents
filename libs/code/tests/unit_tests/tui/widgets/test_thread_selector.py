@@ -222,6 +222,41 @@ class TestContainedSelect:
         assert not select.expanded
 
 
+class TestThreadSelectorOptionHover:
+    """Tests for dropdown option-hover visibility across themes."""
+
+    async def test_ansi_theme_reverses_option_hover(self) -> None:
+        """ANSI themes must reverse the hovered option so it stays visible.
+
+        Under ANSI themes `$block-hover-background` resolves to the terminal
+        default color (no contrast), so the mouse-hover highlight on the
+        scope/sort/agent dropdown options is invisible without an override.
+        """
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.theme = "ansi-dark"
+                app.show_selector()
+                await pilot.pause()
+
+                overlay = app.screen.query(ContainedSelectOverlay).first()
+                styles = overlay.get_component_styles("option-list--option-hover")
+                assert styles.text_style.reverse is True
+
+    async def test_non_ansi_theme_keeps_default_option_hover(self) -> None:
+        """Non-ANSI themes should keep Textual's default subtle hover."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.theme = "textual-dark"
+                app.show_selector()
+                await pilot.pause()
+
+                overlay = app.screen.query(ContainedSelectOverlay).first()
+                styles = overlay.get_component_styles("option-list--option-hover")
+                assert styles.text_style.reverse is not True
+
+
 class TestThreadSelectorEscapeKey:
     """Tests for ESC key dismissing the modal."""
 

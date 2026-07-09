@@ -785,6 +785,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
 
+    /* ANSI themes resolve `$block-hover-background` to the terminal default
+       color, which has no contrast, so mouse-hover over the scope/sort/agent
+       dropdown options is invisible. Reverse the default option colors under
+       ANSI so the hovered row stays visible in both light and dark terminals
+       without hardcoding a palette-specific color. */
+    ThreadSelectorScreen ContainedSelectOverlay:ansi > .option-list--option-hover {
+        background: ansi_default;
+        color: ansi_default;
+        text-style: reverse;
+    }
+
     ThreadSelectorScreen .thread-column-toggle {
         width: 1fr;
         height: auto;

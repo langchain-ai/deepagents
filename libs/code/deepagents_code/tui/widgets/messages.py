@@ -1982,19 +1982,18 @@ class ToolCallMessage(Vertical):
 
     @staticmethod
     def _compact_line_gutter(output: str) -> str:
-        r"""Tighten legacy `read_file` cat-n line-number gutters for display.
+        r"""Tighten `read_file`'s cat -n line-number gutter for display.
 
-        Older tool output used `f"{line_num:6d}\t{line}"` — a 6-wide
-        right-justified number plus a tab — so even single-digit line numbers
-        carried five leading spaces and the tab pushed content to a distant tab
-        stop. The TUI renders that legacy gutter in the newer compact shape:
-        numbers right-justified to the widest number actually present, then two
-        spaces, mirroring how grep/glob results sit flush left. Source
-        indentation after the gutter is preserved untouched.
+        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
+        number plus a tab — so even single-digit line numbers carry five
+        leading spaces and the tab pushes content to a distant tab stop. The
+        model needs that raw format for edits, but the TUI renders a compact
+        gutter instead: numbers right-justified to the widest number actually
+        present, then two spaces, mirroring how grep/glob results sit flush
+        left. Source indentation after the gutter is preserved untouched.
 
-        Lines that don't match the legacy cat-n shape (e.g. current compact
-        read output, test fixtures, or non-numbered output) are passed through
-        unchanged.
+        Lines that don't match the cat -n shape (e.g. test fixtures or
+        non-numbered output) are passed through unchanged.
 
         Returns:
             The output with compacted gutters, or the original string if no

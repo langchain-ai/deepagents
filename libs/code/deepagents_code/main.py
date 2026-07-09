@@ -601,6 +601,27 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return whether tool calls should be auto-approved for these CLI args.
+
+    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
+    (`args.auto_approve is None`), the persistent `[startup].mode` config
+    default decides — `dangerously-auto` enables auto-approval, anything else
+    (including missing/invalid config) keeps human-in-the-loop approvals on.
+
+    Extracted from the `cli_main` body so it is unit-testable without
+    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    """
+    if args.auto_approve is not None:
+        return args.auto_approve
+    from deepagents_code.model_config import (
+        STARTUP_MODE_DANGEROUSLY_AUTO,
+        load_startup_mode,
+    )
+
+    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+
+
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     """Warn that a remote sandbox suppressed the otherwise-default interpreter.
 
@@ -1616,11 +1637,14 @@ def parse_args() -> argparse.Namespace:
         "-y",
         "--auto-approve",
         action="store_true",
+        default=None,
         help=(
             "Auto-approve all tool calls without prompting "
             "(disables human-in-the-loop). Affected tools: shell "
             "execution, file writes/edits, web search, and URL fetch. "
-            "Use with caution — the agent can execute arbitrary commands."
+            "Use with caution — the agent can execute arbitrary commands. "
+            "When omitted, the launch default comes from [startup].mode in "
+            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
         ),
     )
 
@@ -3644,10 +3668,14 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
+                # An explicit -y/--auto-approve wins; otherwise the persistent
+                # [startup].mode config default decides the launch mode.
+                auto_approve = _resolve_auto_approve(args)
+
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=args.auto_approve,
+                        auto_approve=auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,

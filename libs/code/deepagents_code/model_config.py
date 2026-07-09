@@ -3554,6 +3554,57 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     return "updated_at"
 
 
+STARTUP_MODE_MANUAL = "manual"
+"""Startup approval mode that keeps human-in-the-loop approvals enabled."""
+
+STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
+"""Startup approval mode that auto-approves gated tool calls at launch."""
+
+VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_AUTO})
+"""Accepted values for the `[startup].mode` config option."""
+
+DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
+"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+
+
+def load_startup_mode(config_path: Path | None = None) -> str:
+    """Load the default startup approval mode from config.toml.
+
+    Reads `[startup].mode`, which controls whether the interactive TUI launches
+    with human-in-the-loop approvals enabled (`manual`) or auto-approved
+    (`dangerously-auto`). The explicit `-y`/`--auto-approve` flag overrides this.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"manual"` or `"dangerously-auto"`; falls back to `"manual"` when unset,
+        unreadable, or invalid.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return DEFAULT_STARTUP_MODE
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        startup = data.get("startup")
+        value = startup.get("mode") if isinstance(startup, dict) else None
+        # `value` may be any TOML type; guard against non-strings (e.g. an
+        # array or table) before the frozenset membership test, which would
+        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
+            return value
+        if value is not None:
+            logger.warning(
+                "Ignoring [startup].mode=%r (expected 'manual' or 'dangerously-auto')",
+                value,
+            )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read startup mode config", exc_info=True)
+    return DEFAULT_STARTUP_MODE
+
+
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:
     """Save the sort order preference for the thread selector.
 

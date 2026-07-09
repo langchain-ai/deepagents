@@ -806,6 +806,15 @@ def uninstall_plugin(
         if scope is not None and scopes.get(plugin_id) == scope:
             scopes[plugin_id] = remaining[0].scope
     else:
+        enabled_plugins.pop(plugin_id, None)
+        if scope is None:
+            active_project = project_path or _default_project_path()
+            project_enabled = _load_project_enabled(active_project)
+            if plugin_id in project_enabled:
+                project_enabled.pop(plugin_id)
+                _write_project_enabled(active_project, project_enabled)
+            project_key = str(Path(active_project).resolve())
+            local_enabled.get(project_key, {}).pop(plugin_id, None)
         scopes.pop(plugin_id, None)
         favorites.discard(plugin_id)
 

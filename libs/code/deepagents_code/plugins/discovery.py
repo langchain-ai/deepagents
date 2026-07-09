@@ -40,6 +40,7 @@ from deepagents_code.plugins.store import (
     cache_and_register_plugin,
     get_primary_install_entry,
     load_enabled_plugins,
+    load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
     load_plugin_scopes,
@@ -190,7 +191,13 @@ def remove_marketplace(name: str) -> bool:
     record = load_marketplace_records().get(name)
     if record is None:
         return False
-    for plugin_id in tuple(load_installed_plugins()):
+    plugin_ids = (
+        set(load_installed_plugins())
+        | set(load_enabled_plugins())
+        | set(load_plugin_scopes())
+        | load_favorite_plugins()
+    )
+    for plugin_id in plugin_ids:
         if plugin_id.endswith(f"@{name}"):
             uninstall_plugin(plugin_id)
     removed = remove_marketplace_record(name)
@@ -200,8 +207,13 @@ def remove_marketplace(name: str) -> bool:
         cache_root = marketplace_cache_dir().resolve()
     except OSError:
         return removed
-    if resolved.is_relative_to(cache_root) and resolved.is_dir():
-        shutil.rmtree(resolved, ignore_errors=True)
+    if record.source_type in {"github", "git", "url"} and resolved.is_relative_to(
+        cache_root
+    ):
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+        elif resolved.is_file():
+            resolved.unlink(missing_ok=True)
     return removed
 
 

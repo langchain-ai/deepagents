@@ -67,8 +67,10 @@ from deepagents_code.plugins.store import (
     load_installed_plugins,
     load_marketplace_records,
     load_plugin_scopes,
+    marketplace_cache_dir,
     sanitize_plugin_id,
     set_plugin_enabled,
+    set_plugin_favorite,
     versioned_cache_path,
 )
 from deepagents_code.plugins.substitution import substitute_string
@@ -733,7 +735,7 @@ def test_remove_marketplace_uninstalls_plugins_but_keeps_local_source(
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
     )
-    marketplace_root = tmp_path / "marketplace"
+    marketplace_root = marketplace_cache_dir() / "team-plugins"
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
     plugin_id = "quality-review-plugin@company-tools"
@@ -746,6 +748,30 @@ def test_remove_marketplace_uninstalls_plugins_but_keeps_local_source(
     assert "company-tools" not in load_marketplace_records()
     assert plugin_id not in load_installed_plugins()
     assert plugin_id not in load_enabled_plugins()
+
+
+def test_remove_marketplace_cleans_enabled_only_plugin_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    enable_plugin_with_scope(plugin_id, "project")
+    set_plugin_favorite(plugin_id, True)
+
+    assert remove_marketplace("company-tools") is True
+
+    assert plugin_id not in load_enabled_plugins()
+    assert plugin_id not in load_plugin_scopes()
+    assert plugin_id not in load_favorite_plugins()
+    assert not discover_plugins().warnings
 
 
 def test_marketplace_remove_cli_reports_missing_and_removed(

@@ -311,7 +311,8 @@ class AuthResult(StrEnum):
     """
 
     SAVED = "saved"
-    """User pasted a key and it was persisted."""
+    """A key was persisted, or a reload (Ctrl+R) made the provider's credential
+    resolvable. Either way the caller should retry the original operation."""
 
     DELETED = "deleted"
     """User cleared the existing stored key. No retry should follow."""
@@ -519,6 +520,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("f2", "toggle_advanced", "Advanced", show=False, priority=True),
+        Binding("ctrl+r", "reload_env", "Reload", show=False, priority=True),
         Binding("ctrl+d", "delete_stored", "Delete stored", show=False, priority=True),
     ]
 
@@ -654,48 +656,79 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # project name and an endpoint chosen from a region selector (US/EU SaaS
         # or a custom self-hosted URL), and saving a key turns tracing on.
         self._is_langsmith = is_langsmith(provider)
-        # Resolve the current credential source and probe the store, but never
-        # let a corrupt `auth.json`/config crash the screen at construction
-        # time — Textual would propagate the exception before the modal mounts.
-        # Treat unreadable as "no env source" / "no existing key" and surface a
-        # one-line warning at compose time. The status is consumed only
-        # cosmetically (title prefix, env note), so a MISSING fallback is safe.
-        # The config is loaded once here so compose-time helpers can read the
-        # cached instance instead of reloading outside this crash-safety guard.
+        # Probe the store once here so compose-time helpers read the cached
+        # `self._config` instead of each reloading it. See
+        # `_probe_credential_state` for the crash-safety rationale that lets
+        # this run at construction (before the modal mounts) without a guard.
+        self._probe_credential_state()
+        self._advanced_visible = bool(self._existing_base_url or self._existing_project)
+        self._refresh_endpoint_env_notice()
+
+    def _probe_credential_state(self) -> None:
+        """Resolve the current credential source, store, base URL, and project.
+
+        Never let an unreadable auth.json crash the screen: Textual would
+        propagate the exception before the modal mounts (at construction) or
+        while it is live (on Ctrl+R reload). `auth_store` funnels all store
+        corruption into RuntimeError, so catch that, treat unreadable store
+        metadata as "no existing key", and surface a one-line warning at
+        compose time. The resolved auth status is kept: `get_provider_auth_status`
+        already falls back to environment credentials when the store can't be
+        read. (A malformed config.toml can't crash us here — `ModelConfig.load()`
+        returns an empty config instead of raising.)
+        """
         try:
             self._config = ModelConfig.load()
-            self._auth_status = _auth_status_for(provider)
-            self._has_existing = auth_store.get_stored_key(provider) is not None
-            self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
-            self._existing_project = auth_store.get_stored_project(provider) or ""
-            self._advanced_visible = bool(
-                self._existing_base_url or self._existing_project
+            self._auth_status = _auth_status_for(self._provider)
+        except RuntimeError as exc:
+            logger.warning(
+                "Could not resolve credentials for %s: %s", self._provider, exc
             )
+            self._config = ModelConfig()
+            self._auth_status = ProviderAuthStatus(
+                state=ProviderAuthState.MISSING, provider=self._provider
+            )
+            self._set_missing_store_metadata(exc)
+            return
+
+        try:
+            self._has_existing = auth_store.get_stored_key(self._provider) is not None
+            self._existing_base_url = (
+                auth_store.get_stored_base_url(self._provider) or ""
+            )
+            self._existing_project = auth_store.get_stored_project(self._provider) or ""
             self._region: Region = _region_for_endpoint(self._existing_base_url)
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
-                "Could not read stored credentials for %s: %s", provider, exc
+                "Could not read stored credentials for %s: %s", self._provider, exc
             )
-            self._config = ModelConfig()
-            self._auth_status = ProviderAuthStatus(
-                state=ProviderAuthState.MISSING, provider=provider
-            )
-            self._has_existing = False
-            self._existing_base_url = ""
-            self._existing_project = ""
-            self._advanced_visible = False
-            self._region = Region.US
-            self._store_warning = (
-                f"Credential file is unreadable ({exc}). Saving here will overwrite it."
-            )
-        # Surface when an environment endpoint is set: at startup an existing
-        # `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT` takes precedence over the
-        # stored region, so without this note the radio could show one region
-        # while traces route somewhere else. (The note fires on presence, not on
-        # divergence — it may show even when the env value matches the stored
-        # region.) Saving here applies the selection (the save path replaces the
-        # env value), so word the note around that.
+            self._set_missing_store_metadata(exc)
+
+    def _set_missing_store_metadata(self, exc: RuntimeError) -> None:
+        """Clear optional stored metadata after an auth-store read failure."""
+        self._has_existing = False
+        self._existing_base_url = ""
+        self._existing_project = ""
+        self._region = Region.US
+        self._store_warning = (
+            f"Credential file is unreadable ({exc}). Saving here will overwrite it."
+        )
+
+    def _refresh_endpoint_env_notice(self) -> None:
+        """Recompute the LangSmith endpoint-precedence notice from the environment.
+
+        Surface when an environment endpoint is set: at startup an existing
+        `LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT` takes precedence over the
+        stored region, so without this note the radio could show one region
+        while traces route somewhere else. (The note fires on presence, not on
+        divergence — it may show even when the env value matches the stored
+        region.) Saving here applies the selection (the save path replaces the
+        env value), so word the note around that.
+
+        Called at construction and again on Ctrl+R reload, since the reload can
+        add or remove one of those variables and the recompose must reflect it.
+        """
         self._endpoint_env_notice: str | None = None
         if self._is_langsmith and any(
             os.environ.get(var) for var in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
@@ -850,7 +883,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                         "priority. Set ",
                         (self._env_var, TStyle(bold=True)),
                         " to share a key with other provider SDK tools; it is used "
-                        "only when no scoped or stored key exists. ",
+                        "only when no scoped or stored key exists. After setting one "
+                        "in a .env file, press ",
+                        ("Ctrl+R", TStyle(bold=True)),
+                        " to reload without restarting. A variable exported in a "
+                        "separate shell after launch is invisible to this process; "
+                        "it needs a full relaunch. ",
                         (
                             "Configuration docs",
                             self._link_style(CONFIGURATION_DOCS_URL),
@@ -962,7 +1000,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             save_label = self._submit_label or (
                 "Enter replace" if self._has_existing else "Enter save"
             )
-            help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
+            help_parts = [
+                f"{save_label} {glyphs.bullet} Esc cancel",
+                "F2 advanced",
+                "Ctrl+R reload",
+            ]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
             yield Static(
@@ -1291,6 +1333,66 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     def action_cancel(self) -> None:
         """Dismiss without saving."""
         self.dismiss(AuthResult.CANCELLED)
+
+    async def action_reload_env(self) -> None:
+        """Re-read .env/environment, re-probe credentials, and continue.
+
+        Runs the same environment/credential reload core as the `/reload`
+        command (`reload_from_environment` + `clear_caches`), so a credential
+        env var added to a `.env` file after launch is picked up without a full
+        restart; it intentionally skips `/reload`'s theme and skill
+        re-discovery. If the provider was blocked and is now resolvable, dismiss
+        with SAVED so the caller retries the original operation; otherwise
+        refresh the modal in place and toast the outcome.
+        """
+        from deepagents_code.config import settings
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to reload configuration from auth prompt: %s", exc)
+            self.app.notify(
+                "Could not reload configuration. Check your .env file and "
+                "environment variables for syntax errors, then try again.",
+                severity="error",
+                markup=False,
+            )
+            return
+
+        was_blocking = self._auth_status.blocks_start
+        self._probe_credential_state()
+
+        if was_blocking and not self._auth_status.blocks_start:
+            self.app.notify(
+                f"Credentials detected for {self._provider}. Continuing.",
+                markup=False,
+            )
+            self.dismiss(AuthResult.SAVED)
+            return
+
+        # The reload may have added/removed a LangSmith endpoint env var; refresh
+        # the precedence notice so the recompose below doesn't render a stale one.
+        self._refresh_endpoint_env_notice()
+
+        # Preserve any in-progress input across the recompose so a reload never
+        # discards values the user already started typing.
+        before = {inp.id: inp.value for inp in self.query(Input)}
+        await self.recompose()
+        for inp in self.query(Input):
+            if inp.id in before:
+                inp.value = before[inp.id]
+        self.query_one("#auth-prompt-input", Input).focus()
+
+        if was_blocking:
+            self.app.notify(
+                "No credentials detected. Set a key in a .env file, then press "
+                "Ctrl+R. A variable exported in a separate shell needs a full "
+                "relaunch to take effect.",
+                markup=False,
+            )
+        else:
+            self.app.notify("Environment reloaded.", markup=False)
 
     def action_delete_stored(self) -> None:
         """Open the delete-confirmation overlay, or quit when nothing is stored.

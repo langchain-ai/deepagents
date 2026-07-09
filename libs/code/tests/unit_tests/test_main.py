@@ -2280,7 +2280,6 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
-
         with (
             patch(
                 "deepagents_code.project_utils.ProjectContext.from_user_cwd",
@@ -2331,7 +2330,6 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
-
         with (
             patch(
                 "deepagents_code.project_utils.ProjectContext.from_user_cwd",
@@ -2380,6 +2378,10 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
 
         with (
             patch(
@@ -2396,12 +2398,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "reference": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2416,7 +2413,15 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is True
         lists = model_config.load_mcp_server_trust_lists(user_config)
-        assert lists.enabled == frozenset({"docs", "reference"})
+        assert lists.enabled == frozenset()
+        assert lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
+        assert lists.is_enabled(
+            "reference",
+            project_root=project_root,
+            server=server_configs["reference"],
+        )
 
     def test_always_allow_warns_when_save_fails(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
@@ -2483,6 +2488,10 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
 
         with (
             patch(
@@ -2499,12 +2508,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "reference": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2520,7 +2524,15 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is True
         lists = model_config.load_mcp_server_trust_lists(user_config)
-        assert lists.enabled == frozenset({"reference"})
+        assert lists.enabled == frozenset()
+        assert not lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
+        assert lists.is_enabled(
+            "reference",
+            project_root=project_root,
+            server=server_configs["reference"],
+        )
 
     def test_always_allow_none_saves_nothing(
         self,
@@ -2543,6 +2555,10 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
 
         with (
             patch(
@@ -2559,12 +2575,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "reference": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2601,6 +2612,10 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
 
         with (
             patch(
@@ -2617,12 +2632,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "reference": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2641,7 +2651,10 @@ class TestCheckMcpProjectTrustPrompt:
         lists = model_config.load_mcp_server_trust_lists(user_config)
         # The denied server is neither offered nor written to the allowlist, and
         # its deny entry survives (reject precedence still holds).
-        assert lists.enabled == frozenset({"docs"})
+        assert lists.enabled == frozenset()
+        assert lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
         assert lists.disabled == frozenset({"reference"})
 
     def test_all_servers_list_resolved_shows_context_without_prompt(
@@ -2660,12 +2673,21 @@ class TestCheckMcpProjectTrustPrompt:
         project_cfg.write_text("{}")
 
         user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        server_configs = {
+            "docs[/green]": {"command": "echo"},
+            "blocked[/red]": {"command": "echo"},
+        }
+        fingerprint = model_config.fingerprint_mcp_server_config(
+            server_configs["docs[/green]"]
+        )
         user_config.write_text(
             "[mcp]\n"
-            'enabled_project_servers = ["docs[/green]"]\n'
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs[/green]", '
+            f'fingerprint = "{fingerprint}" }}]\n'
             'disabled_project_servers = ["blocked[/red]"]\n'
         )
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
 
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
@@ -2690,12 +2712,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs[/green]": {"command": "echo"},
-                        "blocked[/red]": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2716,7 +2733,7 @@ class TestCheckMcpProjectTrustPrompt:
         assert "Resolved by your config" in err
         assert (
             '"docs[/green]" (stdio[/green]): pre-approved '
-            "(enabled_project_servers):  echo [/green]" in flattened
+            "(enabled_project_server_approvals):  echo [/green]" in flattened
         )
         assert (
             '"blocked[/red]" (http[/red]): blocked '
@@ -2739,8 +2756,16 @@ class TestCheckMcpProjectTrustPrompt:
         project_cfg.write_text("{}")
 
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        server_configs = {
+            "docs": {"command": "echo"},
+            "other": {"command": "echo"},
+        }
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            project_root=project_root,
+            server_configs=server_configs,
+        )
 
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
@@ -2761,12 +2786,7 @@ class TestCheckMcpProjectTrustPrompt:
             ),
             patch(
                 "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "other": {"command": "echo"},
-                    }
-                },
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2785,8 +2805,8 @@ class TestCheckMcpProjectTrustPrompt:
         assert '  "other" (stdio):  echo other' in err
         # The pre-approved server is shown as resolved, not asked about.
         assert (
-            '  "docs" (stdio): pre-approved (enabled_project_servers):  echo docs'
-            in err
+            '  "docs" (stdio): pre-approved '
+            "(enabled_project_server_approvals):  echo docs" in err
         )
 
     def test_unreadable_policy_fails_closed_without_prompting(

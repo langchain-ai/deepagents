@@ -2440,12 +2440,14 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     server not already resolved by the user's allow/deny lists. The prompt
     accepts "y"/"yes" (allow for this session only, persisting nothing),
     "a"/"always" (persist a chosen subset — all, custom, or none — of the
-    prompted server names to `[mcp].enabled_project_servers` in the user-level
-    config.toml so they load by name without re-prompting), or "N" (deny).
+    prompted servers to `[mcp].enabled_project_server_approvals` in the
+    user-level config.toml so they load only for this project and exact server
+    definition), or "N" (deny).
 
-    Servers already resolved by the user's `enabled_project_servers` /
-    `disabled_project_servers` lists are shown for transparency but not
-    prompted for (enabled ones load regardless; disabled ones never load).
+    Servers already resolved by the user's scoped approvals or
+    `disabled_project_servers` list are shown for transparency but not prompted
+    for (approved ones load when the project/fingerprint still matches;
+    disabled ones never load).
     `None` is returned when that leaves nothing to decide. If the user's own
     allow/deny policy cannot be read, returns `False` (fail closed) rather than
     prompting under an unknown deny list.
@@ -2490,6 +2492,9 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     ]
     merged_config = merge_mcp_configs(loaded_configs)
     all_servers = extract_project_server_summaries(merged_config)
+    raw_server_configs = merged_config.get("mcpServers", {})
+    server_configs = raw_server_configs if isinstance(raw_server_configs, dict) else {}
+    project_root = project_context.project_root or project_context.user_cwd
 
     if not all_servers and debug_prompt:
         all_servers = [
@@ -2506,13 +2511,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if trust_flag:
         return True
 
-    # Partition by the user's own allow/deny lists (read only from home config,
-    # never the repo — the same boundary the loader enforces). Enabled servers
-    # load regardless of the answer here and disabled ones never load, so the
-    # prompt must not *ask* about them. It still *shows* them, though, so the
-    # user sees what their config decided — notably a repo redefining an
-    # allowlisted name, since the allow-list binds by name (whatever definition
-    # the repo currently gives it).
+    # Partition by the user's own allow/deny policy (read only from home config,
+    # never the repo — the same boundary the loader enforces). Scoped approvals
+    # load only while the project root and server fingerprint match; disabled
+    # names never load. The prompt must not *ask* about resolved servers, but it
+    # still *shows* them so the user sees what their config decided.
     from deepagents_code.model_config import load_mcp_server_trust_lists
 
     trust_lists = load_mcp_server_trust_lists()
@@ -2527,7 +2530,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         # Disabled first: reject precedence (a name in both lists is disabled).
         if name in trust_lists.disabled:
             blocked.append((name, kind, summary))
-        elif name in trust_lists.enabled:
+        elif trust_lists.is_enabled(
+            name,
+            project_root=project_root,
+            server=server_configs.get(name, {}),
+        ):
             preapproved.append((name, kind, summary))
         else:
             prompt_servers.append((name, kind, summary))
@@ -2543,7 +2550,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         for name, kind, summary in preapproved:
             prompt_console.print(
                 f'  [green]"{escape(name)}"[/green] ({escape(kind)}): pre-approved '
-                f"(enabled_project_servers):  {escape(summary)}",
+                f"(enabled_project_server_approvals):  {escape(summary)}",
                 highlight=False,
             )
         for name, kind, summary in blocked:
@@ -2604,10 +2611,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer in {"a", "always"}:
-        # "Always allow" persists selected server names to the user-level
-        # config.toml allowlist (by name), so those servers load on future runs
-        # without re-prompting even if the config changes. The user picks which
-        # to save — the full list is not presumed.
+        # "Always allow" persists selected servers to the user-level config.toml
+        # with this project root and each server definition fingerprint, so a
+        # different project or changed command/URL asks again. The user picks
+        # which servers to save — the full list is not presumed.
         from deepagents_code.model_config import add_enabled_project_mcp_servers
 
         names = _select_project_servers_to_persist(prompt_servers, prompt_console)
@@ -2617,7 +2624,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
                 "only.[/dim]",
                 highlight=False,
             )
-        elif not debug_prompt and not add_enabled_project_mcp_servers(names):
+        elif not debug_prompt and not add_enabled_project_mcp_servers(
+            names,
+            project_root=project_root,
+            server_configs=server_configs,
+        ):
             prompt_console.print(
                 "[yellow]Approved for this session, but the choice could not be "
                 "saved to config.toml — you'll be asked again next time.[/yellow]",

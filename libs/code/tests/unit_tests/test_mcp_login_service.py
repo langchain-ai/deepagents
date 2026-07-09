@@ -20,6 +20,44 @@ if TYPE_CHECKING:
     import pytest
 
 
+def _project_approval_config(
+    project_root: Path,
+    name: str,
+    server: object,
+    *,
+    disabled: list[str] | None = None,
+) -> str:
+    """Build user config text with one scoped project MCP approval."""
+    from deepagents_code.model_config import fingerprint_mcp_server_config
+
+    text = (
+        "[mcp]\n"
+        "enabled_project_server_approvals = ["
+        f'{{ project_root = "{project_root}", name = "{name}", '
+        f'fingerprint = "{fingerprint_mcp_server_config(server)}" }}]\n'
+    )
+    if disabled:
+        quoted = ", ".join(f'"{item}"' for item in disabled)
+        text += f"disabled_project_servers = [{quoted}]\n"
+    return text
+
+
+def _isolate_project_mcp_trust_lists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_text: str = "[mcp]\n",
+) -> Path:
+    """Point MCP trust lists at a test-only user config."""
+    from deepagents_code import _env_vars
+
+    user_config = tmp_path / "config.toml"
+    user_config.write_text(config_text)
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config)
+    monkeypatch.delenv(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
+    monkeypatch.delenv(_env_vars.DISABLED_PROJECT_MCP_SERVERS, raising=False)
+    return user_config
+
+
 class TestResolveMcpConfigExplicit:
     """Explicit `--mcp-config <path>` resolution path."""
 
@@ -81,8 +119,10 @@ class TestResolveMcpConfigAutodiscover:
     def test_untrusted_only_returns_no_usable_config_with_paths(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """An untrusted-only discovery returns the project paths it skipped."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
         project_cfg = tmp_path / "project.json"
         project_cfg.write_text(
             '{"mcpServers":{"notion":{"transport":"http",'
@@ -127,6 +167,7 @@ class TestResolveMcpConfigAutodiscover:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """User config loads OK while an untrusted project config is noted."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
         fake_home = tmp_path / "home"
         user_dir = fake_home / ".deepagents"
         user_dir.mkdir(parents=True)
@@ -155,6 +196,67 @@ class TestResolveMcpConfigAutodiscover:
         # Only the user server is in the merged config; the project server is excluded.
         assert "notion" in result.config["mcpServers"]
         assert "slack" not in result.config["mcpServers"]
+
+    def test_allowlisted_project_server_is_loaded_for_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An always-allowed project server is available to `mcp login`."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"},'
+            '"other":{"type":"http","url":"https://example.com/mcp",'
+            '"auth":"oauth"}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project_cfg.parent, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"slack"}
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_disabled_project_server_overrides_allowlist_for_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A disabled project server stays unavailable even if also enabled."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(
+                project_cfg.parent, "slack", slack, disabled=["slack"]
+            ),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (project_cfg,)
 
 
 class TestSelectServer:
@@ -227,4 +329,4 @@ class TestFormatUntrustedProjectNotice:
         notice = format_untrusted_project_notice((a, b))
         assert str(a) in notice
         assert str(b) in notice
-        assert "pass --mcp-config <path> to use it explicitly" in notice
+        assert "pass --mcp-config <path> to use the file explicitly" in notice

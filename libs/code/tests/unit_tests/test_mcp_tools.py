@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from deepagents_code import model_config
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator
 
@@ -1770,7 +1772,10 @@ class TestResolveAndLoadMcpTools:
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "config.toml",
         )
-        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+        monkeypatch.delenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            raising=False,
+        )
         monkeypatch.delenv(
             "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS", raising=False
         )
@@ -3193,6 +3198,35 @@ class TestSelectiveProjectMcpTrust:
     def _remote(url: str = "https://example.test/mcp") -> dict[str, Any]:
         return {"type": "sse", "url": url}
 
+    @staticmethod
+    def _write_user_approvals(
+        user_config: Path,
+        project_root: Path,
+        servers: dict[str, Any],
+        names: list[str],
+        *,
+        disabled: list[str] | None = None,
+    ) -> None:
+        from deepagents_code.model_config import fingerprint_mcp_server_config
+
+        entries = [
+            "{ "
+            f'project_root = "{project_root}", '
+            f'name = "{name}", '
+            f'fingerprint = "{fingerprint_mcp_server_config(servers[name])}"'
+            " }"
+            for name in names
+        ]
+        lines = ["[mcp]"]
+        if entries:
+            lines.append(
+                "enabled_project_server_approvals = [" + ", ".join(entries) + "]"
+            )
+        if disabled:
+            quoted = ", ".join(f'"{name}"' for name in disabled)
+            lines.append(f"disabled_project_servers = [{quoted}]")
+        user_config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     async def _resolve_merged(
         self,
         project_root: Path,
@@ -3232,11 +3266,10 @@ class TestSelectiveProjectMcpTrust:
         """An allowlisted server loads while a non-listed sibling is dropped."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._stdio(), "other": self._stdio()}
-        )
+        servers = {"docs": self._stdio(), "other": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -3245,21 +3278,68 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
+    async def test_same_name_in_different_project_is_not_approved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scoped approval for one project does not approve another repo."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        approved_servers = {"docs": self._stdio("echo")}
+        attack_servers = {"docs": self._stdio("python")}
+        self._write_project_config(attack_project, attack_servers)
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(
+            user_config,
+            approved_project,
+            approved_servers,
+            ["docs"],
+        )
+
+        merged = await self._resolve_merged(
+            attack_project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
+    async def test_changed_same_name_server_is_not_approved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A command change under an approved name requires a new approval."""
+        project = tmp_path / "project"
+        project.mkdir()
+        approved_servers = {"docs": self._stdio("echo")}
+        changed_servers = {"docs": self._stdio("python")}
+        self._write_project_config(project, changed_servers)
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, approved_servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
     async def test_allowlisted_loads_with_invalid_unlisted_sibling(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An invalid unlisted server cannot block an allowlisted sibling."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project,
-            {
-                "docs": self._stdio(),
-                "broken": ["not", "a", "server"],
-            },
-        )
+        servers = {
+            "docs": self._stdio(),
+            "broken": ["not", "a", "server"],
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -3341,12 +3421,11 @@ class TestSelectiveProjectMcpTrust:
         """A server named in both lists is disabled (reject precedence)."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(project, {"both": self._stdio()})
+        servers = {"both": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = ["both"]\n'
-            'disabled_project_servers = ["both"]\n'
+        self._write_user_approvals(
+            user_config, project, servers, ["both"], disabled=["both"]
         )
 
         merged = await self._resolve_merged(
@@ -3387,7 +3466,10 @@ class TestSelectiveProjectMcpTrust:
             project, {"docs": self._stdio(), "other": self._stdio()}
         )
         user_config = tmp_path / "config.toml"  # no [mcp] table
-        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "docs",
+        )
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -3407,11 +3489,10 @@ class TestSelectiveProjectMcpTrust:
         """
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._remote(), "evil": self._remote()}
-        )
+        servers = {"docs": self._remote(), "evil": self._remote()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -3427,19 +3508,15 @@ class TestSelectiveProjectMcpTrust:
         """One untrusted config: allowed kept, denied and unlisted both dropped."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project,
-            {
-                "keep": self._stdio(),
-                "block": self._stdio(),
-                "other": self._stdio(),
-            },
-        )
+        servers = {
+            "keep": self._stdio(),
+            "block": self._stdio(),
+            "other": self._stdio(),
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = ["keep"]\n'
-            'disabled_project_servers = ["block"]\n'
+        self._write_user_approvals(
+            user_config, project, servers, ["keep"], disabled=["block"]
         )
 
         merged = await self._resolve_merged(
@@ -3475,11 +3552,10 @@ class TestSelectiveProjectMcpTrust:
         """On the untrusted default path, an allowlisted server still loads."""
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(
-            project, {"docs": self._stdio(), "other": self._stdio()}
-        )
+        servers = {"docs": self._stdio(), "other": self._stdio()}
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         # No trust flag → the config is untrusted; only the allowlisted name loads.
         merged = await self._resolve_merged(
@@ -3502,19 +3578,17 @@ class TestSelectiveProjectMcpTrust:
         project.mkdir()
         # A dict (so it yields a summary and skips the empty-summaries fast path),
         # but setting both tool filters at once — a documented per-server error.
-        self._write_project_config(
-            project,
-            {
-                "docs": {
-                    "command": "echo",
-                    "args": [],
-                    "allowedTools": ["a"],
-                    "disabledTools": ["b"],
-                }
-            },
-        )
+        servers = {
+            "docs": {
+                "command": "echo",
+                "args": [],
+                "allowedTools": ["a"],
+                "disabledTools": ["b"],
+            }
+        }
+        self._write_project_config(project, servers)
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        self._write_user_approvals(user_config, project, servers, ["docs"])
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
@@ -3579,7 +3653,10 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text("[[not valid toml")
-        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "docs",
+        )
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=True

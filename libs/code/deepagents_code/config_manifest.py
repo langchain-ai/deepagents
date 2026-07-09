@@ -1111,12 +1111,22 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # env overrides are named in the summaries instead of `env_var` because the
     # scalar resolver rejects env-backed STRUCTURED options by design.
     ConfigOption(
+        key="mcp.enabled_project_server_approvals",
+        group="MCP",
+        summary=(
+            "Project MCP server approvals saved by project root, server name, and "
+            "server fingerprint; edited commands/URLs require re-approval."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_server_approvals"),
+    ),
+    ConfigOption(
         key="mcp.enabled_project_servers",
         group="MCP",
         summary=(
-            "Project MCP server names to pre-approve by name from an untrusted "
-            ".mcp.json; command/URL changes under the same name still match "
-            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+            "Deprecated legacy flat project MCP server-name allowlist; ignored in "
+            "config.toml. Use enabled_project_server_approvals instead. Env-only "
+            "global override: DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),
@@ -1245,7 +1255,7 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
         # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
-        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
     }
 )

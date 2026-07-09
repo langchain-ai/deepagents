@@ -91,11 +91,12 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     When `config_path` is omitted, auto-discovered MCP configs are merged in
     the same precedence order as the runtime loader, with matching trust
     gating: user-level configs are always included, but project-level configs
-    are only included when the trust store has a fingerprint match. An
-    untrusted project-level config (for example, a `.mcp.json` in a cloned
-    repo) is skipped so attacker-controlled `headers` entries cannot exfiltrate
-    local secrets during the OAuth handshake. When `config_path` is set, that
-    file alone is loaded and treated as explicitly trusted.
+    contribute only servers with matching scoped approvals and no deny-list
+    entry. Untrusted project-level server entries (for example, from a `.mcp.json`
+    in a cloned repo) are skipped so attacker-controlled `headers` entries
+    cannot exfiltrate local secrets during the OAuth handshake. When
+    `config_path` is set, that file alone is loaded and treated as explicitly
+    trusted.
 
     Args:
         server: Target server name from `mcpServers`.

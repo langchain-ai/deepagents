@@ -59,12 +59,12 @@ class ConfigResolutionError:
     """Plain-text description suitable for direct display to the user."""
 
     untrusted_project_paths: tuple[Path, ...] = ()
-    """Project-level configs skipped because the trust store had no match.
+    """Project-level configs with server entries skipped by the trust gate.
 
-    Populated only when at least one discovered project config was
-    skipped during auto-discovery, regardless of `kind`. Callers can
-    surface a "skipping untrusted project config" hint alongside the
-    primary error.
+    Populated when at least one discovered project config had unapproved or
+    disabled server entries skipped during auto-discovery, regardless of `kind`.
+    Callers can surface a "skipping untrusted project servers" hint alongside
+    the primary error.
     """
 
 
@@ -79,7 +79,7 @@ class ConfigResolution:
     """Paths whose contents were merged into `config`, in precedence order."""
 
     untrusted_project_paths: tuple[Path, ...] = ()
-    """Project-level configs that were skipped during this resolution."""
+    """Project-level configs with server entries skipped by the trust gate."""
 
     def __post_init__(self) -> None:
         """Enforce the non-empty `used_paths` invariant.
@@ -134,11 +134,13 @@ def resolve_mcp_config(
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        _resolve_project_config_base,
         classify_discovered_configs,
         discover_mcp_configs,
         load_mcp_config,
         load_mcp_config_lenient,
         merge_mcp_configs,
+        project_root_for_mcp_config_path,
     )
 
     if config_path is not None:
@@ -177,12 +179,34 @@ def resolve_mcp_config(
             used_paths.append(path)
 
     if project_paths:
-        # `mcp login` never auto-loads project-level configs: it surfaces them
-        # as untrusted so the user approves them in the main `dcode` flow (or
-        # with `--trust-project-mcp`), where the interactive prompt and the
-        # `[mcp].enabled_project_servers` allow-list live. There is no
-        # fingerprint auto-trust for this command to consult.
-        untrusted = tuple(project_paths)
+        from deepagents_code.model_config import load_mcp_server_trust_lists
+
+        trust_lists = load_mcp_server_trust_lists()
+        project_base = _resolve_project_config_base(None)
+        untrusted_paths: list[Path] = []
+        for path in project_paths:
+            project_root = project_root_for_mcp_config_path(path, fallback=project_base)
+            loaded = load_mcp_config_lenient(path)
+            if loaded is None:
+                continue
+            servers = loaded.get("mcpServers", {})
+            if not isinstance(servers, dict):
+                continue
+            kept = {
+                name: server
+                for name, server in servers.items()
+                if trust_lists.is_enabled(
+                    name,
+                    project_root=project_root,
+                    server=server,
+                )
+            }
+            if kept:
+                configs.append({**loaded, "mcpServers": kept})
+                used_paths.append(path)
+            if len(kept) != len(servers):
+                untrusted_paths.append(path)
+        untrusted = tuple(untrusted_paths)
 
     if not configs:
         found_paths = ", ".join(str(path) for path in found)
@@ -241,10 +265,10 @@ def select_server(
 
 
 def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
-    """Build the CLI-style hint string for skipped untrusted project configs.
+    """Build the CLI-style hint string for skipped project server entries.
 
     Args:
-        paths: Project configs that were skipped during resolution.
+        paths: Project configs with entries skipped during resolution.
 
     Returns:
         A single-line user-facing string. Empty when `paths` is empty.
@@ -253,10 +277,10 @@ def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
         return ""
     skipped = ", ".join(str(path) for path in paths)
     return (
-        "Skipping untrusted project MCP config "
-        f"(not yet approved or config changed): {skipped}. "
-        "Approve it by running `dcode` in this project, or "
-        "pass --mcp-config <path> to use it explicitly."
+        "Skipping untrusted project MCP server entries "
+        f"(not yet approved or disabled): {skipped}. "
+        "Approve them by running `dcode` in this project, or "
+        "pass --mcp-config <path> to use the file explicitly."
     )
 
 

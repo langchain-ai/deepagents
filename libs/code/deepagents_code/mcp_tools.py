@@ -853,6 +853,29 @@ def _resolve_project_config_base(project_context: ProjectContext | None) -> Path
     return find_project_root() or Path.cwd()
 
 
+def project_root_for_mcp_config_path(
+    path: Path, *, fallback: Path | None = None
+) -> Path:
+    """Infer the project root that owns a project-level MCP config path.
+
+    Args:
+        path: Project-level `.mcp.json` path.
+        fallback: Root to use if `path` cannot be resolved.
+
+    Returns:
+        The owning project root.
+    """
+    try:
+        parent = path.resolve().parent
+    except OSError:
+        if fallback is not None:
+            return fallback
+        parent = path.parent
+    if parent.name == ".deepagents":
+        return parent.parent
+    return parent
+
+
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
     ("~/.deepagents/.mcp.json", "user-level"),
     ("<project-root>/.deepagents/.mcp.json", "project subdir"),
@@ -1904,11 +1927,13 @@ async def resolve_and_load_mcp_tools(
                 load fully; all servers from untrusted project configs are
                 dropped.
 
-            Regardless of this flag, the user-level allow/deny lists
-            (`[mcp].enabled_project_servers` /`disabled_project_servers` and
-            their env equivalents, via `load_mcp_server_trust_lists`) are
-            applied: named servers load from an otherwise-untrusted config,
-            and explicitly denied servers are dropped even from a trusted one.
+            Regardless of this flag, the user-level allow/deny policy
+            (`[mcp].enabled_project_server_approvals`,
+            `[mcp].disabled_project_servers`, and env equivalents via
+            `load_mcp_server_trust_lists`) is applied: scoped approvals load
+            from an otherwise-untrusted config only when the project root and
+            server fingerprint match, and explicitly denied servers are dropped
+            even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
         stateless: When `True`, do not return an owned runtime session manager.
@@ -1978,8 +2003,12 @@ async def resolve_and_load_mcp_tools(
 
         # Whole-config trust comes only from the flag (`--trust-project-mcp` or
         # the interactive approval prompt's decision). Without it, servers load
-        # solely via the user's allow-list below; there is no fingerprint store.
+        # solely via the user's scoped approvals below.
         config_trusted = trust_project_mcp is True
+        project_root = project_root_for_mcp_config_path(
+            path,
+            fallback=_resolve_project_config_base(project_context),
+        )
 
         # The allow/deny lists are sourced only from the user's own config (home
         # config.toml + env) — never from the repo — so a committed .mcp.json
@@ -2014,7 +2043,11 @@ async def resolve_and_load_mcp_tools(
             if name in trust_lists.disabled:
                 # Explicit reject always wins, even for a trusted config.
                 continue
-            if config_trusted or name in trust_lists.enabled:
+            if config_trusted or trust_lists.is_enabled(
+                name,
+                project_root=project_root,
+                server=server,
+            ):
                 kept[name] = server
         if kept:
             filtered = {**config, "mcpServers": kept}

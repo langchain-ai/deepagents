@@ -594,6 +594,7 @@ jobs:
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries 2 \
+            --retry-exclude AgentTimeoutError \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             $n_tasks_flag \

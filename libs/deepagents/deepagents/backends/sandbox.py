@@ -60,7 +60,7 @@ try:
     real_root = os.path.realpath(path)
     os.chdir(path)
     rel_pattern = pattern.lstrip('/')
-    if any(seg == '..' for seg in rel_pattern.replace('\\\\', '/').split('/')):
+    if any(seg == '..' for seg in rel_pattern.replace(chr(92), '/').split('/')):
         print(json.dumps({{'error': 'invalid_pattern'}}))
     else:
         matches = sorted(glob.glob(rel_pattern, recursive=True))
@@ -72,10 +72,8 @@ try:
                 st = os.stat(candidate)
             except OSError:
                 continue
-            rel_path = os.path.relpath(candidate, real_root)
-            display_path = real_root if rel_path == '.' else os.path.join(path, rel_path)
             print(json.dumps({{
-                'path': display_path,
+                'path': m,
                 'size': st.st_size,
                 'mtime': st.st_mtime,
                 'is_dir': os.path.isdir(candidate),
@@ -112,7 +110,7 @@ if os.path.isdir(search_path):
     # stay relative to the search root, matching the `FilesystemBackend`
     # semantics where `/` anchors to the root, not the filesystem.
     rel_glob = glob_pat.lstrip('/')
-    if any(seg == '..' for seg in rel_glob.replace('\\\\', '/').split('/')):
+    if any(seg == '..' for seg in rel_glob.replace(chr(92), '/').split('/')):
         sys.stderr.write('glob contains path traversal\\n')
         sys.exit(2)
     real_root = os.path.realpath(search_path)

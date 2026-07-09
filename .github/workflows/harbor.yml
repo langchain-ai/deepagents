@@ -624,6 +624,7 @@ jobs:
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
             "${verifier_env_args[@]}" \
+            --environment-kwarg 'api_key=${LANGSMITH_SANDBOX_API_KEY}' \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \

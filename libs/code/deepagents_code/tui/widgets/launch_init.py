@@ -145,7 +145,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
             Widgets for the modal content.
         """
         with Vertical():
-            yield Static("Welcome to dcode", classes="launch-init-title")
+            yield Static("Welcome to Deep Agents Code", classes="launch-init-title")
             yield Static(
                 Content.assemble("What should Deep Agents call you?"),
                 classes="launch-init-copy",

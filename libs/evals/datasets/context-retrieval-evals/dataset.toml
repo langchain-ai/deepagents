@@ -1,0 +1,13 @@
+# Dataset manifest for langchain-ai/context-retrieval-evals
+# Add tasks using: harbor add <org>/<name>
+# Publish using: harbor publish
+
+[dataset]
+name = "langchain-ai/context-retrieval-evals"
+description = "Context retrieval evaluation tasks for Deep Agents."
+authors = []
+keywords = []
+
+[[tasks]]
+name = "langchain-ai/cb-cloud-1"
+digest = "sha256:1bab77986d4b180c131f7f790999c2394d7799e7f20d5173f9f4db30c0534b2e"

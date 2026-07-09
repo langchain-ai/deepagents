@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 from langchain.agents import create_agent
@@ -31,6 +31,7 @@ from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResul
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware import SkillSource as PublicSkillSource
 from deepagents.middleware.skills import (
     MAX_SKILL_COMPATIBILITY_LENGTH,
     MAX_SKILL_DESCRIPTION_LENGTH,
@@ -656,6 +657,31 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
     ]
 
 
+def test_list_skills_from_backend_root_skill_md(tmp_path: Path) -> None:
+    """Test listing a SKILL.md placed directly under the source path."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_root = tmp_path / "plugin-skill"
+    skill_path = (skill_root / "SKILL.md").as_posix()
+    skill_content = make_skill_content("root-skill", "Root skill")
+
+    responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
+    assert responses[0].error is None
+
+    skills = _list_skills(backend, skill_root.as_posix())
+
+    assert skills == [
+        {
+            "name": "root-skill",
+            "description": "Root skill",
+            "path": skill_path,
+            "metadata": {},
+            "license": None,
+            "compatibility": None,
+            "allowed_tools": [],
+        }
+    ]
+
+
 def test_list_skills_from_backend_multiple_skills(tmp_path: Path) -> None:
     """Test listing multiple skills from filesystem backend."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -715,13 +741,14 @@ def test_list_skills_logs_ls_error(caplog: pytest.LogCaptureFixture) -> None:
     """A backend listing error should not look like a normal empty source."""
     backend = MagicMock()
     backend.ls.return_value = LsResult(error="Cannot list '/bad': denied", entries=[])
+    backend.download_files.return_value = [FileDownloadResponse(path="/bad/SKILL.md", content=None, error="file_not_found")]
 
     with caplog.at_level(logging.WARNING):
         skills = _list_skills(backend, "/bad")
 
     assert skills == []
     assert "Cannot load skills from '/bad'" in caplog.text
-    backend.download_files.assert_not_called()
+    backend.download_files.assert_called_once_with(["/bad/SKILL.md"])
 
 
 def test_list_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptureFixture) -> None:
@@ -732,7 +759,10 @@ def test_list_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptu
 
     backend = MagicMock()
     backend.ls.return_value = LsResult(error="Cannot list '/skills/loop': symlink loop", entries=[FileInfo(path=skill_dir_path, is_dir=True)])
-    backend.download_files.return_value = [FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)]
+    backend.download_files.side_effect = [
+        [FileDownloadResponse(path="/skills/SKILL.md", content=None, error="file_not_found")],
+        [FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)],
+    ]
 
     with caplog.at_level(logging.WARNING):
         skills = _list_skills(backend, "/skills")
@@ -740,7 +770,10 @@ def test_list_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptu
     assert len(skills) == 1
     assert skills[0]["name"] == "valid-skill"
     assert "Cannot load skills from '/skills'" in caplog.text
-    backend.download_files.assert_called_once_with([skill_md_path])
+    assert backend.download_files.call_args_list == [
+        call(["/skills/SKILL.md"]),
+        call([skill_md_path]),
+    ]
 
 
 def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
@@ -873,23 +906,30 @@ def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: 
     """
     skill_content = make_skill_content("my-skill", "My test skill")
     expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
+    direct_skill_md_path = str(PurePosixPath(source_path.replace("\\", "/")) / "SKILL.md")
 
     backend = MagicMock()
     backend.ls = MagicMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
     backend.download_files = MagicMock(
-        return_value=[
-            FileDownloadResponse(
-                path=expected_skill_md_path,
-                content=skill_content.encode("utf-8"),
-                error=None,
-            )
+        side_effect=[
+            [FileDownloadResponse(path=direct_skill_md_path, content=None, error="file_not_found")],
+            [
+                FileDownloadResponse(
+                    path=expected_skill_md_path,
+                    content=skill_content.encode("utf-8"),
+                    error=None,
+                )
+            ],
         ]
     )
 
     skills = _list_skills(backend, source_path)
 
     # Pins the whole fix: the normalized POSIX path must be what gets requested.
-    backend.download_files.assert_called_once_with([expected_skill_md_path])
+    assert backend.download_files.call_args_list == [
+        call([direct_skill_md_path]),
+        call([expected_skill_md_path]),
+    ]
     assert len(skills) == 1
     assert skills[0]["name"] == "my-skill"
     assert skills[0]["description"] == "My test skill"
@@ -1086,11 +1126,12 @@ def test_format_skills_locations_empty_path_fallback(empty_path: str) -> None:
     "bad_source",
     [
         ("/only-one-element",),
-        ("/one", "two", "three"),
+        ("/one", "two", "three", "four"),
         ("/path", 42),
         (None, "label"),
+        ("/path", "label", 42),
     ],
-    ids=["one-tuple", "three-tuple", "non-string-label", "non-string-path"],
+    ids=["one-tuple", "four-tuple", "non-string-label", "non-string-path", "non-string-prefix"],
 )
 def test_malformed_tuple_source_raises_type_error(bad_source: object) -> None:
     """Malformed tuple sources raise `TypeError` at construction time.
@@ -1099,7 +1140,10 @@ def test_malformed_tuple_source_raises_type_error(bad_source: object) -> None:
     `IndexError` in the middleware or a silently-coerced non-string path
     downstream.
     """
-    with pytest.raises(TypeError, match=r"expected str or \(str, str\) tuple"):
+    with pytest.raises(
+        TypeError,
+        match=r"expected str, \(str, str\), or \(str, str, str\) tuple",
+    ):
         SkillsMiddleware(
             backend=None,  # type: ignore[arg-type]
             sources=[bad_source],  # type: ignore[list-item]
@@ -1122,6 +1166,10 @@ def test_sources_attribute_is_paths_only() -> None:
 
     assert middleware.sources == ["/skills/user/", "/home/me/.claude/skills"]
     assert middleware.source_labels == ["User", "User Claude"]
+
+
+def test_skill_source_is_exported_from_middleware() -> None:
+    assert PublicSkillSource is not None
 
 
 def test_format_skills_locations_single_registry() -> None:

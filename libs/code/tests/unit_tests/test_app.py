@@ -5772,6 +5772,72 @@ class TestGoalCommand:
             assert app._pending_goal_objective == "add refresh tokens"
             assert app._pending_goal_rubric == "- model draft"
 
+    async def test_goal_revision_does_not_duplicate_ready_message(self) -> None:
+        """Revision cycles must not re-announce readiness (see duplicate bug)."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Stub the review continuation so no goal-review task is scheduled;
+            # the dedup under test runs before it in `_propose_goal_rubric`.
+            with (
+                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(
+                    app, "_start_pending_goal_rubric_review", new_callable=AsyncMock
+                ),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._propose_goal_rubric("add refresh tokens")
+                await pilot.pause()
+                await app._propose_goal_rubric(
+                    "add refresh tokens",
+                    feedback="be thorough in research",
+                    previous_criteria="- tests pass",
+                )
+                await pilot.pause()
+
+            ready_messages = [
+                w
+                for w in app.query(AppMessage)
+                if str(w._content) == "Proposed acceptance criteria are ready."
+            ]
+            assert len(ready_messages) == 1
+
+    async def test_goal_revision_warns_when_persist_fails_despite_suppression(
+        self,
+    ) -> None:
+        """A revision that cannot be saved must still surface the unsaved warning."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            with (
+                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(
+                    app, "_start_pending_goal_rubric_review", new_callable=AsyncMock
+                ),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._propose_goal_rubric(
+                    "add refresh tokens",
+                    feedback="be thorough in research",
+                    previous_criteria="- old criteria",
+                )
+                await pilot.pause()
+
+            # Success text is suppressed on the revision, but the failed write
+            # must still warn the user that the change is unsaved.
+            assert not any(
+                str(w._content) == "Proposed acceptance criteria are ready."
+                for w in app.query(AppMessage)
+            )
+            assert any(
+                "could not be saved to the thread" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+
     async def test_goal_review_regeneration_failure_remounts_pending_review(
         self,
     ) -> None:
@@ -5871,7 +5937,13 @@ class TestGoalCommand:
                     thread_id="thread-1",
                     preloaded_payload=payload,
                 )
-                await pilot.pause()
+                # The review task is scheduled via `call_after_refresh`, which
+                # can take more than one refresh to fire; wait for it instead of
+                # racing a single pause (previously flaky under event-loop load).
+                for _ in range(50):
+                    await pilot.pause()
+                    if app._goal_review_task is not None:
+                        break
 
                 menu = app.query_one(GoalReviewMenu)
                 assert app._pending_goal_review_widget is menu

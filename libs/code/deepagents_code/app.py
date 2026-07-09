@@ -8368,15 +8368,22 @@ class DeepAgentsApp(App):
             return False
         return True
 
-    async def _mount_goal_rubric_result(self, message: str, *, persisted: bool) -> None:
+    async def _mount_goal_rubric_result(
+        self, message: str, *, persisted: bool, suppress_success: bool = False
+    ) -> None:
         """Mount a goal/rubric command result, flagging unsaved state.
 
         Args:
             message: Success text describing the applied change.
             persisted: Whether `_persist_goal_rubric_state` confirmed the write.
+            suppress_success: When `True`, skip the success message on a
+                persisted write but still surface the unsaved-state warning.
+                Used by revision cycles that would otherwise duplicate a
+                message already shown for the first proposal.
         """
         if persisted:
-            await self._mount_message(AppMessage(message))
+            if not suppress_success:
+                await self._mount_message(AppMessage(message))
             return
         await self._mount_message(
             ErrorMessage(
@@ -8943,9 +8950,14 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = objective
         self._pending_goal_rubric = rubric
         persisted = await self._persist_goal_rubric_state()
+        # On a revision the remounted review widget already shows the updated
+        # criteria, so re-announcing readiness is redundant and would duplicate
+        # the message from the first proposal. The unsaved-state warning still
+        # surfaces regardless (see `_mount_goal_rubric_result`).
         await self._mount_goal_rubric_result(
             "Proposed acceptance criteria are ready.",
             persisted=persisted,
+            suppress_success=feedback is not None,
         )
         await self._start_pending_goal_rubric_review()
 

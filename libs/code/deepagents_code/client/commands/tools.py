@@ -161,7 +161,7 @@ def _tools_list_project_mcp_trust(args: argparse.Namespace) -> bool | None:
 
     Returns:
         `True` when project MCP trust was explicitly requested, otherwise
-        `None` so MCP discovery can consult persisted trust.
+        `None` so MCP discovery falls back to the user's per-server allow-list.
     """
     if getattr(args, "trust_project_mcp", False):
         return True

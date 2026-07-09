@@ -1790,15 +1790,14 @@ class TestResolveAndLoadMcpTools:
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.classify_discovered_configs")
     @patch("deepagents_code.mcp_tools.discover_mcp_configs")
-    async def test_untrusted_project_remote_dropped_when_store_unknown(
+    async def test_untrusted_project_remote_dropped_without_trust_flag(
         self,
         mock_discover: MagicMock,
         mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Trust-store miss drops project remote entries (no preflight HEAD)."""
+        """No whole-config trust flag drops project remote entries (no HEAD)."""
         project_cfg = tmp_path / ".mcp.json"
         project_cfg.write_text(
             json.dumps(
@@ -1815,11 +1814,6 @@ class TestResolveAndLoadMcpTools:
         mock_discover.return_value = [project_cfg]
         mock_classify.return_value = ([], [project_cfg])
         mock_load.return_value = ([], None, [])
-
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted",
-            lambda *_args, **_kwargs: False,
-        )
 
         await resolve_and_load_mcp_tools(trust_project_mcp=None)
 
@@ -3455,10 +3449,10 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"keep"}
 
-    async def test_disabled_dropped_when_fingerprint_trusted(
+    async def test_disabled_dropped_when_config_trusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Deny wins over fingerprint trust, not just the explicit flag."""
+        """Deny wins even when the whole config is trusted via the flag."""
         project = tmp_path / "project"
         project.mkdir()
         self._write_project_config(
@@ -3466,22 +3460,19 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
-        # Fingerprint store reports the whole config as trusted.
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: True
-        )
 
+        # The whole config is trusted via the flag; the deny list must still win.
         merged = await self._resolve_merged(
-            project, monkeypatch, user_config=user_config, trust_project_mcp=None
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
         )
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
-    async def test_allowlisted_loads_when_fingerprint_untrusted(
+    async def test_allowlisted_loads_when_config_untrusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On the `None` path with untrusted fingerprint, allowlist still loads."""
+        """On the untrusted default path, an allowlisted server still loads."""
         project = tmp_path / "project"
         project.mkdir()
         self._write_project_config(
@@ -3489,10 +3480,8 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted", lambda *_a, **_k: False
-        )
 
+        # No trust flag → the config is untrusted; only the allowlisted name loads.
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=None
         )

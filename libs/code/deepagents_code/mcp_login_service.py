@@ -177,22 +177,12 @@ def resolve_mcp_config(
             used_paths.append(path)
 
     if project_paths:
-        from deepagents_code.mcp_trust import (
-            compute_config_fingerprint,
-            is_project_mcp_trusted,
-        )
-        from deepagents_code.project_utils import find_project_root
-
-        project_root = str((find_project_root() or Path.cwd()).resolve())
-        fingerprint = compute_config_fingerprint(project_paths)
-        if is_project_mcp_trusted(project_root, fingerprint):
-            for path in project_paths:
-                loaded = load_mcp_config_lenient(path)
-                if loaded is not None:
-                    configs.append(loaded)
-                    used_paths.append(path)
-        else:
-            untrusted = tuple(project_paths)
+        # `mcp login` never auto-loads project-level configs: it surfaces them
+        # as untrusted so the user approves them in the main `dcode` flow (or
+        # with `--trust-project-mcp`), where the interactive prompt and the
+        # `[mcp].enabled_project_servers` allow-list live. There is no
+        # fingerprint auto-trust for this command to consult.
+        untrusted = tuple(project_paths)
 
     if not configs:
         found_paths = ", ".join(str(path) for path in found)

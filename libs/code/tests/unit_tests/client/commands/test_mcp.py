@@ -101,29 +101,32 @@ class TestRunMCPLogin:
         exit_code = await run_mcp_login(server="notion", config_path=str(config_path))
         assert exit_code == 1
 
-    async def test_autodiscover_searches_merged_view(self, tmp_path: Path) -> None:
+    async def test_autodiscover_searches_merged_view(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         """Auto-discovery merges all discovered configs before lookup."""
         from deepagents_code.client.commands.mcp import run_mcp_login
 
-        lower = tmp_path / "lower.json"
+        # User-level configs (under ~/.deepagents) are always loaded — the
+        # merge/precedence path no longer depends on a fingerprint trust gate.
+        user_dir = tmp_path / ".deepagents"
+        user_dir.mkdir()
+        lower = user_dir / "lower.json"
         lower.write_text(
             '{"mcpServers":{"notion":{"transport":"http",'
             '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
         )
-        higher = tmp_path / "higher.json"
+        higher = user_dir / "higher.json"
         higher.write_text(
             '{"mcpServers":{"linear":{"transport":"http",'
             '"url":"https://mcp.linear.app/mcp","auth":"oauth"}}}'
         )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
 
         with (
             patch(
                 "deepagents_code.mcp_tools.discover_mcp_configs",
                 return_value=[lower, higher],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=True,
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -135,29 +138,30 @@ class TestRunMCPLogin:
             "https://mcp.notion.com/mcp"
         )
 
-    async def test_autodiscover_higher_precedence_wins(self, tmp_path: Path) -> None:
+    async def test_autodiscover_higher_precedence_wins(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         """When two configs define the same server, the later one wins."""
         from deepagents_code.client.commands.mcp import run_mcp_login
 
-        lower = tmp_path / "lower.json"
+        user_dir = tmp_path / ".deepagents"
+        user_dir.mkdir()
+        lower = user_dir / "lower.json"
         lower.write_text(
             '{"mcpServers":{"notion":{"transport":"http",'
             '"url":"https://example.invalid/lower","auth":"oauth"}}}'
         )
-        higher = tmp_path / "higher.json"
+        higher = user_dir / "higher.json"
         higher.write_text(
             '{"mcpServers":{"notion":{"transport":"http",'
             '"url":"https://example.invalid/higher","auth":"oauth"}}}'
         )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
 
         with (
             patch(
                 "deepagents_code.mcp_tools.discover_mcp_configs",
                 return_value=[lower, higher],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=True,
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -201,10 +205,6 @@ class TestRunMCPLogin:
                 "deepagents_code.mcp_tools.discover_mcp_configs",
                 return_value=[project_cfg],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
             exit_code = await run_mcp_login(server="evil", config_path=None)
@@ -230,10 +230,6 @@ class TestRunMCPLogin:
             patch(
                 "deepagents_code.mcp_tools.discover_mcp_configs",
                 return_value=[project_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -267,10 +263,6 @@ class TestRunMCPLogin:
             patch(
                 "deepagents_code.mcp_tools.discover_mcp_configs",
                 return_value=[user_cfg],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):

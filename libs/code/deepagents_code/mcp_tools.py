@@ -1953,7 +1953,6 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
-    project_trusted: bool | None = None
     trust_lists: McpServerTrustLists | None = None
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)
@@ -1977,26 +1976,10 @@ async def resolve_and_load_mcp_tools(
                 configs.append(config)
             continue
 
-        # Whether the config as a whole is trusted (flag/env/fingerprint). This
-        # governs the default for un-listed servers; the user-level allow/deny
-        # lists below refine it per server.
-        if trust_project_mcp is True:
-            config_trusted = True
-        elif trust_project_mcp is False:
-            config_trusted = False
-        else:
-            if project_trusted is None:
-                from deepagents_code.mcp_trust import (
-                    compute_config_fingerprint,
-                    is_project_mcp_trusted,
-                )
-
-                project_root = str(
-                    _resolve_project_config_base(project_context).resolve()
-                )
-                fingerprint = compute_config_fingerprint(project_configs)
-                project_trusted = is_project_mcp_trusted(project_root, fingerprint)
-            config_trusted = project_trusted
+        # Whole-config trust comes only from the flag (`--trust-project-mcp` or
+        # the interactive approval prompt's decision). Without it, servers load
+        # solely via the user's allow-list below; there is no fingerprint store.
+        config_trusted = trust_project_mcp is True
 
         # The allow/deny lists are sourced only from the user's own config (home
         # config.toml + env) — never from the repo — so a committed .mcp.json

@@ -2257,17 +2257,11 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.classify_discovered_configs",
                 return_value=([], []),
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=True,
-            ),
-            patch("deepagents_code.mcp_trust.trust_project_mcp") as trust_project_mcp,
             patch("builtins.input", return_value="y"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        trust_project_mcp.assert_not_called()
         captured = capsys.readouterr()
         assert "debug-project-mcp" in captured.err
         assert "Learn more:" in captured.err
@@ -2310,10 +2304,6 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("fs", "stdio", "node server.js")],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("builtins.input", return_value="n"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
@@ -2330,7 +2320,7 @@ class TestCheckMcpProjectTrustPrompt:
     def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
-        """Answering "y" does not persist fingerprint trust."""
+        """Answering "y" allows for the session without persisting anything."""
         from deepagents_code.main import _check_mcp_project_trust
 
         project_root = tmp_path / "proj"
@@ -2365,17 +2355,11 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("fs", "stdio", "node server.js")],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
-            patch("deepagents_code.mcp_trust.trust_project_mcp") as trust_project_mcp,
             patch("builtins.input", return_value="y"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        trust_project_mcp.assert_not_called()
         assert "could not be saved" not in capsys.readouterr().err
 
     def test_always_allow_persists_names_to_config(
@@ -2426,18 +2410,11 @@ class TestCheckMcpProjectTrustPrompt:
                     ("reference", "stdio", "echo reference"),
                 ],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
-            patch("deepagents_code.mcp_trust.trust_project_mcp") as trust_project_mcp,
             patch("builtins.input", return_value="a"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        # "Always allow" persists by name to config.toml, not the fingerprint store.
-        trust_project_mcp.assert_not_called()
         lists = model_config.load_mcp_server_trust_lists(user_config)
         assert lists.enabled == frozenset({"docs", "reference"})
 
@@ -2476,10 +2453,6 @@ class TestCheckMcpProjectTrustPrompt:
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("fs", "stdio", "node")],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch(
                 "deepagents_code.model_config.add_enabled_project_mcp_servers",
@@ -2539,10 +2512,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("docs", "stdio", "echo docs"),
                     ("reference", "stdio", "echo reference"),
                 ],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             # Allow -> always; choose custom; select only the 2nd server.
             patch("builtins.input", side_effect=["a", "custom", "2"]),
@@ -2604,10 +2573,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("reference", "stdio", "echo reference"),
                 ],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("builtins.input", side_effect=["a", "none"]),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
@@ -2665,10 +2630,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("docs", "stdio", "echo docs"),
                     ("reference", "stdio", "echo reference"),
                 ],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             # "reference" is denied, so only "docs" is promptable — the subset
             # menu is skipped and answering "a" persists just that one name.
@@ -2743,10 +2704,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("blocked[/red]", "http[/red]", "https://x.test/[/red]"),
                 ],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("builtins.input", _no_input),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
@@ -2818,10 +2775,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("other", "stdio", "echo other"),
                 ],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("builtins.input", return_value="n"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
@@ -2888,10 +2841,6 @@ class TestCheckMcpProjectTrustPrompt:
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("docs", "stdio", "echo docs")],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("builtins.input", _no_input),
         ):
@@ -3022,10 +2971,6 @@ class TestCheckMcpProjectTrustDedupe:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted",
-            lambda *_a, **_k: False,
-        )
         monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
 
     def _captured_prompt(self, capsys: pytest.CaptureFixture[str]) -> str:

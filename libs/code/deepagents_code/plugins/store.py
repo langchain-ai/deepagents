@@ -40,10 +40,8 @@ def plugin_root_dir() -> Path:
 
 
 def plugin_data_dir(plugin_id: str) -> Path:
-    """Return the lazily-created data directory for a plugin id."""
-    data_dir = plugin_root_dir() / "data" / sanitize_plugin_id(plugin_id)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+    """Return the data directory path for a plugin id."""
+    return plugin_root_dir() / "data" / sanitize_plugin_id(plugin_id)
 
 
 def sanitize_plugin_id(value: str) -> str:
@@ -120,6 +118,51 @@ def _plugin_state_path() -> Path:
 
 def _installed_plugins_path() -> Path:
     return _state_dir() / "installed_plugins.json"
+
+
+def _default_project_path() -> str:
+    from deepagents_code.project_utils import find_project_root
+
+    cwd = Path.cwd().resolve()
+    return str((find_project_root(cwd) or cwd).resolve())
+
+
+def _project_plugin_state_path(project_path: str) -> Path:
+    return Path(project_path).resolve() / ".deepagents" / "plugins.json"
+
+
+def _load_project_enabled(project_path: str) -> dict[str, bool]:
+    data = _load_json(_project_plugin_state_path(project_path))
+    enabled = data.get("enabledPlugins")
+    if not isinstance(enabled, dict):
+        return {}
+    return {
+        key: value
+        for key, value in enabled.items()
+        if isinstance(key, str) and isinstance(value, bool)
+    }
+
+
+def _write_project_enabled(project_path: str, enabled: dict[str, bool]) -> None:
+    _atomic_write_json(
+        _project_plugin_state_path(project_path),
+        {"version": _STORAGE_VERSION, "enabledPlugins": enabled},
+    )
+
+
+def _load_local_enabled(data: dict[str, Any]) -> dict[str, dict[str, bool]]:
+    raw = data.get("localEnabledPlugins")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        path: {
+            plugin_id: value
+            for plugin_id, value in values.items()
+            if isinstance(plugin_id, str) and isinstance(value, bool)
+        }
+        for path, values in raw.items()
+        if isinstance(path, str) and isinstance(values, dict)
+    }
 
 
 def _load_json(path: Path, *, max_version: int = _STORAGE_VERSION) -> dict[str, Any]:
@@ -240,38 +283,48 @@ def remove_marketplace_record(name: str) -> bool:
     return True
 
 
-def load_enabled_plugins() -> dict[str, bool]:
+def load_enabled_plugins(*, project_path: str | None = None) -> dict[str, bool]:
     """Load enabled plugin state.
 
     Returns:
         Enabled-state map keyed by plugin id.
     """
     data = _load_json(_plugin_state_path())
-    enabled = data.get("enabledPlugins", {})
-    if not isinstance(enabled, dict):
-        return {}
-    return {
-        key: value
-        for key, value in enabled.items()
-        if isinstance(key, str) and isinstance(value, bool)
-    }
+    enabled_raw = data.get("enabledPlugins", {})
+    enabled = (
+        {
+            key: value
+            for key, value in enabled_raw.items()
+            if isinstance(key, str) and isinstance(value, bool)
+        }
+        if isinstance(enabled_raw, dict)
+        else {}
+    )
+    active_project = project_path or _default_project_path()
+    enabled.update(_load_project_enabled(active_project))
+    project_key = str(Path(active_project).resolve())
+    enabled.update(_load_local_enabled(data).get(project_key, {}))
+    return enabled
 
 
-def load_plugin_scopes() -> dict[str, str]:
+def load_plugin_scopes(*, project_path: str | None = None) -> dict[str, InstallScope]:
     """Load plugin install scopes.
 
     Returns:
         Scope map keyed by plugin id.
     """
     data = _load_json(_plugin_state_path())
-    scopes = data.get("pluginScopes", {})
-    if not isinstance(scopes, dict):
-        return {}
-    return {
-        key: value
-        for key, value in scopes.items()
-        if isinstance(key, str) and value in {"user", "project", "local"}
-    }
+    enabled = data.get("enabledPlugins")
+    scopes: dict[str, InstallScope] = (
+        {key: "user" for key in enabled if isinstance(key, str)}
+        if isinstance(enabled, dict)
+        else {}
+    )
+    active_project = project_path or _default_project_path()
+    scopes.update(dict.fromkeys(_load_project_enabled(active_project), "project"))
+    local = _load_local_enabled(data).get(str(Path(active_project).resolve()), {})
+    scopes.update(dict.fromkeys(local, "local"))
+    return scopes
 
 
 def load_favorite_plugins() -> set[str]:
@@ -292,6 +345,7 @@ def _write_plugin_state(
     enabled_plugins: dict[str, Any],
     scopes: dict[str, Any],
     favorites: set[str],
+    local_enabled: dict[str, dict[str, bool]] | None = None,
 ) -> None:
     _atomic_write_json(
         _plugin_state_path(),
@@ -300,12 +354,17 @@ def _write_plugin_state(
             "enabledPlugins": enabled_plugins,
             "pluginScopes": scopes,
             "favoritePlugins": sorted(favorites),
+            "localEnabledPlugins": local_enabled or {},
         },
     )
 
 
 def set_plugin_enabled(
-    plugin_id: str, enabled: bool, *, scope: InstallScope | None = None
+    plugin_id: str,
+    enabled: bool,
+    *,
+    scope: InstallScope | None = None,
+    project_path: str | None = None,
 ) -> None:
     """Persist a plugin enablement value.
 
@@ -322,12 +381,22 @@ def set_plugin_enabled(
     enabled_plugins = data.get("enabledPlugins")
     if not isinstance(enabled_plugins, dict):
         enabled_plugins = {}
-    enabled_plugins[plugin_id] = enabled
+    resolved_scope = scope or "user"
+    active_project = project_path or _default_project_path()
+    local_enabled = _load_local_enabled(data)
+    if resolved_scope == "user":
+        enabled_plugins[plugin_id] = enabled
+    elif resolved_scope == "project":
+        project_enabled = _load_project_enabled(active_project)
+        project_enabled[plugin_id] = enabled
+        _write_project_enabled(active_project, project_enabled)
+    else:
+        project_key = str(Path(active_project).resolve())
+        local_enabled.setdefault(project_key, {})[plugin_id] = enabled
     scopes = data.get("pluginScopes")
     if not isinstance(scopes, dict):
         scopes = {}
-    if scope is not None:
-        scopes[plugin_id] = scope
+    scopes[plugin_id] = resolved_scope
     favorites_raw = data.get("favoritePlugins", [])
     favorites = (
         {item for item in favorites_raw if isinstance(item, str) and item}
@@ -338,6 +407,7 @@ def set_plugin_enabled(
         enabled_plugins=enabled_plugins,
         scopes=scopes,
         favorites=favorites,
+        local_enabled=local_enabled,
     )
 
 
@@ -356,6 +426,7 @@ def set_plugin_favorite(item_id: str, favorite: bool) -> None:
     if not isinstance(scopes, dict):
         scopes = {}
     favorites_raw = data.get("favoritePlugins", [])
+    local_enabled = _load_local_enabled(data)
     favorites = (
         {item for item in favorites_raw if isinstance(item, str) and item}
         if isinstance(favorites_raw, list)
@@ -369,6 +440,7 @@ def set_plugin_favorite(item_id: str, favorite: bool) -> None:
         enabled_plugins=enabled_plugins,
         scopes=scopes,
         favorites=favorites,
+        local_enabled=local_enabled,
     )
 
 
@@ -592,6 +664,7 @@ def cache_and_register_plugin(
     version: str,
     git_commit_sha: str | None = None,
     project_path: str | None = None,
+    force: bool = False,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
 
@@ -602,6 +675,7 @@ def cache_and_register_plugin(
         version: Version string used for the cache path.
         git_commit_sha: Optional git SHA.
         project_path: Optional project path for project/local scopes.
+        force: Whether to replace an existing non-development cache entry.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -616,7 +690,7 @@ def cache_and_register_plugin(
         raise FileNotFoundError(msg)
 
     cache_path = versioned_cache_path(plugin_id, version)
-    if cache_path.exists() and version != "dev":
+    if cache_path.exists() and version != "dev" and not force:
         try:
             if any(cache_path.iterdir()):
                 add_installed_plugin(
@@ -712,15 +786,26 @@ def uninstall_plugin(
         if isinstance(favorites_raw, list)
         else set()
     )
+    local_enabled = _load_local_enabled(data)
+
+    removed_entries = [
+        entry for entry in existing if entry.install_path in removed_paths
+    ]
+    for entry in removed_entries:
+        if entry.scope == "user":
+            enabled_plugins.pop(plugin_id, None)
+        elif entry.scope == "project" and entry.project_path:
+            project_enabled = _load_project_enabled(entry.project_path)
+            project_enabled.pop(plugin_id, None)
+            _write_project_enabled(entry.project_path, project_enabled)
+        elif entry.scope == "local" and entry.project_path:
+            project_key = str(Path(entry.project_path).resolve())
+            local_enabled.get(project_key, {}).pop(plugin_id, None)
 
     if remaining:
-        # Still installed in another scope — keep enabled state unless this
-        # was the only enabled mention; mirror Claude last-scope cleanup only
-        # when fully removed.
         if scope is not None and scopes.get(plugin_id) == scope:
             scopes[plugin_id] = remaining[0].scope
     else:
-        enabled_plugins[plugin_id] = False
         scopes.pop(plugin_id, None)
         favorites.discard(plugin_id)
 
@@ -728,9 +813,21 @@ def uninstall_plugin(
         enabled_plugins=enabled_plugins,
         scopes=scopes,
         favorites=favorites,
+        local_enabled=local_enabled,
     )
 
     for path_str in removed_paths - remaining_paths:
         path = Path(path_str)
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+        try:
+            resolved = path.resolve()
+            cache_root = plugin_install_cache_dir().resolve()
+        except OSError:
+            logger.warning(
+                "Could not validate plugin cache path before deletion: %s", path
+            )
+            continue
+        if not resolved.is_relative_to(cache_root):
+            logger.warning("Refusing to delete plugin path outside cache: %s", path)
+            continue
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)

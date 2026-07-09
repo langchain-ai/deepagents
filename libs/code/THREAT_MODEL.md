@@ -28,6 +28,7 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Plugin marketplace, cache, trust, and adapters (`plugins/`)
 
 ### Out of Scope
 
@@ -50,6 +51,8 @@
 6. The LangGraph dev server subprocess binds to `127.0.0.1` by default (`client/launch/server.py:_DEFAULT_HOST`) and is ephemeral — started and stopped per CLI session.
 7. `DA_SERVER_*` environment variables are readable only by the CLI process and its child server subprocess (OS process isolation assumption).
 8. Users who set `class_path` in `config.toml` accept the same trust model as `pyproject.toml` build scripts — they control their own machine.
+9. Plugin marketplace metadata is untrusted until its exact executable surface
+   has an explicit local trust decision.
 
 ---
 
@@ -114,6 +117,30 @@
 │  (config.toml, .env)                                                │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+### Plugin trust boundary
+
+Plugins may contribute prompt-level components (skills, commands, and agents)
+and executable components (hooks and MCP servers). Installed artifacts are
+copied into a managed versioned cache. Session-only `--plugin-dir` plugins load
+from user-selected paths.
+
+MCP and hook activation requires a trust record matching the plugin id,
+version, and normalized executable-surface fingerprint. A changed command,
+environment, hook file, or MCP definition invalidates the decision. Missing or
+corrupt trust state fails closed. Plugin-agent frontmatter cannot add
+permission modes, hooks, or MCP servers.
+
+Pre-tool hooks execute server-side before the tool handler. A deny always
+blocks, including in auto-approve mode; ask routes through HITL when the tool is
+gated and otherwise fails closed. Allow may suppress a prompt but cannot
+override an independent user or policy denial. Post-tool hooks cannot undo
+execution and only add model feedback.
+
+Marketplace URLs are redacted before persistence and display. Uninstall and
+marketplace cleanup refuse to recursively delete paths outside managed plugin
+cache roots. Plugin subprocesses still execute with the local user's OS
+permissions, so trust is consent, not sandboxing.
 
 ---
 

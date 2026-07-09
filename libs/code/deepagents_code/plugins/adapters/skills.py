@@ -38,7 +38,7 @@ def plugin_skill_sources(plugins: tuple[PluginInstance, ...]) -> list[SkillSourc
                 (
                     str(source_path),
                     f"Plugin: {plugin.plugin_id}",
-                    f"{plugin.plugin_id}:",
+                    f"{plugin.name}:",
                 )
             )
     return sources

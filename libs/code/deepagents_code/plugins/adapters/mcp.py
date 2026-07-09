@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_code.plugins.substitution import substitute_json
+from deepagents_code.plugins.substitution import plugin_environment, substitute_json
 
 if TYPE_CHECKING:
     from deepagents_code.plugins.models import PluginInstance
@@ -29,20 +29,20 @@ def _safe_mcp_name_part(value: str) -> str:
     return f"{prefix}_{digest}"
 
 
-def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
+def scoped_mcp_server_name(plugin_name: str, server_name: str) -> str:
     """Return an MCP-loader-safe scoped server name for a plugin server.
 
     Plugin identifiers may contain characters rejected by dcode's MCP loader.
     Use `__` as the namespace separator so names stay unique and valid.
 
     Args:
-        plugin_id: Full plugin id in `name@marketplace` form.
+        plugin_name: Logical plugin name.
         server_name: Unscoped server name from the plugin config.
 
     Returns:
         Scoped server name safe for `_SERVER_NAME_RE`.
     """
-    plugin_part = _safe_mcp_name_part(plugin_id)
+    plugin_part = _safe_mcp_name_part(plugin_name)
     server_part = _safe_mcp_name_part(server_name)
     return f"plugin__{plugin_part}__{server_part}"
 
@@ -76,26 +76,30 @@ def _load_mcp_file(path: Path) -> JsonObject:
 
 def _normalize_server(
     server: object, *, plugin: PluginInstance, project_dir: Path | None
-) -> object:
+) -> object | None:
     substituted = substitute_json(
         server,
         plugin_root=plugin.root,
         plugin_data=plugin.data_dir,
         project_dir=project_dir,
+        warning_key=plugin.plugin_id,
     )
     if isinstance(substituted, dict):
         cwd = substituted.get("cwd")
         if isinstance(cwd, str) and cwd and not Path(cwd).is_absolute():
-            substituted = {**substituted, "cwd": str((plugin.root / cwd).resolve())}
+            resolved_cwd = (plugin.root / cwd).resolve()
+            if not resolved_cwd.is_relative_to(plugin.root.resolve()):
+                logger.warning(
+                    "Skipping MCP server with cwd outside plugin root: %s", cwd
+                )
+                return None
+            substituted = {**substituted, "cwd": str(resolved_cwd)}
         env = substituted.get("env")
-        plugin_env = {
-            "CLAUDE_PLUGIN_ROOT": str(plugin.root),
-            "CLAUDE_PLUGIN_DATA": str(plugin.data_dir),
-            "PLUGIN_ROOT": str(plugin.root),
-            "PLUGIN_DATA": str(plugin.data_dir),
-            "DEEPAGENTS_PLUGIN_ROOT": str(plugin.root),
-            "DEEPAGENTS_PLUGIN_DATA": str(plugin.data_dir),
-        }
+        plugin_env = plugin_environment(
+            plugin_root=plugin.root,
+            plugin_data=plugin.data_dir,
+            project_dir=project_dir,
+        )
         if isinstance(env, dict):
             substituted = {**substituted, "env": {**plugin_env, **env}}
         else:
@@ -141,10 +145,12 @@ def plugin_mcp_configs(
         for name, server in servers.items():
             if not isinstance(name, str):
                 continue
-            scoped_name = scoped_mcp_server_name(plugin.plugin_id, name)
-            scoped[scoped_name] = _normalize_server(
+            scoped_name = scoped_mcp_server_name(plugin.name, name)
+            normalized = _normalize_server(
                 server, plugin=plugin, project_dir=project_dir
             )
+            if normalized is not None:
+                scoped[scoped_name] = normalized
         if scoped:
             configs.append({"mcpServers": scoped})
     return configs

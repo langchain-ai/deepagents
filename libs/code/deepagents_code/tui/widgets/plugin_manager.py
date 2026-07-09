@@ -32,6 +32,7 @@ from deepagents_code.plugins import (
     discover_plugins,
     enable_plugin_with_scope,
     install_plugin,
+    remove_marketplace,
     uninstall_plugin,
 )
 from deepagents_code.plugins.marketplace import (
@@ -44,7 +45,6 @@ from deepagents_code.plugins.store import (
     load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
-    remove_marketplace_record,
     set_plugin_favorite,
 )
 
@@ -694,13 +694,13 @@ class PluginManagerScreen(ModalScreen[None]):
             meta_parts.append(f"{row.skill_count} {unit}")
         if row.command_count:
             unit = "command" if row.command_count == 1 else "commands"
-            meta_parts.append(f"{row.command_count} {unit} (unsupported)")
+            meta_parts.append(f"{row.command_count} {unit}")
         if row.agent_count:
             unit = "agent" if row.agent_count == 1 else "agents"
-            meta_parts.append(f"{row.agent_count} {unit} (unsupported)")
+            meta_parts.append(f"{row.agent_count} {unit}")
         if row.hook_count:
             unit = "hook" if row.hook_count == 1 else "hooks"
-            meta_parts.append(f"{row.hook_count} {unit} (unsupported)")
+            meta_parts.append(f"{row.hook_count} {unit}")
         if row.mcp_connected is True:
             meta_parts.append(f"{glyphs.checkmark} connected")
         elif row.mcp_connected is False:
@@ -827,32 +827,19 @@ class PluginManagerScreen(ModalScreen[None]):
             component_lines.append(f"Skills: {row.skill_count}")
         if row.command_count:
             unit = "command" if row.command_count == 1 else "commands"
-            component_lines.append(
-                f"Commands: {row.command_count} {unit} (unsupported)"
-            )
+            component_lines.append(f"Commands: {row.command_count} {unit}")
         if row.agent_count:
             unit = "agent" if row.agent_count == 1 else "agents"
-            component_lines.append(f"Agents: {row.agent_count} {unit} (unsupported)")
+            component_lines.append(f"Agents: {row.agent_count} {unit}")
         if row.hook_count:
             unit = "hook" if row.hook_count == 1 else "hooks"
-            component_lines.append(f"Hooks: {row.hook_count} {unit} (unsupported)")
+            component_lines.append(f"Hooks: {row.hook_count} {unit}")
         if row.mcp_server_names:
             component_lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
         if not component_lines:
             component_lines.append("No components discovered.")
         for line in component_lines:
             parts.extend(["\n  ", Content.styled(line, "dim")])
-        if row.command_count or row.agent_count or row.hook_count:
-            parts.extend(
-                [
-                    "\n\n",
-                    Content.styled(
-                        "Commands, agents, and hooks are detected but not loaded "
-                        "in this release.",
-                        "dim",
-                    ),
-                ]
-            )
         return Content.assemble(*parts)
 
     @staticmethod
@@ -1184,7 +1171,9 @@ class PluginManagerScreen(ModalScreen[None]):
         if row is None:
             return
         try:
-            await asyncio.to_thread(install_plugin, row.plugin_id, scope=scope)
+            await asyncio.to_thread(
+                install_plugin, row.plugin_id, scope=scope, trust=True
+            )
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
@@ -1330,7 +1319,7 @@ class PluginManagerScreen(ModalScreen[None]):
         if option_id is None or not option_id.startswith("marketplace:"):
             return
         name = option_id.removeprefix("marketplace:")
-        if remove_marketplace_record(name):
+        if remove_marketplace(name):
             self._status = f"Removed marketplace {name}."
             self._error = None
             self._refresh_state()

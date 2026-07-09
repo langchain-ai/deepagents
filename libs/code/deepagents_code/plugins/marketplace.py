@@ -240,6 +240,27 @@ def _run_git(args: list[str]) -> None:
         raise MarketplaceError(msg)
 
 
+def get_git_commit_sha(root: Path) -> str | None:
+    """Return the Git commit containing a plugin source, when available."""
+    git_path = shutil.which("git")
+    if git_path is None:
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603  # Fixed git executable, no shell.
+            [git_path, "-C", str(root), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    if result.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40}", value):
+        return value
+    return None
+
+
 def _clone_repository(
     source: MarketplaceSource,
     git_url: str,

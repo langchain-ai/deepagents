@@ -60,6 +60,16 @@ def test_plugin_command_parses_when_experimental_features_are_disabled(
     assert args.plugin_command == "list"
 
 
+def test_plugin_dir_is_repeatable() -> None:
+    with patch.object(
+        sys,
+        "argv",
+        ["deepagents", "--plugin-dir", "one", "--plugin-dir", "two"],
+    ):
+        args = parse_args()
+    assert args.plugin_dirs == ["one", "two"]
+
+
 class TestInitialSkillArg:
     """Tests for `--skill` startup skill argument."""
 

@@ -140,6 +140,9 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(
+        "  --plugin-dir PATH          Load a session-only plugin directory (repeatable)"
+    )
+    console.print(
         "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
@@ -390,12 +393,19 @@ def show_plugins_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls                      List available plugins")
-    console.print("  install <id> [--scope ...]   Install a marketplace plugin")
+    console.print("  install <id> [--scope ...] [--trust] Install a marketplace plugin")
     console.print("  uninstall <id> [--scope ...] Uninstall a plugin")
-    console.print("  enable <id>                  Enable an installed plugin")
-    console.print("  disable <id>                 Disable a plugin")
+    console.print("  enable <id> [--scope ...]    Enable an installed plugin")
+    console.print("  disable <id> [--scope ...]   Disable a plugin")
+    console.print("  trust <id>                   Trust the current executable surface")
+    console.print("  info <id>                    Show component and trust details")
+    console.print("  update <id> [--scope ...]    Refresh an installed plugin")
     console.print("  marketplace list|ls          List configured marketplaces")
     console.print("  marketplace add <source>     Add a marketplace source")
+    console.print("  marketplace update <name>    Refresh a marketplace")
+    console.print(
+        "  marketplace remove <name>    Remove a marketplace and its installs"
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode plugin list")

@@ -45,18 +45,16 @@ def discover_skills_and_roots(
         from deepagents_code._env_vars import experimental_enabled
 
         if experimental_enabled():
-            from deepagents_code.plugins import discover_plugins
-            from deepagents_code.plugins.adapters.skills import (
-                plugin_skill_roots,
-                plugin_skill_sources,
-            )
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
 
-            plugin_result = discover_plugins()
+            plugin_snapshot = get_plugin_snapshot(
+                project_dir=settings.project_root or Path.cwd()
+            )
             plugin_sources = [
                 (Path(path), prefix)
-                for path, _label, prefix in plugin_skill_sources(plugin_result.plugins)
+                for path, _label, prefix in plugin_snapshot.skill_sources
             ]
-            plugin_roots = plugin_skill_roots(plugin_result.plugins)
+            plugin_roots = list(plugin_snapshot.skill_roots)
     except (OSError, RuntimeError, TypeError, ValueError):
         plugin_sources = []
         plugin_roots = []

@@ -50,6 +50,25 @@ The main extension points are:
 
 These pieces are designed to compose. A project can provide shared defaults and integrations, while each user can layer personal configuration on top.
 
+## Plugin lifecycle
+
+The plugin subsystem separates configuration intent, installed artifacts, and
+the active runtime:
+
+1. Marketplace records identify available plugins.
+2. Installation copies a validated artifact into the versioned cache and
+   records its user, project, or local scope.
+3. Discovery resolves scoped enablement and session-only `--plugin-dir`
+   overrides.
+4. A runtime snapshot validates and groups skills, commands, agents, hooks, and
+   MCP configuration.
+5. The server consumes one immutable snapshot. `/reload-plugins` builds a
+   replacement before swapping and restarts MCP-owning server state.
+
+Executable plugin surfaces require a versioned fingerprint trust decision.
+Client-side hooks handle lifecycle and prompt events; server middleware handles
+pre/post tool decisions so a plugin denial occurs on the execution path.
+
 ## Design tradeoffs
 
 This architecture optimizes for:
@@ -67,4 +86,5 @@ The main cost is the client/server boundary. When debugging, first decide which 
 - For local setup and debugging, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 - For command behavior, see [`COMMANDS.md`](./COMMANDS.md).
 - For security boundaries, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).
+- For plugin lifecycle and compatibility, see [`PLUGINS.md`](./PLUGINS.md).
 - For package-specific coding conventions, see [`AGENTS.md`](./AGENTS.md).

@@ -1961,19 +1961,16 @@ async def resolve_and_load_mcp_tools(
         from deepagents_code._env_vars import experimental_enabled
 
         if experimental_enabled():
-            from deepagents_code.plugins import discover_plugins
-            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
 
-            plugin_result = discover_plugins()
-            if plugin_result.warnings:
+            project_dir = _resolve_project_config_base(project_context)
+            plugin_snapshot = get_plugin_snapshot(project_dir=project_dir)
+            if plugin_snapshot.discovery.warnings:
                 logger.warning(
                     "Plugin discovery warnings while loading MCP: %s",
-                    plugin_result.warnings,
+                    plugin_snapshot.discovery.warnings,
                 )
-            project_dir = _resolve_project_config_base(project_context)
-            configs.extend(
-                plugin_mcp_configs(plugin_result.plugins, project_dir=project_dir)
-            )
+            configs.extend(plugin_snapshot.mcp_configs)
     except Exception:
         logger.warning("Could not discover plugin MCP configs", exc_info=True)
 

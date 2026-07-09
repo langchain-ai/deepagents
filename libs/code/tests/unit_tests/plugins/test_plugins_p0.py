@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -17,8 +18,9 @@ from textual.widgets import Input, OptionList
 if TYPE_CHECKING:
     from deepagents_code.plugins.models import InstallScope
 
-from deepagents_code._env_vars import EXPERIMENTAL
+from deepagents_code._env_vars import EXPERIMENTAL, PLUGIN_DIRS
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.command_registry import build_plugin_commands
 from deepagents_code.config import get_glyphs
 from deepagents_code.mcp_tools import MCPServerInfo
 from deepagents_code.plugins import (
@@ -30,7 +32,15 @@ from deepagents_code.plugins import (
     enable_plugin_with_scope,
     install_plugin,
     list_available_plugins,
+    remove_marketplace,
+    trust_plugin,
     uninstall_plugin,
+)
+from deepagents_code.plugins.adapters.hooks import (
+    PluginHook,
+    run_post_tool_hooks,
+    run_pre_tool_hooks,
+    run_user_prompt_hooks,
 )
 from deepagents_code.plugins.adapters.mcp import (
     plugin_mcp_configs,
@@ -38,20 +48,30 @@ from deepagents_code.plugins.adapters.mcp import (
 )
 from deepagents_code.plugins.adapters.skills import plugin_skill_sources
 from deepagents_code.plugins.commands_cli import execute_plugin_command
+from deepagents_code.plugins.manifest import PluginManifestError, load_manifest
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     load_marketplace,
     parse_marketplace_source,
 )
+from deepagents_code.plugins.runtime import (
+    clear_plugin_snapshot,
+    get_plugin_snapshot,
+    reload_plugin_snapshot,
+)
 from deepagents_code.plugins.store import (
+    add_installed_plugin,
     get_primary_install_entry,
     load_enabled_plugins,
     load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
+    load_plugin_scopes,
     sanitize_plugin_id,
+    set_plugin_enabled,
     versioned_cache_path,
 )
+from deepagents_code.plugins.substitution import substitute_string
 from deepagents_code.tui.widgets.plugin_manager import (
     PluginManagerScreen,
     _ManagerState,
@@ -59,8 +79,10 @@ from deepagents_code.tui.widgets.plugin_manager import (
 
 
 @pytest.fixture(autouse=True)
-def _enable_experimental(monkeypatch: pytest.MonkeyPatch) -> None:
+def _enable_experimental(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(EXPERIMENTAL, "1")
+    monkeypatch.chdir(tmp_path)
+    clear_plugin_snapshot()
 
 
 def _write_json(path: Path, data: dict[str, object]) -> None:
@@ -144,12 +166,12 @@ async def test_plugin_manager_installed_tab_groups_by_scope_with_metadata(
     _make_marketplace(marketplace_root)
     _add_docs_helper_plugin(marketplace_root)
     add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools", scope="project")
+    install_plugin("quality-review-plugin@company-tools", scope="project", trust=True)
     install_plugin("docs-helper@company-tools", scope="user")
 
     live_mcp_info = (
         MCPServerInfo(
-            name=scoped_mcp_server_name("quality-review-plugin@company-tools", "docs"),
+            name=scoped_mcp_server_name("quality-review-plugin", "docs"),
             transport="stdio",
         ),
         MCPServerInfo(name="docs-langchain", transport="stdio"),
@@ -176,9 +198,7 @@ async def test_plugin_manager_installed_tab_groups_by_scope_with_metadata(
         assert "quality-review-plugin" in prompts[1]
         assert "1 skill" in prompts[1]
         assert f"{get_glyphs().checkmark} connected" in prompts[1]
-        scoped_docs = scoped_mcp_server_name(
-            "quality-review-plugin@company-tools", "docs"
-        )
+        scoped_docs = scoped_mcp_server_name("quality-review-plugin", "docs")
         assert scoped_docs in "\n".join(prompts)
         assert "docs-langchain" in "\n".join(prompts)
 
@@ -204,7 +224,7 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
     marketplace_root = tmp_path / "marketplace"
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools")
+    install_plugin("quality-review-plugin@company-tools", trust=True)
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -227,10 +247,9 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert load_enabled_plugins().get("quality-review-plugin@company-tools")
 
 
-def test_plugin_manager_marks_commands_agents_hooks_unsupported(
+def test_plugin_manager_lists_all_supported_components(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Commands/agents/hooks are inventoried but labeled unsupported in the UI."""
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
     )
@@ -252,7 +271,7 @@ def test_plugin_manager_marks_commands_agents_hooks_unsupported(
     (plugin / "hooks").mkdir()
     (plugin / "hooks" / "hooks.json").write_text("{}", encoding="utf-8")
     add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools")
+    install_plugin("quality-review-plugin@company-tools", trust=True)
 
     from deepagents_code.tui.widgets.plugin_manager import _load_manager_state
 
@@ -267,16 +286,15 @@ def test_plugin_manager_marks_commands_agents_hooks_unsupported(
     assert row.hook_count == 1
 
     detail = str(PluginManagerScreen._installed_plugin_details_content(row))
-    assert "Commands: 1 command (unsupported)" in detail
-    assert "Agents: 1 agent (unsupported)" in detail
-    assert "Hooks: 1 hook (unsupported)" in detail
-    assert "not loaded in this release" in detail
+    assert "Commands: 1 command" in detail
+    assert "Agents: 1 agent" in detail
+    assert "Hooks: 1 hook" in detail
 
     prompt = str(PluginManagerScreen._plugin_prompt(row, status=None))
     assert "Plugin ·" in prompt or " · Plugin · " in prompt
-    assert "1 command (unsupported)" in prompt
-    assert "1 agent (unsupported)" in prompt
-    assert "1 hook (unsupported)" in prompt
+    assert "1 command" in prompt
+    assert "1 agent" in prompt
+    assert "1 hook" in prompt
 
 
 async def test_plugin_manager_installed_details_favorite_and_disable(
@@ -406,7 +424,7 @@ async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
     marketplace_root = tmp_path / "marketplace"
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools")
+    install_plugin("quality-review-plugin@company-tools", trust=True)
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -648,6 +666,64 @@ def test_marketplace_add_accepts_json_file_source(tmp_path: Path, monkeypatch) -
     )
 
 
+def test_strict_false_marketplace_entry_supplies_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    plugin_root = marketplace_root / "plugins" / "quality-review-plugin"
+    (plugin_root / ".claude-plugin" / "plugin.json").unlink()
+    shutil.rmtree(plugin_root / "skills")
+    _write_skill(plugin_root / "extra" / "review" / "SKILL.md")
+    marketplace_path = marketplace_root / ".claude-plugin" / "marketplace.json"
+    data = json.loads(marketplace_path.read_text(encoding="utf-8"))
+    data["plugins"][0]["strict"] = False
+    data["plugins"][0]["skills"] = "./extra"
+    _write_json(marketplace_path, data)
+    add_local_marketplace(marketplace_root)
+
+    instance = install_plugin("quality-review-plugin@company-tools")
+
+    assert instance.manifest is not None
+    assert instance.inventory.skills == ((instance.root / "extra").resolve(),)
+
+
+def test_manifest_rejects_ambiguous_plugin_names(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "ambiguous@plugin"},
+    )
+
+    with pytest.raises(PluginManifestError, match="Invalid plugin name"):
+        load_manifest(plugin_root)
+
+
+def test_substitution_includes_session_and_skill_context(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    plugin_data = tmp_path / "data"
+    skill_dir = plugin_root / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+
+    result = substitute_string(
+        "${CLAUDE_SESSION_ID}:${CLAUDE_SKILL_DIR}:${CLAUDE_PLUGIN_DATA}",
+        plugin_root=plugin_root,
+        plugin_data=plugin_data,
+        session_id="session-1",
+        skill_dir=skill_dir,
+    )
+
+    assert result == f"session-1:{skill_dir.resolve()}:{plugin_data.resolve()}"
+    assert plugin_data.is_dir()
+
+
 async def test_plugin_manager_opens_add_marketplace_input(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -835,21 +911,74 @@ def test_plugin_mcp_config_scopes_and_substitutes(tmp_path: Path, monkeypatch) -
     marketplace_root = tmp_path / "marketplace"
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools")
+    install_plugin("quality-review-plugin@company-tools", trust=True)
     plugin = discover_plugins().plugins[0]
 
     configs = plugin_mcp_configs((plugin,), project_dir=tmp_path / "project")
 
     servers = cast("dict[str, dict[str, Any]]", configs[0]["mcpServers"])
-    server = servers[
-        scoped_mcp_server_name("quality-review-plugin@company-tools", "docs")
-    ]
+    server = servers[scoped_mcp_server_name("quality-review-plugin", "docs")]
     assert str(plugin.root) in server["command"]
     assert server["command"].endswith("/bin/docs")
     assert str(plugin.data_dir) in server["args"]
     assert server["cwd"].endswith("/server")
     assert server["env"]["CLAUDE_PLUGIN_ROOT"] == str(plugin.root)
     assert plugin.in_place is False
+
+
+def test_plugin_mcp_requires_current_surface_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    install_plugin(plugin_id)
+
+    untrusted = discover_plugins().plugins[0]
+    assert untrusted.trusted is False
+    assert plugin_mcp_configs((untrusted,)) == []
+
+    trusted = trust_plugin(plugin_id)
+    assert trusted.trusted is True
+    assert plugin_mcp_configs((trusted,))
+
+    (trusted.root / ".mcp.json").write_text(
+        '{"mcpServers":{"changed":{"command":"changed"}}}', encoding="utf-8"
+    )
+    changed = discover_plugins().plugins[0]
+    assert changed.trusted is False
+    assert plugin_mcp_configs((changed,)) == []
+
+
+def test_uninstall_refuses_to_delete_outside_plugin_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    plugin_id = "unsafe@marketplace"
+    add_installed_plugin(
+        plugin_id,
+        scope="user",
+        install_path=str(outside),
+        version="1.0.0",
+    )
+
+    uninstall_plugin(plugin_id)
+
+    assert outside.is_dir()
 
 
 def test_scoped_mcp_server_name_is_valid_and_collision_resistant() -> None:
@@ -898,6 +1027,318 @@ def test_project_scoped_plugin_is_inactive_outside_its_project(
     assert discover_plugins().plugins == ()
 
 
+def test_scope_enablement_uses_local_project_user_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin_id = "plugin@marketplace"
+
+    set_plugin_enabled(plugin_id, True, scope="user")
+    set_plugin_enabled(plugin_id, False, scope="project", project_path=str(project))
+    set_plugin_enabled(plugin_id, True, scope="local", project_path=str(project))
+
+    assert load_enabled_plugins(project_path=str(project))[plugin_id] is True
+    assert load_plugin_scopes(project_path=str(project))[plugin_id] == "local"
+
+    set_plugin_enabled(plugin_id, False, scope="local", project_path=str(project))
+    assert load_enabled_plugins(project_path=str(project))[plugin_id] is False
+
+
+def test_session_plugin_dir_overrides_installed_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    plugin_root = tmp_path / "session-plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "session-plugin", "version": "dev"},
+    )
+    _write_skill(plugin_root / "skills" / "review" / "SKILL.md")
+    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
+
+    result = discover_plugins()
+
+    assert len(result.plugins) == 1
+    assert result.plugins[0].plugin_id == "session-plugin@inline"
+    assert result.plugins[0].origin == "dev-dir"
+    assert result.plugins[0].in_place is True
+
+
+def test_plugin_snapshot_changes_when_session_skill_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_root = tmp_path / "session-plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "session-plugin"},
+    )
+    skill_path = plugin_root / "skills" / "review" / "SKILL.md"
+    _write_skill(skill_path)
+    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
+
+    first = reload_plugin_snapshot(project_dir=tmp_path)
+    skill_path.write_text(
+        skill_path.read_text(encoding="utf-8") + "\nUpdated.",
+        encoding="utf-8",
+    )
+    second = reload_plugin_snapshot(project_dir=tmp_path)
+
+    assert first.fingerprint != second.fingerprint
+
+
+def test_failed_snapshot_reload_retains_previous_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous = reload_plugin_snapshot(project_dir=tmp_path)
+
+    def fail(*, project_dir: Path | None = None) -> None:
+        del project_dir
+        msg = "snapshot failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("deepagents_code.plugins.runtime.build_plugin_snapshot", fail)
+    with pytest.raises(RuntimeError, match="snapshot failed"):
+        reload_plugin_snapshot(project_dir=tmp_path)
+
+    assert get_plugin_snapshot(project_dir=tmp_path) is previous
+
+
+def test_plugin_commands_and_agents_load_with_canonical_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    plugin_root = tmp_path / "session-plugin"
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "session-plugin"},
+    )
+    command_path = plugin_root / "commands" / "review.md"
+    command_path.parent.mkdir(parents=True)
+    command_path.write_text(
+        "---\ndescription: Review code\nargument-hint: FILE\n---\n"
+        "Review $ARGUMENTS in ${CLAUDE_SESSION_ID}.",
+        encoding="utf-8",
+    )
+    agent_path = plugin_root / "agents" / "reviewer.md"
+    agent_path.parent.mkdir(parents=True)
+    agent_path.write_text(
+        "---\ndescription: Review code\npermissionMode: bypass\n"
+        "hooks: {}\nmcpServers: {}\n---\nReview carefully.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
+    caplog.set_level("WARNING")
+
+    snapshot = reload_plugin_snapshot(project_dir=tmp_path)
+
+    assert [command.name for command in snapshot.commands] == ["session-plugin:review"]
+    assert [entry.name for entry in build_plugin_commands(snapshot.commands)] == [
+        "/session-plugin:review"
+    ]
+    assert (
+        snapshot.commands[0].render("src/app.py", session_id="session-1")
+        == "Review src/app.py in session-1."
+    )
+    assert [agent["name"] for agent in snapshot.agents] == ["session-plugin:reviewer"]
+    assert snapshot.agents[0]["system_prompt"] == "Review carefully."
+    assert "Ignoring permissionMode" in caplog.text
+    assert "Ignoring hooks" in caplog.text
+    assert "Ignoring mcpServers" in caplog.text
+
+
+def test_plugin_observational_hook_receives_tool_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_root = tmp_path / "session-plugin"
+    output = tmp_path / "hook-output.json"
+    script = tmp_path / "capture.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "session-plugin"},
+    )
+    _write_json(
+        plugin_root / "hooks" / "hooks.json",
+        {
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Write",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} {script} {output}",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
+    snapshot = reload_plugin_snapshot(project_dir=tmp_path)
+    assert len(snapshot.hooks) == 1
+
+    context = run_post_tool_hooks(
+        snapshot.hooks,
+        tool_name="write_file",
+        tool_input={"path": "a.py"},
+        tool_output="updated",
+        failed=False,
+        session_id="session-1",
+        cwd=tmp_path,
+    )
+
+    assert context == ""
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["hook_event_name"] == "PostToolUse"
+    assert payload["tool_name"] == "Write"
+    assert payload["session_id"] == "session-1"
+
+
+def test_plugin_pre_tool_hook_denial_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin_root = tmp_path / "session-plugin"
+    script = tmp_path / "deny.py"
+    script.write_text(
+        "import sys\nsys.stderr.write('blocked by plugin')\nsys.exit(2)\n",
+        encoding="utf-8",
+    )
+    _write_json(
+        plugin_root / ".claude-plugin" / "plugin.json",
+        {"name": "session-plugin"},
+    )
+    _write_json(
+        plugin_root / "hooks" / "hooks.json",
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": f"{sys.executable} {script}",
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
+    snapshot = reload_plugin_snapshot(project_dir=tmp_path)
+
+    result = run_pre_tool_hooks(
+        snapshot.hooks,
+        tool_name="write_file",
+        tool_input={"path": "a.py"},
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "blocked by plugin"
+
+
+@pytest.mark.parametrize("decision", ["allow", "ask"])
+def test_plugin_pre_tool_hook_structured_decisions(
+    decision: str,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "decision.py"
+    script.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'hookSpecificOutput': {"
+        "'permissionDecision': sys.argv[1], "
+        "'permissionDecisionReason': 'review required', "
+        "'additionalContext': 'hook context'}}))\n",
+        encoding="utf-8",
+    )
+    hook = PluginHook(
+        event="tool.use",
+        source_event="PreToolUse",
+        command=(sys.executable, str(script), decision),
+        plugin_id="plugin@inline",
+        matcher="Write",
+        cwd=str(tmp_path),
+        blocking=True,
+    )
+
+    result = run_pre_tool_hooks(
+        (hook,),
+        tool_name="write_file",
+        tool_input={"path": "a.py"},
+        session_id="session-1",
+        cwd=tmp_path,
+    )
+
+    assert result.decision == decision
+    assert result.additional_context == "hook context"
+    if decision == "ask":
+        assert result.reason == "review required"
+
+
+def test_plugin_user_prompt_hook_blocks_submission(tmp_path: Path) -> None:
+    script = tmp_path / "block_prompt.py"
+    script.write_text(
+        "import json\n"
+        "print(json.dumps({'decision': 'block', 'reason': 'prompt blocked'}))\n",
+        encoding="utf-8",
+    )
+    hook = PluginHook(
+        event="user.prompt",
+        source_event="UserPromptSubmit",
+        command=(sys.executable, str(script)),
+        plugin_id="plugin@inline",
+        cwd=str(tmp_path),
+    )
+
+    result = run_user_prompt_hooks(
+        (hook,),
+        prompt="dangerous prompt",
+        session_id="session-1",
+        cwd=tmp_path,
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "prompt blocked"
+
+
+def test_remove_marketplace_removes_installs_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    instance = install_plugin(plugin_id)
+
+    assert remove_marketplace("company-tools") is True
+    assert "company-tools" not in load_marketplace_records()
+    assert plugin_id not in load_installed_plugins()
+    assert not instance.root.exists()
+
+
 def test_plugin_skill_source_prefixes_sdk_skill_name(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -930,10 +1371,7 @@ def test_plugin_skill_source_prefixes_sdk_skill_name(
         cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
     )
     assert update is not None
-    assert (
-        update["skills_metadata"][0]["name"]
-        == "quality-review-plugin@company-tools:review"
-    )
+    assert update["skills_metadata"][0]["name"] == "quality-review-plugin:review"
 
 
 def test_cache_keys_do_not_collide(
@@ -1038,10 +1476,11 @@ def test_namespaces_distinguish_same_named_plugins_across_marketplaces(
     _write_json(second_manifest, second_data)
     add_local_marketplace(first_root)
     add_local_marketplace(second_root)
-    install_plugin("quality-review-plugin@company-tools")
-    install_plugin("quality-review-plugin@other-tools")
+    install_plugin("quality-review-plugin@company-tools", trust=True)
+    install_plugin("quality-review-plugin@other-tools", trust=True)
 
-    plugins = discover_plugins().plugins
+    result = discover_plugins()
+    plugins = result.plugins
     mcp_names = {
         name
         for config in plugin_mcp_configs(plugins)
@@ -1049,8 +1488,9 @@ def test_namespaces_distinguish_same_named_plugins_across_marketplaces(
     }
     skill_prefixes = {prefix for _path, _label, prefix in plugin_skill_sources(plugins)}
 
-    assert len(mcp_names) == 2
-    assert len(skill_prefixes) == 2
+    assert len(mcp_names) == 1
+    assert len(skill_prefixes) == 1
+    assert any("Plugin namespace" in warning for warning in result.warnings)
 
 
 def test_marketplace_credentials_are_rejected_or_redacted(

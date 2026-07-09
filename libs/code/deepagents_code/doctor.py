@@ -453,6 +453,49 @@ def _collect_configuration() -> DiagnosticSection:
     )
 
 
+def _collect_plugins() -> DiagnosticSection:
+    """Collect plugin storage, activation, trust, and error status.
+
+    Returns:
+        The `Plugins` section.
+    """
+    try:
+        from deepagents_code.plugins import discover_plugins
+        from deepagents_code.plugins.store import (
+            load_enabled_plugins,
+            load_installed_plugins,
+            load_marketplace_records,
+            plugin_root_dir,
+        )
+
+        result = discover_plugins()
+        installed = load_installed_plugins()
+        enabled = load_enabled_plugins()
+        items = [
+            _path_status("Plugin directory", plugin_root_dir()),
+            DiagnosticItem("Marketplaces", str(len(load_marketplace_records()))),
+            DiagnosticItem("Installed", str(len(installed))),
+            DiagnosticItem(
+                "Enabled",
+                str(sum(1 for value in enabled.values() if value)),
+            ),
+            DiagnosticItem("Active", str(len(result.plugins))),
+            DiagnosticItem(
+                "Trusted",
+                str(sum(1 for plugin in result.plugins if plugin.trusted)),
+            ),
+            DiagnosticItem(
+                "Load errors",
+                str(len(result.errors)),
+                ok=not result.errors,
+            ),
+        ]
+    except Exception as exc:
+        logger.warning("Could not collect plugin diagnostics", exc_info=True)
+        items = [DiagnosticItem("Status", f"unavailable: {exc}", ok=False)]
+    return DiagnosticSection(title="Plugins", items=items)
+
+
 def collect_sections() -> list[DiagnosticSection]:
     """Gather every diagnostic section in display order.
 
@@ -464,6 +507,7 @@ def collect_sections() -> list[DiagnosticSection]:
         _collect_updates(),
         _collect_tracing(),
         _collect_configuration(),
+        _collect_plugins(),
     ]
 
 

@@ -3616,6 +3616,7 @@ class DeepAgentsApp(App):
             simply ignore the result.
         """
         from deepagents_code.command_registry import (
+            build_plugin_commands,
             build_skill_commands,
             get_slash_commands,
         )
@@ -3655,17 +3656,30 @@ class DeepAgentsApp(App):
 
         self._discovered_skills = skills
         self._skill_allowed_roots = roots
-        if skills:
-            skill_commands = build_skill_commands(skills)
-            if self._chat_input:
-                merged = list(get_slash_commands()) + skill_commands
-                self._chat_input.update_slash_commands(merged)
-            else:
-                logger.debug(
-                    "Skill discovery completed (%d skills) but chat input "
-                    "not yet mounted; autocomplete deferred",
-                    len(skills),
+        plugin_commands = []
+        try:
+            from deepagents_code._env_vars import experimental_enabled
+
+            if experimental_enabled():
+                from deepagents_code.config import settings
+                from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+                snapshot = get_plugin_snapshot(
+                    project_dir=settings.project_root or Path.cwd()
                 )
+                plugin_commands = build_plugin_commands(snapshot.commands)
+        except Exception:
+            logger.warning("Could not build plugin command autocomplete", exc_info=True)
+        skill_commands = build_skill_commands(skills)
+        if self._chat_input:
+            merged = list(get_slash_commands()) + skill_commands + plugin_commands
+            self._chat_input.update_slash_commands(merged)
+        else:
+            logger.debug(
+                "Skill discovery completed (%d skills) but chat input "
+                "not yet mounted; autocomplete deferred",
+                len(skills),
+            )
         return True
 
     def _discover_skills_and_roots(
@@ -7691,7 +7705,44 @@ class DeepAgentsApp(App):
 
         from deepagents_code.hooks import dispatch_hook
 
-        await dispatch_hook("user.prompt", {})
+        try:
+            from deepagents_code._env_vars import experimental_enabled
+
+            if experimental_enabled():
+                from deepagents_code.config import settings
+                from deepagents_code.plugins.adapters.hooks import (
+                    run_user_prompt_hooks,
+                )
+                from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+                snapshot = get_plugin_snapshot(
+                    project_dir=settings.project_root or Path.cwd()
+                )
+                hook_result = await asyncio.to_thread(
+                    run_user_prompt_hooks,
+                    snapshot.hooks,
+                    prompt=value,
+                    session_id=self._lc_thread_id or "",
+                    cwd=settings.project_root or Path.cwd(),
+                )
+                if hook_result.decision == "deny":
+                    await self._mount_message(UserMessage(value))
+                    await self._mount_message(
+                        ErrorMessage(
+                            hook_result.reason or "Plugin hook blocked the prompt"
+                        )
+                    )
+                    return
+                if hook_result.additional_context:
+                    value = (
+                        f"{value}\n\n<system-reminder>"
+                        f"{hook_result.additional_context}"
+                        "</system-reminder>"
+                    )
+        except Exception:
+            logger.warning("User-prompt plugin hook failed", exc_info=True)
+
+        await dispatch_hook("user.prompt", {"prompt": value})
 
         await self._submit_input(value, mode)
 
@@ -10044,6 +10095,10 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
+        elif await self._handle_plugin_skill_alias(
+            command
+        ) or await self._handle_plugin_prompt_command(command):
+            pass
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
         elif cmd == "/debug-error":
             await self._mount_message(
@@ -10062,6 +10117,69 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    async def _handle_plugin_skill_alias(self, command: str) -> bool:
+        """Invoke a namespaced plugin skill through its canonical alias.
+
+        Returns:
+            Whether a plugin skill matched and was invoked.
+        """
+        name, _, args = command.strip().partition(" ")
+        normalized = name.removeprefix("/").lower()
+        skill = next(
+            (
+                item
+                for item in self._discovered_skills
+                if item["name"].lower() == normalized
+                and item.get("source") == "plugin"
+                and ":" in item["name"]
+            ),
+            None,
+        )
+        if skill is None:
+            return False
+        await self._invoke_skill(skill["name"], args, command=command)
+        return True
+
+    async def _handle_plugin_prompt_command(self, command: str) -> bool:
+        """Render and submit a plugin prompt command when one matches.
+
+        Returns:
+            Whether a plugin command matched and was submitted.
+        """
+        try:
+            from deepagents_code._env_vars import experimental_enabled
+
+            if not experimental_enabled():
+                return False
+            from deepagents_code.config import settings
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+            snapshot = get_plugin_snapshot(
+                project_dir=settings.project_root or Path.cwd()
+            )
+        except Exception:
+            logger.warning("Could not load plugin commands", exc_info=True)
+            return False
+        name, _, args = command.strip().partition(" ")
+        normalized = name.removeprefix("/").lower()
+        plugin_command = next(
+            (
+                candidate
+                for candidate in snapshot.commands
+                if candidate.name.lower() == normalized
+            ),
+            None,
+        )
+        if plugin_command is None:
+            return False
+        prompt = plugin_command.render(
+            args,
+            session_id=self._lc_thread_id,
+        )
+        await self._mount_message(UserMessage(command))
+        await self._send_to_agent(prompt)
+        return True
 
     async def _invoke_skill(
         self,
@@ -14930,6 +15048,7 @@ class DeepAgentsApp(App):
                 enable_plugin,
                 install_plugin,
                 list_available_plugins,
+                trust_plugin,
                 uninstall_plugin,
             )
             from deepagents_code.plugins.marketplace import MarketplaceError
@@ -14958,7 +15077,10 @@ class DeepAgentsApp(App):
                         plugin_id = f"{plugin.name}@{marketplace.name}"
                         try:
                             await asyncio.to_thread(
-                                install_plugin, plugin_id, scope="user"
+                                install_plugin,
+                                plugin_id,
+                                scope="user",
+                                trust=True,
                             )
                         except (
                             MarketplaceError,
@@ -14997,7 +15119,7 @@ class DeepAgentsApp(App):
                         requested,
                     )
                 instance = await asyncio.to_thread(
-                    install_plugin, plugin_id, scope=scope
+                    install_plugin, plugin_id, scope=scope, trust=True
                 )
                 await self._mount_message(
                     AppMessage(
@@ -15031,6 +15153,15 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+            if parts[0] == "trust" and len(parts) == 2:  # noqa: PLR2004
+                instance = await asyncio.to_thread(trust_plugin, parts[1])
+                await self._mount_message(
+                    AppMessage(
+                        f"Trusted plugin {instance.plugin_id}. "
+                        "Run /reload-plugins to activate executable components."
+                    )
+                )
+                return
         except Exception as exc:
             logger.warning("Plugin command failed", exc_info=True)
             await self._mount_message(ErrorMessage(f"Plugin command failed: {exc}"))
@@ -15038,7 +15169,8 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(
                 "Usage: /plugins [list|install <id>|uninstall <id>|"
-                "marketplace add <path> [--enable-all]|enable <id>|disable <id>]"
+                "marketplace add <path> [--enable-all]|enable <id>|disable <id>|"
+                "trust <id>]"
             )
         )
 
@@ -15050,13 +15182,24 @@ class DeepAgentsApp(App):
         """
         await self._mount_message(UserMessage(command))
 
-        from deepagents_code.plugins import discover_plugins
-        from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+        from deepagents_code.config import settings
+        from deepagents_code.plugins.runtime import reload_plugin_snapshot
 
         old_skill_names = {s["name"] for s in self._discovered_skills}
-        plugin_result = discover_plugins()
+        try:
+            plugin_snapshot = await asyncio.to_thread(
+                reload_plugin_snapshot,
+                project_dir=settings.project_root or Path.cwd(),
+            )
+        except Exception as exc:
+            logger.warning("Plugin snapshot reload failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Plugin reload failed; previous runtime retained: {exc}")
+            )
+            return
+        plugin_result = plugin_snapshot.discovery
         plugin_count = len(plugin_result.plugins)
-        mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+        mcp_configs = plugin_snapshot.mcp_configs
         mcp_count = sum(
             len(servers)
             for config in mcp_configs
@@ -15086,44 +15229,24 @@ class DeepAgentsApp(App):
                 restarted = await self._restart_server_manual()
 
         skill_count = len(plugin_skill_names)
-        unsupported_commands = sum(
-            len(plugin.inventory.commands)
-            + (len(plugin.manifest.inline_commands) if plugin.manifest else 0)
-            for plugin in plugin_result.plugins
-        )
-        unsupported_agents = sum(
-            len(plugin.inventory.agents) for plugin in plugin_result.plugins
-        )
-        unsupported_hooks = sum(
-            len(plugin.inventory.hooks_files)
-            + (len(plugin.manifest.inline_hooks) if plugin.manifest else 0)
-            for plugin in plugin_result.plugins
-        )
         parts = [
             f"{plugin_count} plugin{'s' if plugin_count != 1 else ''}",
             f"{skill_count} skill{'s' if skill_count != 1 else ''}",
+            (
+                f"{len(plugin_snapshot.commands)} command"
+                f"{'s' if len(plugin_snapshot.commands) != 1 else ''}"
+            ),
+            (
+                f"{len(plugin_snapshot.agents)} agent"
+                f"{'s' if len(plugin_snapshot.agents) != 1 else ''}"
+            ),
+            (
+                f"{len(plugin_snapshot.hooks)} hook"
+                f"{'s' if len(plugin_snapshot.hooks) != 1 else ''}"
+            ),
             f"{mcp_count} plugin MCP server{'s' if mcp_count != 1 else ''}",
         ]
         report = f"Reloaded: {' · '.join(parts)}"
-        unsupported_parts: list[str] = []
-        if unsupported_commands:
-            unsupported_parts.append(
-                f"{unsupported_commands} command"
-                f"{'s' if unsupported_commands != 1 else ''}"
-            )
-        if unsupported_agents:
-            unsupported_parts.append(
-                f"{unsupported_agents} agent{'s' if unsupported_agents != 1 else ''}"
-            )
-        if unsupported_hooks:
-            unsupported_parts.append(
-                f"{unsupported_hooks} hook{'s' if unsupported_hooks != 1 else ''}"
-            )
-        if unsupported_parts:
-            report += (
-                f"\nSkipped unsupported: {', '.join(unsupported_parts)} "
-                "(not loaded in this release)."
-            )
         if not discovery_ok:
             report += "\nSkill re-discovery failed; existing /skill: list left as-is."
         elif added_skills or removed_skills:

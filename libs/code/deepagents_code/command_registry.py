@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from deepagents_code.plugins.adapters.commands import PluginCommand
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 
@@ -138,8 +139,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
         argument_hint=(
-            "[list|install <id>|uninstall <id>|marketplace add <path>|"
-            "enable <id>|disable <id>]"
+            "[list|install <id>|uninstall <id>|info <id>|update <id>|"
+            "trust <id>|marketplace ...|enable <id>|disable <id>]"
         ),
     ),
     SlashCommand(
@@ -468,11 +469,37 @@ def build_skill_commands(
     """
     return [
         CommandEntry(
-            name=f"/skill:{skill['name']}",
+            name=(
+                f"/{skill['name']}"
+                if skill.get("source") == "plugin" and ":" in skill["name"]
+                else f"/skill:{skill['name']}"
+            ),
             description=skill["description"],
             hidden_keywords=skill["name"],
             argument_hint="",
         )
         for skill in skills
         if skill["name"] not in _STATIC_SKILL_ALIASES
+    ]
+
+
+def build_plugin_commands(
+    commands: tuple[PluginCommand, ...],
+) -> list[CommandEntry]:
+    """Build autocomplete entries for plugin prompt commands.
+
+    Args:
+        commands: Active plugin prompt commands.
+
+    Returns:
+        Autocomplete entries using canonical plugin command names.
+    """
+    return [
+        CommandEntry(
+            name=f"/{command.name}",
+            description=command.description,
+            hidden_keywords=command.name,
+            argument_hint=command.argument_hint,
+        )
+        for command in commands
     ]

@@ -1180,6 +1180,34 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     Returns:
         `True` to interrupt for approval, `False` to auto-approve.
     """
+    try:
+        from deepagents_code._env_vars import experimental_enabled
+
+        if experimental_enabled():
+            from deepagents_code.plugins.adapters.hooks import (
+                evaluate_pre_tool_request,
+            )
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+            snapshot = get_plugin_snapshot(
+                project_dir=settings.project_root or Path.cwd()
+            )
+            if any(hook.blocking for hook in snapshot.hooks):
+                hook_result = evaluate_pre_tool_request(
+                    snapshot.hooks,
+                    request,
+                    session_cwd=settings.project_root or Path.cwd(),
+                )
+                if hook_result.decision == "deny":
+                    return False
+                if hook_result.decision == "ask":
+                    return True
+                if hook_result.decision == "allow":
+                    return False
+    except Exception:
+        logger.warning("Plugin pre-tool hook evaluation failed", exc_info=True)
+        return True
+
     runtime = getattr(request, "runtime", None)
     ctx = getattr(runtime, "context", None)
     store = getattr(runtime, "store", None)
@@ -1529,10 +1557,56 @@ def create_cli_agent(
             )
         return middleware
 
-    for subagent_meta in list_subagents(
-        user_agents_dir=user_agents_dir,
-        project_agents_dir=project_agents_dir,
-    ):
+    subagent_metadata = {}
+    try:
+        from deepagents_code._env_vars import experimental_enabled
+
+        if experimental_enabled():
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+            snapshot = get_plugin_snapshot(
+                project_dir=settings.project_root or Path.cwd()
+            )
+            if snapshot.discovery.plugins:
+                skill_count = sum(
+                    len(plugin.inventory.skills)
+                    for plugin in snapshot.discovery.plugins
+                )
+                mcp_count = sum(
+                    len(config.get("mcpServers", {})) for config in snapshot.mcp_configs
+                )
+                skipped_count = sum(
+                    len(plugin.inventory.unsupported)
+                    for plugin in snapshot.discovery.plugins
+                )
+                logger.info(
+                    "Loaded %d plugins (%d skill roots, %d commands, %d agents, "
+                    "%d hooks, %d MCP servers; %d skipped)",
+                    len(snapshot.discovery.plugins),
+                    skill_count,
+                    len(snapshot.commands),
+                    len(snapshot.agents),
+                    len(snapshot.hooks),
+                    mcp_count,
+                    skipped_count,
+                )
+            subagent_metadata.update(
+                (agent["name"], agent) for agent in snapshot.agents
+            )
+    except Exception:
+        logger.warning("Could not discover plugin agents", exc_info=True)
+    subagent_metadata.update(
+        (
+            agent["name"],
+            agent,
+        )
+        for agent in list_subagents(
+            user_agents_dir=user_agents_dir,
+            project_agents_dir=project_agents_dir,
+        )
+    )
+
+    for subagent_meta in subagent_metadata.values():
         # Treat a falsy spec (`None` or `""`) as "no explicit model" so an empty
         # `model:` in subagent frontmatter inherits the runtime model rather than
         # being forwarded verbatim to `resolve_model("")`.
@@ -1573,6 +1647,25 @@ def create_cli_agent(
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
     ]
+    try:
+        from deepagents_code._env_vars import experimental_enabled
+
+        if experimental_enabled():
+            from deepagents_code.plugins.adapters.hooks import PluginHookMiddleware
+            from deepagents_code.plugins.runtime import get_plugin_snapshot
+
+            snapshot = get_plugin_snapshot(
+                project_dir=settings.project_root or Path.cwd()
+            )
+            if snapshot.hooks:
+                agent_middleware.append(
+                    PluginHookMiddleware(
+                        snapshot.hooks,
+                        session_cwd=settings.project_root or Path.cwd(),
+                    )
+                )
+    except Exception:
+        logger.warning("Could not configure plugin hooks", exc_info=True)
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
@@ -1632,19 +1725,23 @@ def create_cli_agent(
         sources: list[tuple[str, str] | tuple[str, str, str]] = [
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
+        plugin_snapshot_fingerprint: str | None = None
         try:
             from deepagents_code._env_vars import experimental_enabled
 
             if experimental_enabled():
-                from deepagents_code.plugins import discover_plugins
-                from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+                from deepagents_code.plugins.runtime import get_plugin_snapshot
 
-                plugin_result = discover_plugins()
-                if plugin_result.warnings:
+                plugin_snapshot = get_plugin_snapshot(
+                    project_dir=settings.project_root or Path.cwd()
+                )
+                if plugin_snapshot.discovery.warnings:
                     logger.warning(
-                        "Plugin discovery warnings: %s", plugin_result.warnings
+                        "Plugin discovery warnings: %s",
+                        plugin_snapshot.discovery.warnings,
                     )
-                sources.extend(plugin_skill_sources(plugin_result.plugins))
+                sources.extend(plugin_snapshot.skill_sources)
+                plugin_snapshot_fingerprint = plugin_snapshot.fingerprint
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
         sources.extend(
@@ -1673,6 +1770,7 @@ def create_cli_agent(
             SkillsMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),
                 sources=middleware_sources,
+                source_version=plugin_snapshot_fingerprint,
             )
         )
 

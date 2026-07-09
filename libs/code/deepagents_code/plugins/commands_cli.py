@@ -11,10 +11,14 @@ if TYPE_CHECKING:
 from deepagents_code.plugins import (
     add_marketplace_source,
     disable_plugin,
-    enable_plugin,
+    enable_plugin_with_scope,
+    get_plugin_info,
     install_plugin,
     list_available_plugins,
+    remove_marketplace,
+    trust_plugin,
     uninstall_plugin,
+    update_marketplace,
 )
 from deepagents_code.plugins.marketplace import MarketplaceError
 from deepagents_code.plugins.store import load_marketplace_records
@@ -67,6 +71,11 @@ def setup_plugin_parser(
         default="user",
         help="Install scope (default: user)",
     )
+    install_parser.add_argument(
+        "--trust",
+        action="store_true",
+        help="Trust the installed plugin's current executable surface",
+    )
     uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
     uninstall_parser.add_argument("plugin_id")
     uninstall_parser.add_argument(
@@ -78,8 +87,31 @@ def setup_plugin_parser(
 
     enable_parser = plugin_sub.add_parser("enable", help="Enable a plugin")
     enable_parser.add_argument("plugin_id")
+    enable_parser.add_argument(
+        "--scope",
+        choices=("user", "project", "local"),
+        default="user",
+    )
     disable_parser = plugin_sub.add_parser("disable", help="Disable a plugin")
     disable_parser.add_argument("plugin_id")
+    disable_parser.add_argument(
+        "--scope",
+        choices=("user", "project", "local"),
+        default=None,
+    )
+    trust_parser = plugin_sub.add_parser(
+        "trust", help="Trust a plugin's current executable surface"
+    )
+    trust_parser.add_argument("plugin_id")
+    info_parser = plugin_sub.add_parser("info", help="Show plugin details")
+    info_parser.add_argument("plugin_id")
+    update_parser = plugin_sub.add_parser("update", help="Update a plugin")
+    update_parser.add_argument("plugin_id")
+    update_parser.add_argument(
+        "--scope",
+        choices=("user", "project", "local"),
+        default="user",
+    )
 
     marketplace_parser = plugin_sub.add_parser(
         "marketplace", help="Manage plugin marketplaces"
@@ -93,6 +125,14 @@ def setup_plugin_parser(
     marketplace_add = marketplace_sub.add_parser("add", help="Add a marketplace")
     marketplace_add.add_argument("source")
     marketplace_add.add_argument("--enable-all", action="store_true")
+    marketplace_remove = marketplace_sub.add_parser(
+        "remove", help="Remove a marketplace"
+    )
+    marketplace_remove.add_argument("name")
+    marketplace_update = marketplace_sub.add_parser(
+        "update", help="Update a marketplace"
+    )
+    marketplace_update.add_argument("name")
     return parser
 
 
@@ -138,7 +178,9 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         return text
     if command == "install":
         try:
-            instance = install_plugin(args.plugin_id, scope=args.scope)
+            instance = install_plugin(
+                args.plugin_id, scope=args.scope, trust=args.trust
+            )
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             text = f"Failed to install {args.plugin_id}: {exc}"
             print(text)  # noqa: T201
@@ -156,13 +198,66 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         print(text)  # noqa: T201
         return text
     if command == "enable":
-        enable_plugin(args.plugin_id)
+        enable_plugin_with_scope(args.plugin_id, args.scope)
         text = f"Enabled plugin {args.plugin_id}. Run /reload-plugins to activate."
         print(text)  # noqa: T201
         return text
     if command == "disable":
-        disable_plugin(args.plugin_id)
+        disable_plugin(args.plugin_id, scope=args.scope)
         text = f"Disabled plugin {args.plugin_id}. Run /reload-plugins to unload."
+        print(text)  # noqa: T201
+        return text
+    if command == "trust":
+        try:
+            instance = trust_plugin(args.plugin_id)
+        except (MarketplaceError, OSError, ValueError) as exc:
+            text = f"Failed to trust {args.plugin_id}: {exc}"
+            print(text)  # noqa: T201
+            return text
+        text = (
+            f"Trusted plugin {instance.plugin_id} version {instance.version}. "
+            "Run /reload-plugins to activate executable components."
+        )
+        print(text)  # noqa: T201
+        return text
+    if command == "info":
+        try:
+            instance = get_plugin_info(args.plugin_id)
+        except (MarketplaceError, OSError, ValueError) as exc:
+            text = f"Failed to load {args.plugin_id}: {exc}"
+            print(text)  # noqa: T201
+            return text
+        details = {
+            "id": instance.plugin_id,
+            "version": instance.version,
+            "path": str(instance.root),
+            "trusted": instance.trusted,
+            "skills": len(instance.inventory.skills),
+            "commands": len(instance.inventory.commands),
+            "agents": len(instance.inventory.agents),
+            "hooks": len(instance.inventory.hooks_files),
+            "mcp": len(instance.inventory.mcp_files),
+            "unsupported": list(instance.inventory.unsupported),
+        }
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("plugin info", details)
+            return None
+        text = "\n".join(f"{key}: {value}" for key, value in details.items())
+        print(text)  # noqa: T201
+        return text
+    if command == "update":
+        try:
+            instance = install_plugin(args.plugin_id, scope=args.scope, force=True)
+        except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
+            text = f"Failed to update {args.plugin_id}: {exc}"
+            print(text)  # noqa: T201
+            return text
+        text = (
+            f"Updated plugin {instance.plugin_id} to {instance.version}. "
+            "Review and trust the new executable surface before reloading."
+        )
         print(text)  # noqa: T201
         return text
     if command == "marketplace":
@@ -218,6 +313,31 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
                 text += f" Failed to install: {'; '.join(failed)}."
             print(text)  # noqa: T201
             return text
-    text = "Usage: plugin {list,install,uninstall,enable,disable,marketplace}"
+        if marketplace_command == "remove":
+            removed = remove_marketplace(args.name)
+            text = (
+                f"Removed marketplace {args.name}."
+                if removed
+                else f"Marketplace {args.name} is not configured."
+            )
+            print(text)  # noqa: T201
+            return text
+        if marketplace_command == "update":
+            try:
+                marketplace = update_marketplace(args.name)
+            except (MarketplaceError, OSError, ValueError) as exc:
+                text = f"Failed to update marketplace {args.name}: {exc}"
+                print(text)  # noqa: T201
+                return text
+            text = (
+                f"Updated marketplace {marketplace.name} "
+                f"({len(marketplace.plugins)} plugin(s))."
+            )
+            print(text)  # noqa: T201
+            return text
+    text = (
+        "Usage: plugin "
+        "{list,install,uninstall,enable,disable,trust,info,update,marketplace}"
+    )
     print(text)  # noqa: T201
     return text

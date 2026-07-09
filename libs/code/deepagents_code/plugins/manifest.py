@@ -38,7 +38,7 @@ _UNSUPPORTED_FIELDS = {
     "interface",
 }
 _EXPERIMENTAL_UNSUPPORTED = {"themes", "monitors"}
-_NAME_RE = re.compile(r"^[^\s]+$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEP_RE = re.compile(
     r"^[a-z0-9][-a-z0-9._]*(?:@[a-z0-9][-a-z0-9._]*)?$",
     re.IGNORECASE,

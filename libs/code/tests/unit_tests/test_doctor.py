@@ -71,6 +71,7 @@ class TestCollectSections:
             "Updates",
             "Tracing",
             "Configuration",
+            "Plugins",
         ]
 
     def test_diagnostics_reports_version(self) -> None:
@@ -500,7 +501,13 @@ class TestRunDoctorCommand:
         data = envelope["data"]
         assert data["healthy"] is True
         titles = [section["title"] for section in data["sections"]]
-        assert titles == ["Diagnostics", "Updates", "Tracing", "Configuration"]
+        assert titles == [
+            "Diagnostics",
+            "Updates",
+            "Tracing",
+            "Configuration",
+            "Plugins",
+        ]
 
     def test_unhealthy_returns_nonzero(self) -> None:
         """An unhealthy section yields a non-zero exit code."""

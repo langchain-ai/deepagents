@@ -1567,6 +1567,14 @@ def parse_args() -> argparse.Namespace:
         help="Shell command to run at startup, before the first prompt "
         "(output shown, non-zero exit warns but does not abort)",
     )
+    parser.add_argument(
+        "--plugin-dir",
+        dest="plugin_dirs",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Load a session-only plugin directory (repeatable)",
+    )
 
     parser.add_argument(
         "-n",
@@ -2644,6 +2652,10 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        if plugin_dirs := getattr(args, "plugin_dirs", None):
+            from deepagents_code._env_vars import PLUGIN_DIRS
+
+            os.environ[PLUGIN_DIRS] = os.pathsep.join(plugin_dirs)
 
         if _show_bare_command_group_help(args):
             return

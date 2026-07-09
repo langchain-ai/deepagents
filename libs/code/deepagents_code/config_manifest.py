@@ -1304,6 +1304,7 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Plugin cache root override; read directly by plugins.store, not via
         # the scalar config resolver.
         _env_vars.PLUGIN_CACHE_DIR,
+        _env_vars.PLUGIN_DIRS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

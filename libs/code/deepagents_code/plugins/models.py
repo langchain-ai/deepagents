@@ -11,6 +11,14 @@ if TYPE_CHECKING:
 PluginOrigin = Literal["dev-dir", "marketplace", "claude-install"]
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 InstallScope = Literal["user", "project", "local"]
+PluginErrorCode = Literal[
+    "cache-miss",
+    "dependency-missing",
+    "invalid-plugin-id",
+    "load-failed",
+    "namespace-collision",
+    "not-installed",
+]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -150,8 +158,19 @@ class InstalledPluginEntry:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PluginLoadError:
+    """Structured plugin load failure."""
+
+    code: PluginErrorCode
+    message: str
+    plugin_id: str | None = None
+    component: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PluginDiscoveryResult:
     """Result from plugin discovery."""
 
     plugins: tuple[PluginInstance, ...]
     warnings: tuple[str, ...] = ()
+    errors: tuple[PluginLoadError, ...] = ()

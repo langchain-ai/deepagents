@@ -231,6 +231,9 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
 """
 
+PLUGIN_DIRS = "DEEPAGENTS_CODE_PLUGIN_DIRS"
+"""Paths to session-only plugins, separated by `os.pathsep`."""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.

@@ -111,7 +111,7 @@ class SubAgent(TypedDict):
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
     """Configure human-in-the-loop for specific tools."""
 
-    skills: NotRequired[list[SkillSource]]
+    skills: NotRequired[Sequence[SkillSource]]
     """Skill sources for `SkillsMiddleware`."""
 
     permissions: NotRequired[list[FilesystemPermission]]

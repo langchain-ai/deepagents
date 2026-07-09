@@ -363,7 +363,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
-    skills: list[SkillSource] | None = None,
+    skills: Sequence[SkillSource] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,

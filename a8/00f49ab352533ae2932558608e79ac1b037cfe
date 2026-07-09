@@ -1,0 +1,52 @@
+libs/code/tests/unit_tests/test_reload.py
+  s_9178b7d2c1b8aa::t_57e18259507810 526
+  s_9178b7d2c1b8aa::t_709759c3207b8c 471-525,527-558
+libs/code/deepagents_code/main.py
+  s_9178b7d2c1b8aa::t_4f97d426a9614c 2359-2361,2367-2369
+  s_9178b7d2c1b8aa::t_a5e76544f7262e 2480-2493
+libs/code/deepagents_code/mcp_tools.py
+  s_9178b7d2c1b8aa::t_0621d1e528396e 2015
+  s_9178b7d2c1b8aa::t_11fd4bdb586ec9 1966-1976
+  s_9178b7d2c1b8aa::t_e216d524a4714f 2040-2043,2045-2047,2049,2056-2059
+  s_9178b7d2c1b8aa::t_3cf957b6907ba2 1928-1931
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_9178b7d2c1b8aa::t_3b0258628bd227 3564-3591
+libs/code/tests/unit_tests/test_model_config.py
+  s_9178b7d2c1b8aa::t_70818b64cbd099 5243-5249
+  s_9178b7d2c1b8aa::t_b17e7d341f33aa 5481-5538
+libs/code/deepagents_code/_env_vars.py
+  s_9178b7d2c1b8aa::t_7abc3202510427 116-123
+libs/code/tests/unit_tests/test_main.py
+  s_9178b7d2c1b8aa::t_632be47b7553fd 2598-2600
+  s_9178b7d2c1b8aa::t_cc678d04a5cce6 2535-2597,2601-2602
+libs/code/deepagents_code/model_config.py
+  s_9178b7d2c1b8aa::t_bdeccef07b6ca5 3214-3218
+  s_9178b7d2c1b8aa::t_2b794e527cedb0 3071-3080,3092-3102
+  s_9178b7d2c1b8aa::t_c02a591ffdc141 3119-3121,3124-3132,3141-3145,3148,3150-3152,3155,3160,3176
+  s_9178b7d2c1b8aa::t_2603004dff42a3 3232-3235,3240,3245-3253,3255-3260,3262-3263
+  s_ccdea5bf03fae1::t_300458eaf90907 3103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a800f49ab352533ae2932558608e79ac1b037cfe",
+  "prompts": {},
+  "sessions": {
+    "s_9178b7d2c1b8aa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa33ef30-7979-472e-b391-064df8b4de71",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_ccdea5bf03fae1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c84cc93b-74ec-4189-b6c7-345dc508e0a3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

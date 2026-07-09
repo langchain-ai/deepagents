@@ -1,0 +1,66 @@
+libs/code/deepagents_code/app.py
+  s_3339fbc4547bc9::t_c2ea6995e9e726 9895-9909
+libs/code/deepagents_code/skills/trust.py
+  s_3339fbc4547bc9::t_5f757793bec86d 225-234
+  s_3339fbc4547bc9::t_941f5cf4e0965f 155-168,170-174
+  s_3339fbc4547bc9::t_292cc9287625cb 33-36
+  s_3339fbc4547bc9::t_e533eaaedd4d52 12-15
+  s_3339fbc4547bc9::t_4ce26671b00912 169
+  s_3339fbc4547bc9::t_18d4db60f68006 120
+  s_3339fbc4547bc9::t_e5280dfd48f6cd 31,44-71
+  s_3339fbc4547bc9::t_8a1c3bc429d297 178
+  s_fb27fd4f260d26::t_d3fef3fc317f5f 91-95,256-259,356
+  s_3339fbc4547bc9::t_57102c896f3195 296-302,305,310-312,317-318,326,329-330,337,340
+  s_3339fbc4547bc9::t_01e45144d11f24 358
+  s_3339fbc4547bc9::t_d476824cdf8bd1 284-286
+  s_3339fbc4547bc9::t_8c7f385910dd2e 72-73
+libs/code/tests/unit_tests/skills/test_skill_trust.py
+  s_3339fbc4547bc9::t_41f22a00221757 271-280,282-287
+  s_3339fbc4547bc9::t_08274b8000016f 9
+  s_3339fbc4547bc9::t_49bad28ecca81d 84,86
+  s_3339fbc4547bc9::t_4e88d0e65bbbe6 85
+  s_fb27fd4f260d26::t_3f51492eacbdf1 35-38,40-52,148-154
+  s_3339fbc4547bc9::t_dbd371796121e1 60,64,66-69
+  s_3339fbc4547bc9::t_4b238b8129ee26 211
+  s_3339fbc4547bc9::t_ae11ed35996c83 281
+  s_3339fbc4547bc9::t_75bab87855f1b8 155
+libs/code/tests/unit_tests/skills/test_commands.py
+  s_3339fbc4547bc9::t_c949cdfe6551ac 1561-1582
+  s_3339fbc4547bc9::t_a7020393cae09b 1460,1467,1476-1521,1523,1525,1532
+libs/code/tests/unit_tests/test_skill_invocation.py
+  s_3339fbc4547bc9::t_bf9e1c66f43f17 746-759,761-809
+  s_3339fbc4547bc9::t_4e88d0e65bbbe6 760
+  s_3339fbc4547bc9::t_2181905749338f 810-859
+libs/code/deepagents_code/skills/commands.py
+  s_3339fbc4547bc9::t_c0837944d979bb 1153-1155,1159-1160
+  s_3339fbc4547bc9::t_ef2aecdae72a17 915-919,925-933,935,938-943,948-956
+  s_3339fbc4547bc9::t_ef58db3cbdc810 870
+libs/code/deepagents_code/widgets/skill_trust.py
+  s_3339fbc4547bc9::t_a3be1ca0f5e901 97-100
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_3339fbc4547bc9::t_b0c6ae5243aa0d 1138-1195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "869210ffbaf15198742b139a2d76ef3eaba552ed",
+  "prompts": {},
+  "sessions": {
+    "s_3339fbc4547bc9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50d510c0-0ffc-450e-aabf-80bdd176ad47",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_fb27fd4f260d26": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f35e4-0027-7930-ad59-9d2129a511cf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

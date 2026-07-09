@@ -1,0 +1,28 @@
+.github/RELEASING.md
+  s_8693f4f521153c::t_0efaef821e5298 322-325
+  s_caceb6e1bf0933::t_d42063983493b1 310,319,326-336,341-343,352-363,365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "01a4db412656549873ae227221492b1d712d2346",
+  "prompts": {},
+  "sessions": {
+    "s_8693f4f521153c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1aef737-35df-4c33-b7fa-d30fb787fce8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_caceb6e1bf0933": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "407f2e41-622c-4058-a7ff-951256126524",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

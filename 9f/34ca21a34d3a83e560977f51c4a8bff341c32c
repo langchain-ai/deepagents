@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-07-09-tau3-conversation-subset-design.md
+  s_0b8bbcc97a5d01::t_cc8aab5f2c1cbf 178
+  s_0b8bbcc97a5d01::t_8115070db7aca8 1-177,179-207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9f34ca21a34d3a83e560977f51c4a8bff341c32c",
+  "prompts": {},
+  "sessions": {
+    "s_0b8bbcc97a5d01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ee9ab0ef-332e-4beb-8f46-81ead6f6d627",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

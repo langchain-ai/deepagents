@@ -518,6 +518,99 @@ class TestRecommendedToggle:
             assert "Ctrl+R" not in str(help_text.content)
 
 
+class TestNamesToggle:
+    """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""
+
+    async def test_ctrl_n_toggles_rows_between_names_and_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+N flips rows between the friendly name and the raw spec."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            row = screen._option_widgets[0]
+            assert row.model_spec == "anthropic:claude-sonnet-5"
+            assert not screen._show_specs
+            text = str(row.content)
+            assert "Claude Sonnet 5" in text
+            assert "anthropic:claude-sonnet-5" not in text
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert screen._show_specs
+            text = str(screen._option_widgets[0].content)
+            assert "anthropic:claude-sonnet-5" in text
+            assert "Claude Sonnet 5" not in text
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert not screen._show_specs
+            text = str(screen._option_widgets[0].content)
+            assert "Claude Sonnet 5" in text
+            assert "anthropic:claude-sonnet-5" not in text
+
+    async def test_help_text_advertises_names_toggle_in_standard_mode(self) -> None:
+        """Standard `/model` help footer should mention Ctrl+N."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" in str(help_text.content)
+
+    async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
+        """Onboarding's curated help footer should not mention Ctrl+N."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" not in str(help_text.content)
+
+    async def test_names_toggle_available_in_curated_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Curated/onboarding mode still honors Ctrl+N (presentation only)."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+
+
 class TestRecentModelsSection:
     """Tests for the "Recent" pseudo-provider section pinned at the top."""
 

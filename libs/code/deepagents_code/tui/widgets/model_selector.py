@@ -252,6 +252,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             show=False,
             priority=True,
         ),
+        Binding("ctrl+n", "toggle_names", "Model IDs", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
@@ -259,11 +260,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     Arrows move the cursor, Page Up/Down jump by a visual page, Tab copies
     the highlighted spec into the filter input, Enter selects, Ctrl+S
     toggles the default model, Ctrl+R toggles between showing all installed
-    models and the hand-curated "recommended" subset, and Esc dismisses. All
-    bindings use `priority=True` so they take precedence over the embedded
-    `Input`; vim-style `j`/`k` bindings are deliberately omitted because
-    they would prevent typing those letters into the always-focused filter
-    input.
+    models and the hand-curated "recommended" subset, Ctrl+N toggles rows
+    between friendly display names and raw `provider:model` specs (the analog
+    of the `/theme` picker's `n` key), and Esc dismisses. All bindings use
+    `priority=True` so they take precedence over the embedded `Input`;
+    vim-style `j`/`k` bindings — and a bare `n` mirroring the `/theme`
+    picker — are deliberately omitted because they would prevent typing those
+    letters into the always-focused filter input, which is why the names
+    toggle is bound to `ctrl+n` instead.
     """
 
     CSS = """
@@ -411,6 +415,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # constrains the list via `_curated`, so leaving this False there
         # avoids double-flagging in `_apply_subset`.
         self._recommended_only = not curated
+        # Rows show friendly display names by default; Ctrl+N flips every row
+        # to its raw `provider:model` spec (mirrors the `/theme` picker's
+        # label/key toggle) so a user can read or copy the canonical id.
+        self._show_specs = False
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -463,10 +471,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+S and Ctrl+R hints. Escape stays
-        bound but is left off the hint line — modal dismissal via Escape is
-        conventional, and advertising it would only lengthen an already-wrapping
-        line. In standard mode the full line exceeds the modal width, so the
+        Curated/onboarding mode omits the Ctrl+S, Ctrl+R, and Ctrl+N hints.
+        Escape stays bound but is left off the hint line — modal dismissal via
+        Escape is conventional, and advertising it would only lengthen an
+        already-wrapping line. In standard mode the full line exceeds the modal
+        width, so the
         help `Static` is sized to grow (auto height) and wraps to two rows
         rather than clipping the trailing hints.
 
@@ -480,7 +489,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "Enter select",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+S set default", "Ctrl+R recommended"))
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", "Ctrl+N IDs"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -1292,6 +1301,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             from deepagents_code.tui.widgets.auth import provider_short_name
 
             provider_label = provider_short_name(provider)
+        # `_show_specs` (Ctrl+N) renders the raw `provider:model` spec instead
+        # of the friendly name; `display_name=None` makes `_format_option_label`
+        # fall back to the spec and drop the redundant `(provider)` tag, which
+        # the spec already embeds.
+        display_name = (
+            None if self._show_specs else self._get_model_display_name(model_spec)
+        )
         return self._format_option_label(
             model_spec,
             selected=selected,
@@ -1300,7 +1316,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             is_default=model_spec == self._default_spec,
             status=self._get_model_status(model_spec),
             install_required=provider in self._install_extras,
-            display_name=self._get_model_display_name(model_spec),
+            display_name=display_name,
             provider_label=provider_label,
         )
 
@@ -1922,6 +1938,42 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         info.update(self._info_line_content())
 
         await self._update_display()
+
+    def action_toggle_names(self) -> None:
+        """Toggle rows between friendly display names and raw model specs.
+
+        Mirrors the `/theme` picker's label/key toggle: pressing Ctrl+N flips
+        every visible row between its human-readable name (e.g.
+        `Claude Sonnet 5`) and the canonical `provider:model` spec (e.g.
+        `anthropic:claude-sonnet-5`) so the user can read or copy the exact id
+        without leaving the picker. Relabels the mounted rows in place — the
+        toggle changes neither ordering nor selection, so a full rebuild is
+        unnecessary — and stays available in curated/onboarding mode since it
+        only affects presentation.
+        """
+        if not self._loaded:
+            return
+        self._show_specs = not self._show_specs
+        self._relabel_options()
+
+    def _relabel_options(self) -> None:
+        """Rebuild each mounted row's label for the current display mode.
+
+        Used by `action_toggle_names` after flipping `_show_specs`. Each entry
+        in `_option_widgets` lines up with its `_filtered_models` index, so the
+        highlighted row is re-derived from `_selected_index` to preserve the
+        selected styling.
+        """
+        for index, widget in enumerate(self._option_widgets):
+            widget.update(
+                self._build_option_label(
+                    widget.model_spec,
+                    widget.provider,
+                    widget.auth_status,
+                    selected=index == self._selected_index,
+                    show_provider=widget.show_provider,
+                )
+            )
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

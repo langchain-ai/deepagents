@@ -47,7 +47,7 @@ from langchain_quickjs._subagent import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Iterator, Sequence
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
@@ -935,6 +935,7 @@ class _Slot:
     runtime: Runtime
     repl: _ThreadREPL
     last_used: float = field(default_factory=time.monotonic)
+    in_use: int = 0
 
 
 @dataclass
@@ -963,14 +964,26 @@ class _Registry:
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
-            slot = self._slots.get(thread_id)
-            if slot is None:
-                self._evict_for_cap_locked()
-                slot = self._build_slot_locked(thread_id)
-                self._slots[thread_id] = slot
-            else:
-                slot.last_used = time.monotonic()
-            return slot.repl
+            return self._get_or_create_slot_locked(thread_id).repl
+
+    @contextlib.contextmanager
+    def lease(self, thread_id: str) -> Iterator[_ThreadREPL]:
+        with self._lock:
+            slot = self._get_or_create_slot_locked(thread_id)
+            slot.in_use += 1
+        try:
+            yield slot.repl
+        finally:
+            with self._lock:
+                current = self._slots.get(thread_id)
+                if current is slot and slot.in_use > 0:
+                    slot.in_use -= 1
+                    slot.last_used = time.monotonic()
+
+    @contextlib.asynccontextmanager
+    async def alease(self, thread_id: str) -> AsyncIterator[_ThreadREPL]:
+        with self.lease(thread_id) as repl:
+            yield repl
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""
@@ -1023,12 +1036,30 @@ class _Registry:
         with contextlib.suppress(Exception):
             new_repl.close()
 
+    def _get_or_create_slot_locked(self, thread_id: str) -> _Slot:
+        slot = self._slots.get(thread_id)
+        if slot is None:
+            self._evict_for_cap_locked()
+            slot = self._build_slot_locked(thread_id)
+            self._slots[thread_id] = slot
+        else:
+            slot.last_used = time.monotonic()
+        return slot
+
     def _evict_for_cap_locked(self) -> None:
         if self.max_active_threads is None:
             return
         while len(self._slots) >= self.max_active_threads:
-            oldest_thread_id = min(self._slots, key=lambda t: self._slots[t].last_used)
-            slot = self._slots.pop(oldest_thread_id)
+            idle = [
+                (thread_id, slot)
+                for thread_id, slot in self._slots.items()
+                if slot.in_use == 0
+            ]
+            if not idle:
+                msg = "`max_active_threads` limit reached with all REPL slots active"
+                raise RuntimeError(msg)
+            oldest_thread_id, slot = min(idle, key=lambda item: item[1].last_used)
+            self._slots.pop(oldest_thread_id)
             self._close_slot(slot)
 
     def _build_slot_locked(self, thread_id: str) -> _Slot:

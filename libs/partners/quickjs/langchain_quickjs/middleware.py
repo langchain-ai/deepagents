@@ -290,15 +290,16 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
             thread_id = _resolve_thread_id(fallback_id)
-            repl = middleware._repl_for_eval(thread_id)
-            try:
-                outcome = repl.eval_sync(
-                    code,
-                    outer_runtime=runtime,
-                )
-            finally:
-                if middleware._mode == "call":
-                    middleware._registry.reset_repl(thread_id)
+            with middleware._registry.lease(thread_id) as repl:
+                middleware._prepare_repl_for_eval(thread_id, repl)
+                try:
+                    outcome = repl.eval_sync(
+                        code,
+                        outer_runtime=runtime,
+                    )
+                finally:
+                    if middleware._mode == "call":
+                        middleware._registry.reset_repl(thread_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
         async def async_eval(
@@ -306,16 +307,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
             thread_id = _resolve_thread_id(fallback_id)
-            repl = middleware._repl_for_eval(thread_id)
-            try:
-                outcome = await repl.eval_async(
-                    code,
-                    outer_runtime=runtime,
-                    outer_loop=asyncio.get_running_loop(),
-                )
-            finally:
-                if middleware._mode == "call":
-                    middleware._registry.reset_repl(thread_id)
+            async with middleware._registry.alease(thread_id) as repl:
+                middleware._prepare_repl_for_eval(thread_id, repl)
+                try:
+                    outcome = await repl.eval_async(
+                        code,
+                        outer_runtime=runtime,
+                        outer_loop=asyncio.get_running_loop(),
+                    )
+                finally:
+                    if middleware._mode == "call":
+                        middleware._registry.reset_repl(thread_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
@@ -338,12 +340,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 names.add(entry.name)
         return names
 
-    def _repl_for_eval(self, thread_id: str) -> Any:
-        """Return the REPL slot for one eval invocation."""
-        repl = self._registry.get(thread_id)
+    def _prepare_repl_for_eval(self, thread_id: str, repl: Any) -> None:
+        """Install per-call PTC tools when eval state is not persistent."""
         if self._mode == "call" and self._ptc is not None:
             repl.install_tools(list(self._ptc_tools_by_thread.get(thread_id, ())))
-        return repl
 
     def before_agent(
         self,

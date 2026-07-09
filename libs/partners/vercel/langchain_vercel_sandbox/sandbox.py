@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_BYTES = 100_000
+_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 
 
 class VercelSandbox(BaseSandbox):
@@ -140,36 +141,34 @@ class VercelSandbox(BaseSandbox):
                 )
                 continue
             try:
-                content = self._sandbox.read_file(path)
+                content, too_large = _read_file_with_limit(self._sandbox, path)
             except Exception as exc:  # noqa: BLE001  # Provider exceptions vary by SDK version
-                responses.append(
-                    FileDownloadResponse(
-                        path=path,
-                        content=None,
-                        error=_map_file_error(exc),
+                if _is_sandbox_not_found_error(exc):
+                    content = None
+                    too_large = False
+                else:
+                    responses.append(
+                        FileDownloadResponse(
+                            path=path,
+                            content=None,
+                            error=_map_file_error(exc),
+                        )
                     )
-                )
-                continue
-            if content is None:
-                # `read_file` returns None only by swallowing the SDK's
-                # `SandboxNotFoundError` (HTTP 404 on the read endpoint); every
-                # other failure raises and is mapped by `_map_file_error`.
-                # Surface it as a distinct not-found condition rather than the
-                # `file_not_found` literal, which would imply a known-good
-                # sandbox is simply missing one file.
-                responses.append(
-                    FileDownloadResponse(
-                        path=path,
-                        content=None,
-                        error="sandbox not found",
-                    )
-                )
-            elif len(content) > MAX_BINARY_BYTES:
+                    continue
+            if too_large:
                 responses.append(
                     FileDownloadResponse(
                         path=path,
                         content=None,
                         error=f"file_too_large:max_size_bytes={MAX_BINARY_BYTES}",
+                    )
+                )
+            elif content is None:
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=None,
+                        error="sandbox not found",
                     )
                 )
             else:
@@ -206,6 +205,27 @@ class VercelSandbox(BaseSandbox):
                     responses[i] = FileUploadResponse(path=path, error=error)
 
         return responses
+
+
+def _read_file_with_limit(sandbox: Sandbox, path: str) -> tuple[bytes | None, bool]:
+    chunks_iter = sandbox.iter_file(path, chunk_size=_DOWNLOAD_CHUNK_BYTES)
+    if chunks_iter is None:
+        return None, False
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in chunks_iter:
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > MAX_BINARY_BYTES:
+            return None, True
+        chunks.append(chunk)
+    return b"".join(chunks), False
+
+
+def _is_sandbox_not_found_error(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "SandboxNotFoundError"
 
 
 def _map_file_error(exc: Exception) -> FileOperationError | str:

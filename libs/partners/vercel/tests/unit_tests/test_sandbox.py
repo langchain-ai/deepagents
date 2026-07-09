@@ -11,6 +11,8 @@ from langchain_vercel_sandbox import VercelSandbox
 from langchain_vercel_sandbox.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from vercel.sandbox import Sandbox
 
 NON_ZERO_EXIT_CODE = 7
@@ -58,18 +60,44 @@ class _Sandbox:
         self.sandbox_id = "sb_123"
         self.detached_command = _Command(stdout="hello\n")
         self.writes: list[list[dict[str, object]]] = []
-        self.files: dict[str, bytes | Exception | None] = {}
+        self.files: dict[str, bytes | list[bytes] | Exception | None] = {}
         self.write_error: Exception | None = None
+        self.read_file_calls: list[str] = []
+        self.iter_file_calls: list[str] = []
 
     def run_command_detached(self, cmd: str, args: list[str]) -> _Command:
         self.detached_args = (cmd, args)
         return self.detached_command
 
     def read_file(self, path: str) -> bytes | None:
+        self.read_file_calls.append(path)
         value = self.files[path]
         if isinstance(value, Exception):
             raise value
+        if isinstance(value, list):
+            return b"".join(value)
         return value
+
+    def iter_file(
+        self,
+        path: str,
+        *,
+        chunk_size: int = 65536,
+    ) -> Iterator[bytes] | None:
+        self.iter_file_calls.append(path)
+        value = self.files[path]
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return iter(value)
+
+        def _chunks() -> Iterator[bytes]:
+            for i in range(0, len(value), chunk_size):
+                yield value[i : i + chunk_size]
+
+        return _chunks()
 
     def write_files(self, files: list[dict[str, object]]) -> None:
         self.writes.append(files)
@@ -273,14 +301,20 @@ def test_download_files_rejects_relative_paths_and_preserves_order() -> None:
     assert responses[2].error == "file_not_found"
 
 
-def test_download_files_rejects_large_files() -> None:
+def test_download_files_rejects_large_files_before_full_read() -> None:
     sandbox = _Sandbox()
-    sandbox.files["/vercel/sandbox/large.bin"] = b"x" * (MAX_BINARY_BYTES + 1)
+    sandbox.files["/vercel/sandbox/large.bin"] = [
+        b"x" * MAX_BINARY_BYTES,
+        b"x",
+        b"unread",
+    ]
 
     response = sandbox.as_backend().download_files(["/vercel/sandbox/large.bin"])[0]
 
     assert response.content is None
     assert response.error == f"file_too_large:max_size_bytes={MAX_BINARY_BYTES}"
+    assert sandbox.iter_file_calls == ["/vercel/sandbox/large.bin"]
+    assert sandbox.read_file_calls == []
 
 
 def test_download_files_surfaces_missing_sandbox() -> None:

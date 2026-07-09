@@ -609,6 +609,43 @@ def test_registry_evicts_oldest_slot_when_thread_cap_reached() -> None:
         reg.close()
 
 
+def test_registry_does_not_evict_leased_slot_when_thread_cap_reached() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_active_threads=2,
+    )
+    try:
+        with reg.lease("thread-a") as thread_a:
+            reg.get("thread-b")
+
+            reg.get("thread-c")
+
+            assert set(reg._slots) == {"thread-a", "thread-c"}
+            assert reg.get_if_exists("thread-a") is thread_a
+    finally:
+        reg.close()
+
+
+def test_registry_rejects_new_slot_when_thread_cap_is_all_active() -> None:
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_active_threads=1,
+    )
+    try:
+        with reg.lease("thread-a"):
+            with pytest.raises(RuntimeError, match="all REPL slots active"):
+                reg.get("thread-b")
+            assert set(reg._slots) == {"thread-a"}
+    finally:
+        reg.close()
+
+
 def test_registry_get_if_exists_does_not_create_slot() -> None:
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,

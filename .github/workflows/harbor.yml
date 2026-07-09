@@ -180,6 +180,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
+        required: false
+        default: false
+        type: boolean
       n_shards:
         description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation. Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped so models x shards <= 256 (GitHub's matrix limit)."
         required: false
@@ -291,6 +296,7 @@ jobs:
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
+      HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
       # Effective shard count from prep (capped to selectable work), not the raw
       # input — the partition must match the matrix or tasks would be dropped.
@@ -451,6 +457,14 @@ jobs:
             true)  verification_flag=(--disable-verification) ;;
             false) ;;
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
+          esac
+
+          # Allowlist the boolean; only literal true/false accepted.
+          force_build_flag=()
+          case "$HARBOR_FORCE_BUILD" in
+            true)  force_build_flag=(--force-build) ;;
+            false) ;;
+            *) echo "::error::Invalid force_build (true|false): $HARBOR_FORCE_BUILD"; exit 1 ;;
           esac
 
           dataset_args=(--dataset "$HARBOR_DATASET")
@@ -641,6 +655,7 @@ jobs:
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
+            "${force_build_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

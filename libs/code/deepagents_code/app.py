@@ -13079,7 +13079,12 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
             # When the user selected a greyed-out (uninstalled) provider and
             # confirmed installing it, install the extra and reopen the manager
-            # so they can add a key against the now-installed provider.
+            # so they can add a key against the now-installed provider. A
+            # pending web-search restart rides along rather than being consumed
+            # here: the reopened manager offers it on its own close, and
+            # `_install_provider_then_reopen_auth` surfaces it on the paths
+            # where it cannot reopen — so the flag is never stranded past this
+            # early return.
             extra = screen.pending_install_extra
             if extra is not None:
                 from functools import partial
@@ -13097,9 +13102,7 @@ class DeepAgentsApp(App):
             # A saved Tavily key only enables `web_search` after a respawn.
             # Offer the restart now that the manager has closed, so the prompt
             # never stacks over the still-open manager.
-            if self._pending_web_search_restart:
-                self._pending_web_search_restart = False
-                self.call_after_refresh(self._launch_web_search_restart_prompt)
+            self._maybe_offer_deferred_web_search_restart()
 
         screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
@@ -13113,9 +13116,20 @@ class DeepAgentsApp(App):
         so flag that a restart should be offered once the manager closes.
         """
         event.stop()
-        self._note_web_search_restart_if_needed(event.service)
+        # Kick off the credentials-blocked-startup retry first — it is the
+        # response the user is actually waiting for. Web-search bookkeeping is
+        # secondary and runs synchronously after, so a failure there can never
+        # preempt scheduling the resume.
         task = asyncio.create_task(self._resume_server_after_auth_change())
         task.add_done_callback(_log_task_exception)
+        self._note_web_search_restart_if_needed(event.service)
+
+    def on_auth_manager_screen_credential_deleted(
+        self, event: AuthManagerScreen.CredentialDeleted
+    ) -> None:
+        """Clear auth-derived in-memory state after `/auth` deletes a key."""
+        event.stop()
+        self._clear_web_search_restart_if_needed(event.service)
 
     def _note_web_search_restart_if_needed(self, service: str) -> None:
         """Flag an offered restart when a saved key enables `web_search`.
@@ -13129,7 +13143,9 @@ class DeepAgentsApp(App):
         Args:
             service: The `/auth` config key that was just saved.
         """
-        if service != "tavily":
+        from deepagents_code.model_config import TAVILY_SERVICE
+
+        if service != TAVILY_SERVICE:
             return
         from deepagents_code.config import settings
 
@@ -13142,6 +13158,33 @@ class DeepAgentsApp(App):
         apply_stored_service_credentials()
         if os.environ.get("TAVILY_API_KEY"):
             self._pending_web_search_restart = True
+
+    def _clear_web_search_restart_if_needed(self, service: str) -> None:
+        """Disarm a Tavily restart offer after its stored key is deleted.
+
+        Args:
+            service: The `/auth` config key that was just deleted.
+        """
+        from deepagents_code.model_config import TAVILY_SERVICE
+
+        if service != TAVILY_SERVICE:
+            return
+        if self._pending_web_search_restart:
+            os.environ.pop("TAVILY_API_KEY", None)
+        self._pending_web_search_restart = False
+
+    def _maybe_offer_deferred_web_search_restart(self) -> None:
+        """Offer the deferred Tavily restart once the `/auth` manager has closed.
+
+        Consumes `_pending_web_search_restart` so the offer fires exactly once
+        and never leaks into a later, unrelated manager close. Scheduled via
+        `call_after_refresh` so the prompt mounts after the dismissing manager
+        fully unwinds rather than stacking over it.
+        """
+        if not self._pending_web_search_restart:
+            return
+        self._pending_web_search_restart = False
+        self.call_after_refresh(self._launch_web_search_restart_prompt)
 
     def _launch_web_search_restart_prompt(self) -> None:
         """Kick off the deferred web-search restart offer after the manager closes."""
@@ -13243,12 +13286,18 @@ class DeepAgentsApp(App):
                     "Reopen `/auth` to add a key once it has.",
                 ),
             )
+            # We are not reopening the manager, so surface a Tavily restart the
+            # user armed earlier in this session rather than stranding the flag.
+            self._maybe_offer_deferred_web_search_restart()
             return
         # `ready is False`: the extra genuinely didn't install. `_install_extra`
         # has already surfaced the reason to the user, so stay in chat rather
         # than reopen — but log it so an "install button did nothing" report is
         # debuggable without relying on that sibling method's invariant.
         logger.debug("Provider extra %r not importable after install attempt", extra)
+        # No manager reopen on this path either, so consume any armed Tavily
+        # restart here.
+        self._maybe_offer_deferred_web_search_restart()
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -15164,8 +15213,9 @@ class DeepAgentsApp(App):
         prompt to run the restart immediately instead of making the user type
         `/restart`.
 
-        Owns all of its own follow-up messaging so the caller never appends a
-        redundant hint:
+        Surfaces its own follow-up messaging so a caller need not append one
+        (the `/install` extra path relies on this; `/install --package`
+        deliberately keeps a short hint of its own):
 
         - Owned + idle: show the prompt (its button is the call to action). If
             the prompt can't be shown, fall back to a `/restart` hint.
@@ -15200,6 +15250,14 @@ class DeepAgentsApp(App):
         post-install offer: same guards, watchdog, and fallback messaging, with
         web-search-specific copy.
         """
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            # A respawn happened between arming the offer and now — e.g. an
+            # install-on-select in the same `/auth` session auto-restarted the
+            # server, which reloaded config and rebound `web_search`. The
+            # restart is no longer needed, so don't offer a redundant one.
+            return
         await self._offer_server_restart(
             label="Tavily API key",
             verb="Saved",
@@ -15235,8 +15293,10 @@ class DeepAgentsApp(App):
         that only takes effect at spawn time (a newly installed package, a
         newly configured Tavily key) applies without exiting the TUI.
 
-        Owns all of its own follow-up messaging so callers never append a
-        redundant hint:
+        Surfaces its own follow-up messaging so a caller need not append one
+        (both the post-install and web-search offers rely on this; a caller
+        that still prints its own hint, like `/install --package`, does so
+        deliberately):
 
         - Owned + idle: show the prompt (its button is the call to action). If
             the prompt can't be shown, fall back to `manual_hint`.

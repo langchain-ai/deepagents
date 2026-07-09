@@ -1382,6 +1382,23 @@ class AuthManagerScreen(ModalScreen[None]):
             super().__init__()
             self.service = service
 
+    class CredentialDeleted(Message):
+        """Posted when a key prompt deletes stored credentials.
+
+        Carries the `/auth` config key that was deleted so the app can clear
+        any in-memory state derived from the now-removed credential.
+        """
+
+        def __init__(self, service: str) -> None:
+            """Store the deleted provider/service identifier.
+
+            Args:
+                service: The `/auth` config key that was deleted (a model
+                    provider name or a service key such as `"tavily"`).
+            """
+            super().__init__()
+            self.service = service
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
         Binding("tab", "cursor_down", "Next", show=False, priority=True),
@@ -1690,6 +1707,8 @@ class AuthManagerScreen(ModalScreen[None]):
         self._refresh_options()
         if result is AuthResult.SAVED:
             self.post_message(self.CredentialSaved(provider))
+        elif result is AuthResult.DELETED:
+            self.post_message(self.CredentialDeleted(provider))
 
     def _refresh_options(self) -> None:
         """Rebuild option labels from current store state."""

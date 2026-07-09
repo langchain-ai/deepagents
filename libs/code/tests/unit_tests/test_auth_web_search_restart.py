@@ -8,6 +8,7 @@ should flag — and, once the manager closes, offer — that restart.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -96,12 +97,90 @@ class TestNoteWebSearchRestart:
 
         assert app._pending_web_search_restart is False
 
+    def test_skips_when_export_produces_no_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the eager export lands no `TAVILY_API_KEY`, stay disarmed.
+
+        A stored entry can be empty/malformed, in which case
+        `apply_stored_service_credentials` exports nothing; without an env key
+        a respawn couldn't bind `web_search`, so there is nothing to offer.
+        """
+        from deepagents_code.config import settings
+
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.apply_stored_service_credentials",
+            lambda: None,
+        )
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+
+    def test_deleted_tavily_key_clears_pending_restart_and_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Tavily disarms the deferred restart and removes its env bridge."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-deleted")
+
+        app = DeepAgentsApp()
+        app._pending_web_search_restart = True
+
+        app._clear_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+        assert "TAVILY_API_KEY" not in os.environ
+
+    def test_deleted_non_tavily_key_leaves_pending_restart_and_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Model-provider deletes do not affect Tavily restart state."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-still-present")
+
+        app = DeepAgentsApp()
+        app._pending_web_search_restart = True
+
+        app._clear_web_search_restart_if_needed("openai")
+
+        assert app._pending_web_search_restart is True
+        assert os.environ["TAVILY_API_KEY"] == "tvly-still-present"
+
+    def test_deleted_tavily_key_preserves_env_when_restart_was_not_pending(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting a stored key must not clear an independent shell env key."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
+
+        app = DeepAgentsApp()
+        app._pending_web_search_restart = False
+
+        app._clear_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+        assert os.environ["TAVILY_API_KEY"] == "tvly-from-shell"
+
 
 class TestOfferRestartForWebSearch:
-    """`_offer_restart_for_web_search` messaging and restart dispatch."""
+    """`_offer_restart_for_web_search` messaging and restart dispatch.
 
-    async def test_no_owned_server_recommends_relaunch(self) -> None:
+    Each test pins `settings.tavily_api_key` to `None` so the idempotent
+    "already configured" guard never short-circuits the offer under test; the
+    guard itself is covered by `test_skips_offer_when_tavily_already_configured`.
+    """
+
+    async def test_no_owned_server_recommends_relaunch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = None
         app._server_kwargs = None
@@ -117,8 +196,13 @@ class TestOfferRestartForWebSearch:
         assert "web search" in contents
         assert "/restart" not in contents
 
-    async def test_busy_recommends_restart(self) -> None:
+    async def test_busy_recommends_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An owned-but-busy server points at `/restart`, never a relaunch."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -135,8 +219,13 @@ class TestOfferRestartForWebSearch:
         assert "/restart" in contents
         assert "relaunch" not in contents.lower()
 
-    async def test_restart_choice_dispatches_restart(self) -> None:
+    async def test_restart_choice_dispatches_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Choosing restart respawns the owned server via `_restart_after_install`."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -152,8 +241,13 @@ class TestOfferRestartForWebSearch:
             "Tavily API key"
         )
 
-    async def test_restart_state_flip_surfaces_fallback(self) -> None:
+    async def test_restart_state_flip_surfaces_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A chosen restart that can't run surfaces a web-search fallback hint."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
         app = DeepAgentsApp()
         app._server_proc = MagicMock()
         app._server_kwargs = {"model_name": "anthropic:fake"}
@@ -170,6 +264,33 @@ class TestOfferRestartForWebSearch:
             for c in app._mount_message.await_args_list  # ty: ignore
         )
         assert "Couldn't restart the server automatically to enable web" in contents
+
+    async def test_skips_offer_when_tavily_already_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A respawn that already bound `web_search` suppresses a redundant offer.
+
+        Guards the install-on-select-in-the-same-session case: the install
+        auto-restarted the server (reloading config and rebinding `web_search`),
+        so by the time the reopened manager closes there is nothing left to do.
+        """
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", "tvly-now-configured")
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._push_screen_wait = AsyncMock()  # ty: ignore
+        app._restart_after_install = AsyncMock()  # ty: ignore
+
+        await app._offer_restart_for_web_search()
+
+        app._push_screen_wait.assert_not_awaited()  # ty: ignore
+        app._restart_after_install.assert_not_awaited()  # ty: ignore
+        app._mount_message.assert_not_awaited()  # ty: ignore
 
 
 class TestCredentialSavedHandler:
@@ -199,3 +320,95 @@ class TestCredentialSavedHandler:
             await pilot.pause()
 
             assert app._pending_web_search_restart is True
+
+    async def test_deleted_tavily_key_disarms_restart_offer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Tavily clears the offer before the manager-close callback runs."""
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-deleted")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_web_search_restart = True
+
+            app.on_auth_manager_screen_credential_deleted(
+                AuthManagerScreen.CredentialDeleted("tavily")
+            )
+            await pilot.pause()
+
+            assert app._pending_web_search_restart is False
+            assert "TAVILY_API_KEY" not in os.environ
+
+
+class TestDeferredOfferAfterManagerCloses:
+    """The armed offer is consumed only when the `/auth` manager closes.
+
+    Spies on `call_after_refresh` rather than asserting the offer coroutine
+    actually ran: scheduling is synchronous inside the dismiss callback, so it
+    is deterministic, whereas the post-refresh invocation is timing-dependent.
+    """
+
+    @staticmethod
+    def _spy_call_after_refresh(app: DeepAgentsApp) -> list[object]:
+        """Record callbacks scheduled via `call_after_refresh`, still delegating."""
+        scheduled: list[object] = []
+        real = app.call_after_refresh
+
+        def _spy(callback: object, *args: object, **kwargs: object) -> object:
+            scheduled.append(callback)
+            return real(callback, *args, **kwargs)  # ty: ignore
+
+        app.call_after_refresh = _spy  # ty: ignore
+        return scheduled
+
+    async def test_offer_deferred_until_manager_closes(self) -> None:
+        """An armed offer is scheduled on manager close — never while it is open."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_server_after_auth_change = AsyncMock()  # ty: ignore
+            app._launch_web_search_restart_prompt = MagicMock()  # ty: ignore
+            scheduled = self._spy_call_after_refresh(app)
+            app._pending_web_search_restart = True
+
+            await app._show_auth_manager()
+            await pilot.pause()
+
+            # Manager is open: nothing scheduled and the flag is still armed.
+            assert app._launch_web_search_restart_prompt not in scheduled
+            assert app._pending_web_search_restart is True
+
+            # Closing the manager (no pending install) consumes the flag once
+            # and schedules the offer.
+            app.screen.dismiss(None)
+            await pilot.pause()
+
+            assert app._pending_web_search_restart is False
+            assert app._launch_web_search_restart_prompt in scheduled
+
+    async def test_flag_not_reoffered_on_a_later_unrelated_close(self) -> None:
+        """Once consumed, a later manager close does not re-schedule the offer."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_server_after_auth_change = AsyncMock()  # ty: ignore
+            app._launch_web_search_restart_prompt = MagicMock()  # ty: ignore
+            scheduled = self._spy_call_after_refresh(app)
+            app._pending_web_search_restart = True
+
+            await app._show_auth_manager()
+            await pilot.pause()
+            app.screen.dismiss(None)
+            await pilot.pause()
+            assert scheduled.count(app._launch_web_search_restart_prompt) == 1
+
+            # A second, unrelated open/close must not re-schedule the offer.
+            await app._show_auth_manager()
+            await pilot.pause()
+            app.screen.dismiss(None)
+            await pilot.pause()
+
+            assert scheduled.count(app._launch_web_search_restart_prompt) == 1

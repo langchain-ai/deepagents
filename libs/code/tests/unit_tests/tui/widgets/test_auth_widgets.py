@@ -64,7 +64,9 @@ class _AuthHostApp(App[None]):
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
+        self.credential_deleted_count = 0
         self.last_saved_service: str | None = None
+        self.last_deleted_service: str | None = None
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -108,6 +110,13 @@ class _AuthHostApp(App[None]):
         """Record credential-save notifications from the manager."""
         self.credential_saved_count += 1
         self.last_saved_service = event.service
+
+    def on_auth_manager_screen_credential_deleted(
+        self, event: AuthManagerScreen.CredentialDeleted
+    ) -> None:
+        """Record credential-delete notifications from the manager."""
+        self.credential_deleted_count += 1
+        self.last_deleted_service = event.service
 
 
 class TestCodexAuthScreen:
@@ -1401,6 +1410,33 @@ class TestAuthManagerScreen:
             await pilot.pause()
 
         assert app.credential_saved_count == 0
+
+    async def test_prompt_delete_posts_credential_deleted_event(self) -> None:
+        """Deleting a key notifies the app before the manager itself closes."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed("tavily", AuthResult.DELETED)
+            await pilot.pause()
+
+        assert app.credential_deleted_count == 1
+        assert app.last_deleted_service == "tavily"
+
+    async def test_prompt_cancel_does_not_post_credential_deleted_event(self) -> None:
+        """Cancelling a prompt does not clear app-side credential state."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed("tavily", AuthResult.CANCELLED)
+            await pilot.pause()
+
+        assert app.credential_deleted_count == 0
 
     async def test_lists_known_providers(self) -> None:
         """Every well-known provider appears in the option list."""

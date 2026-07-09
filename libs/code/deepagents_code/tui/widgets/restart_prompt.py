@@ -1,10 +1,12 @@
-"""Confirmation modal offered after a restart-capable `/install`.
+"""Confirmation modal offered when a change needs an owned-server respawn.
 
-Provider and sandbox extras (and `--package` installs) are imported by the
-app-owned LangGraph server subprocess, so a `/restart` loads them without
-exiting the TUI. Rather than make the user type `/restart` by hand, this
-modal offers to run that restart immediately while leaving deferral one
-keypress away.
+Some changes take effect only when the app-owned LangGraph server subprocess
+spawns: provider/sandbox extras and `--package` installs are imported at spawn
+time, and a Tavily key saved via `/auth` binds the `web_search` tool only at
+spawn time. A `/restart` respawns the subprocess without exiting the TUI, so
+rather than make the user type `/restart` by hand, this modal offers to run
+that restart immediately while leaving deferral one keypress away. The title
+`verb` and `body` are caller-supplied so one modal serves each flow.
 """
 
 from __future__ import annotations
@@ -28,7 +30,10 @@ RestartChoice = Literal["restart", "later"]
 
 
 class RestartPromptScreen(ModalScreen[RestartChoice]):
-    """Modal asking whether to restart the server after a successful install.
+    """Modal asking whether to restart the server for a spawn-time change.
+
+    Serves both the post-install offer and the post-`/auth` web-search offer;
+    the caller supplies the title `verb` and `body` copy.
 
     Dismisses with `"restart"` when the user accepts and `"later"` when the
     user defers. Esc is treated as "later" so the user is never forced into a
@@ -81,7 +86,7 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
         self,
         label: str,
         *,
-        verb: str = "Installed",
+        verb: str,
         body: str | None = None,
     ) -> None:
         """Initialize the prompt.
@@ -89,11 +94,12 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
         Args:
             label: The subject surfaced in the title (e.g. an installed extra
                 name, or a saved credential like ``"Tavily API key"``).
-            verb: Past-tense action shown before `label` in the title. Defaults
-                to `"Installed"` for the post-install flow; callers that saved a
-                key rather than installed a package can pass e.g. `"Saved"`.
+            verb: Past-tense action shown before `label` in the title — e.g.
+                `"Installed"` for the post-install flow or `"Saved"` for a
+                saved credential. Required (no default) so each flow states its
+                own intent and a future caller can't inherit install-only copy.
             body: Optional override for the explanatory line under the title.
-                Defaults to the post-install copy.
+                Defaults to the generic restart copy.
         """
         super().__init__()
         self._label = label

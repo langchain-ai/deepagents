@@ -118,6 +118,60 @@ def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> N
         assert parsed_args.auto_approve is True
 
 
+class TestAutoApproveArgument:
+    """Tests for -y / --auto-approve parsing and its config.toml default."""
+
+    def test_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing -y sets auto_approve to True."""
+        with mock_argv("-y"):
+            assert parse_args().auto_approve is True
+
+    def test_long_flag_sets_true(self, mock_argv: MockArgvType) -> None:
+        """Passing --auto-approve sets auto_approve to True."""
+        with mock_argv("--auto-approve"):
+            assert parse_args().auto_approve is True
+
+    def test_omitted_is_none(self, mock_argv: MockArgvType) -> None:
+        """Omitting the flag leaves auto_approve as None so config.toml decides."""
+        with mock_argv():
+            assert parse_args().auto_approve is None
+
+
+class TestResolveAutoApprove:
+    """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
+
+    def test_explicit_flag_wins_without_consulting_config(self) -> None:
+        """An explicit -y (True) resolves True and never reads config."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=True)
+        with patch("deepagents_code.model_config.load_startup_mode") as mock_load:
+            assert _resolve_auto_approve(args) is True
+        mock_load.assert_not_called()
+
+    def test_omitted_flag_manual_config_resolves_false(self) -> None:
+        """No flag + `[startup].mode = manual` keeps approvals on (False)."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="manual",
+        ):
+            assert _resolve_auto_approve(args) is False
+
+    def test_omitted_flag_dangerously_auto_config_resolves_true(self) -> None:
+        """No flag + `[startup].mode = dangerously-auto` auto-approves (True)."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="dangerously-auto",
+        ):
+            assert _resolve_auto_approve(args) is True
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [
@@ -1937,6 +1991,7 @@ class TestInstallExtraSubcommand:
         assert code == 0
         text = self._printed_text(console_mock)
         assert "Installed extra 'quickjs'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_failure_renders_log_path_and_manual_command(self) -> None:
         """A failed install surfaces both the log path and manual script command."""
@@ -2106,6 +2161,7 @@ class TestInstallPackageSubcommand:
         perform_mock.assert_awaited_once()
         text = self._printed_text(console_mock)
         assert "Installed package 'langchain-custom'" in text
+        assert "tail -f /tmp/deepagents-install.log" in text
 
     def test_package_non_interactive_without_yes_refuses(self) -> None:
         """Non-TTY stdin + no --yes must exit 2 without installing."""

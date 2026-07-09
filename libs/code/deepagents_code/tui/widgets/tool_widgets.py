@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from textual.containers import Vertical
@@ -18,6 +19,23 @@ _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
+
+
+def format_display_content(content: object) -> str:
+    """Coerce arbitrary tool-arg content into a displayable string.
+
+    Strings pass through unchanged; other values are JSON-formatted for
+    readability, falling back to `str()` when serialization fails.
+
+    Returns:
+        A string safe to render in an approval widget.
+    """
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError, RecursionError):
+        return str(content)
 
 
 def _format_stats(additions: int, deletions: int) -> Content:
@@ -142,7 +160,7 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
             Widgets displaying file path header and syntax-highlighted content.
         """
         file_path = self.data.get("file_path", "")
-        content = self.data.get("content", "")
+        content = format_display_content(self.data.get("content", ""))
         file_extension = self.data.get("file_extension", "text")
 
         # Content with syntax highlighting via Markdown code block
@@ -175,8 +193,8 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         """
         file_path = self.data.get("file_path", "")
         diff_lines = self.data.get("diff_lines", [])
-        old_string = self.data.get("old_string", "")
-        new_string = self.data.get("new_string", "")
+        old_string = format_display_content(self.data.get("old_string", ""))
+        new_string = format_display_content(self.data.get("new_string", ""))
 
         additions, deletions = _count_diff_stats(diff_lines, old_string, new_string)
         yield from _file_header(file_path, additions, deletions)

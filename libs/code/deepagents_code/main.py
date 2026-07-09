@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import shlex
 import shutil
 import sys
 import traceback
@@ -38,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def _tail_log_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file."""
+    return f"tail -f {shlex.quote(str(log_path))}"
 
 
 def build_version_text() -> str:
@@ -371,7 +377,7 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         log_path = create_update_log_path()
         console.print(
-            f"Progress: tail -f {log_path}",
+            f"Update log: {_tail_log_command(log_path)}",
             style="dim",
             highlight=False,
             markup=False,
@@ -595,6 +601,27 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return whether tool calls should be auto-approved for these CLI args.
+
+    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
+    (`args.auto_approve is None`), the persistent `[startup].mode` config
+    default decides — `dangerously-auto` enables auto-approval, anything else
+    (including missing/invalid config) keeps human-in-the-loop approvals on.
+
+    Extracted from the `cli_main` body so it is unit-testable without
+    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    """
+    if args.auto_approve is not None:
+        return args.auto_approve
+    from deepagents_code.model_config import (
+        STARTUP_MODE_DANGEROUSLY_AUTO,
+        load_startup_mode,
+    )
+
+    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+
+
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     """Warn that a remote sandbox suppressed the otherwise-default interpreter.
 
@@ -742,7 +769,7 @@ def check_cli_dependencies() -> None:
 
     if missing:
         print("\nMissing required dependencies!")  # noqa: T201  # App output for missing dependencies
-        print("\nThe following packages are required to use Deep Agents Code:")  # noqa: T201  # App output for missing dependencies
+        print("\nThe following packages are required to use dcode:")  # noqa: T201  # App output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
         print("\nReinstall dcode with the recommended installer:")  # noqa: T201  # CLI output for missing dependencies
@@ -876,6 +903,7 @@ def _auto_install_ripgrep_cli(
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
+        ManagedToolUnavailableError,
         ensure_ripgrep,
         managed_rg_path,
         prepend_managed_bin_to_path,
@@ -892,6 +920,10 @@ def _auto_install_ripgrep_cli(
             "[bold red]Error:[/bold red] ripgrep auto-install aborted: downloaded "
             "archive failed SHA-256 verification. Refusing to install."
         )
+        return missing_tools
+    except ManagedToolUnavailableError as exc:
+        logger.info("ripgrep auto-install unavailable: %s", exc.reason)
+        warn_console.print(f"[yellow]Warning:[/yellow] {exc.message}")
         return missing_tools
     except Exception:
         logger.warning("ripgrep auto-install failed unexpectedly", exc_info=True)
@@ -1605,11 +1637,14 @@ def parse_args() -> argparse.Namespace:
         "-y",
         "--auto-approve",
         action="store_true",
+        default=None,
         help=(
             "Auto-approve all tool calls without prompting "
             "(disables human-in-the-loop). Affected tools: shell "
             "execution, file writes/edits, web search, and URL fetch. "
-            "Use with caution — the agent can execute arbitrary commands."
+            "Use with caution — the agent can execute arbitrary commands. "
+            "When omitted, the launch default comes from [startup].mode in "
+            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
         ),
     )
 
@@ -2973,7 +3008,7 @@ def cli_main() -> None:
                     sys.exit(0)
                 log_path = create_update_log_path()
                 console.print(
-                    f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+                    f"Update log: {_tail_log_command(log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3070,7 +3105,7 @@ def cli_main() -> None:
                 # so confirm before pulling third-party code into the tool env.
                 console.print(
                     f"This will install the package '{escape(package)}' into "
-                    "the Deep Agents Code environment (this runs third-party "
+                    "the dcode environment (this runs third-party "
                     "code).",
                     highlight=False,
                 )
@@ -3094,8 +3129,7 @@ def cli_main() -> None:
                 console.print(f"Installing package '{package}'...")
                 pkg_log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {pkg_log_path}\n"
-                    f"Tail progress: tail -f {pkg_log_path}",
+                    f"Install log: {_tail_log_command(pkg_log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3205,7 +3239,7 @@ def cli_main() -> None:
                 console.print(f"Installing extra '{extra}'...")
                 log_path = create_update_log_path()
                 console.print(
-                    f"Install log: {log_path}\nTail progress: tail -f {log_path}",
+                    f"Install log: {_tail_log_command(log_path)}",
                     style="dim",
                     highlight=False,
                     markup=False,
@@ -3634,10 +3668,14 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
+                # An explicit -y/--auto-approve wins; otherwise the persistent
+                # [startup].mode config default decides the launch mode.
+                auto_approve = _resolve_auto_approve(args)
+
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=args.auto_approve,
+                        auto_approve=auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,

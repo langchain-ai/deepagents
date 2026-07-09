@@ -7,6 +7,7 @@ of relying on direct visual input from the chat model.
 """
 
 from deepagents.profiles.harness._fireworks_glm_5p2_middleware import (
+    AdherenceGateMiddleware,
     MediaGuardMiddleware,
 )
 from deepagents.profiles.harness.harness_profiles import (
@@ -134,23 +135,16 @@ meets the stated bar.
 """Text appended to the assembled base system prompt."""
 
 
-def _build_extra_middleware() -> list[MediaGuardMiddleware]:
-    """Build fresh GLM-5.2 behavioral middleware for each assembled agent stack.
-
-    Only the media guard is wired (rewrites non-text `read_file` results to a text
-    notice, since GLM-5.2 is text-only). AdherenceGate / Finalize / Ramble stay
-    unwired (their classes remain defined for easy re-enabling). A fresh instance
-    per stack avoids sharing per-run flags across stacks.
-    """
-    return [MediaGuardMiddleware()]
+def _build_extra_middleware() -> list[AdherenceGateMiddleware | MediaGuardMiddleware]:
+    """Build fresh GLM-5.2 behavioral middleware (adherence gate + media guard) per stack."""
+    return [AdherenceGateMiddleware(), MediaGuardMiddleware()]
 
 
 def register() -> None:
     """Register the built-in GLM-5.2 harness profile.
 
-    Wires the system-prompt suffix plus ``MediaGuardMiddleware`` (a text-only media
-    guard for ``read_file``). AdherenceGate / Finalize / Ramble remain intentionally
-    unwired.
+    Wires the system-prompt suffix plus ``AdherenceGateMiddleware`` and
+    ``MediaGuardMiddleware``. Finalize / Ramble remain intentionally unwired.
     """
     _register_harness_profile_impl(
         "fireworks:accounts/fireworks/models/glm-5p2",

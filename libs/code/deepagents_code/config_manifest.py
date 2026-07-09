@@ -487,7 +487,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
     elif kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES
 
-        if raw in VALID_STARTUP_MODES:
+        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
             "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",

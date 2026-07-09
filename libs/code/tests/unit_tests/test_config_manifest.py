@@ -1473,6 +1473,14 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
         value, source = resolve_scalar(opt, toml_data={"startup": {"mode": "yolo"}})
     assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
     assert any("[startup].mode='yolo'" in r.getMessage() for r in caplog.records)
+
+    for raw in (["manual"], {"name": "manual"}):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            value, source = resolve_scalar(opt, toml_data={"startup": {"mode": raw}})
+        assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
+        assert any("[startup].mode" in r.getMessage() for r in caplog.records)
+
     assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 

@@ -1884,7 +1884,7 @@ def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) ->
     # Create agent with skills parameter and FilesystemBackend
     agent = create_deep_agent(
         backend=backend,
-        skills=[str(skills_dir)],
+        skills=[(str(skills_dir), "Plugin", "plugin:")],
         model=GenericFakeChatModel(messages=iter([AIMessage(content="I see the test-skill in the system prompt.")])),
     )
 

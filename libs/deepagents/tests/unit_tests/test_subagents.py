@@ -2626,7 +2626,7 @@ class TestSubAgents:
                     system_prompt="You are a custom worker with skills.",
                     model=custom_subagent_model,
                     tools=[capture_subagent_state],
-                    skills=[str(skills_dir)],  # Custom subagent with skills
+                    skills=[(str(skills_dir), "Plugin", "plugin:")],
                 )
             ],
         )
@@ -2646,7 +2646,7 @@ class TestSubAgents:
         # Verify the skill name is in the skills_metadata
         skills_metadata = subagent_state["skills_metadata"]
         skill_names = [s["name"] for s in skills_metadata]
-        assert "custom-skill" in skill_names, f"Custom subagent should have 'custom-skill' in skills_metadata. Found skills: {skill_names}"
+        assert "plugin:custom-skill" in skill_names
 
     def test_custom_subagent_with_skills_multiple_sources(self, tmp_path: Path) -> None:
         """Test that a custom SubAgent with multiple skill sources loads skills with proper override.

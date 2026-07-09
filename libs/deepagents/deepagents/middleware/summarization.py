@@ -411,9 +411,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
 
         if is_base64:
             if _estimated_base64_decoded_size(payload) > _MAX_INLINE_MEDIA_BYTES:
-                logger.warning(
-                    "Skipping oversized base64 media block while offloading conversation history"
-                )
+                logger.warning("Skipping oversized base64 media block while offloading conversation history")
                 return None
             raw = base64.b64decode(payload.strip(), validate=True)
         else:
@@ -421,9 +419,7 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
             # expansion for percent-encoded bytes but reject clearly unbounded
             # inline data before allocating the decoded bytes.
             if len(payload) > _MAX_INLINE_MEDIA_BYTES * 3:
-                logger.warning(
-                    "Skipping oversized data URL media block while offloading conversation history"
-                )
+                logger.warning("Skipping oversized data URL media block while offloading conversation history")
                 return None
             raw = urllib.parse.unquote_to_bytes(payload)
 

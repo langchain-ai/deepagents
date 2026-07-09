@@ -4750,6 +4750,8 @@ class TestDetectProvider:
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("accounts/fireworks/models/kimi-k2p7-code", "fireworks"),
+            ("Accounts/Fireworks/Models/Kimi-K2P7-Code", "fireworks"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

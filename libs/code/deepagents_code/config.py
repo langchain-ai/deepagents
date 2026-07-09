@@ -3796,8 +3796,8 @@ def detect_provider(model_name: str) -> str | None:
 
     Returns:
         Provider name (openai, anthropic, google_genai, google_vertexai,
-            nvidia) or `None` if the provider cannot be determined from the
-            name alone.
+            nvidia, fireworks) or `None` if the provider cannot be determined
+            from the name alone.
     """
     model_lower = model_name.lower()
 
@@ -3818,6 +3818,15 @@ def detect_provider(model_name: str) -> str | None:
 
     if model_lower.startswith(("nemotron", "nvidia/")):
         return "nvidia"
+
+    # Fireworks models use fully-qualified IDs like
+    # `accounts/fireworks/models/<name>`. `init_chat_model` can infer the
+    # provider from this prefix, but the inferred name is not exposed on the
+    # returned model, so resolving it here keeps the provider visible to the
+    # `/model` confirmation, the status bar, and the early credential check
+    # instead of leaving the raw ID unprefixed.
+    if model_lower.startswith("accounts/fireworks/"):
+        return "fireworks"
 
     return None
 

@@ -10,6 +10,7 @@ from deepagents_code.plugins.discovery import (
     install_plugin,
     list_available_plugins,
     list_installed_plugin_ids,
+    remove_marketplace,
     uninstall_plugin,
 )
 from deepagents_code.plugins.models import PluginDiscoveryResult, PluginInstance
@@ -26,5 +27,6 @@ __all__ = [
     "install_plugin",
     "list_available_plugins",
     "list_installed_plugin_ids",
+    "remove_marketplace",
     "uninstall_plugin",
 ]

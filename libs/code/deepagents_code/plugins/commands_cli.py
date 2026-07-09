@@ -14,6 +14,7 @@ from deepagents_code.plugins import (
     enable_plugin,
     install_plugin,
     list_available_plugins,
+    remove_marketplace,
     uninstall_plugin,
 )
 from deepagents_code.plugins.marketplace import MarketplaceError
@@ -93,6 +94,10 @@ def setup_plugin_parser(
     marketplace_add = marketplace_sub.add_parser("add", help="Add a marketplace")
     marketplace_add.add_argument("source")
     marketplace_add.add_argument("--enable-all", action="store_true")
+    marketplace_remove = marketplace_sub.add_parser(
+        "remove", help="Remove a marketplace and uninstall its plugins"
+    )
+    marketplace_remove.add_argument("name")
     return parser
 
 
@@ -216,6 +221,15 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
                 text += f" Installed: {', '.join(installed)}."
             if failed:
                 text += f" Failed to install: {'; '.join(failed)}."
+            print(text)  # noqa: T201
+            return text
+        if marketplace_command == "remove":
+            removed = remove_marketplace(args.name)
+            text = (
+                f"Removed marketplace {args.name} and its installed plugins."
+                if removed
+                else f"Marketplace {args.name} is not configured."
+            )
             print(text)  # noqa: T201
             return text
     text = "Usage: plugin {list,install,uninstall,enable,disable,marketplace}"

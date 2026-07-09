@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from deepagents_code.plugins.manifest import (
@@ -34,7 +35,9 @@ from deepagents_code.plugins.store import (
     load_enabled_plugins,
     load_installed_plugins,
     load_marketplace_records,
+    marketplace_cache_dir,
     plugin_data_dir,
+    remove_marketplace_record,
     save_marketplace_record,
     set_plugin_enabled,
     uninstall_plugin as uninstall_plugin_record,
@@ -116,6 +119,38 @@ def add_marketplace_source(raw: str) -> PluginMarketplace:
         )
     )
     return marketplace
+
+
+def remove_marketplace(name: str) -> bool:
+    """Remove a marketplace and every plugin installed from it.
+
+    Local marketplace source directories are never deleted. Managed marketplace
+    clones and installed plugin caches are removed.
+
+    Args:
+        name: Marketplace name.
+
+    Returns:
+        `True` when a configured marketplace was removed.
+    """
+    record = load_marketplace_records().get(name)
+    if record is None:
+        return False
+
+    for plugin_id in tuple(load_installed_plugins()):
+        if plugin_id.endswith(f"@{name}"):
+            uninstall_plugin(plugin_id)
+
+    removed = remove_marketplace_record(name)
+    location = Path(record.install_location)
+    try:
+        resolved = location.resolve()
+        cache_root = marketplace_cache_dir().resolve()
+    except OSError:
+        return removed
+    if resolved.is_relative_to(cache_root) and resolved.is_dir():
+        shutil.rmtree(resolved, ignore_errors=True)
+    return removed
 
 
 def enable_plugin(plugin_id: str) -> None:

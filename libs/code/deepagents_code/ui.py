@@ -396,6 +396,7 @@ def show_plugins_help() -> None:
     console.print("  disable <id>                 Disable a plugin")
     console.print("  marketplace list|ls          List configured marketplaces")
     console.print("  marketplace add <source>     Add a marketplace source")
+    console.print("  marketplace remove <name>    Remove a marketplace and its plugins")
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode plugin list")

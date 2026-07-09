@@ -139,7 +139,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="plugin marketplace skills mcp enable disable install",
         argument_hint=(
             "[list|install <id>|uninstall <id>|marketplace add <path>|"
-            "enable <id>|disable <id>]"
+            "marketplace remove <name>|enable <id>|disable <id>]"
         ),
     ),
     SlashCommand(

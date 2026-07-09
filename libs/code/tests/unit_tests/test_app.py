@@ -19590,6 +19590,10 @@ class TestMCPLoginCommand:
 
             prompt.assert_awaited_once_with("notion")
             restart.assert_not_called()
+            assert any(
+                "Logged in to 'notion'." in str(w._content)
+                for w in app.query(AppMessage)
+            )
 
     async def test_prompt_mcp_reconnect_restart_choice_restarts(self) -> None:
         """Choosing `reconnect` triggers `_restart_server_for_mcp_refresh`."""

@@ -51,7 +51,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware, SkillSource
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
@@ -363,7 +363,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | SystemPromptConfig | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
-    skills: list[str] | None = None,
+    skills: list[SkillSource] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
@@ -526,7 +526,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             — the `task` tool is not exposed. Async subagents are independent.
 
-        skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
+        skills: List of skill sources.
 
             Paths must be specified using POSIX conventions (forward slashes)
             and are relative to the backend's root. When using
@@ -534,6 +534,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `invoke(files={...})`. With `FilesystemBackend`, skills are loaded
             from disk relative to the backend's `root_dir`. Later sources
             override earlier ones for skills with the same name (last one wins).
+            Each source can be a path, a `(path, label)` tuple, or a
+            `(path, label, name_prefix)` tuple.
         memory: List of memory file paths (`AGENTS.md` files) to load
             (e.g., `["/memory/AGENTS.md"]`).
 

@@ -5928,3 +5928,23 @@ class TestLoadStartupMode:
         config = tmp_path / "config.toml"
         config.write_text("startup = 'oops'\n")
         assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_non_scalar_mode_returns_default(self, tmp_path: Path) -> None:
+        """A non-string `mode` (e.g. array) falls back instead of raising.
+
+        `value in VALID_STARTUP_MODES` (a frozenset) would raise `TypeError:
+        unhashable type` on a list/dict; the isinstance guard must prevent that.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = ['dangerously-auto']\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_unparseable_file_returns_default(self, tmp_path: Path) -> None:
+        """Syntactically invalid TOML is swallowed and falls back to default.
+
+        Exercises the `except (OSError, tomllib.TOMLDecodeError)` branch, which
+        must fail closed (to `manual`) rather than propagate and abort startup.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("this is not valid toml [[[\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL

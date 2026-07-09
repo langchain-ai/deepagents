@@ -3564,7 +3564,7 @@ VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_A
 """Accepted values for the `[startup].mode` config option."""
 
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
-"""Fallback startup mode when `[startup].mode` is unset or invalid."""
+"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
 
 
 def load_startup_mode(config_path: Path | None = None) -> str:
@@ -3590,7 +3590,10 @@ def load_startup_mode(config_path: Path | None = None) -> str:
             data = tomllib.load(f)
         startup = data.get("startup")
         value = startup.get("mode") if isinstance(startup, dict) else None
-        if value in VALID_STARTUP_MODES:
+        # `value` may be any TOML type; guard against non-strings (e.g. an
+        # array or table) before the frozenset membership test, which would
+        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
         if value is not None:
             logger.warning(

@@ -32,7 +32,7 @@ from deepagents_code.config_manifest import (
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
-from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
 # PyPI/DNS work. This module checks whether update settings came from the env,
@@ -1449,25 +1449,31 @@ def test_resolve_toml_str_success_and_type_mismatch(caplog) -> None:
 
 
 def test_startup_mode_option_definition() -> None:
-    """`startup.mode` is a config.toml-only string option defaulting to 'manual'."""
+    """`startup.mode` is config.toml-only and uses runtime mode validation."""
     opt = get_option("startup.mode")
     assert opt is not None
     assert opt.group == "Startup"
-    assert opt.kind is OptionKind.STR
-    assert opt.default == "manual"
+    assert opt.kind is OptionKind.STARTUP_MODE_DELEGATE
+    assert opt.default == DEFAULT_STARTUP_MODE
     assert opt.toml_keys == ("startup", "mode")
     assert opt.env_var is None
 
 
-def test_resolve_startup_mode_from_toml() -> None:
-    """`startup.mode` resolves from config.toml and falls back to its default."""
+def test_resolve_startup_mode_from_toml(caplog) -> None:
+    """`startup.mode` resolves only valid runtime modes from config.toml."""
+    import logging
+
     opt = get_option("startup.mode")
     assert opt is not None
     assert resolve_scalar(opt, toml_data={"startup": {"mode": "dangerously-auto"}}) == (
         "dangerously-auto",
         "config.toml",
     )
-    assert resolve_scalar(opt, toml_data={}) == ("manual", "default")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={"startup": {"mode": "yolo"}})
+    assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
+    assert any("[startup].mode='yolo'" in r.getMessage() for r in caplog.records)
+    assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
 def test_resolve_toml_float_success_non_bool() -> None:

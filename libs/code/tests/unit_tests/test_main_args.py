@@ -137,6 +137,41 @@ class TestAutoApproveArgument:
             assert parse_args().auto_approve is None
 
 
+class TestResolveAutoApprove:
+    """Tests for `_resolve_auto_approve` (flag vs. `[startup].mode` precedence)."""
+
+    def test_explicit_flag_wins_without_consulting_config(self) -> None:
+        """An explicit -y (True) resolves True and never reads config."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=True)
+        with patch("deepagents_code.model_config.load_startup_mode") as mock_load:
+            assert _resolve_auto_approve(args) is True
+        mock_load.assert_not_called()
+
+    def test_omitted_flag_manual_config_resolves_false(self) -> None:
+        """No flag + `[startup].mode = manual` keeps approvals on (False)."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="manual",
+        ):
+            assert _resolve_auto_approve(args) is False
+
+    def test_omitted_flag_dangerously_auto_config_resolves_true(self) -> None:
+        """No flag + `[startup].mode = dangerously-auto` auto-approves (True)."""
+        from deepagents_code.main import _resolve_auto_approve
+
+        args = argparse.Namespace(auto_approve=None)
+        with patch(
+            "deepagents_code.model_config.load_startup_mode",
+            return_value="dangerously-auto",
+        ):
+            assert _resolve_auto_approve(args) is True
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [

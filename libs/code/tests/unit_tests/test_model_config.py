@@ -46,6 +46,7 @@ from deepagents_code.model_config import (
     load_recent_agent,
     load_recent_models,
     load_thread_columns,
+    normalize_mcp_project_root,
     save_default_agent,
     save_recent_agent,
     save_recent_model,
@@ -5248,6 +5249,263 @@ class TestMcpServerTrustLists:
         assert McpServerTrustLists(
             frozenset(), frozenset(), read_error="boom"
         ).load_failed
+
+
+class TestFingerprintMcpServerConfig:
+    """Independent oracle for the definition fingerprint.
+
+    Every trust round-trip test builds its expected TOML with
+    `fingerprint_mcp_server_config`, so those tests are self-referential: a
+    regression that narrowed the fingerprint (e.g. hashing only `command`) would
+    pass all of them. These pin the field-completeness and canonicalization
+    contract directly, since a narrowed fingerprint is a silent security
+    downgrade — an attacker could keep an approved name while mutating `args`,
+    `env`, or `headers`.
+    """
+
+    def test_prefix_and_stability(self) -> None:
+        """Same definition yields the same `sha256:`-prefixed digest."""
+        server = {"command": "echo", "args": ["hi"]}
+
+        first = fingerprint_mcp_server_config(server)
+
+        assert first.startswith("sha256:")
+        assert first == fingerprint_mcp_server_config(dict(server))
+
+    def test_key_order_does_not_matter(self) -> None:
+        """`sort_keys=True` makes the digest independent of key order."""
+        assert fingerprint_mcp_server_config(
+            {"command": "echo", "args": []}
+        ) == fingerprint_mcp_server_config({"args": [], "command": "echo"})
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            (
+                {"command": "echo", "args": []},
+                {"command": "echo", "args": ["--exfiltrate"]},
+            ),
+            (
+                {"command": "echo", "env": {}},
+                {"command": "echo", "env": {"TOKEN": "x"}},
+            ),
+            (
+                {"url": "https://a", "headers": {}},
+                {"url": "https://a", "headers": {"Authorization": "Bearer x"}},
+            ),
+            (
+                {"url": "https://a"},
+                {"url": "https://b"},
+            ),
+        ],
+    )
+    def test_any_field_change_changes_fingerprint(
+        self, a: dict[str, object], b: dict[str, object]
+    ) -> None:
+        """Mutating `args`, `env`, `headers`, or `url` re-prompts (new digest)."""
+        assert fingerprint_mcp_server_config(a) != fingerprint_mcp_server_config(b)
+
+
+class TestNormalizeMcpProjectRoot:
+    """Tests for normalize_mcp_project_root()."""
+
+    def test_none_returns_none(self) -> None:
+        """`None` in yields `None` out (the "unavailable" signal)."""
+        assert normalize_mcp_project_root(None) is None
+
+    def test_expands_user_and_returns_absolute(self) -> None:
+        """`~` is expanded and the result is absolute, never left literal."""
+        result = normalize_mcp_project_root("~/some-project")
+
+        assert result is not None
+        assert "~" not in result
+        assert Path(result).is_absolute()
+
+    def test_relative_path_is_made_absolute(self) -> None:
+        """A relative input is resolved to an absolute path."""
+        result = normalize_mcp_project_root("some/rel/project")
+
+        assert result is not None
+        assert Path(result).is_absolute()
+
+    def test_symlink_resolves_to_target(self, tmp_path: Path) -> None:
+        """A symlinked root and its target normalize to the same string.
+
+        Root matching is exact-string over normalized output, so write-side and
+        read-side must agree whether the path is reached via a link or directly.
+        """
+        target = tmp_path / "real"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
+
+        assert normalize_mcp_project_root(link) == normalize_mcp_project_root(target)
+
+
+class TestMcpProjectServerApproval:
+    """Tests for the approval value object and its normalizing factory."""
+
+    def test_rejects_empty_fields(self) -> None:
+        """A degenerate approval cannot be constructed (unrepresentable state).
+
+        An empty field can only ever equal a malformed peer, so the constructor
+        forbids it rather than let a never-matching approval persist.
+        """
+        with pytest.raises(ValueError, match="non-empty"):
+            McpProjectServerApproval(project_root="", name="n", fingerprint="f")
+        with pytest.raises(ValueError, match="non-empty"):
+            McpProjectServerApproval(project_root="/p", name="  ", fingerprint="f")
+
+    def test_create_normalizes_and_fingerprints(self, tmp_path: Path) -> None:
+        """`create` matches the root normalization and fingerprint of the loader."""
+        server = {"command": "echo", "args": []}
+
+        approval = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+
+        assert approval == McpProjectServerApproval(
+            project_root=normalize_mcp_project_root(tmp_path / "proj") or "",
+            name="docs",
+            fingerprint=fingerprint_mcp_server_config(server),
+        )
+
+    def test_create_returns_none_for_unavailable_root(self) -> None:
+        """`create` returns `None` (not a bad approval) when the root is `None`."""
+        assert (
+            McpProjectServerApproval.create(
+                project_root=None, name="docs", server={"command": "echo"}
+            )
+            is None
+        )
+
+
+class TestMcpServerTrustListsIsEnabled:
+    """Direct tests of the per-server trust decision (`is_enabled`).
+
+    The consumers only reach `is_enabled` transitively, so these pin the
+    contract branches directly: name/root/fingerprint scoping, the
+    project-agnostic env allowlist, and the disabled short-circuit.
+    """
+
+    @staticmethod
+    def _server() -> dict[str, object]:
+        return {"command": "echo", "args": ["run"]}
+
+    def _approval_for(self, root: Path, name: str) -> McpProjectServerApproval:
+        approval = McpProjectServerApproval.create(
+            project_root=root, name=name, server=self._server()
+        )
+        assert approval is not None
+        return approval
+
+    def test_exact_scoped_match_is_enabled(self, tmp_path: Path) -> None:
+        """Matching name, root, and fingerprint together approve the server."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert lists.is_enabled("docs", project_root=tmp_path, server=self._server())
+
+    def test_different_project_root_not_enabled(self, tmp_path: Path) -> None:
+        """An approval for one repo does not carry to another."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path / "a", "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            "docs", project_root=tmp_path / "b", server=self._server()
+        )
+
+    def test_changed_definition_not_enabled(self, tmp_path: Path) -> None:
+        """A changed server definition (new fingerprint) re-prompts."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            "docs",
+            project_root=tmp_path,
+            server={"command": "echo", "args": ["--exfiltrate"]},
+        )
+
+    def test_env_enabled_is_project_agnostic(self, tmp_path: Path) -> None:
+        """An env-enabled name matches any project, even with no root at all."""
+        lists = McpServerTrustLists(enabled=frozenset({"docs"}), disabled=frozenset())
+
+        assert lists.is_enabled("docs", project_root=None, server=self._server())
+        assert lists.is_enabled(
+            "docs", project_root=tmp_path / "anywhere", server=self._server()
+        )
+
+    def test_disabled_name_never_enabled(self, tmp_path: Path) -> None:
+        """A disabled name is rejected regardless of approvals/env."""
+        lists = McpServerTrustLists(enabled=frozenset(), disabled=frozenset({"docs"}))
+
+        assert not lists.is_enabled(
+            "docs", project_root=tmp_path, server=self._server()
+        )
+
+    def test_scoped_approval_needs_a_root(self, tmp_path: Path) -> None:
+        """A scoped approval cannot match when the caller has no project root."""
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled("docs", project_root=None, server=self._server())
+
+
+class TestLoadMcpServerApprovalsParsing:
+    """Fail-closed parsing of `[mcp].enabled_project_server_approvals`.
+
+    Dropping a malformed entry only reduces trust, but the real hazard is a
+    regression that *accepts* an entry missing a fingerprint — silently
+    degrading definition-bound scoping to name+root matching. These pin the drop.
+    """
+
+    def test_non_list_value_yields_no_approvals(self, tmp_path: Path) -> None:
+        """A scalar (wrong-typed) approvals value degrades to no approvals."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_server_approvals = "nope"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset()
+
+    def test_malformed_entries_are_dropped(self, tmp_path: Path) -> None:
+        """Non-table and fingerprint-less entries drop; well-formed ones survive."""
+        config_path = tmp_path / "config.toml"
+        project_root = str(tmp_path / "project")
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = [\n"
+            '  "not-a-table",\n'
+            f'  {{ project_root = "{project_root}", name = "missing-fp" }},\n'
+            f'  {{ project_root = "{project_root}", name = "good", '
+            f'fingerprint = "{fingerprint}" }},\n'
+            "]\n"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset(
+            {
+                McpProjectServerApproval(
+                    project_root=project_root,
+                    name="good",
+                    fingerprint=fingerprint,
+                )
+            }
+        )
 
 
 class TestLoadMcpServerTrustLists:

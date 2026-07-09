@@ -44,6 +44,26 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS = (
+    "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+)
+"""Comma-separated project MCP server names to dangerously pre-approve by name.
+
+This is an explicit process-wide escape hatch. Servers named here load from an
+otherwise-untrusted project `.mcp.json` without prompting (they are omitted from
+the interactive approval prompt), while non-listed servers stay dropped. Like
+`DISABLED_PROJECT_MCP_SERVERS`, this is user-controlled process env, not a repo
+file, so it does not weaken the user-level-only trust boundary (a committed
+*project* `.env` cannot set it; see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
+This dangerous contract is name-based: a different project, command change, or
+URL change under the same server name still matches.
+
+When set, this replaces (takes precedence over) the scoped
+`[mcp].enabled_project_server_approvals` TOML approvals.
+(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
+is never silently emptied.)
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -108,26 +128,6 @@ process env the user controls, not a repo file, so it does not weaken the
 user-level-only trust boundary: a committed *project* `.env` is blocked from
 setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
 shell, launch env, or global `~/.deepagents/.env` can.
-"""
-
-DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS = (
-    "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
-)
-"""Comma-separated project MCP server names to dangerously pre-approve by name.
-
-This is an explicit process-wide escape hatch. Servers named here load from an
-otherwise-untrusted project `.mcp.json` without prompting (they are omitted from
-the interactive approval prompt), while non-listed servers stay dropped. Like
-`DISABLED_PROJECT_MCP_SERVERS`, this is user-controlled process env, not a repo
-file, so it does not weaken the user-level-only trust boundary (a committed
-*project* `.env` cannot set it; see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
-This dangerous contract is name-based: a different project, command change, or
-URL change under the same server name still matches.
-
-When set, this replaces (takes precedence over) the scoped
-`[mcp].enabled_project_server_approvals` TOML approvals.
-(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
-is never silently emptied.)
 """
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"

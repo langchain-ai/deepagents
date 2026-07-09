@@ -3049,7 +3049,17 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
 
 @dataclass(frozen=True, order=True)
 class McpProjectServerApproval:
-    """A project-scoped, definition-bound MCP server approval."""
+    """A project-scoped, definition-bound MCP server approval.
+
+    Membership in a `McpServerTrustLists.approvals` set *is* the trust decision
+    (`is_enabled` reconstructs an approval and tests `approval in approvals`), so
+    value equality on the three raw strings must line up between the write side
+    (`add_enabled_project_mcp_servers`) and the read side (`is_enabled`). Build
+    runtime approvals through `create`, never the raw constructor, so both sides
+    normalize the root and compute the fingerprint identically; the raw
+    constructor is reserved for deserializing already-computed fields from TOML.
+    `order=True` exists only so `sorted()` yields deterministic TOML output.
+    """
 
     project_root: str
     """Resolved project root that originated the approval."""
@@ -3059,6 +3069,50 @@ class McpProjectServerApproval:
 
     fingerprint: str
     """Fingerprint of the approved MCP server definition."""
+
+    def __post_init__(self) -> None:
+        """Reject degenerate approvals so a bad one can't silently never match.
+
+        An empty `project_root`, `name`, or `fingerprint` can only ever equal a
+        malformed peer, so forbid the state entirely rather than let it persist.
+
+        Raises:
+            ValueError: If any field is empty or whitespace-only.
+        """
+        if not (
+            self.project_root.strip() and self.name.strip() and self.fingerprint.strip()
+        ):
+            msg = (
+                "McpProjectServerApproval requires non-empty project_root, name, "
+                "and fingerprint"
+            )
+            raise ValueError(msg)
+
+    @classmethod
+    def create(
+        cls, *, project_root: str | Path | None, name: str, server: object
+    ) -> McpProjectServerApproval | None:
+        """Build an approval, normalizing the root and fingerprinting `server`.
+
+        The single construction path for runtime approvals, so the write and read
+        sides cannot drift on how the root is normalized or the server hashed.
+
+        Args:
+            project_root: Project root to normalize.
+            name: MCP server name.
+            server: Parsed MCP server definition to fingerprint.
+
+        Returns:
+            The approval, or `None` when `project_root` cannot be normalized.
+        """
+        normalized_root = normalize_mcp_project_root(project_root)
+        if normalized_root is None:
+            return None
+        return cls(
+            project_root=normalized_root,
+            name=name,
+            fingerprint=fingerprint_mcp_server_config(server),
+        )
 
     def as_toml(self) -> dict[str, str]:
         """Return a TOML-serializable representation."""
@@ -3076,7 +3130,11 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
         project_root: Project root path to normalize.
 
     Returns:
-        Resolved absolute project root string, or `None` when unavailable.
+        Resolved absolute project root string, or `None` when `project_root`
+            is `None`. On an `OSError` from `resolve()`, returns the expanded
+            but *unresolved* path as a fallback; a transient failure on only one
+            of the write/read sides then yields different strings and a spurious
+            re-prompt (fail-closed), never a false match.
     """
     if project_root is None:
         return None
@@ -3094,8 +3152,14 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
 def fingerprint_mcp_server_config(server: object) -> str:
     """Return a stable fingerprint for an MCP server definition.
 
+    Typed `object` because callers thread the server through as `object`, but
+    the contract is a JSON-serializable value (in practice the `dict` parsed
+    from `.mcp.json`); a non-serializable input raises `TypeError` from
+    `json.dumps`. `sort_keys=True` makes the digest independent of key order,
+    so reordering fields in the config does not force a re-prompt.
+
     Args:
-        server: Parsed MCP server config.
+        server: Parsed MCP server config (a JSON-serializable value).
 
     Returns:
         A SHA-256 fingerprint over the canonical JSON representation.
@@ -3146,11 +3210,11 @@ class McpServerTrustLists:
     equal to empty lists for tests that only care about the resolved names."""
 
     def __post_init__(self) -> None:
-        """Enforce reject precedence by removing disabled names from approvals.
+        """Enforce reject precedence by stripping disabled names from both sets.
 
-        A rejected name must never survive in any approval set, whatever the
-        caller passed, so a future allow-first consumer can't be tricked into
-        loading a denied server. Frozen dataclass, so assign via
+        A rejected name must never survive in `enabled` or `approvals`, whatever
+        the caller passed, so a future allow-first consumer can't be tricked
+        into loading a denied server. Frozen dataclass, so assign via
         `object.__setattr__`.
         """
         if self.enabled & self.disabled:
@@ -3199,14 +3263,11 @@ class McpServerTrustLists:
             return False
         if name in self.enabled:
             return True
-        normalized_root = normalize_mcp_project_root(project_root)
-        if normalized_root is None:
-            return False
-        approval = McpProjectServerApproval(
-            project_root=normalized_root,
-            name=name,
-            fingerprint=fingerprint_mcp_server_config(server),
+        approval = McpProjectServerApproval.create(
+            project_root=project_root, name=name, server=server
         )
+        if approval is None:
+            return False
         return approval in self.approvals
 
 
@@ -3529,13 +3590,15 @@ def add_enabled_project_mcp_servers(
         if name not in server_configs:
             logger.error("Cannot save unknown project MCP server %r", name)
             return False
-        approvals_to_add.append(
-            McpProjectServerApproval(
-                project_root=normalized_root,
-                name=name,
-                fingerprint=fingerprint_mcp_server_config(server_configs[name]),
-            )
+        approval = McpProjectServerApproval.create(
+            project_root=normalized_root, name=name, server=server_configs[name]
         )
+        if approval is None:
+            # normalized_root is already non-None here, so create cannot fail;
+            # guard anyway so a future change can't smuggle in a bad approval.
+            logger.error("Could not build approval for project MCP server %r", name)
+            return False
+        approvals_to_add.append(approval)
 
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3549,13 +3612,11 @@ def add_enabled_project_mcp_servers(
         mcp_section = data.get("mcp")
         if not isinstance(mcp_section, dict):
             mcp_section = {}
-        merged = _toml_project_server_approvals(
+        existing = _toml_project_server_approvals(
             mcp_section.get("enabled_project_server_approvals"),
             config_path=config_path,
         )
-        for approval in approvals_to_add:
-            if approval not in merged:
-                merged.append(approval)
+        merged = set(existing) | set(approvals_to_add)
         mcp_section["enabled_project_server_approvals"] = [
             approval.as_toml() for approval in sorted(merged)
         ]

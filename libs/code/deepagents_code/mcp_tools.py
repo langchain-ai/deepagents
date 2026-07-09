@@ -873,6 +873,44 @@ def project_root_for_mcp_config_path(
     return parent
 
 
+def filter_trusted_project_servers(
+    servers: Mapping[str, Any],
+    trust_lists: McpServerTrustLists,
+    *,
+    project_root: Path,
+    config_trusted: bool = False,
+) -> dict[str, Any]:
+    """Return only the project servers that survive the user's trust policy.
+
+    The single place the per-server trust rule lives, shared by the runtime
+    tool loader and the `mcp login` resolver so reject-precedence cannot drift
+    between them: a disabled name is dropped even from a `config_trusted`
+    config; otherwise a server is kept when the whole config is trusted or the
+    user's scoped approvals / env allowlist enable it (`is_enabled`).
+
+    Args:
+        servers: `mcpServers`-shaped mapping of name to definition.
+        trust_lists: The user's allow/deny policy.
+        project_root: Resolved project root owning `servers`, for scoped
+            fingerprint matching.
+        config_trusted: Whether the config as a whole is trusted (e.g.
+            `--trust-project-mcp`). Defaults to `False`.
+
+    Returns:
+        The kept subset of `servers`, in input order.
+    """
+    kept: dict[str, Any] = {}
+    for name, server in servers.items():
+        if name in trust_lists.disabled:
+            # Explicit reject always wins, even for a trusted config.
+            continue
+        if config_trusted or trust_lists.is_enabled(
+            name, project_root=project_root, server=server
+        ):
+            kept[name] = server
+    return kept
+
+
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
     ("~/.deepagents/.mcp.json", "user-level"),
     ("<project-root>/.deepagents/.mcp.json", "project subdir"),
@@ -2035,17 +2073,12 @@ async def resolve_and_load_mcp_tools(
         # controlled .mcp.json never reaches the preflight HEAD probe or the
         # `${VAR}` header interpolation during the discovery handshake.
         servers = config["mcpServers"]
-        kept: dict[str, Any] = {}
-        for name, server in servers.items():
-            if name in trust_lists.disabled:
-                # Explicit reject always wins, even for a trusted config.
-                continue
-            if config_trusted or trust_lists.is_enabled(
-                name,
-                project_root=project_root,
-                server=server,
-            ):
-                kept[name] = server
+        kept = filter_trusted_project_servers(
+            servers,
+            trust_lists,
+            project_root=project_root,
+            config_trusted=config_trusted,
+        )
         if kept:
             filtered = {**config, "mcpServers": kept}
             try:

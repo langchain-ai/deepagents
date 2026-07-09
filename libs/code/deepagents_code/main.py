@@ -2638,9 +2638,11 @@ def _check_mcp_project_trust(
     user-level config so they load only for this project and exact server
     definition), or "N" (deny).
 
-    Servers already resolved by the user's scoped approvals or
+    Servers already resolved by the user's scoped approvals, the
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
     `disabled_project_servers` list are not prompted for (approved ones load when
-    the project/fingerprint still matches; disabled ones never load).
+    the project/fingerprint still matches; env-enabled ones load by name; disabled
+    ones never load).
     `None` is returned when that leaves nothing to decide. If the user's own
     allow/deny policy cannot be read, returns `False` (fail closed) rather than
     prompting under an unknown deny list.

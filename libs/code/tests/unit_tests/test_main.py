@@ -2875,6 +2875,50 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED
 
+    def test_eof_at_prompt_denies(self, tmp_path: Path) -> None:
+        """EOF (closed stdin) at the approval prompt fails safe to deny.
+
+        A non-interactive/piped stdin must not accidentally allow project MCP
+        servers: EOF coerces the answer to empty, which is neither yes nor
+        always, so the prompt returns False.
+        """
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={"mcpServers": {"docs": {"command": "echo"}}},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "echo docs")],
+            ),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+
     def test_unreadable_policy_fails_closed_without_prompting(
         self,
         capsys: pytest.CaptureFixture[str],

@@ -238,8 +238,8 @@ class TestRunMCPLogin:
         err = capsys.readouterr().err
         assert exit_code == 1
         mock_login.assert_not_awaited()
-        assert "Skipping untrusted project MCP config" in err
-        assert "pass --mcp-config <path> to use it explicitly" in err
+        assert "Skipping untrusted project MCP server entries" in err
+        assert "pass --mcp-config <path> to use the file explicitly" in err
 
     async def test_user_level_config_is_trusted_without_approval(
         self,

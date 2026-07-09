@@ -137,6 +137,69 @@ class TestResolveMcpConfigAutodiscover:
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
         assert result.untrusted_project_paths == (project_cfg,)
 
+    def test_unreadable_policy_fails_closed_and_surfaces_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A broken trust policy skips even a previously-approved project server.
+
+        Regression guard: a valid approval plus a wrong-typed
+        `disabled_project_servers` sets `read_error` and empties the deny set, so
+        `is_enabled` would still match the live approval. The login resolver must
+        instead fail closed (a revoked-but-mistyped deny must not be bypassed)
+        and surface the policy read error rather than a bare "no usable config".
+        """
+        from deepagents_code.model_config import fingerprint_mcp_server_config
+
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        # Valid approval for slack, but a wrong-typed deny list -> read_error.
+        config_text = (
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_cfg.parent}", name = "slack", '
+            f'fingerprint = "{fingerprint_mcp_server_config(slack)}" }}]\n'
+            "disabled_project_servers = 123\n"
+        )
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path, config_text)
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (project_cfg,)
+        assert "config.toml" in result.message
+
+    def test_broken_project_config_surfaces_parse_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed `.mcp.json` surfaces its parse error, not a bare not-found."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text("{not valid json")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert "load errors" in result.message
+        assert str(project_cfg) in result.message
+
     def test_user_level_config_is_loaded_without_trust_prompt(
         self,
         tmp_path: Path,

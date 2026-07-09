@@ -1115,7 +1115,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="MCP",
         summary=(
             "Project MCP server approvals saved by project root, server name, and "
-            "server fingerprint; edited commands/URLs require re-approval."
+            "server fingerprint; edited commands/URLs require re-approval. Env-only "
+            "global override (bypasses project/fingerprint binding): "
+            "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_server_approvals"),
@@ -1125,8 +1127,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="MCP",
         summary=(
             "Deprecated legacy flat project MCP server-name allowlist; ignored in "
-            "config.toml. Use enabled_project_server_approvals instead. Env-only "
-            "global override: DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
+            "config.toml. Use enabled_project_server_approvals instead."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("mcp", "enabled_project_servers"),

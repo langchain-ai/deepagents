@@ -202,8 +202,6 @@ jobs:
       # Effective shard count after capping to the selectable work (<= n_shards).
       # The harbor job reads this so its partition matches the emitted matrix.
       n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
-    env:
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -253,6 +251,16 @@ jobs:
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
+      - name: "🧪 Create LangSmith experiments"
+        id: langsmith-experiments
+        env:
+          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+          HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: python .github/scripts/langsmith_experiment_matrix.py
+
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
         # Cross-products the model matrix with the shard axis, caps the shard
@@ -260,7 +268,7 @@ jobs:
         # jobs aren't spawned, and guards against GitHub's 256-job matrix cap.
         # See shard_matrix.py (unit-tested in test_shard_matrix.py).
         env:
-          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+          MODEL_MATRIX: ${{ steps.langsmith-experiments.outputs.matrix }}
           N_SHARDS: ${{ inputs.n_shards || '1' }}
           N_TASKS: ${{ inputs.n_tasks }}
         run: python .github/scripts/shard_matrix.py
@@ -292,6 +300,8 @@ jobs:
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
+      HARBOR_LANGSMITH_EXPERIMENT_ID: ${{ matrix.langsmith_experiment_id }}
+      HARBOR_LANGSMITH_EXPERIMENT: ${{ matrix.langsmith_experiment_name }}
       LANGSMITH_TRACING: "true"
       OLLAMA_HOST: "https://ollama.com"
     steps:
@@ -567,10 +577,7 @@ jobs:
               exit 1
               ;;
           esac
-          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -622,7 +629,8 @@ jobs:
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
+            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT" \
+            --plugin-kwarg experiment_id="$HARBOR_LANGSMITH_EXPERIMENT_ID"
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job

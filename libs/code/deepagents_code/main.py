@@ -19,6 +19,7 @@ import shutil
 import sys
 import traceback
 from collections.abc import Callable, Sequence
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code.app import AppResult
+    from deepagents_code.config import Glyphs
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
 
@@ -38,6 +40,12 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+class _ProjectMcpTrustPromptOutcome(Enum):
+    """Internal outcomes that are not project MCP trust decisions."""
+
+    INTERRUPTED = "interrupted"
 
 
 def build_version_text() -> str:
@@ -2373,43 +2381,194 @@ def _parse_server_number_selection(raw: str, count: int) -> list[int]:
     return selected
 
 
-def _select_project_servers_to_persist(
-    prompt_servers: list[tuple[str, str, str]], console: "Console"
-) -> list[str]:
-    """Ask which prompted project MCP servers to persist to config.toml.
-
-    Shows an all/custom/none menu so the user isn't forced to save the whole
-    list. "custom" reprints the servers numbered and reads a `1,3`-style
-    selection. A single prompted server skips the menu (there is nothing to
-    choose between).
+def _format_project_mcp_checkbox_rows(
+    prompt_servers: list[tuple[str, str, str]],
+    selected_names: set[str],
+    selected_index: int,
+    glyphs: "Glyphs",
+) -> list[tuple[str, str]]:
+    """Format rows for the inline project MCP checkbox picker.
 
     Args:
         prompt_servers: The `(name, kind, summary)` rows being asked about.
-        console: Console to print the selection UI to (stderr).
+        selected_names: Server names that are currently checked.
+        selected_index: Zero-based cursor row.
+        glyphs: Terminal-appropriate glyphs.
 
     Returns:
-        The chosen server names. Empty when the user picks "none" or makes no
-            valid selection (the caller then allows only for this session).
+        Prompt-toolkit formatted text fragments, one per visible server row.
+    """
+    rows: list[tuple[str, str]] = []
+    for index, (name, kind, summary) in enumerate(prompt_servers):
+        active = index == selected_index
+        checked = name in selected_names
+        cursor = glyphs.cursor if active else " "
+        box = "[x]" if checked else "[ ]"
+        style = "class:item.current" if active else "class:item"
+        suffix = "\n" if index < len(prompt_servers) - 1 else ""
+        rows.append((style, f"{cursor} {box} {name} ({kind}): {summary}{suffix}"))
+    return rows
+
+
+def _run_project_mcp_server_checkbox_picker(
+    prompt_servers: list[tuple[str, str, str]], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
+    """Show an inline checkbox picker for project MCP servers to remember.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print fallback notices to (stderr).
+
+    Returns:
+        Selected server names. Empty means the user accepted no selections;
+        `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox
+        UI could not run and the caller should fall back to a simpler prompt.
+    """
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import HSplit, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+    except ImportError:
+        logger.debug("Project MCP checkbox picker unavailable", exc_info=True)
+        console.print(
+            "[dim]Checkbox picker unavailable; falling back to number selection.[/dim]",
+            highlight=False,
+        )
+        return None
+
+    from deepagents_code.config import get_glyphs
+
+    names = [name for name, _kind, _summary in prompt_servers]
+    selected_names = set(names)
+    selected_index = 0
+    glyphs = get_glyphs()
+
+    def _selected_names() -> list[str]:
+        return [name for name in names if name in selected_names]
+
+    def _help_text() -> FormattedText:
+        return FormattedText(
+            [
+                ("class:prompt.title", "Remember MCP servers for this project\n"),
+                (
+                    "class:prompt.help",
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Space toggle · Enter confirm · Esc cancel\n"
+                    ),
+                ),
+            ]
+        )
+
+    def _rows() -> FormattedText:
+        return FormattedText(
+            _format_project_mcp_checkbox_rows(
+                prompt_servers, selected_names, selected_index, glyphs
+            )
+        )
+
+    key_bindings = KeyBindings()
+
+    @key_bindings.add("up")
+    @key_bindings.add("s-tab")
+    @key_bindings.add("k")
+    def _up(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index - 1) % len(names)
+
+    @key_bindings.add("down")
+    @key_bindings.add("tab")
+    @key_bindings.add("j")
+    def _down(_event: KeyPressEvent) -> None:
+        nonlocal selected_index
+        selected_index = (selected_index + 1) % len(names)
+
+    @key_bindings.add(" ")
+    def _toggle(_event: KeyPressEvent) -> None:
+        name = names[selected_index]
+        if name in selected_names:
+            selected_names.remove(name)
+        else:
+            selected_names.add(name)
+
+    @key_bindings.add("enter")
+    def _confirm(event: KeyPressEvent) -> None:
+        event.app.exit(result=_selected_names())
+
+    @key_bindings.add("escape")
+    def _cancel(event: KeyPressEvent) -> None:
+        event.app.exit(result=[])
+
+    @key_bindings.add("c-c")
+    def _interrupt(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+
+    app = Application[list[str]](
+        layout=Layout(
+            HSplit(
+                [
+                    Window(
+                        FormattedTextControl(_help_text),
+                        height=2,
+                        dont_extend_height=True,
+                    ),
+                    Window(
+                        FormattedTextControl(_rows),
+                        height=len(prompt_servers),
+                        dont_extend_height=True,
+                    ),
+                ]
+            )
+        ),
+        key_bindings=key_bindings,
+        style=Style.from_dict(
+            {
+                "prompt.title": "bold",
+                "prompt.help": "ansibrightblack",
+                "item.current": "reverse",
+            }
+        ),
+        full_screen=False,
+        erase_when_done=False,
+        output=create_output(stdout=sys.stderr),
+    )
+    try:
+        return app.run()
+    except (RuntimeError, OSError):
+        logger.debug("Project MCP checkbox picker failed", exc_info=True)
+        console.print(
+            "[dim]Checkbox picker unavailable; falling back to number selection.[/dim]",
+            highlight=False,
+        )
+        return None
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
+        return []
+
+
+def _select_project_servers_with_numbers(
+    prompt_servers: list[tuple[str, str, str]], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome:
+    """Ask which prompted project MCP servers to remember with a text fallback.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print the fallback selection UI to (stderr).
+
+    Returns:
+        The chosen server names. Empty when the user makes no valid selection;
+        `INTERRUPTED` when the user presses Ctrl+C.
     """
     from rich.markup import escape
 
     names = [name for name, _kind, _summary in prompt_servers]
-    if len(names) <= 1:
-        return names
-
-    try:
-        choice = (
-            input("Save to config.toml? [a]ll / [c]ustom / [n]one: ").strip().lower()
-        )
-    except (EOFError, KeyboardInterrupt):
-        choice = ""
-
-    if choice in {"a", "all"}:
-        return names
-    if choice not in {"c", "custom"}:
-        # "none" or an unrecognized answer persists nothing (fail-safe).
-        return []
-
     console.print()
     for index, (name, kind, summary) in enumerate(prompt_servers, start=1):
         console.print(
@@ -2418,15 +2577,51 @@ def _select_project_servers_to_persist(
             highlight=False,
         )
     try:
-        raw = input("Enter numbers to always-allow (comma-separated, e.g. 1,3): ")
-    except (EOFError, KeyboardInterrupt):
+        raw = input(
+            "Enter numbers to remember for this project (e.g. 1,3), "
+            "'all', or blank for none: "
+        )
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
         raw = ""
+    if raw.strip().lower() in {"a", "all"}:
+        return names
     return [
         names[index - 1] for index in _parse_server_number_selection(raw, len(names))
     ]
 
 
-def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
+def _select_project_servers_to_persist(
+    prompt_servers: list[tuple[str, str, str]], console: "Console"
+) -> list[str] | _ProjectMcpTrustPromptOutcome:
+    """Ask which prompted project MCP servers to remember for this project.
+
+    Multiple prompted servers use an arrow-key checkbox picker. A single
+    prompted server skips the picker because there is nothing to choose between.
+
+    Args:
+        prompt_servers: The `(name, kind, summary)` rows being asked about.
+        console: Console to print the fallback selection UI to (stderr).
+
+    Returns:
+        The chosen server names. Empty when the user selects no servers or makes
+        no valid fallback selection; the caller then allows only for this session.
+        `INTERRUPTED` means the user pressed Ctrl+C.
+    """
+    names = [name for name, _kind, _summary in prompt_servers]
+    if len(names) <= 1:
+        return names
+
+    selected = _run_project_mcp_server_checkbox_picker(prompt_servers, console)
+    if selected is not None:
+        return selected
+    return _select_project_servers_with_numbers(prompt_servers, console)
+
+
+def _check_mcp_project_trust(
+    *, trust_flag: bool = False
+) -> bool | _ProjectMcpTrustPromptOutcome | None:
     """Check whether project-level MCP servers should be trusted.
 
     Both stdio and remote (http/sse) project entries require approval —
@@ -2439,9 +2634,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     returns `True`. Otherwise it shows an interactive approval prompt for any
     server not already resolved by the user's allow/deny lists. The prompt
     accepts "y"/"yes" (allow for this session only, persisting nothing),
-    "a"/"always" (persist a chosen subset — all, custom, or none — of the
-    prompted servers to `[mcp].enabled_project_server_approvals` in the
-    user-level config.toml so they load only for this project and exact server
+    "a"/"always" (remember a chosen subset of the prompted servers in the
+    user-level config so they load only for this project and exact server
     definition), or "N" (deny).
 
     Servers already resolved by the user's scoped approvals or
@@ -2457,8 +2651,9 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
     Returns:
         `True` to allow project servers, `False` to deny (including when the
-            user's trust policy could not be read), or `None` when there are no
-            project servers whose fate this prompt decides.
+            user's trust policy could not be read), `None` when there are no
+            project servers whose fate this prompt decides, or `INTERRUPTED`
+            when the user presses Ctrl+C at the approval prompt.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -2595,8 +2790,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     _print_auto_resolved()
     prompt_console.print()
     prompt_console.print(
-        "[dim]y = allow this time · a = always allow (choose which to save to "
-        "config.toml) · N = deny[/dim]",
+        "[dim]y = allow this time · a = remember for this project · "
+        "N = deny (default)[/dim]",
         highlight=False,
     )
     prompt_console.print(
@@ -2607,21 +2802,24 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
     try:
         answer = input("Allow? [y]es / [a]lways / [N]o: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    except KeyboardInterrupt:
+        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    except EOFError:
         answer = ""
 
     if answer in {"a", "always"}:
-        # "Always allow" persists selected servers to the user-level config.toml
-        # with this project root and each server definition fingerprint, so a
-        # different project or changed command/URL asks again. The user picks
-        # which servers to save — the full list is not presumed.
+        # "Always allow" persists selected servers with this project root and
+        # each server definition fingerprint, so a different project or changed
+        # command/URL asks again. The user picks which servers to remember —
+        # the full list is not presumed.
         from deepagents_code.model_config import add_enabled_project_mcp_servers
 
         names = _select_project_servers_to_persist(prompt_servers, prompt_console)
+        if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+            return _ProjectMcpTrustPromptOutcome.INTERRUPTED
         if not names:
             prompt_console.print(
-                "[dim]Nothing saved to config.toml; allowed for this session "
-                "only.[/dim]",
+                "[dim]Nothing remembered; allowed for this session only.[/dim]",
                 highlight=False,
             )
         elif not debug_prompt and not add_enabled_project_mcp_servers(
@@ -2631,7 +2829,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         ):
             prompt_console.print(
                 "[yellow]Approved for this session, but the choice could not be "
-                "saved to config.toml — you'll be asked again next time.[/yellow]",
+                "remembered — you'll be asked again next time.[/yellow]",
                 highlight=False,
             )
         return True
@@ -3720,6 +3918,8 @@ def cli_main() -> None:
             )
             if _debug_mcp_project_trust_enabled():
                 sys.exit(0)
+            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
 
             # Run Textual TUI
             return_code = 0

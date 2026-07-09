@@ -1420,6 +1420,37 @@ def test_glob_script_permission_denied(tmp_path: Path) -> None:
         locked.chmod(stat.S_IRWXU)
 
 
+def test_glob_script_keeps_absolute_pattern_under_search_root(tmp_path: Path) -> None:
+    """Absolute glob patterns are treated as search-root-relative, not host-rooted."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    (workspace / "src").mkdir(parents=True)
+    outside.mkdir()
+    (workspace / "src" / "ok.py").write_text("print('ok')")
+    (outside / "secret.py").write_text("print('secret')")
+
+    output = _run_glob_script(workspace, "/src/*.py")
+    records = [json.loads(line) for line in output.strip().split("\n") if line]
+
+    assert [record["path"] for record in records] == [str(workspace / "src" / "ok.py")]
+    assert str(outside / "secret.py") not in output
+
+
+def test_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
+    """Relative patterns must not climb outside the requested search root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.py").write_text("print('secret')")
+
+    output = _run_glob_script(workspace, "../outside/*.py")
+    records = [json.loads(line) for line in output.strip().split("\n") if line]
+
+    assert records == [{"error": "invalid_pattern"}]
+    assert str(outside / "secret.py") not in output
+
+
 # -- grep path-glob template runtime behavior ---------------------------------
 # Direct execution of the formatted _GREP_PATH_GLOB_TEMPLATE script. Mock-based
 # tests stub execute() output and so cannot catch a real defect in the template
@@ -1517,6 +1548,39 @@ def test_grep_glob_script_strips_leading_slash(tmp_path: Path) -> None:
     records = _parse_script_records(proc.stdout)
     # `/*.py` -> `*.py`: matches only the top-level file under the search root.
     assert [r[0] for r in records] == [str(tmp_path / "top.py")]
+
+
+def test_grep_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
+    """Slash globs must not allow `..` to escape the search root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("needle\n")
+
+    proc = _run_grep_glob_script(workspace, "needle", "../outside/*.txt")
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "path traversal" in proc.stderr
+
+
+def test_grep_glob_script_skips_symlinks_outside_root(tmp_path: Path) -> None:
+    """Realpath containment keeps symlink matches inside the declared root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    src = workspace / "src"
+    outside.mkdir()
+    src.mkdir(parents=True)
+    (outside / "secret.py").write_text("needle\n")
+    (src / "link.py").symlink_to(outside / "secret.py")
+    (src / "safe.py").write_text("needle\n")
+
+    proc = _run_grep_glob_script(workspace, "needle", "src/*.py")
+
+    assert proc.returncode == 0
+    records = _parse_script_records(proc.stdout)
+    assert [r[0] for r in records] == [str(src / "safe.py")]
 
 
 @_PERMISSION_DENIED_SKIP

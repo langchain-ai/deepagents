@@ -314,6 +314,9 @@ class SkillsState(AgentState):
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
 
+    skills_source_version: NotRequired[Annotated[str, PrivateStateAttr]]
+    """Token identifying the source set used for `skills_metadata`."""
+
 
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
@@ -323,6 +326,9 @@ class SkillsStateUpdate(TypedDict):
 
     skills_load_errors: NotRequired[list[str]]
     """Skill source loading errors to merge into state."""
+
+    skills_source_version: NotRequired[str]
+    """Token identifying the source set used for `skills_metadata`."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -843,6 +849,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         backend: BACKEND_TYPES,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
+        source_version: str | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -861,6 +868,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 `{skills_list}` slots for runtime substitution. Pass `None`
                 to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
+            source_version: Optional source version. A changed value reloads
+                metadata from checkpointed sessions.
 
         Raises:
             TypeError: If a tuple entry in `sources` is not a two- or
@@ -886,6 +895,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.source_name_prefixes: list[str] = [_source_name_prefix(s) for s in sources]
         self.system_prompt_template = system_prompt
+        self.source_version = source_version
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -1012,8 +1022,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        if "skills_metadata" in state and (self.source_version is None or state.get("skills_source_version") == self.source_version):
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
@@ -1032,6 +1041,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
+        if self.source_version is not None:
+            update["skills_source_version"] = self.source_version
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and
@@ -1058,8 +1069,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        if "skills_metadata" in state and (self.source_version is None or state.get("skills_source_version") == self.source_version):
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
@@ -1078,6 +1088,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
+        if self.source_version is not None:
+            update["skills_source_version"] = self.source_version
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and

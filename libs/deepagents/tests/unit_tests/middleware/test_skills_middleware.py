@@ -40,6 +40,7 @@ from deepagents.middleware.skills import (
     MAX_SKILLS_LOAD_WARNINGS,
     SkillMetadata,
     SkillsMiddleware,
+    SkillsState,
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
@@ -1869,6 +1870,31 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
     assert "skills_metadata" in result
     assert len(result["skills_metadata"]) == 1
     assert result["skills_metadata"][0]["name"] == "test-skill"
+
+
+def test_before_agent_reloads_when_source_token_changes(tmp_path: Path) -> None:
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_path = tmp_path / "skills" / "test" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        make_skill_content("test", "Test skill"),
+        encoding="utf-8",
+    )
+    middleware = SkillsMiddleware(
+        backend=backend,
+        sources=[str(tmp_path / "skills")],
+        source_version="new-version",
+    )
+    state: SkillsState = {
+        "skills_metadata": [],
+        "skills_source_version": "old-version",
+    }
+
+    result = middleware.before_agent(state, Runtime(), {})
+
+    assert result is not None
+    assert result["skills_source_version"] == "new-version"
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["test"]
 
 
 def test_create_deep_agent_with_skills_and_filesystem_backend(tmp_path: Path) -> None:

@@ -41,7 +41,7 @@ Each package gets its own **draft** release PR on a branch named `release-please
 
 To release a package:
 
-1. Merge qualifying conventional commits to `main` (see [Commit Format](#commit-format))
+1. Merge one or more [releasable conventional commits](#releasable-commit-types-and-version-bumping) to `main`
 2. Wait for the release-please action to create/update the release PR (can take a minute or two)
 3. Review the generated changelog in the PR and make any edits as needed
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
@@ -49,9 +49,9 @@ To release a package:
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `release: skip sdk pin check` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
-### Version Bumping
+### Releasable Commit Types and Version Bumping
 
-Version bumps are determined by commit types. All packages are currently pre-1.0, so the effective bumps are shifted down one level:
+A commit creates or updates a release PR for a package only when release-please assigns it to that package and its type bumps the version. The releasable types are listed below. All packages are currently pre-1.0, so the effective bumps are shifted down one level:
 
 | Commit Type                    | Standard (≥ 1.0) | Pre-1.0 (current) | Example                                  |
 | ------------------------------ | ----------------- | ------------------ | ---------------------------------------- |
@@ -498,6 +498,16 @@ After `main` adopts the new line, cut a `vX.Y` branch from the **last release co
 - **Release** from the branch with [Manual Release](#manual-release) + `dangerous-nonmain-release` (its stated purpose is backports): bump the version files on the branch, then dispatch `🚀 Package Release` with that branch, package, version, and `dangerous-nonmain-release` ✓. It is usually rare to need to release old versions so these steps remain manual.
 
 ## Troubleshooting
+
+### Why don't I see a release PR?
+
+Check these common causes first:
+
+- **The [release-please workflow](https://github.com/langchain-ai/deepagents/actions/workflows/release-please.yml) has not run yet.** Wait a minute or two after the PR merges to `main`, then check the `release-please` workflow run.
+- **The merged commit uses a hidden type.** `chore`, `refactor`, `ci`, `docs`, `style`, `test`, and `hotfix` do not create release PRs on their own. See [Releasable Commit Types and Version Bumping](#releasable-commit-types-and-version-bumping).
+- **The commit was not assigned to the package you expected.** release-please scopes commits by **changed file paths**, not just the Conventional Commit scope. For example, a `feat(code): ...` commit must touch files under `libs/code` to create or update the `deepagents-code` release PR.
+- **An [existing draft release PR](https://github.com/langchain-ai/deepagents/issues?q=is%3Apr+is%3Aopen+author%3Aapp%2Fgithub-actions) was updated instead.** Each package has at most one active release PR, on a branch named `release-please--branches--main--components--<package>`.
+- **A previous merged release PR [is still pending](https://github.com/langchain-ai/deepagents/issues?q=state%3Aopen%20label%3A%22autorelease%3A%20pending%22).** If a release PR still has `autorelease: pending` after the release workflow finished, see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 ### Empty commit fan-out
 

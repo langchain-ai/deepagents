@@ -142,7 +142,7 @@ class AgentSelectorScreen(ModalScreen[str | None]):
             else:
                 yield Static(
                     "No agents found in ~/.deepagents/.\n"
-                    "Run Deep Agents Code with -a <name> to create one.",
+                    "Run dcode with -a <name> to create one.",
                     classes="agent-selector-help",
                 )
                 help_text = f"{glyphs.bullet} Esc close"

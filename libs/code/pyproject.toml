@@ -77,6 +77,8 @@ dependencies = [
 
     # MCP
     "langchain-mcp-adapters>=0.3.0,<1.0.0",
+    # Cross-process lock serializing MCP OAuth token refreshes.
+    "filelock>=3.12,<4.0.0",
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",

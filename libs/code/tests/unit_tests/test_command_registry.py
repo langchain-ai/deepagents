@@ -103,11 +103,18 @@ class TestBypassTiers:
 class TestSlashCommands:
     """Validate the SLASH_COMMANDS autocomplete list."""
 
-    def test_length_matches_commands(self) -> None:
-        assert len(SLASH_COMMANDS) == len(COMMANDS)
+    def test_length_matches_public_commands(self) -> None:
+        from deepagents_code.command_registry import (
+            _public_commands,
+            get_slash_commands,
+        )
+
+        assert len(get_slash_commands()) == len(_public_commands())
 
     def test_entry_format(self) -> None:
-        for entry in SLASH_COMMANDS:
+        from deepagents_code.command_registry import get_slash_commands
+
+        for entry in get_slash_commands():
             assert isinstance(entry, CommandEntry)
             assert isinstance(entry.name, str)
             assert entry.name.startswith("/")
@@ -116,7 +123,9 @@ class TestSlashCommands:
             assert isinstance(entry.argument_hint, str)
 
     def test_excludes_aliases(self) -> None:
-        names = {entry.name for entry in SLASH_COMMANDS}
+        from deepagents_code.command_registry import get_slash_commands
+
+        names = {entry.name for entry in get_slash_commands()}
         for cmd in COMMANDS:
             for alias in cmd.aliases:
                 assert alias not in names, (
@@ -124,9 +133,32 @@ class TestSlashCommands:
                 )
 
     def test_to_entry_matches_slash_commands(self) -> None:
-        """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
-        for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
+        """`to_entry()` matches `get_slash_commands()` for public commands."""
+        from deepagents_code.command_registry import (
+            _public_commands,
+            get_slash_commands,
+        )
+
+        for cmd, entry in zip(_public_commands(), get_slash_commands(), strict=True):
             assert cmd.to_entry() == entry
+
+    def test_experimental_plugin_commands_hidden_by_default(self) -> None:
+        from deepagents_code.command_registry import get_slash_commands
+
+        names = {entry.name for entry in get_slash_commands()}
+        assert "/plugins" not in names
+        assert "/reload-plugins" not in names
+
+    def test_experimental_plugin_commands_visible_when_enabled(
+        self, monkeypatch
+    ) -> None:
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.command_registry import get_slash_commands
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        names = {entry.name for entry in get_slash_commands()}
+        assert "/plugins" in names
+        assert "/reload-plugins" in names
 
 
 class TestHiddenCommands:

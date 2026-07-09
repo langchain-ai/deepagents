@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 
@@ -40,8 +39,30 @@ def discover_skills_and_roots(
     from deepagents_code.skills.load import list_skills
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
+    plugin_sources: list[tuple[Path, str]] = []
+    plugin_roots: list[Path] = []
+    try:
+        from deepagents_code._env_vars import experimental_enabled
+
+        if experimental_enabled():
+            from deepagents_code.plugins import discover_plugins
+            from deepagents_code.plugins.adapters.skills import (
+                plugin_skill_roots,
+                plugin_skill_sources,
+            )
+
+            plugin_result = discover_plugins()
+            plugin_sources = [
+                (Path(path), prefix)
+                for path, _label, prefix in plugin_skill_sources(plugin_result.plugins)
+            ]
+            plugin_roots = plugin_skill_roots(plugin_result.plugins)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        plugin_sources = []
+        plugin_roots = []
     skills = list_skills(
         built_in_skills_dir=settings.get_built_in_skills_dir(),
+        plugin_skill_sources=plugin_sources,
         user_skills_dir=settings.get_user_skills_dir(assistant_id),
         project_skills_dir=settings.get_project_skills_dir(),
         user_agent_skills_dir=settings.get_user_agent_skills_dir(),
@@ -53,6 +74,7 @@ def discover_skills_and_roots(
         path.resolve()
         for path in (
             settings.get_built_in_skills_dir(),
+            *plugin_roots,
             settings.get_user_skills_dir(assistant_id),
             settings.get_project_skills_dir(),
             settings.get_user_agent_skills_dir(),

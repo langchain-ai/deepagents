@@ -1112,6 +1112,8 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "help": (None, "show_help"),
     "agents": ("agents_command", "show_agents_help"),
     "skills": ("skills_command", "show_skills_help"),
+    "plugin": ("plugin_command", "show_plugins_help"),
+    "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
@@ -1309,6 +1311,26 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
     )
+
+    from deepagents_code._env_vars import experimental_enabled
+
+    if experimental_enabled():
+        from deepagents_code.plugins.commands_cli import setup_plugin_parser
+
+        setup_plugin_parser(
+            subparsers,
+            make_help_action=_make_help_action,
+            add_output_args=add_json_output_arg,
+        )
+    else:
+        plugin_parser = subparsers.add_parser(
+            "plugin",
+            aliases=["plugins"],
+            add_help=False,
+            help=argparse.SUPPRESS,
+        )
+        plugin_parser.add_argument("plugin_command", nargs="?")
+        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
 
     setup_config_parser(
         subparsers,
@@ -3416,6 +3438,18 @@ def cli_main() -> None:
             from deepagents_code.skills import execute_skills_command
 
             execute_skills_command(args)
+        elif args.command in {"plugin", "plugins"}:
+            from deepagents_code._env_vars import (
+                EXPERIMENTAL_HINT,
+                experimental_enabled,
+            )
+
+            if not experimental_enabled():
+                print(EXPERIMENTAL_HINT)  # noqa: T201
+                sys.exit(2)
+            from deepagents_code.plugins.commands_cli import execute_plugin_command
+
+            execute_plugin_command(args)
         elif args.command == "mcp":
             from deepagents_code.client.commands.mcp import (
                 run_mcp_config,

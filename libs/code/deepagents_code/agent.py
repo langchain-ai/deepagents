@@ -13,6 +13,7 @@ import warnings
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
+import deepagents.middleware.skills as _skills_module
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -24,11 +25,7 @@ from deepagents.middleware import (
     SkillsMiddleware,
 )
 
-# Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
-# `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
-# that permits `(path, label)` tuples. The `skills` module is already
-# loaded by the `SkillsMiddleware` import above, so the extra lookup
-# here adds no startup cost.
+# Backwards-compat flags for SDKs that accept only paths or two-item sources.
 try:
     from deepagents.middleware.skills import SkillSource as _SkillSource  # noqa: F401
 except ImportError:
@@ -97,6 +94,24 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PREFIXED_SKILL_SOURCE_LEN = 3
+_SUPPORTS_SKILL_SOURCE_PREFIXES = (
+    getattr(_skills_module, "_SKILL_SOURCE_WITH_PREFIX_LEN", None)
+    == _PREFIXED_SKILL_SOURCE_LEN
+)
+SkillSourceSpec = tuple[str, str] | tuple[str, str, str]
+
+
+def _compatible_skill_sources(
+    sources: Sequence[SkillSourceSpec],
+) -> list[str | tuple[str, str] | tuple[str, str, str]]:
+    if not _SUPPORTS_SKILL_SOURCE_TUPLES:
+        return [path for path, *_rest in sources]
+    if _SUPPORTS_SKILL_SOURCE_PREFIXES:
+        return list(sources)
+    return [(path, label) for path, label, *_rest in sources]
+
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
@@ -1614,11 +1629,30 @@ def create_cli_agent(
         # Labels disambiguate user- vs project-scoped sources that share a
         # `.../skills` leaf; the middleware would otherwise derive identical
         # labels from the parent directory name.
-        sources: list[tuple[str, str]] = [
+        sources: list[tuple[str, str] | tuple[str, str, str]] = [
             (str(settings.get_built_in_skills_dir()), "Built-in"),
-            (str(skills_dir), "User Deepagents"),
-            (str(user_agent_skills_dir), "User Agents"),
         ]
+        try:
+            from deepagents_code._env_vars import experimental_enabled
+
+            if experimental_enabled():
+                from deepagents_code.plugins import discover_plugins
+                from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+
+                plugin_result = discover_plugins()
+                if plugin_result.warnings:
+                    logger.warning(
+                        "Plugin discovery warnings: %s", plugin_result.warnings
+                    )
+                sources.extend(plugin_skill_sources(plugin_result.plugins))
+        except Exception:
+            logger.warning("Could not discover plugin skills", exc_info=True)
+        sources.extend(
+            [
+                (str(skills_dir), "User Deepagents"),
+                (str(user_agent_skills_dir), "User Agents"),
+            ]
+        )
         if project_skills_dir:
             sources.append((str(project_skills_dir), "Project Deepagents"))
         if project_agent_skills_dir:
@@ -1632,14 +1666,8 @@ def create_cli_agent(
         if project_claude_skills_dir:
             sources.append((str(project_claude_skills_dir), "Project Claude"))
 
-        # Backwards-compat: strip labels when the installed SDK is too old
-        # to accept `(path, label)` tuples. Label-based disambiguation
-        # regresses to the pre-alias behavior (user- and project-scoped
-        # `.claude/skills` collapse to the same label), but functionality
-        # is preserved.
-        middleware_sources: Sequence[str | tuple[str, str]] = (
-            sources if _SUPPORTS_SKILL_SOURCE_TUPLES else [path for path, _ in sources]
-        )
+        # Preserve the richest source shape supported by the installed SDK.
+        middleware_sources = _compatible_skill_sources(sources)
 
         agent_middleware.append(
             SkillsMiddleware(

@@ -129,6 +129,15 @@ When set, this replaces (takes precedence over) the
 is never silently emptied.)
 """
 
+EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
+"""Enable experimental `dcode` features.
+
+Parsed by `is_env_truthy`; off by default. Gates unfinished surfaces such as
+plugin marketplace support (`/plugins`, `/reload-plugins`, `dcode plugin …`,
+and plugin skill/MCP loading). Additional experimental features should use
+this same flag rather than introducing per-feature env vars.
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -214,6 +223,12 @@ Off by default: onboarding goes straight from the name prompt to the model
 selector, which already surfaces (and installs) uninstalled model providers.
 Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
+PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
+"""Override the plugin install/marketplace cache root.
+
+When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
@@ -353,3 +368,15 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
         return default
     classified = classify_env_bool(raw)
     return default if classified is None else classified
+
+
+def experimental_enabled() -> bool:
+    """Return whether experimental `dcode` features are enabled.
+
+    Returns:
+        `True` when `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy.
+    """
+    return is_env_truthy(EXPERIMENTAL)
+
+
+EXPERIMENTAL_HINT = f"This feature is experimental. Set {EXPERIMENTAL}=1 to enable."

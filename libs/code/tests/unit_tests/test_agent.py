@@ -24,6 +24,7 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _compatible_skill_sources,
     _create_rubric_grader_tools,
     _format_delete_description,
     _format_edit_file_description,
@@ -1471,6 +1472,17 @@ class TestCreateCliAgentSkillsSources:
         ):
             assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
         assert rendered.rstrip().endswith("(higher priority)")
+
+    def test_skill_source_prefixes_fall_back_to_labels_on_older_sdk(self) -> None:
+        sources = [("/plugins/review", "Plugin: review", "review:")]
+
+        with (
+            patch("deepagents_code.agent._SUPPORTS_SKILL_SOURCE_TUPLES", True),
+            patch("deepagents_code.agent._SUPPORTS_SKILL_SOURCE_PREFIXES", False),
+        ):
+            compatible = _compatible_skill_sources(sources)
+
+        assert compatible == [("/plugins/review", "Plugin: review")]
 
     def test_skills_sources_fallback_to_bare_paths_on_old_sdk(
         self, tmp_path: Path

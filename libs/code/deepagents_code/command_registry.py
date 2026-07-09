@@ -133,6 +133,25 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="[login <server> | reconnect]",
     ),
     SlashCommand(
+        name="/plugins",
+        description="Manage experimental plugins",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="plugin marketplace skills mcp enable disable install",
+        argument_hint=(
+            "[list|install <id>|uninstall <id>|marketplace add <path>|"
+            "enable <id>|disable <id>]"
+        ),
+    ),
+    SlashCommand(
+        name="/reload-plugins",
+        description=(
+            "Reload installed plugins (experimental; requires "
+            "DEEPAGENTS_CODE_EXPERIMENTAL=1)"
+        ),
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="plugin plugins refresh marketplace",
+    ),
+    SlashCommand(
         name="/model",
         description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -362,8 +381,39 @@ class CommandEntry(NamedTuple):
     """Placeholder text shown when the command accepts arguments (e.g. `[context]`)."""
 
 
-SLASH_COMMANDS: list[CommandEntry] = [cmd.to_entry() for cmd in COMMANDS]
-"""Autocomplete entries derived from `COMMANDS` for `SlashCommandController`."""
+_EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset(
+    {"/plugins", "/reload-plugins"}
+)
+"""Slash commands gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`."""
+
+
+def _public_commands() -> tuple[SlashCommand, ...]:
+    """Return commands visible in autocomplete/help for the current process."""
+    from deepagents_code._env_vars import experimental_enabled
+
+    if experimental_enabled():
+        return COMMANDS
+    return tuple(
+        cmd for cmd in COMMANDS if cmd.name not in _EXPERIMENTAL_PLUGIN_COMMANDS
+    )
+
+
+def get_slash_commands() -> list[CommandEntry]:
+    """Return autocomplete entries for currently enabled slash commands.
+
+    Returns:
+        Autocomplete entries derived from `COMMANDS`, excluding experimental
+        plugin commands unless `DEEPAGENTS_CODE_EXPERIMENTAL` is set.
+    """
+    return [cmd.to_entry() for cmd in _public_commands()]
+
+
+SLASH_COMMANDS: list[CommandEntry] = get_slash_commands()
+"""Default autocomplete entries for the current process env.
+
+Prefer `get_slash_commands()` at call sites so tests that toggle
+`DEEPAGENTS_CODE_EXPERIMENTAL` see the live set.
+"""
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

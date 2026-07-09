@@ -37,7 +37,7 @@ class ExtendedSkillMetadata(SkillMetadata):
             or `'claude (experimental)'`.
     """
 
-    source: Literal["built-in", "user", "project", "claude (experimental)"]
+    source: Literal["built-in", "plugin", "user", "project", "claude (experimental)"]
 
 
 # Re-export for CLI commands
@@ -47,6 +47,7 @@ __all__ = ["SkillMetadata", "list_skills", "load_skill_content"]
 def list_skills(
     *,
     built_in_skills_dir: Path | None = None,
+    plugin_skill_sources: Sequence[tuple[Path, str]] = (),
     user_skills_dir: Path | None = None,
     project_skills_dir: Path | None = None,
     user_agent_skills_dir: Path | None = None,
@@ -72,6 +73,7 @@ def list_skills(
 
     Args:
         built_in_skills_dir: Path to built-in skills shipped with the package.
+        plugin_skill_sources: Plugin skill source directories with name prefixes.
         user_skills_dir: Path to `~/.deepagents/{agent}/skills/`.
         project_skills_dir: Path to `.deepagents/skills/`.
         user_agent_skills_dir: Path to `~/.agents/skills/` (alias).
@@ -85,14 +87,15 @@ def list_skills(
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
 
-    sources: list[tuple[Path | None, str, bool]] = [
-        (built_in_skills_dir, "built-in", False),
-        (user_skills_dir, "user", False),
-        (user_agent_skills_dir, "user", False),
-        (project_skills_dir, "project", False),
-        (project_agent_skills_dir, "project", False),
-        (user_claude_skills_dir, "claude (experimental)", True),
-        (project_claude_skills_dir, "claude (experimental)", True),
+    sources: list[tuple[Path | None, str, bool, str]] = [
+        (built_in_skills_dir, "built-in", False, ""),
+        *[(path, "plugin", False, prefix) for path, prefix in plugin_skill_sources],
+        (user_skills_dir, "user", False, ""),
+        (user_agent_skills_dir, "user", False, ""),
+        (project_skills_dir, "project", False, ""),
+        (project_agent_skills_dir, "project", False, ""),
+        (user_claude_skills_dir, "claude (experimental)", True, ""),
+        (project_claude_skills_dir, "claude (experimental)", True, ""),
     ]
     """Sources in precedence order (lowest to highest).
 
@@ -102,12 +105,17 @@ def list_skills(
     directory doesn't block the rest.
     """
 
-    for skill_dir, source_label, experimental in sources:
+    for skill_dir, source_label, experimental, name_prefix in sources:
         if not skill_dir or not skill_dir.exists():
             continue
         try:
             backend = FilesystemBackend(root_dir=str(skill_dir), virtual_mode=False)
             skills = list_skills_from_backend(backend=backend, source_path=".")
+            if name_prefix:
+                skills = [
+                    {**skill, "name": f"{name_prefix}{skill['name']}"}
+                    for skill in skills
+                ]
             if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",
@@ -117,10 +125,12 @@ def list_skills(
             for skill in skills:
                 extra: dict[str, object] = {"source": source_label}
                 if source_label == "built-in":
-                    extra["metadata"] = {
-                        **skill["metadata"],
-                        "deepagents-code-version": _cli_version,
-                    }
+                    raw_metadata = skill.get("metadata", {})
+                    metadata = (
+                        raw_metadata.copy() if isinstance(raw_metadata, dict) else {}
+                    )
+                    metadata["deepagents-code-version"] = _cli_version
+                    extra["metadata"] = metadata
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
                 all_skills[skill["name"]] = extended
         except Exception:

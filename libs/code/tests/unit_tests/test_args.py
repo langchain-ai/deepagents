@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.main import parse_args
 from deepagents_code.ui import show_help, show_threads_list_help
 
@@ -47,6 +48,16 @@ class TestInitialPromptArg:
         with patch.object(sys, "argv", ["deepagents", "-m", ""]):
             args = parse_args()
         assert args.initial_prompt == ""
+
+
+def test_plugin_command_parses_when_experimental_features_are_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(EXPERIMENTAL, raising=False)
+    with patch.object(sys, "argv", ["deepagents", "plugin", "list"]):
+        args = parse_args()
+    assert args.command == "plugin"
+    assert args.plugin_command == "list"
 
 
 class TestInitialSkillArg:

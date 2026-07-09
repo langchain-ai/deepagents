@@ -1957,6 +1957,26 @@ async def resolve_and_load_mcp_tools(
 
     project_trusted: bool | None = None
     trust_lists: McpServerTrustLists | None = None
+    try:
+        from deepagents_code._env_vars import experimental_enabled
+
+        if experimental_enabled():
+            from deepagents_code.plugins import discover_plugins
+            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+            plugin_result = discover_plugins()
+            if plugin_result.warnings:
+                logger.warning(
+                    "Plugin discovery warnings while loading MCP: %s",
+                    plugin_result.warnings,
+                )
+            project_dir = _resolve_project_config_base(project_context)
+            configs.extend(
+                plugin_mcp_configs(plugin_result.plugins, project_dir=project_dir)
+            )
+    except Exception:
+        logger.warning("Could not discover plugin MCP configs", exc_info=True)
+
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:

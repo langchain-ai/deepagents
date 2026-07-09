@@ -2578,7 +2578,8 @@ class TestSlashCompletionCursorMapping:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            chat._text_area.insert("re")
+            # Use `rem` so `/remember` wins over `/reload-plugins`.
+            chat._text_area.insert("rem")
             await pilot.pause()
 
             chat.on_completion_popup_option_clicked(

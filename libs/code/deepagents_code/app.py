@@ -2992,12 +2992,12 @@ class DeepAgentsApp(App):
         # Apply any skill commands discovered before the widget was mounted
         if self._discovered_skills:
             from deepagents_code.command_registry import (
-                SLASH_COMMANDS,
                 build_skill_commands,
+                get_slash_commands,
             )
 
             cmds = build_skill_commands(self._discovered_skills)
-            merged = list(SLASH_COMMANDS) + cmds
+            merged = list(get_slash_commands()) + cmds
             self._chat_input.update_slash_commands(merged)
 
         # Set initial auto-approve state
@@ -3616,8 +3616,8 @@ class DeepAgentsApp(App):
             simply ignore the result.
         """
         from deepagents_code.command_registry import (
-            SLASH_COMMANDS,
             build_skill_commands,
+            get_slash_commands,
         )
 
         try:
@@ -3658,7 +3658,7 @@ class DeepAgentsApp(App):
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:
-                merged = list(SLASH_COMMANDS) + skill_commands
+                merged = list(get_slash_commands()) + skill_commands
                 self._chat_input.update_slash_commands(merged)
             else:
                 logger.debug(
@@ -9630,7 +9630,9 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /goal, /offload, /editor, /effort, "
                 "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /restart, /rubric, "
+                "/notifications, /plugins (experimental), /reload, "
+                "/reload-plugins (experimental), "
+                "/restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
                 "/threads, /trace, "
@@ -9858,6 +9860,32 @@ class DeepAgentsApp(App):
             args = command.strip()[len("/mcp ") :].strip()
             await self._mount_message(UserMessage(command))
             await self._handle_mcp_subcommand(args)
+        elif cmd == "/plugins" or cmd.startswith("/plugins "):
+            await self._mount_message(UserMessage(command))
+            from deepagents_code._env_vars import (
+                EXPERIMENTAL_HINT,
+                experimental_enabled,
+            )
+
+            if not experimental_enabled():
+                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
+                return
+            if cmd == "/plugins":
+                await self._show_plugin_manager()
+            else:
+                args = command.strip()[len("/plugins ") :].strip()
+                await self._handle_plugins_subcommand(args)
+        elif cmd == "/reload-plugins":
+            from deepagents_code._env_vars import (
+                EXPERIMENTAL_HINT,
+                experimental_enabled,
+            )
+
+            if not experimental_enabled():
+                await self._mount_message(UserMessage(command))
+                await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
+                return
+            await self._handle_reload_plugins_command(command)
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
@@ -14881,6 +14909,246 @@ class DeepAgentsApp(App):
                 timeout=5,
                 markup=False,
             )
+
+    async def _handle_plugins_subcommand(self, args: str) -> None:
+        """Dispatch `/plugins <subcommand>` strings.
+
+        Args:
+            args: Everything after `/plugins` (already stripped).
+        """
+        import shlex
+
+        try:
+            parts = shlex.split(args)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
+        try:
+            from deepagents_code.plugins import (
+                add_marketplace_source,
+                disable_plugin,
+                enable_plugin,
+                install_plugin,
+                list_available_plugins,
+                uninstall_plugin,
+            )
+            from deepagents_code.plugins.marketplace import MarketplaceError
+
+            if not parts or parts[0] in {"list", "ls"}:
+                rows = list_available_plugins()
+                if not rows:
+                    await self._mount_message(
+                        AppMessage("No plugin marketplaces configured.")
+                    )
+                    return
+                lines = []
+                for plugin_id, description, enabled in rows:
+                    status = "enabled" if enabled else "disabled"
+                    lines.append(f"{status} {plugin_id} {description}".rstrip())
+                text = "\n".join(lines)
+                await self._mount_message(AppMessage(text))
+                return
+            if parts[:2] == ["marketplace", "add"] and len(parts) >= 3:  # noqa: PLR2004
+                enable_all = "--enable-all" in parts[3:]
+                marketplace = await asyncio.to_thread(add_marketplace_source, parts[2])
+                installed: list[str] = []
+                failed: list[str] = []
+                if enable_all:
+                    for plugin in marketplace.plugins:
+                        plugin_id = f"{plugin.name}@{marketplace.name}"
+                        try:
+                            await asyncio.to_thread(
+                                install_plugin, plugin_id, scope="user"
+                            )
+                        except (
+                            MarketplaceError,
+                            FileNotFoundError,
+                            OSError,
+                            ValueError,
+                        ) as exc:
+                            failed.append(f"{plugin_id}: {exc}")
+                        else:
+                            installed.append(plugin_id)
+                text = (
+                    f"Added marketplace {marketplace.name} "
+                    f"({len(marketplace.plugins)} plugin(s))."
+                )
+                if installed:
+                    text += (
+                        f" Installed: {', '.join(installed)}. "
+                        "Run /reload-plugins to activate."
+                    )
+                if failed:
+                    text += f" Failed to install: {'; '.join(failed)}."
+                await self._mount_message(AppMessage(text))
+                return
+            if parts[0] == "install" and len(parts) >= 2:  # noqa: PLR2004
+                plugin_id = parts[1]
+                scope: Literal["user", "project", "local"] = "user"
+                if len(parts) >= 4 and parts[2] == "--scope":  # noqa: PLR2004
+                    requested = parts[3]
+                    if requested not in {"user", "project", "local"}:
+                        await self._mount_message(
+                            ErrorMessage("Scope must be user, project, or local.")
+                        )
+                        return
+                    scope = cast(
+                        "Literal['user', 'project', 'local']",
+                        requested,
+                    )
+                instance = await asyncio.to_thread(
+                    install_plugin, plugin_id, scope=scope
+                )
+                await self._mount_message(
+                    AppMessage(
+                        f"Installed plugin {instance.plugin_id} "
+                        f"(scope: {scope}, version: {instance.version}). "
+                        "Run /reload-plugins to activate."
+                    )
+                )
+                return
+            if parts[0] == "uninstall" and len(parts) == 2:  # noqa: PLR2004
+                await asyncio.to_thread(uninstall_plugin, parts[1])
+                await self._mount_message(
+                    AppMessage(
+                        f"Uninstalled plugin {parts[1]}. Run /reload-plugins to unload."
+                    )
+                )
+                return
+            if parts[0] == "enable" and len(parts) == 2:  # noqa: PLR2004
+                enable_plugin(parts[1])
+                await self._mount_message(
+                    AppMessage(
+                        f"Enabled plugin {parts[1]}. Run /reload-plugins to activate."
+                    )
+                )
+                return
+            if parts[0] == "disable" and len(parts) == 2:  # noqa: PLR2004
+                disable_plugin(parts[1])
+                await self._mount_message(
+                    AppMessage(
+                        f"Disabled plugin {parts[1]}. Run /reload-plugins to unload."
+                    )
+                )
+                return
+        except Exception as exc:
+            logger.warning("Plugin command failed", exc_info=True)
+            await self._mount_message(ErrorMessage(f"Plugin command failed: {exc}"))
+            return
+        await self._mount_message(
+            AppMessage(
+                "Usage: /plugins [list|install <id>|uninstall <id>|"
+                "marketplace add <path> [--enable-all]|enable <id>|disable <id>]"
+            )
+        )
+
+    async def _handle_reload_plugins_command(self, command: str) -> None:
+        """Reload plugin skills and rebuild the agent for plugin MCP.
+
+        Args:
+            command: Raw command string for echoing back to chat.
+        """
+        await self._mount_message(UserMessage(command))
+
+        from deepagents_code.plugins import discover_plugins
+        from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
+
+        old_skill_names = {s["name"] for s in self._discovered_skills}
+        plugin_result = discover_plugins()
+        plugin_count = len(plugin_result.plugins)
+        mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+        mcp_count = sum(
+            len(servers)
+            for config in mcp_configs
+            if isinstance((servers := config.get("mcpServers")), dict)
+        )
+
+        skill_worker = self.run_worker(
+            self._discover_skills(),
+            exclusive=True,
+            group="startup-skill-discovery",
+        )
+        await skill_worker.wait()
+        discovery_ok = skill_worker.result is True
+        new_skill_names = {s["name"] for s in self._discovered_skills}
+        plugin_skill_names = sorted(name for name in new_skill_names if ":" in name)
+        added_skills = sorted(new_skill_names - old_skill_names)
+        removed_skills = sorted(old_skill_names - new_skill_names)
+
+        restarted = False
+        if self._server_proc is not None and self._server_kwargs is not None:
+            if self._agent_running and self._agent_worker:
+                self._cancel_worker(self._agent_worker)
+                self._agent_running = False
+            else:
+                self._discard_queue()
+            if await self._reload_configuration_for_restart():
+                restarted = await self._restart_server_manual()
+
+        skill_count = len(plugin_skill_names)
+        unsupported_commands = sum(
+            len(plugin.inventory.commands)
+            + (len(plugin.manifest.inline_commands) if plugin.manifest else 0)
+            for plugin in plugin_result.plugins
+        )
+        unsupported_agents = sum(
+            len(plugin.inventory.agents) for plugin in plugin_result.plugins
+        )
+        unsupported_hooks = sum(
+            len(plugin.inventory.hooks_files)
+            + (len(plugin.manifest.inline_hooks) if plugin.manifest else 0)
+            for plugin in plugin_result.plugins
+        )
+        parts = [
+            f"{plugin_count} plugin{'s' if plugin_count != 1 else ''}",
+            f"{skill_count} skill{'s' if skill_count != 1 else ''}",
+            f"{mcp_count} plugin MCP server{'s' if mcp_count != 1 else ''}",
+        ]
+        report = f"Reloaded: {' · '.join(parts)}"
+        unsupported_parts: list[str] = []
+        if unsupported_commands:
+            unsupported_parts.append(
+                f"{unsupported_commands} command"
+                f"{'s' if unsupported_commands != 1 else ''}"
+            )
+        if unsupported_agents:
+            unsupported_parts.append(
+                f"{unsupported_agents} agent{'s' if unsupported_agents != 1 else ''}"
+            )
+        if unsupported_hooks:
+            unsupported_parts.append(
+                f"{unsupported_hooks} hook{'s' if unsupported_hooks != 1 else ''}"
+            )
+        if unsupported_parts:
+            report += (
+                f"\nSkipped unsupported: {', '.join(unsupported_parts)} "
+                "(not loaded in this release)."
+            )
+        if not discovery_ok:
+            report += "\nSkill re-discovery failed; existing /skill: list left as-is."
+        elif added_skills or removed_skills:
+            skill_lines = []
+            if added_skills:
+                skill_lines.append(f"  - Added: {', '.join(added_skills)}")
+            if removed_skills:
+                skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
+            report += "\nSkills updated:\n" + "\n".join(skill_lines)
+        if plugin_result.warnings:
+            report += f"\n{len(plugin_result.warnings)} warning(s) during load."
+        if self._server_proc is not None and not restarted:
+            report += "\nAgent server was not restarted; MCP may be stale."
+        await self._mount_message(AppMessage(report))
+
+    async def _show_plugin_manager(self) -> None:
+        """Open the interactive plugin manager."""
+        from deepagents_code.tui.widgets.plugin_manager import PluginManagerScreen
+
+        self.push_screen(
+            PluginManagerScreen(
+                mcp_server_info=self._mcp_server_info or [],
+                on_toggle_mcp_disable=self._toggle_mcp_server_disabled,
+            )
+        )
 
     async def _handle_mcp_subcommand(self, args: str) -> None:
         """Dispatch `/mcp <subcommand>` strings.

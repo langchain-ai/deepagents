@@ -1018,6 +1018,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="experimental.enabled",
+        group="Tools",
+        summary="Enable experimental dcode features (e.g. plugin marketplace).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",
@@ -1293,6 +1301,9 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
         _env_vars.ENABLED_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        # Plugin cache root override; read directly by plugins.store, not via
+        # the scalar config resolver.
+        _env_vars.PLUGIN_CACHE_DIR,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

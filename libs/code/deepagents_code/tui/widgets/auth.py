@@ -1372,15 +1372,15 @@ class AuthManagerScreen(ModalScreen[None]):
         enables the `web_search` tool only after the server respawns.
         """
 
-        def __init__(self, service: str) -> None:
+        def __init__(self, provider: str) -> None:
             """Store the saved provider/service identifier.
 
             Args:
-                service: The `/auth` config key that was saved (a model
+                provider: The `/auth` config key that was saved (a model
                     provider name or a service key such as `"tavily"`).
             """
             super().__init__()
-            self.service = service
+            self.provider = provider
 
     class CredentialDeleted(Message):
         """Posted when a key prompt deletes stored credentials.
@@ -1389,15 +1389,15 @@ class AuthManagerScreen(ModalScreen[None]):
         any in-memory state derived from the now-removed credential.
         """
 
-        def __init__(self, service: str) -> None:
+        def __init__(self, provider: str) -> None:
             """Store the deleted provider/service identifier.
 
             Args:
-                service: The `/auth` config key that was deleted (a model
+                provider: The `/auth` config key that was deleted (a model
                     provider name or a service key such as `"tavily"`).
             """
             super().__init__()
-            self.service = service
+            self.provider = provider
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),

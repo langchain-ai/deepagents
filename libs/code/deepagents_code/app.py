@@ -2250,6 +2250,12 @@ class DeepAgentsApp(App):
         closes so the restart prompt never stacks over the still-open manager.
         """
 
+        self._auth_exported_tavily_original: str | None = None
+        """Original shell `TAVILY_API_KEY` value before `/auth` exported Tavily."""
+
+        self._auth_exported_tavily = False
+        """Whether this app process exported `TAVILY_API_KEY` from `/auth`."""
+
         self._pending_mcp_disable_reconnect_servers: set[str] = set()
         """MCP servers with disable-state changes waiting for reconnect."""
 
@@ -13081,10 +13087,10 @@ class DeepAgentsApp(App):
             # confirmed installing it, install the extra and reopen the manager
             # so they can add a key against the now-installed provider. A
             # pending web-search restart rides along rather than being consumed
-            # here: the reopened manager offers it on its own close, and
-            # `_install_provider_then_reopen_auth` surfaces it on the paths
-            # where it cannot reopen — so the flag is never stranded past this
-            # early return.
+            # here: `_install_provider_then_reopen_auth` consumes it on every
+            # one of its exits (reopen defers to the new manager's close; its
+            # non-reopen paths call the offer directly), so the flag is never
+            # stranded past this early return.
             extra = screen.pending_install_extra
             if extra is not None:
                 from functools import partial
@@ -13122,30 +13128,32 @@ class DeepAgentsApp(App):
         # preempt scheduling the resume.
         task = asyncio.create_task(self._resume_server_after_auth_change())
         task.add_done_callback(_log_task_exception)
-        self._note_web_search_restart_if_needed(event.service)
+        self._note_web_search_restart_if_needed(event.provider)
 
     def on_auth_manager_screen_credential_deleted(
         self, event: AuthManagerScreen.CredentialDeleted
     ) -> None:
         """Clear auth-derived in-memory state after `/auth` deletes a key."""
         event.stop()
-        self._clear_web_search_restart_if_needed(event.service)
+        self._clear_web_search_restart_if_needed(event.provider)
 
-    def _note_web_search_restart_if_needed(self, service: str) -> None:
+    def _note_web_search_restart_if_needed(self, provider: str) -> None:
         """Flag an offered restart when a saved key enables `web_search`.
 
         `web_search` is bound only when Tavily is configured at server spawn
         time. A server that already spawned with Tavily has the tool bound, so
         only a running server that lacks it needs a respawn. The stored key is
         exported to the environment eagerly (as onboarding does) so a later
-        `/restart` — or the offered one — picks it up on reload.
+        `/restart` — or the offered one — picks it up on reload. Ownership of
+        that export is tracked separately from the offer flag so a later delete
+        can reliably undo it (see `_clear_web_search_restart_if_needed`).
 
         Args:
-            service: The `/auth` config key that was just saved.
+            provider: The `/auth` config key that was just saved.
         """
         from deepagents_code.model_config import TAVILY_SERVICE
 
-        if service != TAVILY_SERVICE:
+        if provider != TAVILY_SERVICE:
             return
         from deepagents_code.config import settings
 
@@ -13155,22 +13163,40 @@ class DeepAgentsApp(App):
             return
         from deepagents_code.model_config import apply_stored_service_credentials
 
+        previous = os.environ.get("TAVILY_API_KEY")
         apply_stored_service_credentials()
-        if os.environ.get("TAVILY_API_KEY"):
-            self._pending_web_search_restart = True
+        exported = os.environ.get("TAVILY_API_KEY")
+        if not exported:
+            return
+        if not self._auth_exported_tavily and previous != exported:
+            self._auth_exported_tavily_original = previous
+            self._auth_exported_tavily = True
+        self._pending_web_search_restart = True
 
-    def _clear_web_search_restart_if_needed(self, service: str) -> None:
-        """Disarm a Tavily restart offer after its stored key is deleted.
+    def _clear_web_search_restart_if_needed(self, provider: str) -> None:
+        """Disarm a Tavily restart offer and undo its env export after a delete.
+
+        Only touches `TAVILY_API_KEY` when *this* app exported it (tracked by
+        `_auth_exported_tavily`, set in `_note_web_search_restart_if_needed`) —
+        not the offer flag, which is consumed on manager close before a delete
+        can happen. That distinction is why a shell-provided key survives a
+        delete (the export flag was never set) while our own export is reverted
+        to whatever value it shadowed.
 
         Args:
-            service: The `/auth` config key that was just deleted.
+            provider: The `/auth` config key that was just deleted.
         """
         from deepagents_code.model_config import TAVILY_SERVICE
 
-        if service != TAVILY_SERVICE:
+        if provider != TAVILY_SERVICE:
             return
-        if self._pending_web_search_restart:
-            os.environ.pop("TAVILY_API_KEY", None)
+        if self._auth_exported_tavily:
+            if self._auth_exported_tavily_original is None:
+                os.environ.pop("TAVILY_API_KEY", None)
+            else:
+                os.environ["TAVILY_API_KEY"] = self._auth_exported_tavily_original
+            self._auth_exported_tavily = False
+            self._auth_exported_tavily_original = None
         self._pending_web_search_restart = False
 
     def _maybe_offer_deferred_web_search_restart(self) -> None:
@@ -13187,7 +13213,11 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._launch_web_search_restart_prompt)
 
     def _launch_web_search_restart_prompt(self) -> None:
-        """Kick off the deferred web-search restart offer after the manager closes."""
+        """Schedule the deferred web-search restart offer as a background task.
+
+        The close-ordering guarantee lives on the caller
+        (`_maybe_offer_deferred_web_search_restart`, via `call_after_refresh`).
+        """
         task = asyncio.create_task(self._offer_restart_for_web_search())
         task.add_done_callback(_log_task_exception)
 

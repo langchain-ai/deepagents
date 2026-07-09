@@ -11564,10 +11564,16 @@ class TestInstallExtraAuthContinuation:
     async def test_does_not_reopen_auth_when_install_failed(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """A failed install leaves the user in chat and logs the dead-end at DEBUG."""
+        """A failed install leaves the user in chat and logs the dead-end at DEBUG.
+
+        This non-reopen path must still consume an armed web-search restart so
+        the flag never strands onto a later, unrelated `/auth` close.
+        """
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app._pending_web_search_restart = True
 
         with (
             patch("deepagents_code.app._extra_is_ready", return_value=False),
@@ -11578,18 +11584,22 @@ class TestInstallExtraAuthContinuation:
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
         app._show_auth_manager.assert_not_awaited()  # ty: ignore
         assert any("baseten" in record.message for record in caplog.records)
+        assert app._pending_web_search_restart is False
 
     async def test_surfaces_hint_when_install_state_unverifiable(self) -> None:
         """An unknown post-install state points the user back to `/auth`.
 
         When the extra can't be introspected (`_extra_is_ready` returns `None`)
         the manager must not reopen, but the flow must not dead-end silently
-        either — a message tells the user how to finish.
+        either — a message tells the user how to finish. This path also consumes
+        an armed web-search restart so the flag is never stranded.
         """
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app._pending_web_search_restart = True
 
         with patch("deepagents_code.app._extra_is_ready", return_value=None):
             await app._install_provider_then_reopen_auth("baseten", provider="baseten")
@@ -11598,6 +11608,7 @@ class TestInstallExtraAuthContinuation:
         app._mount_message.assert_awaited_once()  # ty: ignore
         message = app._mount_message.await_args.args[0]  # ty: ignore
         assert "baseten" in message._content
+        assert app._pending_web_search_restart is False
 
 
 class TestExtraIsReady:

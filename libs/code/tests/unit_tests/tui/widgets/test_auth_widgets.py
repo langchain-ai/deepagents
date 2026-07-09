@@ -65,8 +65,8 @@ class _AuthHostApp(App[None]):
         self.prompt_dismissed = False
         self.credential_saved_count = 0
         self.credential_deleted_count = 0
-        self.last_saved_service: str | None = None
-        self.last_deleted_service: str | None = None
+        self.last_saved_provider: str | None = None
+        self.last_deleted_provider: str | None = None
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -109,14 +109,14 @@ class _AuthHostApp(App[None]):
     ) -> None:
         """Record credential-save notifications from the manager."""
         self.credential_saved_count += 1
-        self.last_saved_service = event.service
+        self.last_saved_provider = event.provider
 
     def on_auth_manager_screen_credential_deleted(
         self, event: AuthManagerScreen.CredentialDeleted
     ) -> None:
         """Record credential-delete notifications from the manager."""
         self.credential_deleted_count += 1
-        self.last_deleted_service = event.service
+        self.last_deleted_provider = event.provider
 
 
 class TestCodexAuthScreen:
@@ -1395,7 +1395,7 @@ class TestAuthManagerScreen:
             await pilot.pause()
 
         assert app.credential_saved_count == 1
-        assert app.last_saved_service == "openai"
+        assert app.last_saved_provider == "openai"
 
     async def test_prompt_cancel_does_not_post_credential_saved_event(self) -> None:
         """Cancelling or deleting credentials should not trigger startup recovery."""
@@ -1423,7 +1423,7 @@ class TestAuthManagerScreen:
             await pilot.pause()
 
         assert app.credential_deleted_count == 1
-        assert app.last_deleted_service == "tavily"
+        assert app.last_deleted_provider == "tavily"
 
     async def test_prompt_cancel_does_not_post_credential_deleted_event(self) -> None:
         """Cancelling a prompt does not clear app-side credential state."""

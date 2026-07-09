@@ -567,8 +567,8 @@ TAVILY_SERVICE = "tavily"
 
 Storing a key for this service via `/auth` gates the spawn-time `web_search`
 tool (see `server_graph._build_tools`), so a key added to a running server
-takes effect only after a respawn — the app offers that restart rather than
-scattering `== "tavily"` comparisons.
+takes effect only after a respawn — the app offers that restart, and this
+constant is the single name its `/auth` handling compares against.
 """
 
 SERVICE_API_KEY_ENV: dict[str, str] = {

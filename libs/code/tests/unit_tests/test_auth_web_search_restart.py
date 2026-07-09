@@ -9,13 +9,11 @@ should flag — and, once the manager closes, offer — that restart.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
-from deepagents_code.app import DeepAgentsApp
+import pytest
 
-if TYPE_CHECKING:
-    import pytest
+from deepagents_code.app import DeepAgentsApp
 
 
 def _fake_tavily_export(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,11 +129,55 @@ class TestNoteWebSearchRestart:
 
         app = DeepAgentsApp()
         app._pending_web_search_restart = True
+        app._auth_exported_tavily = True
+        app._auth_exported_tavily_original = None
 
         app._clear_web_search_restart_if_needed("tavily")
 
         assert app._pending_web_search_restart is False
         assert "TAVILY_API_KEY" not in os.environ
+
+    def test_deleted_tavily_key_clears_env_after_offer_was_consumed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Tavily still removes `/auth` export after prompt scheduling."""
+        from deepagents_code.config import settings
+
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        _fake_tavily_export(monkeypatch)
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("tavily")
+        app._maybe_offer_deferred_web_search_restart()
+        app._clear_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+        assert "TAVILY_API_KEY" not in os.environ
+
+    def test_deleted_tavily_key_restores_original_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting Tavily restores a shell key that `/auth` temporarily replaced."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        _fake_tavily_export(monkeypatch)
+
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+
+        app._note_web_search_restart_if_needed("tavily")
+        app._maybe_offer_deferred_web_search_restart()
+        app._clear_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+        assert os.environ["TAVILY_API_KEY"] == "tvly-from-shell"
 
     def test_deleted_non_tavily_key_leaves_pending_restart_and_env(
         self, monkeypatch: pytest.MonkeyPatch
@@ -159,6 +201,20 @@ class TestNoteWebSearchRestart:
 
         app = DeepAgentsApp()
         app._pending_web_search_restart = False
+
+        app._clear_web_search_restart_if_needed("tavily")
+
+        assert app._pending_web_search_restart is False
+        assert os.environ["TAVILY_API_KEY"] == "tvly-from-shell"
+
+    def test_deleted_tavily_key_preserves_env_when_only_restart_flag_was_pending(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The one-shot prompt flag alone does not prove `/auth` owns the env var."""
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-from-shell")
+
+        app = DeepAgentsApp()
+        app._pending_web_search_restart = True
 
         app._clear_web_search_restart_if_needed("tavily")
 
@@ -292,9 +348,89 @@ class TestOfferRestartForWebSearch:
         app._restart_after_install.assert_not_awaited()  # ty: ignore
         app._mount_message.assert_not_awaited()  # ty: ignore
 
+    async def test_later_choice_shows_no_followup_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deferring at the prompt is an informed choice — no extra hint follows.
+
+        The prompt's own button was the call to action, so the shared helper
+        stays silent (neither restarts nor mounts a `/restart` hint) when the
+        user picks "later".
+        """
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value="later")  # ty: ignore
+        app._restart_after_install = AsyncMock()  # ty: ignore
+
+        await app._offer_restart_for_web_search()
+
+        app._restart_after_install.assert_not_awaited()  # ty: ignore
+        app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_watchdog_timeout_falls_back_to_manual_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prompt that never resolves is bounded by the watchdog → manual hint."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._push_screen_wait = AsyncMock(side_effect=TimeoutError())  # ty: ignore
+        app._restart_after_install = AsyncMock()  # ty: ignore
+
+        await app._offer_restart_for_web_search()
+
+        app._restart_after_install.assert_not_awaited()  # ty: ignore
+        contents = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "/restart" in contents
+        assert "web search" in contents
+
+    async def test_mount_failure_falls_back_to_manual_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the modal can't be mounted at all, degrade to the manual hint."""
+        from deepagents_code.config import settings
+
+        monkeypatch.setattr(settings, "tavily_api_key", None)
+        app = DeepAgentsApp()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "anthropic:fake"}
+        app._agent_running = False
+        app._connecting = False
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._push_screen_wait = AsyncMock(  # ty: ignore
+            side_effect=RuntimeError("stack hijacked")
+        )
+        app._restart_after_install = AsyncMock()  # ty: ignore
+
+        await app._offer_restart_for_web_search()
+
+        app._restart_after_install.assert_not_awaited()  # ty: ignore
+        contents = " ".join(
+            str(c.args[0]._content)
+            for c in app._mount_message.await_args_list  # ty: ignore
+        )
+        assert "/restart" in contents
+        assert "web search" in contents
+
 
 class TestCredentialSavedHandler:
-    """The `/auth` credential-saved handler threads the service through."""
+    """The `/auth` credential-saved handler threads the provider through."""
 
     async def test_saved_tavily_key_arms_restart_offer(
         self, monkeypatch: pytest.MonkeyPatch
@@ -333,6 +469,8 @@ class TestCredentialSavedHandler:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._pending_web_search_restart = True
+            app._auth_exported_tavily = True
+            app._auth_exported_tavily_original = None
 
             app.on_auth_manager_screen_credential_deleted(
                 AuthManagerScreen.CredentialDeleted("tavily")
@@ -341,6 +479,31 @@ class TestCredentialSavedHandler:
 
             assert app._pending_web_search_restart is False
             assert "TAVILY_API_KEY" not in os.environ
+
+    async def test_resume_is_scheduled_before_web_search_bookkeeping(self) -> None:
+        """The credentials-blocked resume is scheduled even if bookkeeping raises.
+
+        The handler kicks off `_resume_server_after_auth_change` (the response
+        the user is waiting on) before the secondary web-search bookkeeping, so
+        a failure in the latter can never preempt the resume.
+        """
+        from deepagents_code.tui.widgets.auth import AuthManagerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_server_after_auth_change = AsyncMock()  # ty: ignore
+            app._note_web_search_restart_if_needed = MagicMock(  # ty: ignore
+                side_effect=RuntimeError("bookkeeping blew up")
+            )
+
+            with pytest.raises(RuntimeError):
+                app.on_auth_manager_screen_credential_saved(
+                    AuthManagerScreen.CredentialSaved("tavily")
+                )
+            await pilot.pause()
+
+            app._resume_server_after_auth_change.assert_awaited_once()  # ty: ignore
 
 
 class TestDeferredOfferAfterManagerCloses:
@@ -412,3 +575,35 @@ class TestDeferredOfferAfterManagerCloses:
             await pilot.pause()
 
             assert scheduled.count(app._launch_web_search_restart_prompt) == 1
+
+    async def test_flag_rides_along_when_close_kicks_off_install(self) -> None:
+        """A close that starts a provider install must not consume the offer.
+
+        When the manager closes with a `pending_install_extra`, the app hands
+        off to `_install_provider_then_reopen_auth` (which reopens the manager
+        or surfaces the offer on its non-reopen exits). Consuming the flag here
+        would strand the restart the user armed, so it must ride along untouched.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_server_after_auth_change = AsyncMock()  # ty: ignore
+            app._launch_web_search_restart_prompt = MagicMock()  # ty: ignore
+            app._install_provider_then_reopen_auth = AsyncMock()  # ty: ignore
+            scheduled = self._spy_call_after_refresh(app)
+            app._pending_web_search_restart = True
+
+            await app._show_auth_manager()
+            await pilot.pause()
+            # Simulate the user having confirmed installing an uninstalled
+            # provider: the manager records the extra to install on close.
+            app.screen.pending_install_extra = "baseten"  # ty: ignore
+            app.screen.pending_install_provider = "baseten"  # ty: ignore
+
+            app.screen.dismiss(None)
+            await pilot.pause()
+
+            # The flag rides along: neither consumed nor scheduled here.
+            assert app._pending_web_search_restart is True
+            assert app._launch_web_search_restart_prompt not in scheduled
+            app._install_provider_then_reopen_auth.assert_awaited_once()  # ty: ignore

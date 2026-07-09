@@ -15048,6 +15048,7 @@ class DeepAgentsApp(App):
                 enable_plugin,
                 install_plugin,
                 list_available_plugins,
+                remove_marketplace,
                 trust_plugin,
                 uninstall_plugin,
             )
@@ -15065,6 +15066,17 @@ class DeepAgentsApp(App):
                     status = "enabled" if enabled else "disabled"
                     lines.append(f"{status} {plugin_id} {description}".rstrip())
                 text = "\n".join(lines)
+                await self._mount_message(AppMessage(text))
+                return
+            if (
+                parts[:2] == ["marketplace", "remove"] and len(parts) == 3  # noqa: PLR2004
+            ):
+                removed = await asyncio.to_thread(remove_marketplace, parts[2])
+                text = (
+                    f"Removed marketplace {parts[2]} and its installed plugins."
+                    if removed
+                    else f"Marketplace {parts[2]} is not configured."
+                )
                 await self._mount_message(AppMessage(text))
                 return
             if parts[:2] == ["marketplace", "add"] and len(parts) >= 3:  # noqa: PLR2004
@@ -15169,8 +15181,8 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(
                 "Usage: /plugins [list|install <id>|uninstall <id>|"
-                "marketplace add <path> [--enable-all]|enable <id>|disable <id>|"
-                "trust <id>]"
+                "marketplace add <path> [--enable-all]|marketplace remove <name>|"
+                "enable <id>|disable <id>|trust <id>]"
             )
         )
 

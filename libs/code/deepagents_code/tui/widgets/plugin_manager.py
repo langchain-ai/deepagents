@@ -57,6 +57,8 @@ ViewMode = Literal[
     "plugin_details",
     "installed_details",
     "mcp_details",
+    "marketplace_details",
+    "confirm_remove_marketplace",
 ]
 InstalledGroup = Literal["favorites", "project", "local", "user"]
 
@@ -98,6 +100,7 @@ class _MarketplaceRow:
     name: str
     source: str
     plugin_count: int | None
+    installed_count: int
     error: str | None = None
 
 
@@ -259,6 +262,9 @@ def _load_manager_state(
                     name=name,
                     source=record.source,
                     plugin_count=None,
+                    installed_count=sum(
+                        plugin_id.endswith(f"@{name}") for plugin_id in installed
+                    ),
                     error=str(exc),
                 )
             )
@@ -269,6 +275,10 @@ def _load_manager_state(
                 name=marketplace.name,
                 source=record.source,
                 plugin_count=len(marketplace.plugins),
+                installed_count=sum(
+                    plugin_id.endswith(f"@{marketplace.name}")
+                    for plugin_id in installed
+                ),
             )
         )
         for plugin in marketplace.plugins:
@@ -511,6 +521,7 @@ class PluginManagerScreen(ModalScreen[None]):
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_mcp: _McpRow | None = None
+        self._selected_marketplace: _MarketplaceRow | None = None
 
     @override
     def render(self) -> str:
@@ -907,11 +918,76 @@ class PluginManagerScreen(ModalScreen[None]):
         )
         return f"{row.name} {bullet} {row.source} {bullet} {count}"
 
+    @staticmethod
+    def _marketplace_details_options() -> list[Option]:
+        return [
+            Option(
+                Content.styled("Remove marketplace", "bold"),
+                id="action:remove-marketplace",
+            ),
+            Option("Back to marketplace list", id="details-back"),
+        ]
+
+    @staticmethod
+    def _confirm_marketplace_removal_options(
+        row: _MarketplaceRow,
+    ) -> list[Option]:
+        plugin_label = (
+            "installed plugin" if row.installed_count == 1 else "installed plugins"
+        )
+        return [
+            Option(
+                Content.styled(
+                    f"Remove marketplace and {row.installed_count} {plugin_label}",
+                    "bold",
+                ),
+                id="action:confirm-remove-marketplace",
+            ),
+            Option("Cancel", id="details-back"),
+        ]
+
+    @staticmethod
+    def _marketplace_details_content(row: _MarketplaceRow) -> Content:
+        available = (
+            "Unavailable"
+            if row.plugin_count is None
+            else f"{row.plugin_count} available"
+        )
+        return Content.assemble(
+            Content.styled(row.name, "bold"),
+            "\n",
+            Content.styled(f"Source: {row.source}", "dim"),
+            "\n",
+            Content.styled(f"Plugins: {available}", "dim"),
+            "\n",
+            Content.styled(f"Installed: {row.installed_count}", "dim"),
+        )
+
+    @staticmethod
+    def _marketplace_removal_content(row: _MarketplaceRow) -> Content:
+        warning = (
+            f"This also uninstalls {row.installed_count} plugin"
+            f"{'s' if row.installed_count != 1 else ''} from this marketplace. "
+            if row.installed_count
+            else ""
+        )
+        return Content.assemble(
+            Content.styled(f"Remove marketplace {row.name}?", "bold"),
+            "\n\n",
+            Content.styled(
+                f"{warning}The marketplace record and managed caches will be "
+                "removed. Local source directories are not deleted.",
+                "dim",
+            ),
+        )
+
     def _details_mode_active(self) -> bool:
         return self._mode in {
             "plugin_details",
             "installed_details",
             "mcp_details",
+            "marketplace_details",
+            "confirm_remove_marketplace",
         }
 
     def _refresh_view(self) -> None:
@@ -925,6 +1001,20 @@ class PluginManagerScreen(ModalScreen[None]):
             )
         elif self._mode == "mcp_details" and self._selected_mcp is not None:
             status_widget.update(self._mcp_details_content(self._selected_mcp))
+        elif (
+            self._mode == "marketplace_details"
+            and self._selected_marketplace is not None
+        ):
+            status_widget.update(
+                self._marketplace_details_content(self._selected_marketplace)
+            )
+        elif (
+            self._mode == "confirm_remove_marketplace"
+            and self._selected_marketplace is not None
+        ):
+            status_widget.update(
+                self._marketplace_removal_content(self._selected_marketplace)
+            )
         else:
             status_widget.update(self._status or "")
         error = self._error or ""
@@ -997,6 +1087,16 @@ class PluginManagerScreen(ModalScreen[None]):
             return self._installed_details_options(self._selected_plugin)
         if self._mode == "mcp_details" and self._selected_mcp is not None:
             return self._mcp_details_options(self._selected_mcp)
+        if (
+            self._mode == "marketplace_details"
+            and self._selected_marketplace is not None
+        ):
+            return self._marketplace_details_options()
+        if (
+            self._mode == "confirm_remove_marketplace"
+            and self._selected_marketplace is not None
+        ):
+            return self._confirm_marketplace_removal_options(self._selected_marketplace)
         return [Option("Back to plugin list", id="details-back")]
 
     def _refresh_state(self) -> None:
@@ -1008,6 +1108,10 @@ class PluginManagerScreen(ModalScreen[None]):
             self._selected_plugin = refreshed
         if self._selected_mcp is not None:
             self._selected_mcp = self._find_mcp(self._selected_mcp.name)
+        if self._selected_marketplace is not None:
+            self._selected_marketplace = self._find_marketplace(
+                self._selected_marketplace.name
+            )
         self._refresh_view()
 
     def action_cancel(self) -> None:
@@ -1018,9 +1122,15 @@ class PluginManagerScreen(ModalScreen[None]):
             self._refresh_view()
             return
         if self._details_mode_active():
+            if self._mode == "confirm_remove_marketplace":
+                self._mode = "marketplace_details"
+                self._error = None
+                self._refresh_view()
+                return
             self._mode = "list"
             self._selected_plugin = None
             self._selected_mcp = None
+            self._selected_marketplace = None
             self._error = None
             self._refresh_view()
             return
@@ -1051,6 +1161,8 @@ class PluginManagerScreen(ModalScreen[None]):
             "plugin_details",
             "installed_details",
             "mcp_details",
+            "marketplace_details",
+            "confirm_remove_marketplace",
         }:
             self.query_one("#plugin-manager-options", OptionList).action_cursor_down()
 
@@ -1061,6 +1173,8 @@ class PluginManagerScreen(ModalScreen[None]):
             "plugin_details",
             "installed_details",
             "mcp_details",
+            "marketplace_details",
+            "confirm_remove_marketplace",
         }:
             self.query_one("#plugin-manager-options", OptionList).action_cursor_up()
 
@@ -1076,6 +1190,19 @@ class PluginManagerScreen(ModalScreen[None]):
             self._status = None
             self._error = None
             self.query_one("#plugin-marketplace-source", Input).value = ""
+            self._refresh_view()
+            return
+        if option_id.startswith("marketplace:"):
+            name = option_id.removeprefix("marketplace:")
+            row = self._find_marketplace(name)
+            if row is None:
+                return
+            self._selected_marketplace = row
+            self._selected_plugin = None
+            self._selected_mcp = None
+            self._mode = "marketplace_details"
+            self._status = None
+            self._error = None
             self._refresh_view()
             return
         if option_id.startswith("detail:"):
@@ -1134,10 +1261,24 @@ class PluginManagerScreen(ModalScreen[None]):
         if option_id == "action:toggle-mcp":
             await self._toggle_selected_mcp()
             return
+        if option_id == "action:remove-marketplace":
+            self._mode = "confirm_remove_marketplace"
+            self._error = None
+            self._refresh_view()
+            return
+        if option_id == "action:confirm-remove-marketplace":
+            await self._remove_selected_marketplace()
+            return
         if option_id == "details-back":
-            self._mode = "list"
+            self._mode = (
+                "marketplace_details"
+                if self._mode == "confirm_remove_marketplace"
+                else "list"
+            )
             self._selected_plugin = None
             self._selected_mcp = None
+            if self._mode == "list":
+                self._selected_marketplace = None
             self._refresh_view()
 
     def _find_available_plugin(self, plugin_id: str) -> _PluginRow | None:
@@ -1163,6 +1304,12 @@ class PluginManagerScreen(ModalScreen[None]):
     def _find_mcp(self, name: str) -> _McpRow | None:
         return next(
             (row for row in self._state.mcp_servers if row.name == name),
+            None,
+        )
+
+    def _find_marketplace(self, name: str) -> _MarketplaceRow | None:
+        return next(
+            (row for row in self._state.marketplaces if row.name == name),
             None,
         )
 
@@ -1246,6 +1393,35 @@ class PluginManagerScreen(ModalScreen[None]):
         self._error = None
         self._refresh_state()
 
+    async def _remove_selected_marketplace(self) -> None:
+        row = self._selected_marketplace
+        if row is None:
+            return
+        self._status = f"Removing marketplace {row.name}..."
+        self._error = None
+        try:
+            removed = await asyncio.to_thread(remove_marketplace, row.name)
+        except OSError as exc:
+            self._status = None
+            self._error = f"Could not remove marketplace: {exc}"
+            self._refresh_view()
+            return
+        if not removed:
+            self._status = None
+            self._error = f"Marketplace {row.name} is no longer configured."
+            self._refresh_state()
+            return
+        plugin_label = "plugin" if row.installed_count == 1 else "plugins"
+        self._mode = "list"
+        self._tab = "marketplaces"
+        self._selected_marketplace = None
+        self._status = (
+            f"Removed marketplace {row.name} and uninstalled "
+            f"{row.installed_count} {plugin_label}."
+        )
+        self._error = None
+        self._refresh_state()
+
     async def _toggle_selected_mcp(self) -> None:
         row = self._selected_mcp
         if row is None:
@@ -1319,7 +1495,11 @@ class PluginManagerScreen(ModalScreen[None]):
         if option_id is None or not option_id.startswith("marketplace:"):
             return
         name = option_id.removeprefix("marketplace:")
-        if remove_marketplace(name):
-            self._status = f"Removed marketplace {name}."
-            self._error = None
-            self._refresh_state()
+        row = self._find_marketplace(name)
+        if row is None:
+            return
+        self._selected_marketplace = row
+        self._mode = "confirm_remove_marketplace"
+        self._status = None
+        self._error = None
+        self._refresh_view()

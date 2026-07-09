@@ -126,7 +126,7 @@ def setup_plugin_parser(
     marketplace_add.add_argument("source")
     marketplace_add.add_argument("--enable-all", action="store_true")
     marketplace_remove = marketplace_sub.add_parser(
-        "remove", help="Remove a marketplace"
+        "remove", help="Remove a marketplace and uninstall its plugins"
     )
     marketplace_remove.add_argument("name")
     marketplace_update = marketplace_sub.add_parser(
@@ -316,7 +316,7 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         if marketplace_command == "remove":
             removed = remove_marketplace(args.name)
             text = (
-                f"Removed marketplace {args.name}."
+                f"Removed marketplace {args.name} and its installed plugins."
                 if removed
                 else f"Marketplace {args.name} is not configured."
             )

@@ -724,6 +724,104 @@ def test_substitution_includes_session_and_skill_context(tmp_path: Path) -> None
     assert plugin_data.is_dir()
 
 
+def test_remove_marketplace_uninstalls_plugins_but_keeps_local_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+    instance = install_plugin(plugin_id)
+
+    assert remove_marketplace("company-tools") is True
+
+    assert marketplace_root.is_dir()
+    assert not instance.root.exists()
+    assert "company-tools" not in load_marketplace_records()
+    assert plugin_id not in load_installed_plugins()
+    assert plugin_id not in load_enabled_plugins()
+
+
+def test_marketplace_remove_cli_reports_missing_and_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    install_plugin("quality-review-plugin@company-tools")
+    args = argparse.Namespace(
+        plugin_command="marketplace",
+        marketplace_command="remove",
+        name="company-tools",
+        output_format="text",
+    )
+
+    removed = execute_plugin_command(args)
+    missing = execute_plugin_command(args)
+
+    assert removed == ("Removed marketplace company-tools and its installed plugins.")
+    assert missing == "Marketplace company-tools is not configured."
+
+
+async def test_plugin_manager_confirms_marketplace_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    install_plugin("quality-review-plugin@company-tools")
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        screen = PluginManagerScreen()
+        assert len(screen._state.marketplaces) == 1
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert options.option_count == 2
+        options.highlighted = 1
+        await pilot.press("enter")
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert "Remove marketplace" in str(options.get_option_at_index(0).prompt)
+
+        await pilot.press("enter")
+        await pilot.pause()
+        confirmation = str(screen.query_one("#plugin-manager-status").render())
+        assert "Remove marketplace company-tools?" in confirmation
+        assert "uninstalls 1 plugin" in confirmation
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert "company-tools" not in load_marketplace_records()
+    assert not load_installed_plugins()
+    assert marketplace_root.is_dir()
+
+
 async def test_plugin_manager_opens_add_marketplace_input(
     tmp_path: Path, monkeypatch
 ) -> None:

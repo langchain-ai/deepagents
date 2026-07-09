@@ -70,6 +70,21 @@ def test_plugin_dir_is_repeatable() -> None:
     assert args.plugin_dirs == ["one", "two"]
 
 
+def test_plugin_marketplace_remove_parses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(EXPERIMENTAL, "1")
+    with patch.object(
+        sys,
+        "argv",
+        ["deepagents", "plugin", "marketplace", "remove", "company-tools"],
+    ):
+        args = parse_args()
+    assert args.plugin_command == "marketplace"
+    assert args.marketplace_command == "remove"
+    assert args.name == "company-tools"
+
+
 class TestInitialSkillArg:
     """Tests for `--skill` startup skill argument."""
 

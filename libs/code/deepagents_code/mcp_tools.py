@@ -860,17 +860,14 @@ def project_root_for_mcp_config_path(
 
     Args:
         path: Project-level `.mcp.json` path.
-        fallback: Root to use if `path` cannot be resolved.
+        fallback: Root to use as the base for relative config paths.
 
     Returns:
         The owning project root.
     """
-    try:
-        parent = path.resolve().parent
-    except OSError:
-        if fallback is not None:
-            return fallback
-        parent = path.parent
+    parent = path.parent
+    if fallback is not None and not path.is_absolute():
+        parent = fallback if str(parent) == "." else fallback / parent
     if parent.name == ".deepagents":
         return parent.parent
     return parent

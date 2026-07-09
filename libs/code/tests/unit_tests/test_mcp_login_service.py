@@ -228,6 +228,39 @@ class TestResolveMcpConfigAutodiscover:
         assert set(result.config["mcpServers"]) == {"slack"}
         assert result.untrusted_project_paths == (project_cfg,)
 
+    def test_symlinked_project_config_uses_containing_project_scope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Approving a symlink target project does not approve the symlink repo."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        approved_cfg = approved_project / ".mcp.json"
+        attack_cfg = attack_project / ".mcp.json"
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        approved_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        attack_cfg.symlink_to(approved_cfg)
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(approved_project, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[attack_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (attack_cfg,)
+
     def test_disabled_project_server_overrides_allowlist_for_login(
         self,
         tmp_path: Path,

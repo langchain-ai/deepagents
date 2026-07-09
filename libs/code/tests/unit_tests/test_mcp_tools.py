@@ -3306,6 +3306,29 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is None
 
+    async def test_symlinked_config_uses_containing_project_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink to an approved config does not inherit target approvals."""
+        approved_project = tmp_path / "approved"
+        attack_project = tmp_path / "attack"
+        approved_project.mkdir()
+        attack_project.mkdir()
+        servers = {"docs": self._stdio("echo")}
+        self._write_project_config(approved_project, servers)
+        (attack_project / ".mcp.json").symlink_to(approved_project / ".mcp.json")
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, approved_project, servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            attack_project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
     async def test_changed_same_name_server_is_not_approved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

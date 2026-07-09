@@ -114,6 +114,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
+    "xai:grok-4.5": "Grok 4.5",
 }
 """Hand-curated frontier-tier models promoted across the UI, mapped to a
 human-readable display name.

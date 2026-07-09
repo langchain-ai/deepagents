@@ -2251,15 +2251,21 @@ class TestGetModelDisplayName:
             == "claude-sonnet-4-5"
         )
 
-    def test_uses_recommended_name_when_no_profile(self) -> None:
+    @pytest.mark.parametrize(
+        ("spec", "name"),
+        [
+            ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
+            ("xai:grok-4.5", "Grok 4.5"),
+        ],
+    )
+    def test_uses_recommended_name_when_no_profile(self, spec: str, name: str) -> None:
         """Uninstalled recommendations use the hardcoded name, not the raw id."""
         from deepagents_code.tui.widgets import model_selector
 
         screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
         screen._profiles = {}
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
         assert spec in model_selector._RECOMMENDED_MODELS
-        assert screen._get_model_display_name(spec) == "Kimi K2.7 Code"
+        assert screen._get_model_display_name(spec) == name
 
     def test_profile_name_wins_over_recommended_name(self) -> None:
         """A loaded profile's `name` takes precedence over the hardcoded one."""

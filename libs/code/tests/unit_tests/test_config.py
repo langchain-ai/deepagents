@@ -4750,6 +4750,7 @@ class TestDetectProvider:
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("grok-4.5", "xai"),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),
@@ -4804,6 +4805,7 @@ class TestDetectProvider:
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("gpt-5.5") == "openai"
+            assert detect_provider("Grok-4.5") == "xai"
         finally:
             settings.anthropic_api_key = None
 

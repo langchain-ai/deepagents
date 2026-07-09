@@ -7,6 +7,7 @@ from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import anyio
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
@@ -64,6 +65,9 @@ class _AuthHostApp(App[None]):
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
+        self.credential_deleted_count = 0
+        self.last_saved_provider: str | None = None
+        self.last_deleted_provider: str | None = None
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -102,10 +106,18 @@ class _AuthHostApp(App[None]):
         self.push_screen(AuthManagerScreen(initial_provider=initial_provider))
 
     def on_auth_manager_screen_credential_saved(
-        self, _event: AuthManagerScreen.CredentialSaved
+        self, event: AuthManagerScreen.CredentialSaved
     ) -> None:
         """Record credential-save notifications from the manager."""
         self.credential_saved_count += 1
+        self.last_saved_provider = event.provider
+
+    def on_auth_manager_screen_credential_deleted(
+        self, event: AuthManagerScreen.CredentialDeleted
+    ) -> None:
+        """Record credential-delete notifications from the manager."""
+        self.credential_deleted_count += 1
+        self.last_deleted_provider = event.provider
 
 
 class TestCodexAuthScreen:
@@ -634,6 +646,86 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
 
+    async def test_successful_save_notifies_with_provider_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A successful save surfaces a confirmation toast naming the provider."""
+        # `openai` resolves to "OpenAI" via the built-in display-name map but
+        # would title-case to "Openai" via the bare fallback, so asserting on it
+        # proves the label is resolved through `provider_display_name` rather
+        # than the raw provider key.
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "sk-test"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        # `markup=False` is load-bearing: a user-configured display name can
+        # contain Textual markup metacharacters (e.g. `[`), so the toast must not
+        # interpret its interpolated label as markup.
+        assert (
+            "Successfully saved key for OpenAI.",
+            "information",
+            False,
+        ) in notices
+
+    async def test_langsmith_save_notifies_with_service_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The save toast fires on the service path with the service's label."""
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        # Stub the tracing activation so the test stays hermetic (no process
+        # env mutation); the toast runs immediately after it on the LangSmith
+        # branch, so the branch is still exercised end to end.
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.apply_stored_langsmith_auth",
+            lambda **_kwargs: None,
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        # "LangSmith (tracing)" carries a parenthetical the bare provider key
+        # never would, proving the service branch resolves its label through
+        # `provider_display_name` rather than echoing "langsmith".
+        assert (
+            "Successfully saved key for LangSmith (tracing).",
+            "information",
+            False,
+        ) in notices
+
     async def test_langsmith_submit_applies_tracing_env_immediately(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1083,6 +1175,12 @@ api_key_url = "javascript:alert(1)"
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed credential write shows an inline error and keeps the modal."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
 
         def _raise(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
             msg = "credential store is not writable"
@@ -1092,6 +1190,7 @@ api_key_url = "javascript:alert(1)"
 
         app = _AuthHostApp()
         async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
             app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
             await pilot.pause()
             app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
@@ -1105,6 +1204,9 @@ api_key_url = "javascript:alert(1)"
         assert "Could not save credential" in error_text
         assert "credential store is not writable" in error_text
         assert app.prompt_dismissed is False
+        # The success toast must never fire when the write raised — it would
+        # tell the user the key was saved when it wasn't.
+        assert not any(msg.startswith("Successfully saved key") for msg, _ in notices)
 
     async def test_optional_prompt_notifies_store_warnings(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1133,6 +1235,9 @@ api_key_url = "javascript:alert(1)"
 
         assert ("credential file is not private", "warning") in notices
         assert app.prompt_result is AuthResult.SAVED
+        # When the store warns, the plain "success" toast is suppressed so it
+        # can't visually bury (or seem to contradict) the security warning.
+        assert not any(msg.startswith("Successfully saved key") for msg, _ in notices)
 
     async def test_escape_cancels(self) -> None:
         """Escape dismisses with `CANCELLED` and writes nothing."""
@@ -1147,6 +1252,251 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_dismissed is True
         assert app.prompt_result is AuthResult.CANCELLED
         assert auth_store.get_stored_key("openai") is None
+
+    async def test_ctrl_r_reload_continues_when_env_now_resolves(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R dismisses with SAVED (and clears caches) once creds resolve."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        # Spy on cache invalidation: get_provider_auth_status reads os.environ
+        # directly, so a missing clear_caches would still let this test pass on
+        # the dismiss outcome while silently breaking downstream model lookups.
+        cache_clears = 0
+        real_clear = model_config.clear_caches
+
+        def _spy_clear() -> None:
+            nonlocal cache_clears
+            cache_clears += 1
+            real_clear()
+
+        monkeypatch.setattr("deepagents_code.tui.widgets.auth.clear_caches", _spy_clear)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.SAVED
+        assert cache_clears >= 1
+        assert any("Continuing" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_continues_when_store_is_corrupt_but_env_resolves(
+        self, fake_state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt store must not hide a newly resolvable env credential."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        store_dir = anyio.Path(fake_state_dir)
+        await store_dir.mkdir(parents=True, exist_ok=True)
+        await (store_dir / "auth.json").write_text("{", encoding="utf-8")
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            monkeypatch.setenv("ANTHROPIC_API_KEY", "test-env-key")
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.SAVED
+
+    async def test_ctrl_r_reload_stays_open_when_still_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R with nothing newly set keeps the modal open (no false SAVED)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+        assert any("No credentials detected" in msg for msg, _ in notices)
+
+    async def test_ctrl_r_reload_when_not_blocking_stays_open_and_toasts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+R on a non-blocking modal never false-dismisses with SAVED.
+
+        A stored key means the modal opened in a replace/edit flow (not
+        blocking start), so reload must refresh in place and toast "Environment
+        reloaded." rather than hand control back as if a fresh key resolved.
+        """
+        auth_store.set_stored_key("anthropic", "sk-ant-stored")
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+        assert any(msg == "Environment reloaded." for msg, _ in notices)
+
+    async def test_ctrl_r_reload_preserves_typed_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An in-progress key survives the reload recompose."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "half-typed"
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            value = app.screen.query_one("#auth-prompt-input", Input).value
+        assert value == "half-typed"
+
+    async def test_ctrl_r_reload_surfaces_config_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed reload is caught, toasted as an error, and never crashes."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_a: object, severity: str | None = None, **_k: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+
+            def _boom() -> list[str]:
+                msg = "bad .env"
+                raise ValueError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.config.settings.reload_from_environment", _boom
+            )
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+        # The failure must reach the user as an error toast, not just a log line.
+        assert any(
+            "Could not reload configuration" in msg and severity == "error"
+            for msg, severity in notices
+        )
+
+    async def test_ctrl_r_reload_survives_structurally_invalid_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A config.toml that parses but is structurally wrong must not crash.
+
+        `ModelConfig.load()` swallows TOML *syntax* errors but lets a clean
+        parse with the wrong shape (here a scalar `models`) raise
+        AttributeError from the subsequent `.get(...)`. Since Ctrl+R clears
+        caches and re-parses live, the probe must catch it at both construction
+        and reload rather than take down the modal.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('models = "oops"\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            # Construction path: show_prompt instantiates the screen, which
+            # probes credentials synchronously — a raise here would surface as a
+            # test error, not a caught fallback.
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthPromptScreen)
+            # Live reload path: re-parses the bad config after clearing caches.
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+    async def test_ctrl_r_reload_refreshes_langsmith_endpoint_notice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A LangSmith endpoint set via reload surfaces its precedence notice.
+
+        The notice is derived in `__init__` and must be recomputed on reload;
+        otherwise the recompose would render the construction-time (absent)
+        notice while the region radio reflects the new endpoint.
+        """
+        for var in (
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "LANGSMITH_ENDPOINT",
+            "LANGCHAIN_ENDPOINT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert not app.screen.query("#auth-prompt-endpoint-env-notice")
+            monkeypatch.setenv(
+                "LANGSMITH_ENDPOINT", "https://eu.api.smith.langchain.com"
+            )
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            # Still blocking (no key), so the modal recomposed in place — and the
+            # notice now reflects the endpoint the reload picked up.
+            assert app.screen.query("#auth-prompt-endpoint-env-notice")
+
+    async def test_help_line_advertises_reload(self) -> None:
+        """The modal help line tells users Ctrl+R reloads the environment."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            help_line = app.screen.query_one(".auth-prompt-help", Static)
+            content = str(help_line.content)
+        assert "Ctrl+R reload" in content
+
+    async def test_advanced_copy_flags_reload_and_relaunch_caveat(self) -> None:
+        """Advanced env-var copy points at Ctrl+R and the separate-shell caveat."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            key_meta = str(
+                app.screen.query_one("#auth-prompt-key-meta", Static).content
+            )
+        assert "Ctrl+R" in key_meta
+        assert "relaunch" in key_meta
 
     async def test_ctrl_d_opens_confirm_then_deletes(self) -> None:
         """Ctrl+D opens the confirmation modal; Enter completes the delete."""
@@ -1165,6 +1515,188 @@ api_key_url = "javascript:alert(1)"
         assert app.prompt_dismissed is True
         assert app.prompt_result is AuthResult.DELETED
         assert auth_store.get_stored_key("openai") is None
+
+    async def test_successful_delete_notifies_with_provider_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A completed delete surfaces a confirmation toast naming the provider."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        # `openai` resolves to "OpenAI" via the built-in display-name map but
+        # would title-case to "Openai" via the bare fallback, so asserting on it
+        # proves the label is resolved through `provider_display_name` rather
+        # than the raw provider key.
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        auth_store.set_stored_key("openai", "to-be-removed")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.DELETED
+        # `markup=False` is load-bearing: a user-configured display name can
+        # contain Textual markup metacharacters (e.g. `[`).
+        assert (
+            "Successfully removed key for OpenAI.",
+            "information",
+            False,
+        ) in notices
+
+    async def test_delete_failure_does_not_notify_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed delete shows an inline error and fires no success toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        def _raise(*_args: object, **_kwargs: object) -> auth_store.DeleteOutcome:
+            msg = "credential store is not writable"
+            raise RuntimeError(msg)
+
+        # Seed a key so Ctrl+D opens the confirm modal, then fail the delete
+        # itself — the mirror of `test_optional_prompt_surfaces_save_failure`.
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(auth_store, "delete_stored_key", _raise)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+            err = app.screen.query_one("#auth-prompt-error", Static)
+            error_text = str(err.content)
+
+        # Surfaced in-modal; the prompt stays open rather than dismissing
+        # DELETED as if the removal had happened.
+        assert "Could not delete credential" in error_text
+        assert "credential store is not writable" in error_text
+        assert app.prompt_dismissed is False
+        # The success toast must never fire when the delete raised — it would
+        # claim a removal that did not occur.
+        assert not any(msg.startswith("Successfully removed key") for msg, _ in notices)
+
+    async def test_noop_delete_notifies_already_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delete that finds nothing surfaces only the 'already removed' toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        # The key exists when the modal opens (so Ctrl+D confirms) but is gone
+        # by the time the delete runs — e.g. a concurrent delete from another
+        # app instance. `removed=False` drives the "already removed" branch.
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(
+            auth_store,
+            "delete_stored_key",
+            lambda *_a, **_k: auth_store.DeleteOutcome(removed=False),
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        # The no-op path still dismisses DELETED (shared with the success path),
+        # surfaces the resolved label, and never claims a real removal.
+        assert app.prompt_result is AuthResult.DELETED
+        assert (
+            "No stored credential for OpenAI — already removed.",
+            "information",
+            False,
+        ) in notices
+        assert not any(
+            msg.startswith("Successfully removed key") for msg, _, _ in notices
+        )
+
+    async def test_delete_store_warning_suppresses_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Store warnings on the delete rewrite fire and suppress the success toast."""
+        from deepagents_code.tui.widgets.auth import DeleteCredentialConfirmScreen
+
+        notices: list[tuple[str, str | None, bool]] = []
+
+        def _capture_notify(
+            message: str,
+            *_args: object,
+            severity: str | None = None,
+            markup: bool = True,
+            **_kwargs: object,
+        ) -> None:
+            notices.append((str(message), severity, markup))
+
+        warning = "Could not set mode 0600 on auth.json: denied. World-readable."
+        auth_store.set_stored_key("openai", "to-be-removed")
+        monkeypatch.setattr(
+            auth_store,
+            "delete_stored_key",
+            lambda *_a, **_k: auth_store.DeleteOutcome(
+                removed=True, warnings=(warning,)
+            ),
+        )
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("openai", "OPENAI_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.DELETED
+        # The security warning is surfaced...
+        assert (warning, "warning", False) in notices
+        # ...and the clean "success" toast is suppressed so it can't bury it.
+        assert not any(
+            msg.startswith("Successfully removed key") for msg, _, _ in notices
+        )
 
     async def test_ctrl_d_then_escape_keeps_credential(self) -> None:
         """Esc on the confirm modal returns to the prompt without deleting."""
@@ -1222,9 +1754,11 @@ api_key_url = "javascript:alert(1)"
             assert "stored" not in str(title.content)
 
     async def test_init_does_not_crash_on_corrupt_store(
-        self, fake_state_dir: Path
+        self, fake_state_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A corrupt auth.json must not crash the prompt at construction."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
         path = fake_state_dir / "auth.json"
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
@@ -1238,9 +1772,8 @@ api_key_url = "javascript:alert(1)"
             error_widgets = app.screen.query(".auth-prompt-error")
             warning_text = " ".join(str(w.render()) for w in error_widgets)
             assert "unreadable" in warning_text
-            # The MISSING fallback renders no env-source block and an unprefixed
-            # title (no warning/checkmark glyph), confirming the cosmetic-only
-            # degradation the construction guard promises.
+            # With no environment credential, the missing status renders no
+            # env-source block and an unprefixed title.
             assert not app.screen.query("#auth-prompt-env-status")
             title_text = str(app.screen.query_one(".auth-prompt-title", Static).content)
             glyphs = get_glyphs()
@@ -1378,10 +1911,11 @@ class TestAuthManagerScreen:
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
 
-            screen._on_prompt_closed(AuthResult.SAVED)
+            screen._on_prompt_closed("openai", AuthResult.SAVED)
             await pilot.pause()
 
         assert app.credential_saved_count == 1
+        assert app.last_saved_provider == "openai"
 
     async def test_prompt_cancel_does_not_post_credential_saved_event(self) -> None:
         """Cancelling or deleting credentials should not trigger startup recovery."""
@@ -1391,11 +1925,38 @@ class TestAuthManagerScreen:
             await pilot.pause()
             screen = cast("AuthManagerScreen", app.screen)
 
-            screen._on_prompt_closed(AuthResult.CANCELLED)
-            screen._on_prompt_closed(AuthResult.DELETED)
+            screen._on_prompt_closed("openai", AuthResult.CANCELLED)
+            screen._on_prompt_closed("openai", AuthResult.DELETED)
             await pilot.pause()
 
         assert app.credential_saved_count == 0
+
+    async def test_prompt_delete_posts_credential_deleted_event(self) -> None:
+        """Deleting a key notifies the app before the manager itself closes."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed("tavily", AuthResult.DELETED)
+            await pilot.pause()
+
+        assert app.credential_deleted_count == 1
+        assert app.last_deleted_provider == "tavily"
+
+    async def test_prompt_cancel_does_not_post_credential_deleted_event(self) -> None:
+        """Cancelling a prompt does not clear app-side credential state."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed("tavily", AuthResult.CANCELLED)
+            await pilot.pause()
+
+        assert app.credential_deleted_count == 0
 
     async def test_lists_known_providers(self) -> None:
         """Every well-known provider appears in the option list."""

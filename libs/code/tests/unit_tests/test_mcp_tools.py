@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -2074,6 +2075,38 @@ class TestHealthChecks:
             pytest.raises(RuntimeError, match="not found on PATH"),
         ):
             _check_stdio_server("srv", {"command": "missing"})
+
+    async def test_check_stdio_server_runs_off_event_loop(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """The stdio pre-flight's `shutil.which` runs off the event loop."""
+        path = write_config({"mcpServers": {"srv": {"command": "missing"}}})
+        event_loop_thread = threading.current_thread()
+        which_threads: list[threading.Thread] = []
+
+        def _record_missing_command(_command: str) -> str | None:
+            which_threads.append(threading.current_thread())
+            return None
+
+        with patch(
+            "deepagents_code.mcp_tools.shutil.which",
+            side_effect=_record_missing_command,
+        ):
+            tools, manager, server_infos = await get_mcp_tools(path)
+
+        try:
+            assert which_threads
+            assert which_threads[0] is not event_loop_thread
+            assert tools == []
+            assert server_infos[0].name == "srv"
+            assert server_infos[0].status == "error"
+            error = server_infos[0].error or ""
+            assert "command 'missing' not found on PATH" in error
+            assert manager is not None
+        finally:
+            if manager is not None:
+                await manager.cleanup()
 
     async def test_check_remote_server_transport_error(self) -> None:
         """Transport errors are wrapped as `RuntimeError`."""

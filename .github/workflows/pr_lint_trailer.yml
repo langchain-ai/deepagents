@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   trailer-check:
-    name: "validate squash-merge has no banned trailers"
+    name: "validate PR has no banned trailers"
     runs-on: ubuntu-latest
     # Serialize per-PR. Rapid `edited`/`synchronize` events on a PR open can
     # otherwise produce two concurrent runs that both observe "no existing
@@ -23,7 +23,7 @@ jobs:
       group: pr-trailer-lint-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     steps:
-      - name: Check PR title and body for banned trailer
+      - name: Check PR and commit messages for banned trailer
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         # Bound the comment-write tail so a hung GitHub API call cannot leave
         # the check stuck "in progress" past the runner default. `core.setFailed`
@@ -37,6 +37,9 @@ jobs:
               return;
             }
             const { title, body, number } = context.payload.pull_request;
+            // The PR's total commit count, used to detect when GitHub's commit
+            // list API returned fewer commits than the PR actually has.
+            const prCommitCount = context.payload.pull_request.commits;
             // Normalize line endings — GitHub returns whatever the editor used,
             // and CRLF leaves stray \r chars in offending-line displays.
             const fullBody = (body || '').replace(/\r\n/g, '\n');
@@ -57,6 +60,11 @@ jobs:
             const BANNED_REGEX = /Co-[Aa]uthored-[Bb]y:.*<noreply@anthropic\.com>/;
 
             const squashMessage = `${title} (#${number})\n\n${fullBody}`;
+            // GitHub's `pulls.listCommits` returns at most 250 commits for a PR
+            // and gives no "there were more" signal, so scanning past this is
+            // impossible via that endpoint. A PR with more commits is treated as
+            // an incomplete scan (see `listPrCommits`) and fails closed.
+            const MAX_COMMITS_TO_SCAN = 250;
 
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -109,16 +117,72 @@ jobs:
               }
             }
 
-            const lines = squashMessage.split('\n');
-            const offendingIndices = [];
-            for (let i = 0; i < lines.length; i++) {
-              if (BANNED_REGEX.test(lines[i])) {
-                offendingIndices.push(i);
+            // Collect up to MAX_COMMITS_TO_SCAN commit objects for scanning.
+            // `truncated` reports whether commits went unscanned, detected two
+            // ways: we hit our own scan ceiling, or the PR's declared commit
+            // count (`prCommitCount`) exceeds what the list API handed back
+            // (GitHub caps that endpoint at 250). We compare counts rather than
+            // trust "no next page", which cannot distinguish exactly-250 from
+            // a silently-capped larger PR.
+            async function listPrCommits() {
+              const commits = [];
+              for await (const response of github.paginate.iterator(github.rest.pulls.listCommits, {
+                ...context.repo,
+                pull_number: number,
+                per_page: 100,
+              })) {
+                for (const commit of response.data) {
+                  if (commits.length >= MAX_COMMITS_TO_SCAN) {
+                    return { commits, truncated: true };
+                  }
+                  commits.push(commit);
+                }
               }
+              return {
+                commits,
+                truncated: typeof prCommitCount === 'number' && prCommitCount > commits.length,
+              };
             }
 
-            if (offendingIndices.length === 0) {
-              core.info('No banned trailer in squash-merge message.');
+            function findOffendingLines(source, text) {
+              const lines = text.split('\n');
+              const matches = [];
+              for (let i = 0; i < lines.length; i++) {
+                if (BANNED_REGEX.test(lines[i])) {
+                  matches.push({ source, line: i + 1, text: lines[i] });
+                }
+              }
+              return matches;
+            }
+
+            const offendingLines = findOffendingLines('squash merge message', squashMessage);
+
+            // Fail closed if we cannot enumerate every commit. `listPrCommits`
+            // may throw (rate limit, transient API error) or report truncation
+            // (the PR has more commits than GitHub's list API returns). Either
+            // way we cannot certify the PR clean, so route into the failure
+            // branch below — carrying the real error message so the report is
+            // not misattributed to PR size.
+            let commits = [];
+            let truncated = false;
+            let listError = null;
+            try {
+              ({ commits, truncated } = await listPrCommits());
+            } catch (listErr) {
+              listError = listErr.message;
+              truncated = true;
+            }
+            for (const commit of commits) {
+              const sha = (commit.sha || '').slice(0, 12);
+              const message = (commit.commit?.message || '').replace(/\r\n/g, '\n');
+              offendingLines.push(...findOffendingLines(`commit ${sha}`, message));
+            }
+
+            // `!truncated` is load-bearing: an incomplete scan must NOT report
+            // clean, because an unscanned commit could carry the trailer the
+            // `main` ruleset will reject. Dropping it reopens that hole silently.
+            if (offendingLines.length === 0 && !truncated) {
+              core.info('No banned trailer in squash-merge message or PR commit messages.');
               // Mark any prior failure comment as resolved. We update rather
               // than delete because `deleteComment` 403s under restricted
               // fork-PR tokens, whereas `updateComment` on a bot-authored
@@ -146,31 +210,78 @@ jobs:
               return;
             }
 
-            const offendingExcerpt = offendingIndices
-              .map(i => `Line ${i + 1}: ${lines[i]}`)
+            const offenseExcerpt = offendingLines
+              .map(match => `${match.source}, line ${match.line}: ${match.text}`)
               .join('\n');
+            const hasSquashMessageOffense = offendingLines.some(match => match.source === 'squash merge message');
+            const hasCommitMessageOffense = offendingLines.some(match => match.source.startsWith('commit '));
+
+            // Three mutually exclusive report modes, selected in priority order:
+            //   1. squash-message offense — authoritative under a squash merge,
+            //      so this definitively blocks merging to `main`.
+            //   2. commit-only offense — dropped by a squash merge but pushed by
+            //      a rebase/merge-commit, so it blocks only those merge methods.
+            //   3. no offense but the scan was incomplete (truncated or list
+            //      error) — fail closed; we cannot certify the PR is clean.
+            let titleLine, intro, foundBlock, failureReason;
+            if (hasSquashMessageOffense) {
+              titleLine = '⚠️ **Banned trailer in PR — would block merging to `main`.**';
+              intro = 'The squash-merge message (PR title + description) matches `Co-authored-by: ... <noreply@anthropic.com>`. An organization ruleset on `main` rejects any pushed commit whose message matches that pattern, so the PR cannot be merged until the trailer is removed.';
+              foundBlock = offenseExcerpt;
+              failureReason = `PR contains banned trailer matching ${BANNED_REGEX}`;
+            } else if (hasCommitMessageOffense) {
+              titleLine = '⚠️ **Banned trailer in a PR commit message.**';
+              intro = 'An individual commit message matches `Co-authored-by: ... <noreply@anthropic.com>`. A squash merge drops individual commit messages, but a rebase or merge-commit pushes them to `main`, where an organization ruleset rejects any commit whose message matches that pattern. Remove the trailer so the PR can be merged by any method.';
+              foundBlock = offenseExcerpt;
+              failureReason = `PR contains banned trailer matching ${BANNED_REGEX}`;
+            } else {
+              titleLine = '⚠️ **Banned trailer check could not inspect every PR commit.**';
+              intro = listError
+                ? `The GitHub API call to list this PR's commits failed, so the workflow could not scan every commit message for the banned Claude Code co-author trailer: ${listError}`
+                : `This PR has more than ${MAX_COMMITS_TO_SCAN} commits, so the workflow stopped before it could inspect every commit message for the banned Claude Code co-author trailer.`;
+              foundBlock = listError
+                ? 'The commit list could not be retrieved; no commit messages were scanned.'
+                : `No matching trailer found in the first ${MAX_COMMITS_TO_SCAN} commits, but the PR has more commits than this workflow scans.`;
+              failureReason = listError
+                ? `Could not list PR commits to scan for banned trailer: ${listError}`
+                : `Could not inspect every PR commit for banned trailer (scanned first ${MAX_COMMITS_TO_SCAN} of ${prCommitCount})`;
+            }
+
+            const fixLines = [];
+            if (hasSquashMessageOffense) {
+              fixLines.push('If the trailer appears in the squash merge message, edit the PR description and remove the offending line(s).');
+            }
+            if (hasCommitMessageOffense) {
+              fixLines.push('If the trailer appears in an individual commit, rewrite that commit message to remove the offending line.');
+            }
+            if (truncated && !listError) {
+              fixLines.push(`This workflow scanned only the first ${MAX_COMMITS_TO_SCAN} commits because GitHub's pull request commit API returns at most that many. Ask a maintainer to inspect the remaining commits before merging.`);
+            }
+            if (listError) {
+              fixLines.push('This is usually a transient rate-limit or API error — re-run the check. If it persists, a maintainer should verify the commit messages manually before merging.');
+            }
 
             const commentBody = [
               STICKY_MARKER,
-              '⚠️ **Banned trailer in PR — would block the squash-merge push to `main`.**',
+              titleLine,
               '',
-              'The would-be squash-merge commit message contains a `Co-authored-by: ... <noreply@anthropic.com>` line. An organization ruleset on `main` rejects any push whose commit message matches that pattern, so this PR cannot be merged until the trailer is removed.',
+              intro,
               '',
               '**Found:**',
               '```',
-              offendingExcerpt,
+              foundBlock,
               '```',
               '',
               '### Fix',
               '',
-              'Edit the PR description and remove the offending line(s). The trailer is auto-inserted by some Claude-based authoring tools — strip it before opening or merging the PR. Save the description; this check will re-run automatically.',
+              ...fixLines,
             ].join('\n');
 
             // Set the failure signal BEFORE the sticky write — if the comment
             // API hangs, the runner-level timeout fires with the failure
             // status already recorded. Reversing the order leaves the check
             // stuck "in progress" instead of red.
-            core.setFailed(`PR contains banned trailer matching ${BANNED_REGEX}`);
+            core.setFailed(failureReason);
             await postStickyOrSummary(
               commentBody,
               'Banned trailer in PR; comment could not be posted',

@@ -3300,20 +3300,23 @@ def add_enabled_project_mcp_servers(
     or URL change under the same name still matches — this is by name, not by
     fingerprint).
 
-    Writes only to the user-level config (`DEFAULT_CONFIG_PATH` by default),
-    never a repo file, preserving the trust boundary in
-    `load_mcp_server_trust_lists`: an approval must live in the user's home
-    config so a committed `.mcp.json` can never self-approve. Names already in
-    the list are deduplicated (order preserved); a non-list existing value is
-    replaced with a fresh list. The write is atomic (`tempfile.mkstemp` +
-    `Path.replace`), matching `suppress_warning`.
+    Defaults to the user-level config (`DEFAULT_CONFIG_PATH`), the sole source
+    `load_mcp_server_trust_lists` reads the allowlist from — so writing to the
+    user's home config is what preserves the read-side trust boundary (a
+    committed `.mcp.json` can never self-approve). The existing value is parsed
+    with the same `_toml_str_list` rules the loader uses (a list, or a
+    comma-separated scalar, of strings); new names are appended without
+    duplicating (order preserved), and a genuinely wrong-typed value degrades
+    to a fresh list. The write is atomic (`tempfile.mkstemp` + `Path.replace`),
+    matching `suppress_warning`.
 
     Args:
         names: Server names to add to the allowlist. Blank/whitespace-only
             names are ignored; a call with no usable names is a no-op success.
         config_path: Config file to write. Defaults to `DEFAULT_CONFIG_PATH`
             (`~/.deepagents/config.toml`). Callers should not point this at a
-            project path — doing so would defeat the boundary above.
+            project path: the loader only ever reads the user-level config, so
+            an allowlist written elsewhere is never honored.
 
     Returns:
         `True` if the save succeeded (or there was nothing to add), `False` on
@@ -3338,18 +3341,11 @@ def add_enabled_project_mcp_servers(
         mcp_section = data.get("mcp")
         if not isinstance(mcp_section, dict):
             mcp_section = {}
-        enabled_list = mcp_section.get("enabled_project_servers")
-        if not isinstance(enabled_list, list):
-            logger.debug(
-                "[mcp].enabled_project_servers in %s should be a list, got %s; "
-                "replacing it",
-                config_path,
-                type(enabled_list).__name__,
-            )
-            enabled_list = []
-        # Keep only string entries; a stray non-string would break the later
-        # dedupe/write and is not a valid server name anyway.
-        merged = [item for item in enabled_list if isinstance(item, str)]
+        merged, _ = _toml_str_list(
+            mcp_section.get("enabled_project_servers"),
+            key="enabled_project_servers",
+            config_path=config_path,
+        )
         for name in clean_names:
             if name not in merged:
                 merged.append(name)

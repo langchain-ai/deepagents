@@ -2438,10 +2438,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     `None` (no gate needed). When `--trust-project-mcp` was passed,
     returns `True`. Otherwise checks the persistent trust store; if
     untrusted, shows an interactive approval prompt. The prompt accepts
-    "y" (trust this config by fingerprint), "a"/"always" (persist a chosen
-    subset — all, custom, or none — of the prompted server names to
-    `[mcp].enabled_project_servers` in the user-level config.toml so they load
-    by name without re-prompting), or "N" (deny).
+    "y"/"yes" (allow for this session only, persisting nothing), "a"/"always"
+    (persist a chosen subset — all, custom, or none — of the prompted server
+    names to `[mcp].enabled_project_servers` in the user-level config.toml so
+    they load by name without re-prompting), or "N" (deny).
 
     Servers already resolved by the user's `enabled_project_servers` /
     `disabled_project_servers` lists are shown for transparency but not
@@ -2510,7 +2510,6 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     from deepagents_code.mcp_trust import (
         compute_config_fingerprint,
         is_project_mcp_trusted,
-        trust_project_mcp,
     )
 
     project_root = str(
@@ -2639,15 +2638,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
             )
         return True
 
-    if answer == "y":
-        if not debug_prompt and not trust_project_mcp(project_root, fingerprint):
-            prompt_console.print(
-                "[yellow]Approved for this session, but the decision could not be "
-                "saved — you'll be asked again next time.[/yellow]",
-                highlight=False,
-            )
-        return True
-    return False
+    return answer in {"y", "yes"}
 
 
 def _verify_interpreter_or_exit() -> None:

@@ -2327,10 +2327,10 @@ class TestCheckMcpProjectTrustPrompt:
         )
         assert "Learn more:" in captured.err
 
-    def test_warns_when_trust_cannot_be_saved(
+    def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
-        """A failed persist still allows this session but warns it wasn't saved."""
+        """Answering "y" does not persist fingerprint trust."""
         from deepagents_code.main import _check_mcp_project_trust
 
         project_root = tmp_path / "proj"
@@ -2369,16 +2369,14 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_trust.is_project_mcp_trusted",
                 return_value=False,
             ),
-            patch(
-                "deepagents_code.mcp_trust.trust_project_mcp",
-                return_value=False,
-            ),
+            patch("deepagents_code.mcp_trust.trust_project_mcp") as trust_project_mcp,
             patch("builtins.input", return_value="y"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        assert "could not be saved" in capsys.readouterr().err
+        trust_project_mcp.assert_not_called()
+        assert "could not be saved" not in capsys.readouterr().err
 
     def test_always_allow_persists_names_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2617,6 +2615,73 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert not user_config.exists()
         assert "Nothing saved to config.toml" in capsys.readouterr().err
+
+    def test_always_allow_all_excludes_disabled_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled server is never offered for — or persisted to — the allowlist."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        # The user's home config already denies "reference".
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["reference"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "reference": {"command": "echo"},
+                    }
+                },
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            # "reference" is denied, so only "docs" is promptable — the subset
+            # menu is skipped and answering "a" persists just that one name.
+            patch("builtins.input", return_value="a"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        # The denied server is neither offered nor written to the allowlist, and
+        # its deny entry survives (reject precedence still holds).
+        assert lists.enabled == frozenset({"docs"})
+        assert lists.disabled == frozenset({"reference"})
 
     def test_all_servers_list_resolved_shows_context_without_prompt(
         self,
@@ -2910,6 +2975,30 @@ class TestSelectProjectServersToPersist:
 
         servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
         with patch("builtins.input", return_value="none"):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == []
+
+    def test_menu_interrupt_persists_nothing(self) -> None:
+        """EOF at the all/custom/none menu fails safe to persisting nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        with patch("builtins.input", side_effect=EOFError):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == []
+
+    def test_number_prompt_interrupt_persists_nothing(self) -> None:
+        """A KeyboardInterrupt at the number prompt fails safe to nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        with patch("builtins.input", side_effect=["custom", KeyboardInterrupt]):
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
         assert names == []

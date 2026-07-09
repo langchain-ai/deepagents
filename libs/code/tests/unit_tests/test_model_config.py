@@ -5950,6 +5950,17 @@ class TestAddEnabledProjectMcpServers:
         assert add_enabled_project_mcp_servers(["docs"], config_path)
         assert self._enabled(config_path) == ["docs"]
 
+    def test_scalar_string_value_is_preserved_when_appending(
+        self, tmp_path: Path
+    ) -> None:
+        """A supported comma-separated scalar allowlist is merged, not dropped."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = "docs, fs"\n')
+        assert add_enabled_project_mcp_servers(["github"], config_path)
+        assert self._enabled(config_path) == ["docs", "fs", "github"]
+
     def test_round_trips_through_loader(self, tmp_path: Path) -> None:
         """Persisted names are read back by `load_mcp_server_trust_lists`."""
         from deepagents_code.model_config import (
@@ -5961,3 +5972,14 @@ class TestAddEnabledProjectMcpServers:
         assert add_enabled_project_mcp_servers(["docs", "reference"], config_path)
         lists = load_mcp_server_trust_lists(config_path)
         assert lists.enabled == frozenset({"docs", "reference"})
+
+    def test_returns_false_on_unparseable_config(self, tmp_path: Path) -> None:
+        """A corrupt existing config fails closed (returns False) and is untouched."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        corrupt = "[mcp]\nenabled_project_servers = [\n"  # truncated array
+        config_path.write_text(corrupt)
+        assert add_enabled_project_mcp_servers(["docs"], config_path) is False
+        # The unparseable file is left exactly as-is — no partial atomic clobber.
+        assert config_path.read_text() == corrupt

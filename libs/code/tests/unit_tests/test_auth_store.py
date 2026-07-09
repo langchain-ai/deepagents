@@ -189,7 +189,15 @@ class TestRoundTrip:
 
     def test_delete_missing_returns_false(self) -> None:
         """Deleting an unknown provider is a no-op that reports `removed=False`."""
-        assert auth_store.delete_stored_key("anthropic").removed is False
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is False
+        # A no-op performs no write, so it can carry no chmod warnings.
+        assert outcome.warnings == ()
+
+    def test_delete_outcome_rejects_warnings_without_removal(self) -> None:
+        """The type refuses the illegal `removed=False` + warnings combination."""
+        with pytest.raises(ValueError, match="cannot carry warnings"):
+            auth_store.DeleteOutcome(removed=False, warnings=("boom",))
 
 
 @pytest.mark.usefixtures("fake_home")
@@ -249,6 +257,37 @@ class TestPermissions:
     def test_clean_save_returns_no_warnings(self, fake_home: Path) -> None:  # noqa: ARG002 - fixture activates the temp state dir
         """A successful save reports an empty warnings tuple."""
         outcome = auth_store.set_stored_key("anthropic", "k")
+        assert outcome.warnings == ()
+
+    def test_delete_chmod_failure_returned_as_warning(
+        self,
+        fake_home: Path,  # noqa: ARG002 - fixture activates the temp state dir
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A chmod that can't lock down the delete rewrite shows up in DeleteOutcome."""
+        from pathlib import Path as _Path
+
+        auth_store.set_stored_key("anthropic", "k")
+        original_chmod = _Path.chmod
+
+        def deny_file_chmod(self: _Path, mode: int) -> None:
+            if self.name == "auth.json":
+                msg = "simulated chmod denial"
+                raise OSError(msg)
+            original_chmod(self, mode)
+
+        # Deny chmod only for the delete rewrite, not the seeding write above.
+        monkeypatch.setattr(_Path, "chmod", deny_file_chmod)
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is True
+        assert any("0600" in w for w in outcome.warnings)
+        assert any("simulated chmod denial" in w for w in outcome.warnings)
+
+    def test_clean_delete_returns_no_warnings(self, fake_home: Path) -> None:  # noqa: ARG002 - fixture activates the temp state dir
+        """A successful delete reports an empty warnings tuple."""
+        auth_store.set_stored_key("anthropic", "k")
+        outcome = auth_store.delete_stored_key("anthropic")
+        assert outcome.removed is True
         assert outcome.warnings == ()
 
 

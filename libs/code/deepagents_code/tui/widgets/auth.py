@@ -1288,10 +1288,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         clear_caches()
         if not outcome.warnings:
             # Only claim a clean save when the store locked the file down. When
-            # chmod warnings fired above, they *are* the outcome message — a
-            # green "success" toast on top would compete with (and visually
+            # chmod warnings fired above, they *are* the outcome message — an
+            # extra "success" toast on top would compete with (and visually
             # bury) the one signal that the key isn't secured.
             provider_label = provider_display_name(self._provider, self._config)
+            # `markup=False`: a configured display name can contain markup
+            # metacharacters (e.g. `[`) that must not be interpreted here. The
+            # same guard applies to every interpolated toast below.
             self.app.notify(
                 f"Successfully saved key for {provider_label}.",
                 severity="information",
@@ -1342,23 +1345,23 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             # surface it rather than dropping it on the floor.
             self.app.notify(warning, severity="warning", markup=False)
         # Toast after `clear_caches` (like the save path) so the confirmation
-        # reflects fully-completed state rather than firing mid-teardown.
+        # reflects fully-settled state rather than firing before the cache is
+        # invalidated.
         clear_caches()
-        provider_label = provider_display_name(self._provider, self._config)
         if not result.removed:
             # The entry was gone — likely a concurrent delete from another
             # app instance. Surface that fact so "delete" UX doesn't lie when
             # nothing actually happened on disk.
+            provider_label = provider_display_name(self._provider, self._config)
             self.app.notify(
                 f"No stored credential for {provider_label} — already removed.",
                 severity="information",
                 markup=False,
             )
         elif not result.warnings:
-            # Mirror the save path: a successful delete otherwise closes the
-            # modal silently, giving no confirmation that anything happened.
-            # Suppressed when chmod warnings fired above so a clean "success"
-            # toast can't bury them.
+            # Mirror the save path: a silent successful delete gives no
+            # confirmation, and the toast is suppressed when warnings fired.
+            provider_label = provider_display_name(self._provider, self._config)
             self.app.notify(
                 f"Successfully removed key for {provider_label}.",
                 severity="information",

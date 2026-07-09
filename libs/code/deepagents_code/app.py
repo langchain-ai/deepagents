@@ -14044,8 +14044,13 @@ class DeepAgentsApp(App):
         )
         if result == AuthResult.SAVED:
             self._notice_registry.remove(entry.key)
+            # The modal's own success toast already confirms the save and names
+            # the provider. This path can't activate the key in-session (unlike
+            # the Tavily flow, which calls `apply_stored_service_credentials`),
+            # so surface only the restart hint the modal can't — repeating the
+            # "saved" confirmation here would just stack a duplicate toast.
             self.notify(
-                f"Saved {service} API key. Restart to apply.",
+                "Restart to apply your new key.",
                 severity="information",
                 timeout=6,
                 markup=False,

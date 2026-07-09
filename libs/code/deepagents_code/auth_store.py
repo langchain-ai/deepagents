@@ -116,8 +116,8 @@ class DeleteOutcome:
 
     A delete rewrites the whole store, so it can hit the same chmod failures as
     a write. `warnings` carries them symmetrically with `WriteOutcome` so a
-    caller's "removed" confirmation doesn't paper over a store the delete left
-    world-readable.
+    caller's "removed" confirmation doesn't paper over a store the delete
+    failed to lock down to owner-only.
     """
 
     removed: bool
@@ -126,6 +126,21 @@ class DeleteOutcome:
     warnings: tuple[str, ...] = field(default_factory=tuple)
     """chmod-failure warnings from the rewrite. Always empty for a no-op delete
     (`removed=False`), which performs no write."""
+
+    def __post_init__(self) -> None:
+        """Reject the one field combination the docstring forbids.
+
+        A no-op delete performs no write, so it can raise no chmod warnings.
+        Enforcing it here makes "no warnings when nothing was removed" a
+        construction-time guarantee rather than a producer-side convention a
+        future edit (or a second producer) could quietly break.
+
+        Raises:
+            ValueError: If `warnings` is non-empty while `removed` is `False`.
+        """
+        if self.warnings and not self.removed:
+            msg = "DeleteOutcome cannot carry warnings when removed=False"
+            raise ValueError(msg)
 
 
 def auth_path() -> Path:

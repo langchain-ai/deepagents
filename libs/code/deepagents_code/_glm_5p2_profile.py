@@ -1,8 +1,20 @@
 """GLM-5.2 harness profile, registered by deepagents-code via entry point.
 
-GLM-5.2 resolves to a different `provider:model` spec on each provider it is
-run through, and profile lookup is an exact, case-sensitive match. Register the
-profile under every spec so it applies regardless of provider.
+Why this profile exists: GLM-5.2 is a text-only model — it accepts no image,
+audio, video, or document (e.g. PDF) input, regardless of which provider serves
+it. Without steering, the agent calls `read_file` on such a path and gets back a
+non-text block the model cannot process. The `<media_file_handling>` suffix
+closes that gap; the remaining sections carry the general harness guidance
+(planning, scope discipline, verification) GLM-5.2 benefits from.
+
+GLM-5.2 resolves to a different `provider:model` spec on each provider it runs
+through, and profile lookup is an exact, case-sensitive match. Register the
+profile under each supported provider spec (Fireworks, OpenRouter, Baseten) so
+it applies wherever GLM-5.2 runs.
+
+The text-only claim reflects GLM-5.2's capabilities as of this profile's
+authoring; revisit this note and the `<media_file_handling>` guard if a future
+GLM-5.2 revision adds media input.
 """
 
 from deepagents import HarnessProfile, register_harness_profile
@@ -143,7 +155,7 @@ configuration already meets the stated bar.
 
 
 def register() -> None:
-    """Register the GLM-5.2 harness profile for each provider spec."""
+    """Register the GLM-5.2 harness profile under each spec in `_GLM_5P2_MODEL_KEYS`."""
     profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
     for key in _GLM_5P2_MODEL_KEYS:
         register_harness_profile(key, profile)

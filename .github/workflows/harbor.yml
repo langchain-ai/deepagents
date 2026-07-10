@@ -496,11 +496,11 @@ jobs:
               echo "::error::Local Harbor dataset path must identify a dataset under datasets/: $HARBOR_DATASET_PATH"
               exit 1
             fi
-            if [ "$HARBOR_N_SHARDS" != "1" ]; then
-              echo "::error::Local Harbor datasets do not support sharding; set n_shards to 1"
-              exit 1
-            fi
             dataset_args=(--path "$dataset_path")
+            # Local sharding: a local dataset has no registry manifest, so expose
+            # the shell-validated dataset dir to the shard-matrix step below, which
+            # enumerates task names from disk instead of querying the registry.
+            export HARBOR_LOCAL_DATASET_DIR="$dataset_path"
             HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
           elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
@@ -537,22 +537,41 @@ jobs:
           if not raw_n_tasks.isdigit():
               sys.exit(f"::error::Invalid n_tasks (must be an integer): {raw_n_tasks!r}")
           n_tasks = int(raw_n_tasks)
-          md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
 
-          # Native manifest order (do NOT sort): the n_tasks cap must pick the same
-          # first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks], native order).
-          names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
-          if not names:
-              # Resolved zero usable names from a non-empty manifest -> the id shape
-              # changed and get_name() stopped yielding a name. Fail loudly instead
-              # of letting every shard collapse into the legitimate-empty no-op
-              # below, which would run the whole sharded job on nothing and report
-              # green. (A genuinely empty selection is handled per-shard, not here.)
-              sys.exit(
-                  f"::error::Resolved 0 usable task names from {ds}@latest "
-                  f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
-                  "shape (get_name() returned nothing)."
+          local_dir = os.environ.get("HARBOR_LOCAL_DATASET_DIR", "").strip()
+          if local_dir:
+              # Local --path dataset: no registry manifest, so enumerate task names
+              # from disk -- immediate subdirs of the dataset dir (shell-validated:
+              # realpath, under datasets/, has dataset.toml) that contain a
+              # task.toml. Raw tasks carry no [task] name, so the dir basename IS the
+              # task name Harbor filters on via --include-task-name. Sorted for a
+              # stable partition that every shard computes identically.
+              names = sorted(
+                  entry.name
+                  for entry in os.scandir(local_dir)
+                  if entry.is_dir()
+                  and os.path.isfile(os.path.join(entry.path, "task.toml"))
               )
+              if not names:
+                  sys.exit(
+                      f"::error::No local Harbor tasks (dirs with task.toml) under {local_dir}"
+                  )
+          else:
+              md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
+              # Native manifest order (do NOT sort): the n_tasks cap must pick the
+              # same first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks]).
+              names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
+              if not names:
+                  # Resolved zero usable names from a non-empty manifest -> the id
+                  # shape changed and get_name() stopped yielding a name. Fail loudly
+                  # instead of letting every shard collapse into the legitimate-empty
+                  # no-op below, which would run the whole sharded job on nothing and
+                  # report green. (A genuinely empty selection is handled per-shard.)
+                  sys.exit(
+                      f"::error::Resolved 0 usable task names from {ds}@latest "
+                      f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
+                      "shape (get_name() returned nothing)."
+                  )
           selected = names
           if include_globs:
               selected = [

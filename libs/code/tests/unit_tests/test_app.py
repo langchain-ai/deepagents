@@ -1953,6 +1953,61 @@ class TestAppBindings:
         assert "ctrl+e" not in bindings_by_key
 
 
+class TestCtrlDChatInput:
+    """Test Ctrl+D deletion and quit behavior in the main chat input."""
+
+    async def test_ctrl_d_deletes_right_when_input_has_text(self) -> None:
+        """Ctrl+D should delete right of the cursor without quitting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "e", "l", "l", "o")
+            await pilot.press("ctrl+a")
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "ello"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_does_not_quit_at_end_of_non_empty_input(self) -> None:
+        """Ctrl+D should be a no-op at the end of a non-empty draft."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "i")
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "hi"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_when_input_is_empty(self) -> None:
+        """Ctrl+D should still quit when the focused chat input is empty."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            assert chat_input.value == ""
+            text_area.focus()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+
 class TestCtrlCCopySelection:
     """Test Ctrl+C copying a focused input's selection instead of quitting."""
 

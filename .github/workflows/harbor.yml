@@ -35,6 +35,7 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "tau3-subset"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false
@@ -381,6 +382,23 @@ jobs:
           mkdir -p ~/.cache/harbor
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
+      - name: "🎯 Resolve tau3-subset dataset"
+        # "tau3-subset" is a curated 30-task view of sierra-research/tau3-bench
+        # (6 easy telecom / 15 medium + 9 hard banking) for probing agent
+        # conversation behavior. Pull the task filter from the committed constant
+        # so the selection lives in one place (deepagents_evals.tau3_subset), run
+        # those tasks against the real registry dataset, and track results under a
+        # dedicated "tau3-subset" LangSmith dataset name.
+        if: env.HARBOR_DATASET == 'tau3-subset'
+        run: |
+          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+          {
+            echo "HARBOR_DATASET=sierra-research/tau3-bench"
+            echo "HARBOR_INCLUDE_TASKS=$include_tasks"
+            echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
+          } >> "$GITHUB_ENV"
+          echo "tau3-subset -> sierra-research/tau3-bench, $(printf '%s' "$include_tasks" | wc -w) tasks"
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -570,7 +588,7 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_DATASET}"
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"

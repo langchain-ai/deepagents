@@ -5,6 +5,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from deepagents_evals.tau3_subset import DATASET, INCLUDE_TASKS, TASKS
+
 ROOT = Path(__file__).parents[4]
 EVALS = ROOT / "libs" / "evals"
 
@@ -109,7 +111,9 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"' in workflow
     assert 'echo "- Included tasks: all"' in workflow
     assert 'echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"' in workflow
-    assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
+    assert (
+        'HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_DATASET}"' in workflow
+    )
     assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
     assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow
     assert "--agent langgraph" in workflow
@@ -239,3 +243,30 @@ def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
     assert "inputs.provider == 'fireworks'" in run_step
     assert "inputs.provider == 'ollama'" in run_step
     assert "startsWith(inputs.analysis_model, 'anthropic:')" in analysis_step
+
+
+def test_harbor_workflow_wires_tau3_subset() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+
+    # "tau3-subset" is a selectable dataset.
+    assert '- "tau3-subset"' in workflow
+    # Its resolution step pulls the committed task filter, runs against the real
+    # registry dataset, and names the LangSmith dataset "tau3-subset".
+    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in workflow
+    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
+    assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
+    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+
+
+def test_tau3_subset_constant_is_well_formed() -> None:
+    tiers = [t.tier for t in TASKS]
+    assert len(TASKS) == 30
+    assert (tiers.count("easy"), tiers.count("medium"), tiers.count("hard")) == (
+        6,
+        15,
+        9,
+    )
+    entries = INCLUDE_TASKS.split()
+    assert len(entries) == 30
+    assert all(e.startswith(f"{DATASET}__tau3-") for e in entries)
+    assert all(t.justification for t in TASKS)

@@ -744,6 +744,15 @@ jobs:
             --harbor-result "$HARBOR_RESULT" \
             --out-dir _shards
 
+      - name: "🏷️ Stamp category (combined artifact root)"
+        # Surface category.txt at the artifact root. The per-shard copy is nested
+        # under shard-*/, but aggregate_unified.py's leaf discovery looks for
+        # summary.json + category.txt at the TOP level of each downloaded artifact.
+        env:
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          printf '%s\n' "$CATEGORY" > _shards/category.txt
+
       - name: "📤 Upload combined results"
         # One zip per category: the merged shard harbor data plus summary.json
         # and per_task.jsonl.

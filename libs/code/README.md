@@ -39,7 +39,7 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Remote sandboxes** — run code in isolated environments (LangSmith, AgentCore, Daytona, Modal, Runloop, & more)
 - **Persistent memory** — agent remembers context across conversations
 - **Custom skills** — extend the agent with your own slash commands
-- **Experimental plugins** — load marketplace skills, commands, agents, hooks, and MCP servers
+- **Experimental plugins** — load marketplace skills, commands, agents, and MCP servers
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
@@ -49,8 +49,9 @@ By default, `dcode` trusts the directory you run it in. Human-in-the-loop approv
 
 Do not run `dcode` in a directory you do not trust without a sandbox backend. For untrusted repositories, use a [remote sandbox](https://docs.langchain.com/oss/python/deepagents/code/remote-sandboxes) so execution is isolated from your machine. Running `dcode` in a directory lets that directory's files shape execution. See [`THREAT_MODEL.md`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/THREAT_MODEL.md) for details.
 
-Plugins can add executable hooks and MCP servers. Their exact executable
-surface must be trusted before activation; see [`PLUGINS.md`](./PLUGINS.md).
+Plugins can add executable MCP servers. Their exact executable surface must be
+trusted before activation; see [`PLUGINS.md`](./PLUGINS.md). Plugin hook
+declarations are detected but not executed.
 
 ## 📖 Resources
 

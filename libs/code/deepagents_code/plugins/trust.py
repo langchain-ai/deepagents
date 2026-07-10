@@ -50,12 +50,7 @@ def plugin_surface_fingerprint(
             _file_fingerprint(path, root)
             for path in sorted(inventory.mcp_files, key=str)
         ],
-        "hook_files": [
-            _file_fingerprint(path, root)
-            for path in sorted(inventory.hooks_files, key=str)
-        ],
         "inline_mcp": manifest.inline_mcp if manifest else {},
-        "inline_hooks": manifest.inline_hooks if manifest else (),
     }
     encoded = json.dumps(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True

@@ -6,7 +6,6 @@ import io
 import json
 import re
 import shutil
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -35,12 +34,6 @@ from deepagents_code.plugins import (
     remove_marketplace,
     trust_plugin,
     uninstall_plugin,
-)
-from deepagents_code.plugins.adapters.hooks import (
-    PluginHook,
-    run_post_tool_hooks,
-    run_pre_tool_hooks,
-    run_user_prompt_hooks,
 )
 from deepagents_code.plugins.adapters.mcp import (
     plugin_mcp_configs,
@@ -249,9 +242,7 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert load_enabled_plugins().get("quality-review-plugin@company-tools")
 
 
-def test_plugin_manager_lists_all_supported_components(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_plugin_manager_marks_hooks_unsupported(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
     )
@@ -290,13 +281,14 @@ def test_plugin_manager_lists_all_supported_components(
     detail = str(PluginManagerScreen._installed_plugin_details_content(row))
     assert "Commands: 1 command" in detail
     assert "Agents: 1 agent" in detail
-    assert "Hooks: 1 hook" in detail
+    assert "Hooks: 1 hook (unsupported)" in detail
+    assert "Hooks are detected but not loaded in this release" in detail
 
     prompt = str(PluginManagerScreen._plugin_prompt(row, status=None))
     assert "Plugin ·" in prompt or " · Plugin · " in prompt
     assert "1 command" in prompt
     assert "1 agent" in prompt
-    assert "1 hook" in prompt
+    assert "1 hook (unsupported)" in prompt
 
 
 async def test_plugin_manager_installed_details_favorite_and_disable(
@@ -1278,168 +1270,6 @@ def test_plugin_commands_and_agents_load_with_canonical_names(
     assert "Ignoring permissionMode" in caplog.text
     assert "Ignoring hooks" in caplog.text
     assert "Ignoring mcpServers" in caplog.text
-
-
-def test_plugin_observational_hook_receives_tool_payload(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    plugin_root = tmp_path / "session-plugin"
-    output = tmp_path / "hook-output.json"
-    script = tmp_path / "capture.py"
-    script.write_text(
-        "import pathlib, sys\n"
-        "pathlib.Path(sys.argv[1]).write_text(sys.stdin.read(), encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-    _write_json(
-        plugin_root / ".claude-plugin" / "plugin.json",
-        {"name": "session-plugin"},
-    )
-    _write_json(
-        plugin_root / "hooks" / "hooks.json",
-        {
-            "hooks": {
-                "PostToolUse": [
-                    {
-                        "matcher": "Write",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": f"{sys.executable} {script} {output}",
-                            }
-                        ],
-                    }
-                ]
-            }
-        },
-    )
-    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
-    snapshot = reload_plugin_snapshot(project_dir=tmp_path)
-    assert len(snapshot.hooks) == 1
-
-    context = run_post_tool_hooks(
-        snapshot.hooks,
-        tool_name="write_file",
-        tool_input={"path": "a.py"},
-        tool_output="updated",
-        failed=False,
-        session_id="session-1",
-        cwd=tmp_path,
-    )
-
-    assert context == ""
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["hook_event_name"] == "PostToolUse"
-    assert payload["tool_name"] == "Write"
-    assert payload["session_id"] == "session-1"
-
-
-def test_plugin_pre_tool_hook_denial_wins(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    plugin_root = tmp_path / "session-plugin"
-    script = tmp_path / "deny.py"
-    script.write_text(
-        "import sys\nsys.stderr.write('blocked by plugin')\nsys.exit(2)\n",
-        encoding="utf-8",
-    )
-    _write_json(
-        plugin_root / ".claude-plugin" / "plugin.json",
-        {"name": "session-plugin"},
-    )
-    _write_json(
-        plugin_root / "hooks" / "hooks.json",
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Write",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": f"{sys.executable} {script}",
-                            }
-                        ],
-                    }
-                ]
-            }
-        },
-    )
-    monkeypatch.setenv(PLUGIN_DIRS, str(plugin_root))
-    snapshot = reload_plugin_snapshot(project_dir=tmp_path)
-
-    result = run_pre_tool_hooks(
-        snapshot.hooks,
-        tool_name="write_file",
-        tool_input={"path": "a.py"},
-    )
-
-    assert result.decision == "deny"
-    assert result.reason == "blocked by plugin"
-
-
-@pytest.mark.parametrize("decision", ["allow", "ask"])
-def test_plugin_pre_tool_hook_structured_decisions(
-    decision: str,
-    tmp_path: Path,
-) -> None:
-    script = tmp_path / "decision.py"
-    script.write_text(
-        "import json, sys\n"
-        "print(json.dumps({'hookSpecificOutput': {"
-        "'permissionDecision': sys.argv[1], "
-        "'permissionDecisionReason': 'review required', "
-        "'additionalContext': 'hook context'}}))\n",
-        encoding="utf-8",
-    )
-    hook = PluginHook(
-        event="tool.use",
-        source_event="PreToolUse",
-        command=(sys.executable, str(script), decision),
-        plugin_id="plugin@inline",
-        matcher="Write",
-        cwd=str(tmp_path),
-        blocking=True,
-    )
-
-    result = run_pre_tool_hooks(
-        (hook,),
-        tool_name="write_file",
-        tool_input={"path": "a.py"},
-        session_id="session-1",
-        cwd=tmp_path,
-    )
-
-    assert result.decision == decision
-    assert result.additional_context == "hook context"
-    if decision == "ask":
-        assert result.reason == "review required"
-
-
-def test_plugin_user_prompt_hook_blocks_submission(tmp_path: Path) -> None:
-    script = tmp_path / "block_prompt.py"
-    script.write_text(
-        "import json\n"
-        "print(json.dumps({'decision': 'block', 'reason': 'prompt blocked'}))\n",
-        encoding="utf-8",
-    )
-    hook = PluginHook(
-        event="user.prompt",
-        source_event="UserPromptSubmit",
-        command=(sys.executable, str(script)),
-        plugin_id="plugin@inline",
-        cwd=str(tmp_path),
-    )
-
-    result = run_user_prompt_hooks(
-        (hook,),
-        prompt="dangerous prompt",
-        session_id="session-1",
-        cwd=tmp_path,
-    )
-
-    assert result.decision == "deny"
-    assert result.reason == "prompt blocked"
 
 
 def test_remove_marketplace_removes_installs_and_cache(

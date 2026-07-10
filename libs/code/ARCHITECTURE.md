@@ -60,14 +60,14 @@ the active runtime:
    records its user, project, or local scope.
 3. Discovery resolves scoped enablement and session-only `--plugin-dir`
    overrides.
-4. A runtime snapshot validates and groups skills, commands, agents, hooks, and
-   MCP configuration.
+4. A runtime snapshot validates and groups skills, commands, agents, and MCP
+   configuration.
 5. The server consumes one immutable snapshot. `/reload-plugins` builds a
    replacement before swapping and restarts MCP-owning server state.
 
-Executable plugin surfaces require a versioned fingerprint trust decision.
-Client-side hooks handle lifecycle and prompt events; server middleware handles
-pre/post tool decisions so a plugin denial occurs on the execution path.
+Executable plugin MCP surfaces require a versioned fingerprint trust decision.
+Plugin hook declarations remain inventoried but are not executed until the hook
+architecture is finalized.
 
 ## Design tradeoffs
 

@@ -711,7 +711,7 @@ class PluginManagerScreen(ModalScreen[None]):
             meta_parts.append(f"{row.agent_count} {unit}")
         if row.hook_count:
             unit = "hook" if row.hook_count == 1 else "hooks"
-            meta_parts.append(f"{row.hook_count} {unit}")
+            meta_parts.append(f"{row.hook_count} {unit} (unsupported)")
         if row.mcp_connected is True:
             meta_parts.append(f"{glyphs.checkmark} connected")
         elif row.mcp_connected is False:
@@ -844,13 +844,23 @@ class PluginManagerScreen(ModalScreen[None]):
             component_lines.append(f"Agents: {row.agent_count} {unit}")
         if row.hook_count:
             unit = "hook" if row.hook_count == 1 else "hooks"
-            component_lines.append(f"Hooks: {row.hook_count} {unit}")
+            component_lines.append(f"Hooks: {row.hook_count} {unit} (unsupported)")
         if row.mcp_server_names:
             component_lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
         if not component_lines:
             component_lines.append("No components discovered.")
         for line in component_lines:
             parts.extend(["\n  ", Content.styled(line, "dim")])
+        if row.hook_count:
+            parts.extend(
+                [
+                    "\n\n",
+                    Content.styled(
+                        "Hooks are detected but not loaded in this release.",
+                        "dim",
+                    ),
+                ]
+            )
         return Content.assemble(*parts)
 
     @staticmethod

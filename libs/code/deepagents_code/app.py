@@ -7705,44 +7705,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.hooks import dispatch_hook
 
-        try:
-            from deepagents_code._env_vars import experimental_enabled
-
-            if experimental_enabled():
-                from deepagents_code.config import settings
-                from deepagents_code.plugins.adapters.hooks import (
-                    run_user_prompt_hooks,
-                )
-                from deepagents_code.plugins.runtime import get_plugin_snapshot
-
-                snapshot = get_plugin_snapshot(
-                    project_dir=settings.project_root or Path.cwd()
-                )
-                hook_result = await asyncio.to_thread(
-                    run_user_prompt_hooks,
-                    snapshot.hooks,
-                    prompt=value,
-                    session_id=self._lc_thread_id or "",
-                    cwd=settings.project_root or Path.cwd(),
-                )
-                if hook_result.decision == "deny":
-                    await self._mount_message(UserMessage(value))
-                    await self._mount_message(
-                        ErrorMessage(
-                            hook_result.reason or "Plugin hook blocked the prompt"
-                        )
-                    )
-                    return
-                if hook_result.additional_context:
-                    value = (
-                        f"{value}\n\n<system-reminder>"
-                        f"{hook_result.additional_context}"
-                        "</system-reminder>"
-                    )
-        except Exception:
-            logger.warning("User-prompt plugin hook failed", exc_info=True)
-
-        await dispatch_hook("user.prompt", {"prompt": value})
+        await dispatch_hook("user.prompt", {})
 
         await self._submit_input(value, mode)
 
@@ -15241,6 +15204,11 @@ class DeepAgentsApp(App):
                 restarted = await self._restart_server_manual()
 
         skill_count = len(plugin_skill_names)
+        unsupported_hooks = sum(
+            len(plugin.inventory.hooks_files)
+            + (len(plugin.manifest.inline_hooks) if plugin.manifest else 0)
+            for plugin in plugin_result.plugins
+        )
         parts = [
             f"{plugin_count} plugin{'s' if plugin_count != 1 else ''}",
             f"{skill_count} skill{'s' if skill_count != 1 else ''}",
@@ -15252,13 +15220,15 @@ class DeepAgentsApp(App):
                 f"{len(plugin_snapshot.agents)} agent"
                 f"{'s' if len(plugin_snapshot.agents) != 1 else ''}"
             ),
-            (
-                f"{len(plugin_snapshot.hooks)} hook"
-                f"{'s' if len(plugin_snapshot.hooks) != 1 else ''}"
-            ),
             f"{mcp_count} plugin MCP server{'s' if mcp_count != 1 else ''}",
         ]
         report = f"Reloaded: {' · '.join(parts)}"
+        if unsupported_hooks:
+            report += (
+                f"\nSkipped unsupported: {unsupported_hooks} hook"
+                f"{'s' if unsupported_hooks != 1 else ''} "
+                "(not loaded in this release)."
+            )
         if not discovery_ok:
             report += "\nSkill re-discovery failed; existing /skill: list left as-is."
         elif added_skills or removed_skills:

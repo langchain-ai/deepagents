@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 from deepagents_code.plugins.adapters.agents import plugin_agents
 from deepagents_code.plugins.adapters.commands import PluginCommand, plugin_commands
-from deepagents_code.plugins.adapters.hooks import PluginHook, plugin_hooks
 from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 from deepagents_code.plugins.adapters.skills import (
     SkillSourceTuple,
@@ -36,7 +35,6 @@ class PluginRuntimeSnapshot:
     skill_roots: tuple[Path, ...]
     commands: tuple[PluginCommand, ...]
     agents: tuple[SubagentMetadata, ...]
-    hooks: tuple[PluginHook, ...]
     mcp_configs: tuple[dict[str, Any], ...]
     fingerprint: str
 
@@ -81,7 +79,6 @@ def _snapshot_fingerprint(result: PluginDiscoveryResult) -> str:
             *plugin.inventory.skills,
             *plugin.inventory.commands,
             *plugin.inventory.agents,
-            *plugin.inventory.hooks_files,
             *plugin.inventory.mcp_files,
         )
         payload.append(
@@ -113,7 +110,6 @@ def build_plugin_snapshot(*, project_dir: Path | None = None) -> PluginRuntimeSn
         skill_roots=tuple(plugin_skill_roots(result.plugins)),
         commands=plugin_commands(result.plugins),
         agents=plugin_agents(result.plugins),
-        hooks=plugin_hooks(result.plugins),
         mcp_configs=tuple(plugin_mcp_configs(result.plugins, project_dir=project_dir)),
         fingerprint=_snapshot_fingerprint(result),
     )

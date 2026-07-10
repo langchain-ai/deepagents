@@ -52,16 +52,6 @@ def test_session_plugin_builds_complete_runtime_snapshot(
         plugin / ".mcp.json",
         {"mcpServers": {"docs": {"command": "docs-server"}}},
     )
-    _write_json(
-        plugin / "hooks" / "hooks.json",
-        {
-            "hooks": {
-                "PostToolUse": [
-                    {"hooks": [{"type": "command", "command": "echo complete"}]}
-                ]
-            }
-        },
-    )
     monkeypatch.setenv(EXPERIMENTAL, "1")
     monkeypatch.setenv(PLUGIN_DIRS, str(plugin))
     monkeypatch.setattr(
@@ -78,5 +68,4 @@ def test_session_plugin_builds_complete_runtime_snapshot(
     assert snapshot.skill_sources[0][2] == "integration-plugin:"
     assert snapshot.commands[0].name == "integration-plugin:check"
     assert snapshot.agents[0]["name"] == "integration-plugin:reviewer"
-    assert snapshot.hooks[0].source_event == "PostToolUse"
     assert snapshot.mcp_configs

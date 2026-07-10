@@ -72,10 +72,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import subprocess  # noqa: S404
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -159,7 +157,7 @@ def _load_hooks() -> list[dict[str, Any]]:
     return _hooks_config
 
 
-def _run_single_hook(hook: dict[str, Any], event: str, payload_bytes: bytes) -> None:
+def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> None:
     """Execute a single hook command, writing the JSON payload to its stdin.
 
     On timeout `subprocess.run` kills and reaps only the direct hook process
@@ -170,31 +168,10 @@ def _run_single_hook(hook: dict[str, Any], event: str, payload_bytes: bytes) -> 
     their own session so a signal to our group doesn't reach them.
 
     Args:
-        hook: Hook definition containing command and process options.
+        command: The command and arguments to run.
         event: Event name (for logging).
         payload_bytes: JSON payload to write to the command's stdin.
     """
-    command = hook["command"]
-    timeout = hook.get("timeout", HOOK_SUBPROCESS_TIMEOUT)
-    env = hook.get("env")
-    cwd = hook.get("cwd")
-    source_event = hook.get("source_event")
-    if isinstance(source_event, str):
-        try:
-            raw_payload = json.loads(payload_bytes)
-        except json.JSONDecodeError:
-            raw_payload = {}
-        session_id = raw_payload.get("thread_id", raw_payload.get("session_id", ""))
-        payload_bytes = json.dumps(
-            {
-                "session_id": session_id,
-                "transcript_path": "",
-                "cwd": str(Path.cwd()),
-                "hook_event_name": source_event,
-                **raw_payload,
-            },
-            default=str,
-        ).encode()
     try:
         subprocess.run(  # noqa: S603
             command,
@@ -202,15 +179,13 @@ def _run_single_hook(hook: dict[str, Any], event: str, payload_bytes: bytes) -> 
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            timeout=timeout,
+            timeout=HOOK_SUBPROCESS_TIMEOUT,
             check=False,
-            env=env if isinstance(env, dict) else None,
-            cwd=cwd if isinstance(cwd, str) else None,
         )
     except subprocess.TimeoutExpired:
         logger.warning(
             "Hook command timed out (>%ss) for event %s: %s",
-            timeout,
+            HOOK_SUBPROCESS_TIMEOUT,
             event,
             command,
         )
@@ -245,11 +220,7 @@ def _dispatch_hook_sync(
         payload_bytes: JSON payload to write to each command's stdin.
         hooks: List of hook definition dicts from the config file.
     """
-    matching: list[dict[str, Any]] = []
-    try:
-        payload = json.loads(payload_bytes)
-    except json.JSONDecodeError:
-        payload = {}
+    matching: list[list[str]] = []
     for hook in hooks:
         command = hook.get("command")
         if not isinstance(command, list) or not command:
@@ -269,35 +240,7 @@ def _dispatch_hook_sync(
         if events and event not in events:
             continue
 
-        matcher = hook.get("matcher")
-        if isinstance(matcher, str):
-            tool_name = payload.get("tool_name")
-            candidate = tool_name if isinstance(tool_name, str) else ""
-            source_event = hook.get("source_event")
-            tool_args = payload.get("tool_args")
-            if (
-                source_event in {"SubagentStart", "SubagentStop"}
-                and isinstance(tool_args, dict)
-                and isinstance(tool_args.get("subagent_type"), str)
-            ):
-                candidate = tool_args["subagent_type"]
-            elif isinstance(source_event, str):
-                from deepagents_code.plugins.adapters.hooks import (
-                    map_hook_tool_call,
-                )
-
-                candidate, _mapped = map_hook_tool_call(
-                    candidate,
-                    tool_args if isinstance(tool_args, dict) else {},
-                )
-            try:
-                if re.search(matcher, candidate) is None:
-                    continue
-            except re.error:
-                if candidate != matcher:
-                    continue
-
-        matching.append(hook)
+        matching.append(command)
 
     if not matching:
         return
@@ -308,8 +251,7 @@ def _dispatch_hook_sync(
 
     with ThreadPoolExecutor(max_workers=len(matching)) as pool:
         futures = [
-            pool.submit(_run_single_hook, hook, event, payload_bytes)
-            for hook in matching
+            pool.submit(_run_single_hook, cmd, event, payload_bytes) for cmd in matching
         ]
         for future in futures:
             future.result()
@@ -330,33 +272,7 @@ async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
         payload: Arbitrary JSON-serializable mapping sent on the command's stdin.
     """
     try:
-        hooks = list(_load_hooks())
-        try:
-            from deepagents_code._env_vars import experimental_enabled
-
-            if experimental_enabled():
-                from deepagents_code.config import settings
-                from deepagents_code.plugins.runtime import get_plugin_snapshot
-
-                snapshot = get_plugin_snapshot(
-                    project_dir=settings.project_root or Path.cwd()
-                )
-                hooks.extend(
-                    {
-                        "command": list(hook.command),
-                        "cwd": hook.cwd,
-                        "env": dict(hook.env) if hook.env is not None else None,
-                        "events": [hook.event],
-                        "matcher": hook.matcher,
-                        "source_event": hook.source_event,
-                        "timeout": hook.timeout,
-                    }
-                    for hook in snapshot.hooks
-                    if not hook.blocking
-                    and hook.source_event not in {"PostToolUse", "PostToolUseFailure"}
-                )
-        except Exception:
-            logger.warning("Could not load plugin hooks", exc_info=True)
+        hooks = _load_hooks()
         if not hooks:
             return
 

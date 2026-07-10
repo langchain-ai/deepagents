@@ -121,25 +121,18 @@
 ### Plugin trust boundary
 
 Plugins may contribute prompt-level components (skills, commands, and agents)
-and executable components (hooks and MCP servers). Installed artifacts are
-copied into a managed versioned cache. Session-only `--plugin-dir` plugins load
-from user-selected paths.
+and executable MCP servers. Installed artifacts are copied into a managed
+versioned cache. Session-only `--plugin-dir` plugins load from user-selected
+paths. Plugin hook declarations are inventoried but not executed.
 
-MCP and hook activation requires a trust record matching the plugin id,
-version, and normalized executable-surface fingerprint. A changed command,
-environment, hook file, or MCP definition invalidates the decision. Missing or
-corrupt trust state fails closed. Plugin-agent frontmatter cannot add
-permission modes, hooks, or MCP servers.
-
-Pre-tool hooks execute server-side before the tool handler. A deny always
-blocks, including in auto-approve mode; ask routes through HITL when the tool is
-gated and otherwise fails closed. Allow may suppress a prompt but cannot
-override an independent user or policy denial. Post-tool hooks cannot undo
-execution and only add model feedback.
+MCP activation requires a trust record matching the plugin id, version, and
+normalized executable-surface fingerprint. A changed MCP definition invalidates
+the decision. Missing or corrupt trust state fails closed. Plugin-agent
+frontmatter cannot add permission modes, hooks, or MCP servers.
 
 Marketplace URLs are redacted before persistence and display. Uninstall and
 marketplace cleanup refuse to recursively delete paths outside managed plugin
-cache roots. Plugin subprocesses still execute with the local user's OS
+cache roots. Plugin MCP subprocesses still execute with the local user's OS
 permissions, so trust is consent, not sandboxing.
 
 ---

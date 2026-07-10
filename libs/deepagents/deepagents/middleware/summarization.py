@@ -258,11 +258,26 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
     return False
 
 
-def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
+_PROFILELESS_TRIGGER_FRACTION = 0.75
+"""Fraction of a caller-supplied ceiling used to trigger compaction when the
+model profile omits `max_input_tokens`.
+
+Kept well below 1.0 because the approximate token counter under-counts relative
+to provider tokenizers; compaction must fire before the real ceiling.
+"""
+
+
+def compute_summarization_defaults(
+    model: BaseChatModel,
+    max_input_tokens: int | None = None,
+) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
 
     Args:
         model: A resolved chat model instance.
+        max_input_tokens: Explicit provider input-token ceiling for the active
+            model. Used to size a token-based trigger when the model profile
+            omits `max_input_tokens`.
 
     Returns:
         Default settings for trigger, keep, and truncate_args_settings.
@@ -283,6 +298,20 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
             "truncate_args_settings": {
                 "trigger": ("fraction", 0.85),
                 "keep": ("fraction", 0.10),
+            },
+        }
+
+    # Profile lacks `max_input_tokens`: if the caller supplied the model's real
+    # provider ceiling, size the trigger to a safe fraction of it so compaction
+    # fires before the provider hard limit even without a usable profile.
+    if isinstance(max_input_tokens, int) and max_input_tokens > 0:
+        trigger_tokens = int(max_input_tokens * _PROFILELESS_TRIGGER_FRACTION)
+        return {
+            "trigger": ("tokens", trigger_tokens),
+            "keep": ("messages", 6),
+            "truncate_args_settings": {
+                "trigger": ("messages", 20),
+                "keep": ("messages", 20),
             },
         }
 
@@ -1496,7 +1525,22 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = handler(request.override(messages=modified_messages))
+        try:
+            response = handler(request.override(messages=modified_messages))
+        except ContextOverflowError:
+            # The summarized suffix is still over budget (e.g. an oversized
+            # preserved tail). Clip the tail once more before retrying so the
+            # agent never loops on an oversized request.
+            preserved_messages, extra_tail = _clip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            new_state_tail = [*new_state_tail, *extra_tail]
+            response = handler(request.override(messages=[*new_messages, *preserved_messages]))
 
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
@@ -1631,7 +1675,22 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = await handler(request.override(messages=modified_messages))
+        try:
+            response = await handler(request.override(messages=modified_messages))
+        except ContextOverflowError:
+            # The summarized suffix is still over budget (e.g. an oversized
+            # preserved tail). Clip the tail once more before retrying so the
+            # agent never loops on an oversized request.
+            preserved_messages, extra_tail = await _aclip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            new_state_tail = [*new_state_tail, *extra_tail]
+            response = await handler(request.override(messages=[*new_messages, *preserved_messages]))
 
         update: dict[str, Any] = {"_summarization_event": new_event}
         if new_state_tail:
@@ -1658,6 +1717,7 @@ def create_summarization_middleware(
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
     token_counter: TokenCounter = count_tokens_approximately,
+    max_input_tokens: int | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1702,6 +1762,9 @@ def create_summarization_middleware(
         summary_prompt: Prompt template for generating summaries.
         trim_tokens_to_summarize: Max tokens to include when generating summary.
         token_counter: Function to count tokens in messages.
+        max_input_tokens: Explicit provider input-token ceiling for the active
+            model. Used to size the trigger when the model profile omits
+            `max_input_tokens`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1715,7 +1778,7 @@ def create_summarization_middleware(
         msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
         raise TypeError(msg)
 
-    defaults = compute_summarization_defaults(model)
+    defaults = compute_summarization_defaults(model, max_input_tokens=max_input_tokens)
     return SummarizationMiddleware(
         model=model,
         backend=backend,
@@ -1733,6 +1796,7 @@ def create_summarization_tool_middleware(
     backend: BACKEND_TYPES,
     *,
     system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+    max_input_tokens: int | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -1766,6 +1830,9 @@ def create_summarization_tool_middleware(
         backend: Backend instance or factory for persisting conversation history.
         system_prompt: System-prompt fragment nudging the model to call
             `compact_conversation`. Pass `None` to skip appending the nudge.
+        max_input_tokens: Explicit provider input-token ceiling for the active
+            model. Used to size the trigger when the model profile omits
+            `max_input_tokens`.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1815,7 +1882,7 @@ def create_summarization_tool_middleware(
 
     if isinstance(model, str):
         model = resolve_model(model)
-    summarization = create_summarization_middleware(model, backend)
+    summarization = create_summarization_middleware(model, backend, max_input_tokens=max_input_tokens)
     return SummarizationToolMiddleware(summarization, system_prompt=system_prompt)
 
 

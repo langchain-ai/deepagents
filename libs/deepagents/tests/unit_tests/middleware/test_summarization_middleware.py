@@ -21,6 +21,7 @@ from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     _token_counter_accepts_tools,
     _upload_response_error,
+    compute_summarization_defaults,
 )
 
 if TYPE_CHECKING:
@@ -2944,6 +2945,124 @@ async def test_async_context_overflow_triggers_summarization() -> None:
 
     # Backend should have offloaded messages
     assert len(backend.write_calls) == 1
+
+
+def test_profileless_model_compacts_over_budget_conversation() -> None:
+    """A profile-less model with an explicit ceiling compacts instead of raising.
+
+    Regression: when `model.profile` lacks `max_input_tokens`, the token-based
+    trigger derived from the caller-supplied ceiling must fire on an over-budget
+    conversation so the model call succeeds rather than raising
+    `ContextOverflowError`.
+    """
+    # Charge per non-summary message so a short summary + a small preserved tail
+    # counts well under budget, but the full history is over the ceiling.
+    def token_counter(messages: list[BaseMessage], **_kwargs: Any) -> int:
+        total = 0
+        for msg in messages:
+            total += 5_000 if getattr(msg, "additional_kwargs", {}).get("lc_source") == "summarization" else 30_000
+        return total
+
+    mock_model = make_mock_model()
+    mock_model.profile = None
+
+    # Profile lacks `max_input_tokens`: the explicit ceiling must produce a
+    # token trigger below the provider limit.
+    defaults = compute_summarization_defaults(mock_model, max_input_tokens=200_000)
+    # 0.75 * 200_000 = 150_000: fires below the provider ceiling.
+    assert defaults["trigger"] == ("tokens", 150000)
+
+    backend = MockBackend()
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=defaults["trigger"],
+        keep=("messages", 2),
+        token_counter=token_counter,
+    )
+
+    messages = make_conversation_messages(num_old=6, num_recent=2)
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+    request = ModelRequest(
+        model=mock_model,
+        messages=messages,
+        system_message=None,
+        runtime=runtime,
+        state=state,
+    )
+
+    def handler(req: ModelRequest) -> "ModelResponse":
+        # Simulate the provider ceiling: any still-oversized request raises.
+        if token_counter(req.messages) >= 200_000:
+            raise ContextOverflowError
+        return AIMessage(content="Success after compaction")
+
+    with mock_get_config():
+        result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert result.command.update is not None
+    assert "_summarization_event" in result.command.update
+    assert len(backend.write_calls) == 1
+
+
+def test_post_summarization_retry_clips_on_second_overflow() -> None:
+    """A still-oversized summarized suffix is clipped once more, not looped on.
+
+    Regression: the post-summarization retry must guard against a second
+    `ContextOverflowError` by clipping the preserved tail again instead of
+    re-raising and letting the agent retry the oversized request.
+    """
+    mock_model = make_mock_model()
+    backend = MockBackend()
+    # Low message trigger so normal summarization fires (no overflow pre-clip),
+    # exercising the defensive guard on the summarized-suffix retry itself.
+    middleware = SummarizationMiddleware(
+        model=mock_model,
+        backend=backend,
+        trigger=("messages", 3),
+        keep=("messages", 2),
+    )
+
+    messages: list[BaseMessage] = [
+        HumanMessage(content="User asks for a big file", id="h1"),
+        HumanMessage(content="another question", id="h2"),
+        AIMessage(
+            content="reading",
+            id="a1",
+            tool_calls=[{"id": "tc-1", "name": "read_file", "args": {"file_path": "/big.txt"}}],
+        ),
+        ToolMessage(content="X" * 200_000, tool_call_id="tc-1", id="t1"),
+    ]
+    state = cast("AgentState[Any]", {"messages": messages})
+    runtime = make_mock_runtime()
+    request = ModelRequest(
+        model=mock_model,
+        messages=messages,
+        system_message=None,
+        runtime=runtime,
+        state=state,
+    )
+
+    # Overflow on the raw call and again on the first summarized-suffix call
+    # (oversized preserved ToolMessage). Succeed only once the tail is clipped.
+    call_count = {"count": 0}
+
+    def handler(req: ModelRequest) -> "ModelResponse":
+        call_count["count"] += 1
+        oversized = any(len(str(m.content)) > 50_000 for m in req.messages)
+        if oversized:
+            raise ContextOverflowError
+        return AIMessage(content="Success after clip")
+
+    with mock_get_config():
+        result = middleware.wrap_model_call(request, handler)
+
+    assert isinstance(result, ExtendedModelResponse)
+    # First summarized-suffix call (still oversized), then clipped retry.
+    assert call_count["count"] == 2
 
 
 def test_profile_inference_triggers_summary() -> None:

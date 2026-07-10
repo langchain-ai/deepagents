@@ -44,6 +44,20 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._truncate_args_keep == ("messages", 20)
 
 
+def test_factory_uses_explicit_max_input_tokens_without_profile() -> None:
+    """Sizes a fraction-of-ceiling token trigger when profile lacks the limit."""
+    model = _make_model(with_profile_limit=None)
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        max_input_tokens=272_000,
+    )
+
+    # 0.75 * 272_000 -- fires before the provider ceiling despite a missing profile.
+    assert middleware._lc_helper.trigger == ("tokens", 204000)
+    assert middleware._lc_helper.keep == ("messages", 6)
+
+
 def test_factory_default_prompt_explains_media_references() -> None:
     """Explains preserved media tags in the default summary prompt."""
     model = _make_model(with_profile_limit=None)

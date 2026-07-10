@@ -101,6 +101,34 @@ logger = logging.getLogger(__name__)
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
+_MODEL_MAX_INPUT_TOKENS: dict[str, int] = {
+    "gpt-5.6-luna": 272000,
+    "gpt-5.6-sol": 272000,
+    "gpt-5.6-terra": 272000,
+    "gpt-5.5": 200000,
+}
+"""Real provider input-token ceilings for models whose runtime `model.profile`
+omits or mismatches `max_input_tokens`.
+
+Summarization compaction is sized against these so it fires before the provider
+hard limit even when the profile is absent. Keyed by the provider-native model
+identifier (without the `provider:` prefix).
+"""
+
+
+def _resolve_max_input_tokens(model: str | BaseChatModel) -> int | None:
+    """Return the real provider input-token ceiling for `model`, or `None`."""
+    from deepagents._models import get_model_identifier  # noqa: PLC2701
+
+    if isinstance(model, str):
+        identifier = model.split(":", 1)[-1]
+    else:
+        identifier = get_model_identifier(model)
+    if not identifier:
+        return None
+    return _MODEL_MAX_INPUT_TOKENS.get(identifier)
+
+
 _RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
 _RUBRIC_GRADER_SYSTEM_PROMPT = (
     GRADER_SYSTEM_PROMPT
@@ -1800,7 +1828,11 @@ def create_cli_agent(
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 
     agent_middleware.append(
-        create_summarization_tool_middleware(model, composite_backend)
+        create_summarization_tool_middleware(
+            model,
+            composite_backend,
+            max_input_tokens=_resolve_max_input_tokens(model),
+        )
     )
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a

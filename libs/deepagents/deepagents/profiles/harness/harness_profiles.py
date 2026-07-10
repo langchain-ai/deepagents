@@ -801,6 +801,113 @@ def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
     return prompt
 
 
+def _transition_harness_profile_prompt(
+    prompt: str,
+    current: HarnessProfile,
+    target: HarnessProfile,
+) -> str:
+    """Swap the current profile's trailing suffix for the target's.
+
+    Both operations are tail-anchored: each profile's `system_prompt_suffix`
+    is expected at the very end of `prompt` behind a blank-line separator,
+    mirroring how `_apply_profile_prompt` appends it. When the current suffix
+    is present but *not* the exact tail (e.g. another layer appended text after
+    it), removal cannot proceed safely, so it is skipped with a warning rather
+    than silently leaving the stale suffix embedded while also appending the
+    target's.
+
+    Args:
+        prompt: Assembled system prompt for the current model.
+        current: Profile used when the agent graph was compiled.
+        target: Profile resolved for the runtime model.
+
+    Returns:
+        The prompt ending in exactly one `target` suffix (when the target sets
+            one), with the trailing `current` suffix stripped when it was found
+            at the end.
+    """
+    if current.system_prompt_suffix is not None:
+        marker = f"\n\n{current.system_prompt_suffix}"
+        if prompt.endswith(marker):
+            prompt = prompt.removesuffix(marker)
+        elif current.system_prompt_suffix in prompt:
+            logger.warning(
+                "Current harness profile suffix is present but not at the end "
+                "of the system prompt; leaving it in place to avoid corrupting "
+                "the prompt. Target-profile guidance may be duplicated.",
+            )
+    if target.system_prompt_suffix is not None:
+        suffix = f"\n\n{target.system_prompt_suffix}"
+        prompt = prompt.removesuffix(suffix) + suffix
+    return prompt
+
+
+def _harness_profile_transition_rebuild_fields(
+    current: HarnessProfile,
+    target: HarnessProfile,
+) -> tuple[str, ...]:
+    """Return the graph-compiled fields that differ between two profiles.
+
+    `system_prompt_suffix` is deliberately excluded because it is the only
+    field `_transition_harness_profile_prompt` can re-apply at runtime; every
+    other `HarnessProfile` field is baked into the compiled graph. Keep this
+    exclusion in sync with `_transition_harness_profile_prompt`: if a new
+    runtime-safe field is added there, exclude it here too.
+
+    Args:
+        current: Profile used when the agent graph was compiled.
+        target: Profile resolved for the runtime model.
+
+    Returns:
+        The names of the differing graph-compiled fields, in declaration order;
+            empty when only the runtime-safe prompt suffix differs.
+    """
+    return tuple(
+        profile_field.name
+        for profile_field in fields(HarnessProfile)
+        if profile_field.name != "system_prompt_suffix" and getattr(current, profile_field.name) != getattr(target, profile_field.name)
+    )
+
+
+def _transition_harness_profile_for_model(
+    prompt: str,
+    current_model: BaseChatModel,
+    target_model: BaseChatModel,
+    *,
+    current_spec: str | None = None,
+    target_spec: str | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    """Apply runtime-safe profile changes between two resolved models.
+
+    Profiles are looked up with the same key the graph used at compile time.
+    Pass `current_spec`/`target_spec` (the authoritative `provider:model`
+    strings) whenever they are known: profile registration keys are exact and
+    case-sensitive, and a model instance's introspected provider can diverge
+    from its spec (e.g. an OpenRouter model reporting `openai`), so relying on
+    introspection alone can miss the registered profile. When a spec is `None`,
+    lookup falls back to introspecting the model instance.
+
+    Args:
+        prompt: Assembled system prompt for `current_model`.
+        current_model: Model used when the agent graph was compiled.
+        target_model: Model selected for the runtime request.
+        current_spec: Authoritative spec for `current_model`, or `None` to
+            introspect the instance.
+        target_spec: Authoritative spec for `target_model`, or `None` to
+            introspect the instance.
+
+    Returns:
+        The transitioned prompt and the graph-compiled fields that differ
+            between the two profiles (empty when a runtime prompt swap suffices).
+    """
+    current = _harness_profile_for_model(current_model, current_spec)
+    target = _harness_profile_for_model(target_model, target_spec)
+    return (
+        _transition_harness_profile_prompt(prompt, current, target),
+        _harness_profile_transition_rebuild_fields(current, target),
+    )
+
+
 _HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))
 """Top-level keys accepted by `HarnessProfileConfig.from_dict`.
 

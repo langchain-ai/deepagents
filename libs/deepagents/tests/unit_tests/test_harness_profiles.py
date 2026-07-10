@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -379,6 +380,132 @@ class TestApplyProfilePrompt:
 
         profile = HarnessProfile(system_prompt_suffix="")
         assert _apply_profile_prompt(profile, "base") == "base\n\n"
+
+
+class TestRuntimeProfilePromptTransition:
+    """Tests for profile changes made by runtime model switching."""
+
+    def test_replaces_arbitrary_profile_suffix(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _transition_harness_profile_prompt,
+        )
+
+        current = HarnessProfile(system_prompt_suffix="source guidance")
+        target = HarnessProfile(system_prompt_suffix="target guidance")
+
+        prompt = _transition_harness_profile_prompt(
+            "base\n\nsource guidance",
+            current,
+            target,
+        )
+
+        assert prompt == "base\n\ntarget guidance"
+
+    def test_target_suffix_is_not_duplicated(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _transition_harness_profile_prompt,
+        )
+
+        profile = HarnessProfile(system_prompt_suffix="shared guidance")
+
+        prompt = _transition_harness_profile_prompt(
+            "base\n\nshared guidance",
+            profile,
+            profile,
+        )
+
+        assert prompt == "base\n\nshared guidance"
+
+    def test_current_none_does_not_duplicate_already_present_target(self) -> None:
+        """A None current suffix must not double an already-present target."""
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _transition_harness_profile_prompt,
+        )
+
+        current = HarnessProfile()
+        target = HarnessProfile(system_prompt_suffix="target guidance")
+
+        prompt = _transition_harness_profile_prompt(
+            "base\n\ntarget guidance",
+            current,
+            target,
+        )
+
+        assert prompt == "base\n\ntarget guidance"
+
+    def test_stale_suffix_not_at_tail_is_preserved_and_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A current suffix that is not the tail is left alone, with a warning.
+
+        Blindly stripping only the tail would silently orphan the embedded
+        suffix while still appending the target's, duplicating guidance.
+        """
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _transition_harness_profile_prompt,
+        )
+
+        current = HarnessProfile(system_prompt_suffix="source guidance")
+        target = HarnessProfile(system_prompt_suffix="target guidance")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+            prompt = _transition_harness_profile_prompt(
+                "base\n\nsource guidance\n\nappended later",
+                current,
+                target,
+            )
+
+        assert "source guidance" in prompt
+        assert prompt.endswith("\n\ntarget guidance")
+        assert "not at the end" in caplog.text
+
+    def test_suffix_only_change_has_no_rebuild_fields(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _harness_profile_transition_rebuild_fields,
+        )
+
+        current = HarnessProfile(system_prompt_suffix="source guidance")
+        target = HarnessProfile(system_prompt_suffix="target guidance")
+
+        assert _harness_profile_transition_rebuild_fields(current, target) == ()
+
+    def test_structural_change_reports_rebuild_field(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import (  # noqa: PLC0415
+            _harness_profile_transition_rebuild_fields,
+        )
+
+        current = HarnessProfile()
+        target = HarnessProfile(excluded_tools=frozenset({"execute"}))
+
+        assert _harness_profile_transition_rebuild_fields(current, target) == ("excluded_tools",)
+
+    def test_for_model_resolves_by_spec_not_introspection(self) -> None:
+        """The authoritative spec drives lookup, not model introspection.
+
+        Registration keys are exact and case-sensitive, and a model's
+        introspected provider can diverge from its spec, so the transition must
+        honor the spec strings the caller supplies rather than the (here,
+        unusable `MagicMock`) instances.
+        """
+        from deepagents.profiles.harness import (  # noqa: PLC0415
+            harness_profiles as hp,
+        )
+
+        profiles = {
+            "baseten:zai-org/GLM-5.2": HarnessProfile(system_prompt_suffix="glm guidance"),
+        }
+
+        with patch.object(hp, "_get_harness_profile", side_effect=profiles.get) as lookup:
+            prompt, rebuild_fields = hp._transition_harness_profile_for_model(
+                "base",
+                MagicMock(),
+                MagicMock(),
+                current_spec="anthropic:claude-opus-4-6",
+                target_spec="baseten:zai-org/GLM-5.2",
+            )
+
+        assert prompt == "base\n\nglm guidance"
+        assert rebuild_fields == ()
+        lookup.assert_any_call("baseten:zai-org/GLM-5.2")
+        lookup.assert_any_call("anthropic:claude-opus-4-6")
 
 
 class TestMaterializeExtraMiddleware:

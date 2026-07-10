@@ -1035,6 +1035,11 @@ class TestCreateCliAgentInteractiveForwarding:
 
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
+        mock_profile_registration = Mock()
+
+        def _create_deep_agent(**_: Any) -> Mock:
+            mock_profile_registration.assert_called_once_with()
+            return mock_agent
 
         fake_model = _make_fake_chat_model()
         with (
@@ -1042,7 +1047,12 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+                "deepagents_code.agent._ensure_glm_5p2_profile_registered",
+                mock_profile_registration,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                side_effect=_create_deep_agent,
             ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",

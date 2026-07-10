@@ -20,14 +20,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        required=True,
-        help="Dataset directory that will contain the generated task(s).",
+        help=(
+            "Dataset directory that will contain the generated task(s). "
+            "Required unless --populate is given."
+        ),
     )
     parser.add_argument(
         "--task-ids",
         nargs="+",
         metavar="ID",
         help="Task ids to generate, e.g. `cb-cloud-1`.",
+    )
+    parser.add_argument(
+        "--populate",
+        type=Path,
+        metavar="DATASET_DIR",
+        help=(
+            "Populate each generated Context-Bench task's environment/files/ from "
+            "the single vendored corpus (the per-task corpus is git-ignored). Run "
+            "before `harbor run --path DATASET_DIR`. Mutually exclusive with "
+            "--task-ids/--limit."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -61,6 +74,18 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.populate is not None:
+        if args.task_ids or args.limit is not None:
+            msg = "`--populate` is mutually exclusive with `--task-ids`/`--limit`"
+            raise ValueError(msg)
+        count = adapter.populate_corpus(args.populate)
+        print(f"Populated corpus for {count} Context-Bench task(s) in {args.populate}")
+        return
+
+    if args.output_dir is None:
+        msg = "`--output-dir` is required unless `--populate` is given"
+        raise ValueError(msg)
     task_ids = _resolve_task_ids(args)
 
     for task_id in task_ids:

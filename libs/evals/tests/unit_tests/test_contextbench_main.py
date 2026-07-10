@@ -79,3 +79,32 @@ def test_main_generates_task_by_id(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert 'network_mode = "allowlist"' in task_toml
     solve_sh = (task_dir / "solution" / "solve.sh").read_text()
     assert "Tammy Roberts" in solve_sh
+
+
+def test_populate_restores_corpus_from_vendor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_dir = tmp_path / "vendor"
+    _write_vendor_fixture(vendor_dir)
+    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+
+    output_dir = tmp_path / "dataset"
+    main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
+
+    # Simulate the git-ignored corpus being absent (fresh checkout).
+    files_dir = output_dir / "cb-cloud-1" / "environment" / "files"
+    for corpus_file in files_dir.iterdir():
+        corpus_file.unlink()
+    files_dir.rmdir()
+
+    # A non-contextbench sibling dir must be left untouched.
+    other = output_dir / "not-a-cb-task"
+    other.mkdir()
+    (other / "task.toml").write_text('source = "elsewhere"\n')
+
+    main(["--populate", str(output_dir)])
+
+    restored = sorted(p.name for p in files_dir.iterdir())
+    assert restored == ["addresses.txt", "bank_accounts.txt", "people.txt", "pets.txt", "vehicles.txt"]
+    assert (files_dir / "people.txt").read_text() == "people.txt source data\n"
+    assert not (other / "environment").exists()

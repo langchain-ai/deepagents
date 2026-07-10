@@ -116,6 +116,45 @@ def generate_task(
     return task_dir
 
 
+def populate_corpus(dataset_dir: Path) -> int:
+    """Copy the vendored corpus into each Context-Bench task's build context.
+
+    The corpus is identical for every cloud task, so it is single-sourced under
+    `vendor/files/` and NOT committed into the per-task `environment/files/`
+    directories (which are git-ignored). This regenerates those directories from
+    the single vendored copy so Harbor can build each task image — run it before
+    `harbor run --path <dataset_dir>`.
+
+    Args:
+        dataset_dir: Dataset directory containing generated task directories.
+
+    Returns:
+        The number of Context-Bench task directories populated.
+
+    Raises:
+        FileNotFoundError: If the vendored corpus directory does not exist.
+    """
+    dataset_root = dataset_dir.resolve()
+    source_files_dir = vendor_dir() / "files"
+    if not source_files_dir.is_dir():
+        msg = f"No vendored Context-Bench corpus at {source_files_dir}"
+        raise FileNotFoundError(msg)
+
+    populated = 0
+    for task_toml in sorted(dataset_root.glob("*/task.toml")):
+        task_dir = task_toml.parent
+        # Containment: only populate direct children of the dataset directory.
+        if task_dir.resolve().parent != dataset_root:
+            continue
+        if 'source = "contextbench"' not in task_toml.read_text():
+            continue
+        files_dir = task_dir / "environment" / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        _copy_corpus(source_files_dir, files_dir)
+        populated += 1
+    return populated
+
+
 def _read_record(source_jsonl: Path, line_index: int) -> dict[str, object]:
     records = [json.loads(line) for line in source_jsonl.read_text().splitlines() if line]
     return records[line_index]

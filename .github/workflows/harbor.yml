@@ -405,6 +405,20 @@ jobs:
           python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
+      - name: "🗂️ Populate local dataset corpus"
+        if: ${{ inputs.dataset_path != '' }}
+        working-directory: libs/evals
+        env:
+          HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+        # The per-task corpus is single-sourced (git-ignored) and regenerated from
+        # the vendored copy so each task's build context has its files/ before
+        # Harbor builds the task images.
+        run: |
+          if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
+            echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
+          fi
+          uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}

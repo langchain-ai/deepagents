@@ -81,7 +81,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     edits elsewhere (descriptions, input defaults, dataset options, echo lines)
     don't break the test.
     """
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
 
     # The retired manual experiment wiring must stay gone.
     assert "create-experiment" not in workflow
@@ -113,7 +113,7 @@ def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
     pin them here — scoped to the extracted step, which is stronger than a
     whole-file substring match (a regex in an unrelated step wouldn't satisfy it).
     """
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
     run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
     run_step = run_step.split("      - name:", maxsplit=1)[0]
 
@@ -125,7 +125,7 @@ def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
 
 
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    workflow = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
 
     _, harbor_job = workflow.split("  harbor:", maxsplit=1)
     job_env = harbor_job.split("    steps:", maxsplit=1)[0]
@@ -226,30 +226,34 @@ def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
 
 
 def test_harbor_workflow_wires_tau3_subset() -> None:
+    # The dispatch workflow still exposes "tau3-subset" as a selectable dataset...
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
-
-    # "tau3-subset" is a selectable dataset.
     assert '- "tau3-subset"' in workflow
+
+    # ...but the resolution + run wiring now lives in the reusable leaf
+    # (_harbor_run.yml), which harbor.yml calls. Assert it there.
+    leaf = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
     # Its resolution step pulls the committed task filter, runs against the real
     # registry dataset, and names the LangSmith dataset "tau3-subset".
-    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in workflow
-    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
-    assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
-    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in leaf
+    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in leaf
+    assert "HARBOR_DATASET=sierra-research/tau3-bench" in leaf
+    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in leaf
     # Injecting the task filter is the whole point of the step: it must be
     # written and it must land in $GITHUB_ENV, or the run silently uses the full
     # dataset. Guard both the payload line and the redirect.
-    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in workflow
-    assert '} >> "$GITHUB_ENV"' in workflow
+    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in leaf
+    assert '} >> "$GITHUB_ENV"' in leaf
     # The resolve step must fail loudly on a wrong-sized filter (empty => full
     # dataset), so the count tripwire must stay wired.
-    assert 'if [ "$task_count" -ne 30 ]; then' in workflow
+    assert 'if [ "$task_count" -ne 30 ]; then' in leaf
     # tau3's verifier/user simulator needs OpenAI even when the agent model is
     # hosted by another provider, so missing credentials should fail preflight.
-    assert "contains(inputs.dataset, 'tau3')" in workflow
-    assert "contains(inputs.dataset_override, 'tau3')" in workflow
-    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in workflow
-    assert '[ "$model_provider" != "openai" ]' in workflow
+    # (The leaf receives an already-resolved `dataset` input, so the pre-refactor
+    # `contains(inputs.dataset_override, 'tau3')` check no longer applies here.)
+    assert "contains(inputs.dataset, 'tau3')" in leaf
+    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in leaf
+    assert '[ "$model_provider" != "openai" ]' in leaf
 
 
 def test_tau3_subset_constant_is_well_formed() -> None:

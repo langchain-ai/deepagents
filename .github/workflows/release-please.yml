@@ -702,10 +702,16 @@ jobs:
           echo "::error::Push still rejected after 3 attempts on '${RELEASE_BRANCH}'."
           exit 1
 
-  # release-please and the lockfile updater use GITHUB_TOKEN, so their branch
-  # pushes do not emit pull_request_target events. Explicitly dispatch the curated-notes
-  # check on the release PR head so new generated Code entries cannot bypass the
-  # required merge gate or its stale-warning comment.
+  # release-please and the lockfile updater use GITHUB_TOKEN, so their branch pushes
+  # emit no pull_request_target event and the required "curated release notes" check
+  # does not re-run on the new head on its own. This job dispatches the check workflow
+  # so it re-validates the release PR and posts its stale-notes warning comment when
+  # new generated Code entries appear. Note: a workflow_dispatch run cannot attach a
+  # status to the PR head (only pull_request_target runs do), so it does not itself
+  # mark the check on the new commit — the new head simply has no result yet, which
+  # GitHub treats as unsatisfied, so merge stays blocked (fail-closed) until a
+  # maintainer re-runs `@dcode-release-bot draft`/`apply` (whose bot-PAT push emits
+  # synchronize and re-reports the check on the head).
   #
   # `update-lockfiles` is in `needs` for SEQUENCING, not as a success precondition:
   # it pushes lockfile commits to the release branch (moving the PR head), so we must

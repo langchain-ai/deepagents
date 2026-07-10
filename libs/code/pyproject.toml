@@ -132,6 +132,9 @@ quickjs = []
 deepagents-code = "deepagents_code:cli_main"
 dcode = "deepagents_code:cli_main"
 
+[project.entry-points."deepagents.harness_profiles"]
+glm-5p2 = "deepagents_code._glm_5p2_profile:register"
+
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"

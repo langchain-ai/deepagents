@@ -1,14 +1,11 @@
-"""Built-in GLM-5.2 harness profile (applies to invocations using Fireworks, Baseten, or OpenRouter).
+"""GLM-5.2 harness profile, registered by deepagents-code via entry point.
 
-GLM-5.2 resolves to a different `provider:model` spec on each provider the
-harness runs it through, and profile lookup is an exact, case-sensitive match.
-Register the profile under every spec so it applies regardless of provider.
+GLM-5.2 resolves to a different `provider:model` spec on each provider it is
+run through, and profile lookup is an exact, case-sensitive match. Register the
+profile under every spec so it applies regardless of provider.
 """
 
-from deepagents.profiles.harness.harness_profiles import (
-    HarnessProfile,
-    _register_harness_profile_impl,
-)
+from deepagents import HarnessProfile, register_harness_profile
 
 _GLM_5P2_MODEL_KEYS = (
     "fireworks:accounts/fireworks/models/glm-5p2",
@@ -18,12 +15,10 @@ _GLM_5P2_MODEL_KEYS = (
 
 _SYSTEM_PROMPT_SUFFIX = """\
 <media_file_handling>
-This model profile does not support direct image input through `read_file`.
-Never call `read_file` on image or video files. When image or video files are
-relevant to the task, inspect them with shell commands or scripts in the
-sandbox using the file path, for example Python image-processing, OCR,
-metadata, or frame-extraction utilities, rather than asking the chat model to
-view the media directly.
+This model is text-only and cannot receive image, audio, video, or document
+(e.g. PDF) content. Do not call `read_file` on such files — its result would be
+a non-text block this model cannot process. Inspect media instead with shell
+commands or scripts using the file path.
 </media_file_handling>
 
 <use_the_right_tool>
@@ -63,18 +58,6 @@ Well-structured code in service of the deliverable is good; extra capability
 beside it is not.
 </scope_discipline>
 
-<dependency_discipline>
-Choose dependencies by what the deliverable's runtime actually needs. Before
-installing a framework, check whether it is needed to run or verify the required artifact.
-When the working directory already ships specific libraries or helpers, they are
-almost always the intended building blocks; prefer that path over pulling in a
-heavier alternative.
-
-If a dependency fails to install or import more than once, don't keep repairing
-that path — prefer an alternate route that avoids it. Reaching the deliverable without
-the dependency is usually faster than making the dependency work.
-</dependency_discipline>
-
 <let_code_do_the_work>
 Use your reply to decide the approach, not to carry it out. Deriving results,
 simulating logic, or hand-writing file contents in your reasoning wastes limited
@@ -86,13 +69,6 @@ decision-focused, and act early: plan concrete actions to run ("write and run
 `encoder.py`"), not thinking steps ("analyze", "derive").
 </let_code_do_the_work>
 
-<keep_durable_notes>
-Maintain a notes file (e.g. `Notes.md` in the working directory) capturing findings,
-decisions, experiment results, and the exact required output contract; update it as
-you learn. Re-read it when you are confused, when resuming, or after a summarization
-event — whenever you lack context about what you are solving.
-</keep_durable_notes>
-
 <verification_discipline>
 Before treating a task as done:
 
@@ -102,10 +78,8 @@ Before treating a task as done:
 - Cover every output and constraint. Re-read the request and list every output
   it names — each file path, and each field, section, format, name, ordering,
   value range, or "all vs. one" rule stated about it. Match those names and
-  formats character-for-character — `value` is not `val`, `result.txt` is not
-  `results.txt`. Never rename or "improve" what the task specifies. Confirm each
-  one against your work (`ls`, `cat`): a single missing output or unmet
-  constraint leaves the task unfinished.
+  formats. Confirm each one against your work (`ls`, `cat`): a single missing
+  output or unmet constraint leaves the task unfinished.
 
 - Verify the real behavior, not a proxy. Run the actual required operation
   end-to-end against the adversarial and boundary inputs - the specific scenarios,
@@ -113,9 +87,10 @@ Before treating a task as done:
   A check that only runs inputs you chose can pass while the behavior is still wrong.
 - Anchor pass/fail outside your own solution. Prefer, in order:
     - a test or command the task names -> run it
-    - an exact threshold or invariant the task states -> compute it from your output file(s)
-      already on disk, then assert the task's literal bound
-    - example input/output the task ships -> run your output file(s) on it and assert it matches.
+    - an exact threshold or invariant the task states -> compute it from your
+      output file(s) already on disk, then assert the task's literal bound
+    - example input/output the task ships -> run your output file(s) on it and
+      assert it matches.
 
 - Make it reproducible from a clean state. Your work has to function for someone
   starting fresh, not only in the shell you built it in. A service must keep
@@ -160,15 +135,15 @@ task's stated requirements, save it to the exact required path — then refine o
 useful, keeping a working version saved at every step. A good-enough result already on
 disk beats a better one that never gets written. Never finish by writing a placeholder,
 a label, a description of the answer, or a note explaining why you could not produce it;
-if you cannot fully solve the task, save your best attempt. Do not run exhaustive sweeps, grid
-searches, or many-candidate optimizers when a single sensible configuration already
-meets the stated bar.
+if you cannot fully solve the task, save your best attempt. Do not run exhaustive
+sweeps, grid searches, or many-candidate optimizers when a single sensible
+configuration already meets the stated bar.
 </ship_then_refine>
 """
 
 
 def register() -> None:
-    """Register the built-in GLM-5.2 harness profile for each provider spec."""
+    """Register the GLM-5.2 harness profile for each provider spec."""
     profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
     for key in _GLM_5P2_MODEL_KEYS:
-        _register_harness_profile_impl(key, profile)
+        register_harness_profile(key, profile)

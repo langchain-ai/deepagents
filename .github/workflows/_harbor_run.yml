@@ -662,13 +662,27 @@ jobs:
           mkdir -p harbor-jobs/terminal-bench
           printf '%s\n' "$CATEGORY" > harbor-jobs/terminal-bench/category.txt
 
+      - name: "🔖 Compute leaf slug"
+        if: always()
+        # Sanitized model+category -> artifact-name suffix, unique per leaf, since
+        # the unified orchestrator calls this workflow many times (once per
+        # model x category) within a single caller run and run-global,
+        # model-unqualified names would collide across concurrent leaves.
+        env:
+          MODEL: ${{ inputs.model }}
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          slug=$(printf '%s-%s' "$MODEL" "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          echo "LEAF_SLUG=$slug" >> "$GITHUB_ENV"
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # shard-* so the aggregate job can glob every per-shard upload (this
-          # workflow is single-model, so job-index == shard index).
-          name: shard-${{ strategy.job-index }}
+          # shard-<leaf-slug>-* so the aggregate job can glob every per-shard
+          # upload belonging to THIS leaf (model x category) without colliding
+          # with, or hoovering up, sibling leaves' shards.
+          name: shard-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
@@ -696,14 +710,18 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: "🔖 Compute dataset slug"
+      - name: "🔖 Compute leaf slug"
         id: slug
-        # Sanitized dataset ref -> artifact-name suffix, so a future orchestrator
-        # calling this workflow per category yields one distinctly-named zip each.
+        # Sanitized model+category -> artifact-name suffix, unique per leaf. Must
+        # match the harbor job's "Compute leaf slug" step byte-for-byte, since the
+        # unified orchestrator calls this workflow many times (once per model x
+        # category) within a single caller run and this slug is how the aggregate
+        # job scopes its shard download/delete to only THIS leaf's shards.
         env:
-          DATASET: ${{ inputs.dataset }}
+          MODEL: ${{ inputs.model }}
+          CATEGORY: ${{ inputs.category }}
         run: |
-          slug=$(printf '%s' "$DATASET" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          slug=$(printf '%s-%s' "$MODEL" "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
       - name: "⬇️ Download shard results"
@@ -711,15 +729,17 @@ jobs:
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
+        env:
+          SHARD_PATTERN: shard-${{ steps.slug.outputs.slug }}-*
         run: |
           mkdir -p _shards
           attempt=1
           while :; do
-            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards >dl.log 2>&1; then
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern "$SHARD_PATTERN" --dir _shards >dl.log 2>&1; then
               break
             fi
             if grep -qi 'no artifact' dl.log; then
-              echo "::warning::No shard-* artifacts matched; aggregating an empty set."
+              echo "::warning::No ${SHARD_PATTERN} artifacts matched; aggregating an empty set."
               break
             fi
             echo "Shard download attempt ${attempt} failed:"; cat dl.log
@@ -771,9 +791,15 @@ jobs:
         # The combined zip supersedes the intermediates, leaving one artifact per
         # category. Best-effort: a delete failure must not fail the run.
         continue-on-error: true
+        env:
+          # gh api's --jq takes a single expression string (no --arg support),
+          # so the sanitized (a-z0-9- only) prefix is interpolated directly into
+          # the jq string literal below — safe since the slug charset excludes
+          # quotes/backslashes and can't break out of the jq string.
+          SHARD_PREFIX: shard-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
-            --jq '.artifacts[] | select(.name | startswith("shard-")) | .id')
+            --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")
           for id in $ids; do
             gh api -X DELETE "repos/$REPO/actions/artifacts/$id" \
               && echo "deleted shard artifact $id" || echo "could not delete $id"

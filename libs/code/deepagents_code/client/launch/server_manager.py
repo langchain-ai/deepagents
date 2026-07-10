@@ -404,7 +404,7 @@ async def start_server_and_get_agent(
     try:
         await server.start()
         await server.wait_for_graph_ready("agent")
-    except Exception:
+    except BaseException:
         server.stop()
         raise
 

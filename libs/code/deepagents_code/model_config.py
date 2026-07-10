@@ -562,9 +562,18 @@ Storing a key for this service via `/auth` also enables tracing at startup
 name, so it gets special handling beyond a plain key copy.
 """
 
+TAVILY_SERVICE = "tavily"
+"""Service name for Tavily web search in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` gates the spawn-time `web_search`
+tool (see `server_graph._build_tools`), so a key added to a running server
+takes effect only after a respawn — the app offers that restart, and this
+constant is the single name its `/auth` handling compares against.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
     LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
-    "tavily": "TAVILY_API_KEY",
+    TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
@@ -585,6 +594,9 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -2336,8 +2348,9 @@ class ModelConfig:
 
         Returns:
             Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, or contains
-                invalid TOML syntax.
+                Returns empty config if file is missing, unreadable, contains
+                invalid TOML syntax, or is structurally invalid (valid TOML of
+                the wrong shape, e.g. a scalar `[models]`).
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2356,6 +2369,12 @@ class ModelConfig:
         try:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
+            models_section = data.get("models", {})
+            config = cls(
+                default_model=models_section.get("default"),
+                recent_model=models_section.get("recent"),
+                providers=models_section.get("providers", {}),
+            )
         except tomllib.TOMLDecodeError as e:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
@@ -2363,23 +2382,24 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+            config = cls()
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-
-        models_section = data.get("models", {})
-        config = cls(
-            default_model=models_section.get("default"),
-            recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
-        )
+            config = cls()
+        except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape — a scalar
+            # `[models]`, a non-table `providers` — which surfaces here as an
+            # AttributeError from `.get(...)` or a TypeError from the dataclass
+            # constructor. Treat it like any other unreadable config rather than
+            # letting it crash callers (e.g. the /auth modal on Ctrl+R) that
+            # assume load() is total and never raises.
+            logger.warning(
+                "Config file %s is structurally invalid: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
+                e,
+            )
+            config = cls()
 
         # Validate config consistency
         config._validate()
@@ -3552,6 +3572,57 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read thread sort_order config", exc_info=True)
     return "updated_at"
+
+
+STARTUP_MODE_MANUAL = "manual"
+"""Startup approval mode that keeps human-in-the-loop approvals enabled."""
+
+STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
+"""Startup approval mode that auto-approves gated tool calls at launch."""
+
+VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_AUTO})
+"""Accepted values for the `[startup].mode` config option."""
+
+DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
+"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+
+
+def load_startup_mode(config_path: Path | None = None) -> str:
+    """Load the default startup approval mode from config.toml.
+
+    Reads `[startup].mode`, which controls whether the interactive TUI launches
+    with human-in-the-loop approvals enabled (`manual`) or auto-approved
+    (`dangerously-auto`). The explicit `-y`/`--auto-approve` flag overrides this.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"manual"` or `"dangerously-auto"`; falls back to `"manual"` when unset,
+        unreadable, or invalid.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return DEFAULT_STARTUP_MODE
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        startup = data.get("startup")
+        value = startup.get("mode") if isinstance(startup, dict) else None
+        # `value` may be any TOML type; guard against non-strings (e.g. an
+        # array or table) before the frozenset membership test, which would
+        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
+            return value
+        if value is not None:
+            logger.warning(
+                "Ignoring [startup].mode=%r (expected 'manual' or 'dangerously-auto')",
+                value,
+            )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read startup mode config", exc_info=True)
+    return DEFAULT_STARTUP_MODE
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:

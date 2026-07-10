@@ -140,7 +140,7 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(
-        "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
+        "  -y, --auto-approve         Auto-approve all tool calls in interactive mode (toggle: Shift+Tab)"  # noqa: E501
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(

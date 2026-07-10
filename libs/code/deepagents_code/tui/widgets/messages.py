@@ -64,6 +64,8 @@ if TYPE_CHECKING:
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
+    from deepagents_code.input import MediaTracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -256,15 +258,38 @@ class UserMessage(Static):
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        content: str,
+        *,
+        media_snapshot: MediaTracker | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a user message.
 
         Args:
             content: The message content
+            media_snapshot: Optional media tracker state captured at submission.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._media_snapshot = media_snapshot
+
+    @property
+    def raw_text(self) -> str:
+        """The original, untruncated message text as the user submitted it.
+
+        Named `raw_text` rather than `content` to avoid shadowing Textual's
+        read/write `Static.content` property (backed by a mangled attribute);
+        overriding it getter-only would make `self.content = ...` raise.
+        """
+        return self._content
+
+    @property
+    def media_snapshot(self) -> MediaTracker | None:
+        """Media tracker state captured when the message was submitted."""
+        return self._media_snapshot
 
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""

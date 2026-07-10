@@ -101,7 +101,7 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
                 markup=False,
             )
             yield Static(
-                "Reconnect to load new tools, or defer with `/mcp reconnect`.",
+                "Reconnect to load new tools.",
                 classes="mcp-reconnect-body",
                 markup=False,
             )

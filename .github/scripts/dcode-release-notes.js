@@ -453,19 +453,13 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
-async function prepareDraft({ github, owner, repo, number, expectedHead, workspace, runnerTemp }) {
+async function prepareDraft({ github, owner, repo, number, expectedHead, runnerTemp }) {
   const pr = await getPr(github, owner, repo, number);
   if (!isReleasePr(pr) || pr.draft || pr.head.sha !== expectedHead) {
     throw new Error('Release PR changed before drafting started; re-run the draft command');
   }
   const version = releaseVersion(pr.title);
-  const changelogFile = path.join(workspace, CHANGELOG_PATH);
-  // The changelog lives in the untrusted release-PR checkout; reject a symlink so
-  // fs.readFileSync can't follow a link outside the workspace.
-  if (fs.lstatSync(changelogFile).isSymbolicLink()) {
-    throw new Error(`${CHANGELOG_PATH} is a symlink; refusing to read curated release-note source through it`);
-  }
-  const changelog = fs.readFileSync(changelogFile, 'utf8');
+  const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const section = extractVersionSection(changelog, version);
   const fingerprint = sha256(section);
   const work = fs.mkdtempSync(path.join(runnerTemp, 'dcode-release-notes-'));
@@ -560,7 +554,7 @@ async function postApplyFailure({ github, owner, repo, number, head, login, id, 
   });
 }
 
-async function prepareApply({ github, owner, repo, number, expectedHead, workspace, stateFile, login, id }) {
+async function prepareApply({ github, owner, repo, number, expectedHead, changelogFile, stateFile, login, id }) {
   await authenticatedBot(github, login, id);
   const pr = await getPr(github, owner, repo, number);
   if (!isReleasePr(pr) || pr.draft || pr.head.sha !== expectedHead) {
@@ -572,15 +566,7 @@ async function prepareApply({ github, owner, repo, number, expectedHead, workspa
   if (!override) throw new Error('No valid bot-authored curated release-note draft exists');
   if (!override.comment.updated_at) throw new Error('Curated release-note draft is missing its GitHub revision');
 
-  const changelogFile = path.join(workspace, CHANGELOG_PATH);
-  // The changelog lives in the untrusted release-PR checkout. Reject a symlink
-  // before reading or writing so fs.*Sync can't follow a link outside the
-  // workspace. The apply-commit shell step's `test ! -L` is a post-write backstop;
-  // this is the pre-write gate.
-  if (fs.lstatSync(changelogFile).isSymbolicLink()) {
-    throw new Error(`${CHANGELOG_PATH} is a symlink; refusing to curate release notes through it`);
-  }
-  const changelog = fs.readFileSync(changelogFile, 'utf8');
+  const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const currentSection = extractVersionSection(changelog, version);
   const currentHeading = currentSection.split('\n')[0];
   const overrideHeading = override.section.split('\n')[0];
@@ -595,10 +581,11 @@ async function prepareApply({ github, owner, repo, number, expectedHead, workspa
     throw new Error(`New generated release entries appeared; run ${COMMAND_MENTION} draft before apply`);
   }
 
+  const updatedChangelog = alreadyApplied
+    ? changelog
+    : replaceVersionSection(changelog, version, override.section);
+  fs.writeFileSync(changelogFile, updatedChangelog, { encoding: 'utf8', mode: 0o600 });
   const body = replacePreviewSection(pr.body ?? '', version, override.section);
-  if (!alreadyApplied) {
-    fs.writeFileSync(changelogFile, replaceVersionSection(changelog, version, override.section), 'utf8');
-  }
   writeJson(stateFile, {
     number,
     version,
@@ -607,6 +594,7 @@ async function prepareApply({ github, owner, repo, number, expectedHead, workspa
     overrideId: String(override.comment.id),
     overrideUpdatedAt: override.comment.updated_at,
     contentHash: sha256(override.section),
+    changelogHash: exactSha256(updatedChangelog),
     body,
     originalBodyHash: exactSha256(pr.body ?? ''),
     alreadyApplied,
@@ -614,14 +602,12 @@ async function prepareApply({ github, owner, repo, number, expectedHead, workspa
   return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 }
 
-async function publishAppliedState({ github, owner, repo, stateFile, appliedHead, login, id }) {
-  await authenticatedBot(github, login, id);
-  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+async function validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead }) {
   const pr = await getPr(github, owner, repo, state.number);
   if (
     !isReleasePr(pr) ||
     pr.draft ||
-    pr.head.sha !== state.sourceHead ||
+    pr.head.sha !== expectedHead ||
     exactSha256(pr.body ?? '') !== state.originalBodyHash
   ) {
     throw new Error('Release PR changed while apply was preparing; refusing to publish stale metadata');
@@ -636,6 +622,52 @@ async function publishAppliedState({ github, owner, repo, stateFile, appliedHead
   ) {
     throw new Error('Curated release-note draft changed while apply was preparing; re-run apply');
   }
+  return comments;
+}
+
+async function createApplyCommit({ github, owner, repo, stateFile, changelogFile, login, id }) {
+  await authenticatedBot(github, login, id);
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: state.sourceHead });
+  const changelog = fs.readFileSync(changelogFile, 'utf8');
+  if (exactSha256(changelog) !== state.changelogHash) {
+    throw new Error('Prepared changelog changed before commit creation; re-run apply');
+  }
+  if (state.alreadyApplied) return { appliedHead: state.sourceHead, created: false };
+
+  const parent = await github.rest.git.getCommit({ owner, repo, commit_sha: state.sourceHead });
+  const blob = await github.rest.git.createBlob({ owner, repo, content: changelog, encoding: 'utf-8' });
+  const tree = await github.rest.git.createTree({
+    owner,
+    repo,
+    base_tree: parent.data.tree.sha,
+    tree: [{ path: CHANGELOG_PATH, mode: '100644', type: 'blob', sha: blob.data.sha }],
+  });
+  const identity = { name: login, email: `${id}+${login}@users.noreply.github.com` };
+  const commit = await github.rest.git.createCommit({
+    owner,
+    repo,
+    message: 'chore(code): apply curated release notes',
+    tree: tree.data.sha,
+    parents: [state.sourceHead],
+    author: identity,
+    committer: identity,
+  });
+  await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: state.sourceHead });
+  await github.rest.git.updateRef({
+    owner,
+    repo,
+    ref: `heads/${RELEASE_BRANCH}`,
+    sha: commit.data.sha,
+    force: false,
+  });
+  return { appliedHead: commit.data.sha, created: true };
+}
+
+async function publishAppliedState({ github, owner, repo, stateFile, appliedHead, login, id }) {
+  await authenticatedBot(github, login, id);
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  const comments = await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: appliedHead });
   await github.rest.pulls.update({ owner, repo, pull_number: state.number, body: state.body });
   return upsertOwnMarkedComment({
     github,
@@ -847,6 +879,7 @@ module.exports = {
   canonical,
   checkCuratedState,
   commandFromComment,
+  createApplyCommit,
   exactSha256,
   extractPreviewSection,
   extractVersionSection,

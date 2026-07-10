@@ -95,7 +95,17 @@ function makeCore() {
 }
 
 function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', authenticated = BOT, files = new Map(), comparison = 'ahead', malformedContent = false, onGetPr = null, onListComments = null } = {}) {
-  const calls = { createComment: [], updateComment: [], updatePr: [] };
+  const calls = {
+    createBlob: [],
+    createComment: [],
+    createCommit: [],
+    createTree: [],
+    getCommit: [],
+    getContent: [],
+    updateComment: [],
+    updatePr: [],
+    updateRef: [],
+  };
   let livePr = structuredClone(pr);
   let getPrCount = 0;
   let listCommentsCount = 0;
@@ -138,11 +148,36 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
       repos: {
         getCollaboratorPermissionLevel: async () => ({ data: { permission, user: { permissions: { admin: adminFlag } } } }),
         getContent: async params => {
+          calls.getContent.push(params);
           if (malformedContent) return { data: [] };
-          const content = files.get(params.ref) ?? changelog(CURATED_SECTION);
+          const fallback = params.ref === APPLIED_HEAD ? changelog(CURATED_SECTION) : changelog();
+          const content = files.get(params.ref) ?? fallback;
           return { data: { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64') } };
         },
         compareCommitsWithBasehead: async () => ({ data: { status: comparison } }),
+      },
+      git: {
+        getCommit: async params => {
+          calls.getCommit.push(params);
+          return { data: { tree: { sha: 'tree-base' } } };
+        },
+        createBlob: async params => {
+          calls.createBlob.push(params);
+          return { data: { sha: 'blob-curated' } };
+        },
+        createTree: async params => {
+          calls.createTree.push(params);
+          return { data: { sha: 'tree-curated' } };
+        },
+        createCommit: async params => {
+          calls.createCommit.push(params);
+          return { data: { sha: APPLIED_HEAD } };
+        },
+        updateRef: async params => {
+          calls.updateRef.push(params);
+          livePr.head.sha = params.sha;
+          return { data: { object: { sha: params.sha } } };
+        },
       },
       users: {
         getAuthenticated: async () => ({ data: authenticated }),
@@ -279,23 +314,22 @@ test('ready_for_review automatically validates as draft command', async () => {
   });
 });
 
-test('prepares agent input without exposing a writable repository token', async t => {
-  const workspace = tempWorkspace();
-  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+test('prepares agent input from the exact validated head', async t => {
   const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-runner-'));
   t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
-  const { github } = makeGithub();
+  const { github, calls } = makeGithub();
   const prepared = await releaseNotes.prepareDraft({
     github,
     owner: 'langchain-ai',
     repo: 'deepagents',
     number: 123,
     expectedHead: HEAD,
-    workspace: workspace.root,
     runnerTemp,
   });
   assert.match(fs.readFileSync(prepared.input, 'utf8'), /untrusted source material/);
   assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).fingerprint, releaseNotes.sha256(GENERATED_SECTION));
+  assert.equal(calls.getContent.length, 1);
+  assert.equal(calls.getContent[0].ref, HEAD);
 });
 
 test('posts a bot-authored draft and refuses stale agent output', async t => {
@@ -329,7 +363,7 @@ test('prepare apply replaces only the changelog section and records immutable ha
     repo: 'deepagents',
     number: 123,
     expectedHead: HEAD,
-    workspace: workspace.root,
+    changelogFile: workspace.file,
     stateFile,
     login: BOT.login,
     id: BOT.id,
@@ -354,19 +388,22 @@ test('apply rejects concurrent PR-body and override revisions', async t => {
     repo: 'deepagents',
     number: 123,
     expectedHead: HEAD,
-    workspace: workspace.root,
+    changelogFile: workspace.file,
     stateFile,
     login: BOT.login,
     id: BOT.id,
   });
 
-  run.setPr(releasePr({ body: `${releasePr().body}\nMaintainer edit\n` }));
+  run.setPr(releasePr({
+    body: `${releasePr().body}\nMaintainer edit\n`,
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+  }));
   await assert.rejects(
     releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, login: BOT.login, id: BOT.id }),
     /Release PR changed while apply was preparing/,
   );
 
-  run.setPr(releasePr());
+  run.setPr(releasePr({ head: { ...releasePr().head, sha: APPLIED_HEAD } }));
   comments[0].updated_at = '2026-07-09T12:01:00Z';
   await assert.rejects(
     releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, login: BOT.login, id: BOT.id }),
@@ -380,23 +417,24 @@ test('prepare apply preserves the generated release heading', async t => {
   const altered = CURATED_SECTION.replace('(2026-07-09)', '(2026-07-10)');
   const { github } = makeGithub({ comments: [overrideComment({ section: altered })] });
   await assert.rejects(
-    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
     /Keep the generated release version heading unchanged/,
   );
 });
 
 test('prepare apply rejects new generated entries but permits idempotent recovery', async t => {
   const changed = GENERATED_SECTION.replace('useful feature', 'brand new feature');
-  const workspace = tempWorkspace(changed);
+  const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
-  const { github } = makeGithub({ comments: [overrideComment()] });
+  const files = new Map([[HEAD, changelog(changed)]]);
+  const { github } = makeGithub({ comments: [overrideComment()], files });
   await assert.rejects(
-    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
     /New generated release entries/,
   );
 
-  fs.writeFileSync(workspace.file, changelog(CURATED_SECTION));
-  const recovered = await releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id });
+  files.set(HEAD, changelog(CURATED_SECTION));
+  const recovered = await releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id });
   assert.equal(recovered.alreadyApplied, true);
 });
 
@@ -667,14 +705,29 @@ test('postDraft output round-trips through parseOverrideComment', async t => {
   assert.equal(parsed.metadata['release-heading-hash'], releaseNotes.sha256(HEADING));
 });
 
-test('publishAppliedState updates the PR body and writes a parseable applied comment', async t => {
+test('apply uses an exact-parent commit and a non-force branch update', async t => {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
   const stateFile = path.join(workspace.root, 'apply.json');
   const { github, calls } = makeGithub({ comments: [overrideComment()] });
   const state = await releaseNotes.prepareApply({
     github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
-    workspace: workspace.root, stateFile, login: BOT.login, id: BOT.id,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
+  });
+  const committed = await releaseNotes.createApplyCommit({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, login: BOT.login, id: BOT.id,
+  });
+  assert.deepEqual(committed, { appliedHead: APPLIED_HEAD, created: true });
+  assert.deepEqual(calls.createCommit[0].parents, [HEAD]);
+  assert.equal(calls.createTree[0].base_tree, 'tree-base');
+  assert.equal(calls.createTree[0].tree[0].path, releaseNotes.CHANGELOG_PATH);
+  assert.deepEqual(calls.updateRef[0], {
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${releaseNotes.RELEASE_BRANCH}`,
+    sha: APPLIED_HEAD,
+    force: false,
   });
   await releaseNotes.publishAppliedState({
     github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, login: BOT.login, id: BOT.id,
@@ -689,6 +742,52 @@ test('publishAppliedState updates the PR body and writes a parseable applied com
   assert.equal(parsed.metadata['applied-head'], APPLIED_HEAD);
 });
 
+test('apply refuses a concurrent branch move before updating the ref', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({
+    comments: [overrideComment()],
+    onGetPr: ({ count, pr }) => {
+      if (count === 3) pr.head.sha = 'f'.repeat(40);
+    },
+  });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
+  });
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, login: BOT.login, id: BOT.id,
+    }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('an already-applied changelog does not create another commit', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({
+    comments: [overrideComment()],
+    files: new Map([[HEAD, changelog(CURATED_SECTION)]]),
+  });
+  const state = await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
+  });
+  assert.equal(state.alreadyApplied, true);
+  const result = await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, login: BOT.login, id: BOT.id,
+  });
+  assert.deepEqual(result, { appliedHead: HEAD, created: false });
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
 test('apply rejects a canonically-invisible PR-body edit via the exact hash', async t => {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
@@ -696,11 +795,14 @@ test('apply rejects a canonically-invisible PR-body edit via the exact hash', as
   const run = makeGithub({ comments: [overrideComment()] });
   await releaseNotes.prepareApply({
     github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
-    workspace: workspace.root, stateFile, login: BOT.login, id: BOT.id,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
   });
   // Trailing whitespace is erased by canonical()/sha256 but preserved by
   // exactSha256, so only the byte-exact body guard can reject this edit.
-  run.setPr(releasePr({ body: `${releasePr().body}   ` }));
+  run.setPr(releasePr({
+    body: `${releasePr().body}   `,
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+  }));
   await assert.rejects(
     releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, login: BOT.login, id: BOT.id }),
     /Release PR changed while apply was preparing/,
@@ -822,12 +924,12 @@ test('prepareDraft and prepareApply reject a changed release head', async t => {
   const staleHead = 'c'.repeat(40);
   const draft = makeGithub();
   await assert.rejects(
-    releaseNotes.prepareDraft({ github: draft.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, workspace: workspace.root, runnerTemp }),
+    releaseNotes.prepareDraft({ github: draft.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, runnerTemp }),
     /changed before drafting started/,
   );
   const apply = makeGithub({ comments: [overrideComment()] });
   await assert.rejects(
-    releaseNotes.prepareApply({ github: apply.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    releaseNotes.prepareApply({ github: apply.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
     /changed before apply started/,
   );
 });
@@ -960,14 +1062,14 @@ test('prepareApply fails when no valid override is present', async t => {
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
   const missing = makeGithub({ comments: [] });
   await assert.rejects(
-    releaseNotes.prepareApply({ github: missing.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    releaseNotes.prepareApply({ github: missing.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
     /No valid bot-authored curated release-note draft exists/,
   );
 
   // Override present but missing its GitHub revision timestamp.
   const noRevision = makeGithub({ comments: [overrideComment({ updatedAt: '' })] });
   await assert.rejects(
-    releaseNotes.prepareApply({ github: noRevision.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    releaseNotes.prepareApply({ github: noRevision.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
     /missing its GitHub revision/,
   );
 });

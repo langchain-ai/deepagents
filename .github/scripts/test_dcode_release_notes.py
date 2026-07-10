@@ -93,5 +93,9 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     # so a maintainer who issued the command learns why it did not take effect.
     assert "postDraftFailure" in automation
     assert "postApplyFailure" in automation
-    # The bot credential must not be embedded in the push remote URL.
-    assert "x-access-token:${BOT_TOKEN}@github.com" not in automation
+    # Untrusted release content is fetched at the validated SHA; it is never
+    # checked out into a privileged job or passed to shell Git commands.
+    assert "path: release-pr" not in automation
+    assert "working-directory: release-pr" not in automation
+    assert "git push" not in automation
+    assert "createApplyCommit" in automation

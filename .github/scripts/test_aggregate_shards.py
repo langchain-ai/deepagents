@@ -28,25 +28,6 @@ def _write_trial(dirpath: Path, task, reward=None, errored=False, model="m1", jo
     (dirpath / "result.json").write_text(json.dumps(result))
 
 
-def test_pass_at_k_values():
-    assert agg.pass_at_k(3, 0, 1) == 0.0
-    assert abs(agg.pass_at_k(3, 1, 1) - 1 / 3) < 1e-9
-    assert abs(agg.pass_at_k(3, 1, 2) - 2 / 3) < 1e-9
-    assert agg.pass_at_k(3, 1, 3) == 1.0
-    assert agg.pass_at_k(3, 2, 2) == 1.0
-    assert agg.pass_at_k(3, 3, 1) == 1.0
-    assert agg.pass_at_k(2, 0, 2) == 0.0
-
-
-def test_pass_at_k_rejects_bad_k():
-    for bad in (0, 4):
-        try:
-            agg.pass_at_k(3, 1, bad)
-        except ValueError:
-            continue
-        raise AssertionError(f"expected ValueError for k={bad}")
-
-
 def test_aggregate_and_summary(tmp_path: Path):
     specs = {
         "taskA": [1.0, 0.0, 0.0],  # 1 of 3
@@ -72,8 +53,10 @@ def test_aggregate_and_summary(tmp_path: Path):
     dataset_passk, avg_at_k, totals, per_task = agg.build_summary(by_task, 3)
     # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
     assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
-    assert totals == {"tasks": 3, "trials": 9, "passed": 4, "errored": 0}
-    # avg@K: passing rollouts / total rollouts = 4 / 9.
+    assert totals == {
+        "tasks": 3, "trials": 9, "expected_trials": 9, "passed": 4, "errored": 0,
+    }
+    # avg@K: passing trials / expected trials = 4 / (3 tasks * 3 rollouts) = 4/9.
     assert abs(avg_at_k - 4 / 9) < 1e-6
     assert len(per_task) == 3
     # per-task pass@K is a scalar under a dynamic "pass@{K}" key.
@@ -105,13 +88,46 @@ def test_end_to_end_writes_files(tmp_path: Path):
     summary = json.loads((out / "summary.json").read_text())
     assert summary["dataset"] == "ds/x"
     assert summary["model"] == "m1"
-    assert summary["totals"] == {"tasks": 1, "trials": 2, "passed": 1, "errored": 0}
+    assert summary["totals"] == {
+        "tasks": 1, "trials": 2, "expected_trials": 2, "passed": 1, "errored": 0,
+    }
     assert summary["pass@2"] == 1.0  # pass@2: taskA passed at least once
-    assert summary["avg@2"] == 0.5  # 1 passing rollout of 2
+    assert summary["avg@2"] == 0.5  # 1 passing trial of 2 expected
+    assert summary["incomplete"] is False  # 2 trials == 2 expected, no shard gate
     rows = [json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()]
     assert rows == [
         {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass@2": 1.0}
     ]
+
+
+def test_missing_rollouts_count_as_failures(tmp_path: Path):
+    # taskA ran only 1 of 3 rollouts (a shard died mid-task) and it passed.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    # pass@3 is 1.0 (it did pass once), but avg@3 must be 1/3, not 1/1.
+    assert summary["pass@3"] == 1.0
+    assert abs(summary["avg@3"] - 1 / 3) < 1e-6
+    assert summary["totals"]["trials"] == 1
+    assert summary["totals"]["expected_trials"] == 3
+    assert summary["incomplete"] is True  # 1 trial < 3 expected
+
+
+def test_missing_shards_flag_incomplete(tmp_path: Path):
+    # A complete task, but the run expected 2 shards and only 1 uploaded.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0, job_id="job1")
+    _write_trial(tmp_path / "a__1", "taskA", reward=1.0, job_id="job1")
+    out = tmp_path / "out"
+    rc = agg.main(
+        [str(tmp_path), "--rollouts", "2", "--expected-shards", "2", "--out-dir", str(out)]
+    )
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["shards_found"] == 1
+    assert summary["expected_shards"] == 2
+    assert summary["incomplete"] is True  # 1 shard < 2 expected
 
 
 def test_multiple_models_is_rejected(tmp_path: Path):
@@ -132,6 +148,7 @@ def test_empty_tree_is_no_op(tmp_path: Path):
     assert summary["totals"]["tasks"] == 0
     assert summary["pass@3"] is None
     assert summary["avg@3"] == 0.0
+    assert summary["incomplete"] is False  # nothing expected, nothing missing
 
 
 if __name__ == "__main__":

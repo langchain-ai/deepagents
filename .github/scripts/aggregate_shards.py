@@ -6,8 +6,12 @@ of all shard artifacts), groups trials by task, and computes:
 
   - pass@K  the fraction of tasks that passed at least once within K rollouts
             (K = rollouts_per_task; only this single k is reported).
-  - avg@K   the fraction of all rollouts that passed, i.e. passing trials over
-            total trials (== passing rollouts / (tasks * rollouts)).
+  - avg@K   passing trials over the EXPECTED trial count (tasks * rollouts), so
+            missing rollouts of a present task count as failures.
+
+The summary is flagged ``incomplete`` when fewer shards uploaded than expected
+(``--expected-shards``) or a present task ran fewer than K rollouts, so scores
+from a partial run are not mistaken for a full one.
 
 A trial is a pass only when its verifier reward is >= PASS_THRESHOLD. Errored,
 timed-out, or missing-verifier trials count as failures.
@@ -32,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from collections import defaultdict
@@ -77,20 +80,6 @@ def trial_model(result: dict):
     return agent.get("model_name")
 
 
-def pass_at_k(n: int, c: int, k: int) -> float:
-    """Unbiased pass@k estimate for a task with n trials and c passes.
-
-    Probability that at least one of k trials drawn without replacement from the
-    n available is a pass. Requires 1 <= k <= n. At k == n this reduces to the
-    empirical "did the task pass at least once" (1.0 if c >= 1 else 0.0).
-    """
-    if not 1 <= k <= n:
-        raise ValueError(f"pass_at_k requires 1 <= k <= n (got k={k}, n={n})")
-    if n - c < k:
-        return 1.0
-    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
-
-
 def aggregate(root: Path):
     """Walk the tree once and tally trials per task.
 
@@ -126,15 +115,15 @@ def aggregate(root: Path):
 def build_summary(by_task: dict, rollouts: int):
     """Compute per-task rows plus dataset-level pass@K and avg@K, where K = rollouts.
 
-    Only the single k = rollouts is reported (no k < K sweep):
-      - pass@K: fraction of tasks that passed at least once within K rollouts.
-        Per task this is pass_at_k at k=min(rollouts, trials); with the usual
-        trials == rollouts it is 1.0 iff the task passed at least once.
-      - avg@K: passing rollouts / total rollouts across the whole run.
+    Missing rollouts of a present task are treated as failures, so an incomplete
+    shard cannot inflate the scores:
+      - pass@K: fraction of present tasks with at least one observed passing trial
+        (a task that ran fewer than K rollouts still passes iff it passed once).
+      - avg@K: passing trials / (present tasks * rollouts) -- the denominator is
+        the EXPECTED trial count, not the number of results that happened to land.
     """
     per_task = []
     passk_sum = 0.0
-    passk_count = 0
     total_trials = total_passed = total_errored = 0
 
     for task in sorted(by_task):
@@ -145,12 +134,10 @@ def build_summary(by_task: dict, rollouts: int):
         total_passed += c
         total_errored += errored
 
-        # Cap k to the trials available so a task with fewer than K trials still
-        # scores; normally n == rollouts so this is just pass@K.
-        task_passk = round(pass_at_k(n, c, min(rollouts, n)), 6) if n else None
-        if task_passk is not None:
-            passk_sum += task_passk
-            passk_count += 1
+        # A task passes @K iff it has >=1 observed pass; missing rollouts can only
+        # be failures, so no unbiased estimator is needed.
+        task_passk = 1.0 if c >= 1 else 0.0
+        passk_sum += task_passk
         per_task.append(
             {
                 "task": task,
@@ -161,12 +148,16 @@ def build_summary(by_task: dict, rollouts: int):
             }
         )
 
-    dataset_passk = round(passk_sum / passk_count, 6) if passk_count else None
-    # avg@K: passing rollouts / total rollouts run (== passing / (tasks * rollouts)).
-    avg_at_k = round(total_passed / total_trials, 6) if total_trials else 0.0
+    n_tasks = len(by_task)
+    dataset_passk = round(passk_sum / n_tasks, 6) if n_tasks else None
+    # Denominator is the expected trial count (tasks * rollouts) so missing
+    # rollouts count as failures rather than being dropped from the average.
+    expected_trials = n_tasks * rollouts
+    avg_at_k = round(total_passed / expected_trials, 6) if expected_trials else 0.0
     totals = {
-        "tasks": len(by_task),
+        "tasks": n_tasks,
         "trials": total_trials,
+        "expected_trials": expected_trials,
         "passed": total_passed,
         "errored": total_errored,
     }
@@ -181,13 +172,20 @@ def render_step_summary(summary: dict) -> str:
         f"- Dataset: {summary.get('dataset') or 'n/a'}",
         f"- Model: {summary.get('model') or 'n/a'}",
         f"- Rollouts per task: {summary.get('rollouts_per_task')}",
-        f"- Shards: {summary.get('shards_found')}",
+        f"- Shards: {summary.get('shards_found')}"
+        + (f" / {summary['expected_shards']} expected" if summary.get("expected_shards") else ""),
     ]
     totals = summary["totals"]
     lines.append(
-        f"- Tasks: {totals['tasks']} | Trials: {totals['trials']} | "
-        f"Passed: {totals['passed']} | Errored: {totals['errored']}"
+        f"- Tasks: {totals['tasks']} | Trials: {totals['trials']}"
+        + (f" / {totals['expected_trials']} expected" if totals.get("expected_trials") else "")
+        + f" | Passed: {totals['passed']} | Errored: {totals['errored']}"
     )
+    if summary.get("incomplete"):
+        lines.append(
+            "- ⚠️ **Incomplete run** — some shards/rollouts are missing; "
+            "missing rollouts are counted as failures."
+        )
     k = summary.get("rollouts_per_task")
     passk = summary.get(f"pass@{k}")
     avgk = summary.get(f"avg@{k}")
@@ -220,7 +218,7 @@ def main(argv=None) -> int:
         "--rollouts",
         type=int,
         required=True,
-        help="Rollouts per task (K); reports pass@1 through pass@K.",
+        help="Rollouts per task (K); the reported metrics are pass@K and avg@K.",
     )
     parser.add_argument(
         "--out-dir",
@@ -229,6 +227,12 @@ def main(argv=None) -> int:
         help="Where to write summary.json and per_task.jsonl (default: root).",
     )
     parser.add_argument("--dataset", default=None, help="Dataset ref, recorded in the summary.")
+    parser.add_argument(
+        "--expected-shards",
+        type=int,
+        default=None,
+        help="Expected number of shards; the run is flagged incomplete if fewer uploaded.",
+    )
     args = parser.parse_args(argv)
 
     if args.rollouts < 1:
@@ -236,14 +240,19 @@ def main(argv=None) -> int:
 
     out_dir = args.out_dir or args.root
     models, job_ids, by_task = aggregate(args.root)
+    shards_found = len(job_ids)
 
     if not by_task:
+        # No results at all: incomplete whenever any shard was expected.
+        incomplete = bool(args.expected_shards and shards_found < args.expected_shards)
         summary = {
             "dataset": args.dataset,
             "model": None,
             "rollouts_per_task": args.rollouts,
-            "shards_found": len(job_ids),
-            "totals": {"tasks": 0, "trials": 0, "passed": 0, "errored": 0},
+            "shards_found": shards_found,
+            "expected_shards": args.expected_shards,
+            "incomplete": incomplete,
+            "totals": {"tasks": 0, "trials": 0, "expected_trials": 0, "passed": 0, "errored": 0},
             f"pass@{args.rollouts}": None,
             f"avg@{args.rollouts}": 0.0,
         }
@@ -259,15 +268,29 @@ def main(argv=None) -> int:
         )
 
     dataset_passk, avg_at_k, totals, per_task = build_summary(by_task, args.rollouts)
+    # Incomplete if a shard is missing, or a present task ran fewer than K rollouts.
+    missing_shards = bool(args.expected_shards and shards_found < args.expected_shards)
+    missing_trials = totals["trials"] < totals["expected_trials"]
+    incomplete = missing_shards or missing_trials
     summary = {
         "dataset": args.dataset,
         "model": next(iter(models)) if models else None,
         "rollouts_per_task": args.rollouts,
-        "shards_found": len(job_ids),
+        "shards_found": shards_found,
+        "expected_shards": args.expected_shards,
+        "incomplete": incomplete,
         "totals": totals,
         f"pass@{args.rollouts}": dataset_passk,
         f"avg@{args.rollouts}": avg_at_k,
     }
+    if incomplete:
+        print(
+            f"::warning::Aggregated an incomplete run "
+            f"(shards {shards_found}/{args.expected_shards}, "
+            f"trials {totals['trials']}/{totals['expected_trials']}); "
+            "missing rollouts counted as failures.",
+            file=sys.stderr,
+        )
     write_outputs(summary, per_task, out_dir)
     return 0
 

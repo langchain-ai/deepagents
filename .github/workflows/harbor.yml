@@ -42,32 +42,11 @@ on:
         default: ""
         type: string
       models:
-        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
-        required: false
-        default: ""
+        description: "The single model to evaluate (provider:model). This workflow runs exactly one model — model groups are not accepted. Override with models_override."
+        required: true
+        default: "fireworks:accounts/fireworks/models/glm-5p2"
         type: choice
         options:
-          - ""
-          - all
-          - set0
-          - set1
-          - set2
-          - frontier
-          - mega
-          - fast
-          - open
-          - open-fireworks
-          - docs
-          - anthropic
-          - baseten
-          - fireworks
-          - google_genai
-          - groq
-          - nvidia
-          - openai
-          - ollama
-          - openrouter
-          - xai
           - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
@@ -125,7 +104,7 @@ on:
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        description: "Override: a single model ref not in the dropdown (e.g. 'openai:gpt-5.6'). Takes priority over the dropdown when non-empty. Must resolve to exactly one model."
         required: false
         default: ""
         type: string
@@ -252,13 +231,14 @@ jobs:
         id: set-matrix
         run: python .github/scripts/models.py harbor
         env:
-          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'fireworks:accounts/fireworks/models/glm-5p2' }}
 
-      - name: "🔒 Validate resource limits"
-        # Fail fast (before the matrix fans out) if a dispatch exceeds the caps:
-        # n_shards <= 10, concurrency <= 4, and models x shards x concurrency <= 40
-        # concurrent sandboxes. Inputs are read via env and int-parsed (no shell
-        # interpolation), then only compared and echoed back.
+      - name: "🔒 Validate single model + resource limits"
+        # This workflow evaluates exactly ONE model. Fail fast (before the matrix
+        # fans out) if the resolved model set is not a single model, or if the
+        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; their
+        # product bounds concurrent sandboxes to 40 for the one model). Inputs are
+        # read via env and int-parsed (no shell interpolation).
         env:
           N_SHARDS: ${{ inputs.n_shards || '10' }}
           CONCURRENCY: ${{ inputs.concurrency || '4' }}
@@ -267,7 +247,7 @@ jobs:
           python - <<'PY'
           import json, os, sys
 
-          MAX_SHARDS, MAX_CONCURRENCY, MAX_SANDBOXES = 10, 4, 40
+          MAX_SHARDS, MAX_CONCURRENCY = 10, 4
 
           def parse_positive(name, raw):
               raw = (raw or "").strip()
@@ -275,29 +255,29 @@ jobs:
                   sys.exit(f"::error::Invalid {name} (must be a positive integer): {raw!r}")
               return int(raw)
 
+          models = json.loads(os.environ["MODEL_MATRIX"]).get("include", [])
           n_shards = parse_positive("n_shards", os.environ.get("N_SHARDS"))
           concurrency = parse_positive("concurrency", os.environ.get("CONCURRENCY"))
-          n_models = len(json.loads(os.environ["MODEL_MATRIX"]).get("include", []))
 
           errors = []
+          if len(models) != 1:
+              names = [m.get("model") for m in models]
+              errors.append(
+                  f"this workflow evaluates a single model, but the selection resolved "
+                  f"to {len(models)}: {names}. Pick exactly one model — model groups "
+                  "(all/set0/frontier/...) and comma-separated overrides are not accepted."
+              )
           if n_shards > MAX_SHARDS:
               errors.append(f"n_shards={n_shards} exceeds the cap of {MAX_SHARDS}")
           if concurrency > MAX_CONCURRENCY:
               errors.append(f"concurrency={concurrency} exceeds the cap of {MAX_CONCURRENCY}")
-          sandboxes = n_models * n_shards * concurrency
-          if sandboxes > MAX_SANDBOXES:
-              errors.append(
-                  f"too many concurrent sandboxes: {n_models} model(s) x {n_shards} shard(s) "
-                  f"x {concurrency} concurrency = {sandboxes} (max {MAX_SANDBOXES}); "
-                  "reduce models, n_shards, or concurrency"
-              )
           for err in errors:
               print(f"::error::{err}")
           if errors:
               sys.exit(1)
           print(
-              f"Limits OK: {n_models} model(s) x {n_shards} shard(s) x {concurrency} "
-              f"concurrency = {sandboxes} concurrent sandboxes (<= {MAX_SANDBOXES})"
+              f"OK: single model ({models[0].get('model')}), n_shards={n_shards} "
+              f"(<= {MAX_SHARDS}), concurrency={concurrency} (<= {MAX_CONCURRENCY})"
           )
           PY
 
@@ -758,9 +738,9 @@ jobs:
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
-    needs: harbor
+    needs: [prep, harbor]
     # Runs after all shards. Skipped only when the matrix never ran (prep failed
-    # the caps check -> harbor skipped) or the run was cancelled; otherwise it
+    # the validation -> harbor skipped) or the run was cancelled; otherwise it
     # aggregates whatever shards uploaded, even if some shards failed.
     if: ${{ always() && needs.harbor.result != 'skipped' && needs.harbor.result != 'cancelled' }}
     runs-on: ubuntu-latest
@@ -771,6 +751,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
+      # Effective shard count from prep; aggregation flags the run incomplete if
+      # fewer shards uploaded (a shard failed before writing its artifact).
+      EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -804,9 +787,14 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
             exit 1
           fi
+          if ! [[ "$EXPECTED_SHARDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid expected shard count: $EXPECTED_SHARDS"
+            exit 1
+          fi
           python3 .github/scripts/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
             --dataset "$DATASET" \
+            --expected-shards "$EXPECTED_SHARDS" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"

@@ -69,15 +69,15 @@ def test_makefile_no_longer_uses_custom_harbor_wrapper() -> None:
 
 
 def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> None:
-    """Harbor must drive LangSmith via its plugin, not the retired manual
-    create-experiment / add-feedback steps.
+    """Harbor drives LangSmith via its plugin (not the retired manual
+    create-experiment / add-feedback steps), and the run wires the langgraph
+    agent to its graph, dataset, attempts, jobs dir, and plugin arguments.
 
-    This asserts only that invariant (plus the langgraph-agent wiring it depends
-    on). It deliberately does NOT pin workflow strings line-by-line — descriptions,
-    input defaults, dataset options, echo lines, and shell details are cosmetic and
-    change often, and pinning them made this test fail on every intentional edit.
-    Structural guarantees that do matter have their own focused tests below
-    (secret scoping, sandbox exposure).
+    The functional flag checks run against the EXTRACTED `⚓ Run Harbor` step (as
+    the secret-scoping test below does), not the whole file, so a flag that only
+    appears in a comment or unrelated step wouldn't satisfy them — while cosmetic
+    edits elsewhere (descriptions, input defaults, dataset options, echo lines)
+    don't break the test.
     """
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
 
@@ -85,12 +85,22 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "create-experiment" not in workflow
     assert "add-feedback" not in workflow
 
-    # The run drives the langgraph agent through Harbor's langsmith plugin,
-    # handing the dataset + experiment names to the plugin (not manual API calls).
-    assert "--agent langgraph" in workflow
-    assert "--plugin langsmith" in workflow
-    assert "--plugin-kwarg dataset_name=" in workflow
-    assert "--plugin-kwarg experiment_name=" in workflow
+    # Isolate the actual `harbor run` invocation.
+    run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+
+    # Agent is the langgraph deep agent wired to the selected graph.
+    assert "--agent langgraph" in run_step
+    assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in run_step
+    # Dataset and per-task attempts come from the dispatch inputs.
+    assert '--dataset "$HARBOR_DATASET"' in run_step
+    assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
+    # Results are written under a jobs dir the aggregate job later collects.
+    assert "--jobs-dir harbor-jobs/" in run_step
+    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
+    assert "--plugin langsmith" in run_step
+    assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
+    assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
 
 
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:

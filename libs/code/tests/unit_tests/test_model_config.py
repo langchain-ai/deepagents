@@ -4330,8 +4330,7 @@ class TestGetProviderProfileModules:
         assert ("openai", "langchain_openai.data._profiles") in result
         assert ("ollama", "langchain_ollama.data._profiles") in result
         assert ("fireworks", "langchain_fireworks.data._profiles") in result
-        assert ("meta", "langchain_meta.data._profiles") in result
-        assert len(result) == 5
+        assert len(result) == 4
 
     def test_handles_submodule_paths(self):
         """Extracts package root from dotted module paths like 'pkg.submodule'."""
@@ -4350,7 +4349,6 @@ class TestGetProviderProfileModules:
 
         assert result == [
             ("google_anthropic_vertex", "langchain_google_vertexai.data._profiles"),
-            ("meta", "langchain_meta.data._profiles"),
         ]
 
 

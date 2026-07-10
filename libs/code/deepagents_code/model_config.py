@@ -839,15 +839,13 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     """Build a `(provider, profile_module)` list from langchain's provider registry.
 
     Reads the built-in provider registry from `langchain.chat_models.base`
-    to discover every provider that `init_chat_model` knows about, supplements
-    integrations supported directly by Deep Agents Code, then derives the
-    `<package>.data._profiles` module path for each.
+    to discover every provider that `init_chat_model` knows about, then derives
+    the `<package>.data._profiles` module path for each.
 
     Returns:
         List of `(provider_name, profile_module_path)` tuples.
     """
-    providers = dict(_get_builtin_providers())
-    providers.setdefault("meta", ("langchain_meta", "ChatMetaModel", None))
+    providers = _get_builtin_providers()
 
     result: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()

@@ -42,6 +42,11 @@ on:
         required: false
         default: ""
         type: string
+      dataset_path:
+        description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
+        required: false
+        default: ""
+        type: string
       models:
         description: "The single model to evaluate (provider:model). This workflow runs exactly one model — model groups are not accepted. Override with models_override."
         required: true
@@ -141,6 +146,11 @@ on:
         required: true
         default: "3"
         type: string
+      n_retries:
+        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        required: true
+        default: "0"
+        type: string
       concurrency:
         description: "Concurrent trials (sandbox slots) per shard job. Capped at 4."
         required: true
@@ -153,6 +163,11 @@ on:
         type: string
       disable_verification:
         description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
+        required: false
+        default: false
+        type: boolean
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         required: false
         default: false
         type: boolean
@@ -172,6 +187,7 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  HARBOR_DATASET_PATH: ${{ inputs.dataset_path || '' }}
 
 jobs:
   prep:
@@ -277,8 +293,10 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
+      HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
       # Effective shard count from prep (capped to selectable work), not the raw
       # input — the partition must match the matrix or tasks would be dropped.
@@ -423,6 +441,20 @@ jobs:
           python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
+      - name: "🗂️ Populate local dataset corpus"
+        if: ${{ inputs.dataset_path != '' }}
+        working-directory: libs/evals
+        env:
+          HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+        # The per-task corpus is single-sourced (git-ignored) and regenerated from
+        # the vendored copy so each task's build context has its files/ before
+        # Harbor builds the task images.
+        run: |
+          if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
+            echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
+          fi
+          uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -477,6 +509,10 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
             exit 1
           fi
+          if ! [[ "$HARBOR_N_RETRIES" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
+            exit 1
+          fi
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
@@ -490,7 +526,37 @@ jobs:
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
 
-          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+          # Allowlist the boolean; only literal true/false accepted.
+          force_build_flag=()
+          case "$HARBOR_FORCE_BUILD" in
+            true)  force_build_flag=(--force-build) ;;
+            false) ;;
+            *) echo "::error::Invalid force_build (true|false): $HARBOR_FORCE_BUILD"; exit 1 ;;
+          esac
+
+          dataset_args=(--dataset "$HARBOR_DATASET")
+          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          if [ -n "$HARBOR_DATASET_PATH" ]; then
+            if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
+              echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            if ! dataset_path=$(realpath "$HARBOR_DATASET_PATH"); then
+              echo "::error::Local Harbor dataset path does not exist: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            datasets_root=$(realpath datasets)
+            if [[ "$dataset_path" != "$datasets_root"/* ]] || [ ! -f "$dataset_path/dataset.toml" ]; then
+              echo "::error::Local Harbor dataset path must identify a dataset under datasets/: $HARBOR_DATASET_PATH"
+              exit 1
+            fi
+            dataset_args=(--path "$dataset_path")
+            # Local sharding: a local dataset has no registry manifest, so expose
+            # the shell-validated dataset dir to the shard-matrix step below, which
+            # enumerates task names from disk instead of querying the registry.
+            export HARBOR_LOCAL_DATASET_DIR="$dataset_path"
+            HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
+          elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
           fi
@@ -525,22 +591,41 @@ jobs:
           if not raw_n_tasks.isdigit():
               sys.exit(f"::error::Invalid n_tasks (must be an integer): {raw_n_tasks!r}")
           n_tasks = int(raw_n_tasks)
-          md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
 
-          # Native manifest order (do NOT sort): the n_tasks cap must pick the same
-          # first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks], native order).
-          names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
-          if not names:
-              # Resolved zero usable names from a non-empty manifest -> the id shape
-              # changed and get_name() stopped yielding a name. Fail loudly instead
-              # of letting every shard collapse into the legitimate-empty no-op
-              # below, which would run the whole sharded job on nothing and report
-              # green. (A genuinely empty selection is handled per-shard, not here.)
-              sys.exit(
-                  f"::error::Resolved 0 usable task names from {ds}@latest "
-                  f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
-                  "shape (get_name() returned nothing)."
+          local_dir = os.environ.get("HARBOR_LOCAL_DATASET_DIR", "").strip()
+          if local_dir:
+              # Local --path dataset: no registry manifest, so enumerate task names
+              # from disk -- immediate subdirs of the dataset dir (shell-validated:
+              # realpath, under datasets/, has dataset.toml) that contain a
+              # task.toml. Raw tasks carry no [task] name, so the dir basename IS the
+              # task name Harbor filters on via --include-task-name. Sorted for a
+              # stable partition that every shard computes identically.
+              names = sorted(
+                  entry.name
+                  for entry in os.scandir(local_dir)
+                  if entry.is_dir()
+                  and os.path.isfile(os.path.join(entry.path, "task.toml"))
               )
+              if not names:
+                  sys.exit(
+                      f"::error::No local Harbor tasks (dirs with task.toml) under {local_dir}"
+                  )
+          else:
+              md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
+              # Native manifest order (do NOT sort): the n_tasks cap must pick the
+              # same first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks]).
+              names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
+              if not names:
+                  # Resolved zero usable names from a non-empty manifest -> the id
+                  # shape changed and get_name() stopped yielding a name. Fail loudly
+                  # instead of letting every shard collapse into the legitimate-empty
+                  # no-op below, which would run the whole sharded job on nothing and
+                  # report green. (A genuinely empty selection is handled per-shard.)
+                  sys.exit(
+                      f"::error::Resolved 0 usable task names from {ds}@latest "
+                      f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
+                      "shape (get_name() returned nothing)."
+                  )
           selected = names
           if include_globs:
               selected = [
@@ -612,11 +697,16 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_DATASET}"
+          # A dataset-name override (e.g. tau3-subset) wins; otherwise keep the
+          # value already resolved above (local-path-aware `local/...`, or the
+          # registry ref) rather than falling back to $HARBOR_DATASET, which would
+          # clobber the local-dataset name.
+          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}"
           # Include the run id + attempt so all shards of this dispatch share one
           # experiment name (Harbor's LangSmith plugin uses an explicit name
           # verbatim and create-or-reuses it, converging the shards) while a
-          # later dispatch or re-run gets its own experiment.
+          # later dispatch or re-run gets its own experiment. HARBOR_LANGSMITH_DATASET
+          # is already set (local-path-aware) in the dataset-resolution block above.
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
@@ -661,11 +751,13 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET" \
+            "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
+            --max-retries "$HARBOR_N_RETRIES" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
+            "${force_build_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

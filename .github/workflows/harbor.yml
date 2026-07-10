@@ -430,6 +430,16 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../code/ "$local_deps_dir/deepagents-code/"
+          # Stage partners/quickjs — deepagents-code pins it via ../partners/quickjs.
+          mkdir -p "$local_deps_dir/partners"
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude '*.egg-info' \
+            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then

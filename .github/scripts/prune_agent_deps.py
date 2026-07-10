@@ -1,21 +1,23 @@
 """Prune the Harbor LangGraph agent's provider deps to the active model.
 
-The agent (`deepagents_harbor/langgraph_project/langgraph_agent.py`) picks its
-chat model at runtime through `langchain.chat_models.init_chat_model`, which
-lazily imports only the provider package matching the model spec's `provider:`
-prefix. The committed `langgraph.json` therefore lists *every* provider so a
-local `langgraph dev` can run any model — but a single CI job only ever runs one
-model, and installing the other providers just slows the sandbox env build.
+The agent (`libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py`)
+picks its chat model at runtime through `langchain.chat_models.init_chat_model`,
+which lazily imports only the provider package matching the model spec's
+`provider:` prefix. The committed `langgraph.json` therefore lists *every*
+provider so a local `langgraph dev` can run any model — but a single CI job only
+ever runs one model, and installing the other providers just slows the sandbox
+env build.
 
 This script rewrites a `langgraph.json` in place, dropping every provider
 package except the one matching `HARBOR_MODEL`'s provider. Non-provider
 dependencies (langchain core, the staged local packages, MCP adapters, etc.)
 are always kept. It runs in CI against the ephemeral checkout
-(`.github/workflows/harbor.yml`); the committed file is left untouched.
+(`.github/workflows/harbor.yml`, from the `libs/evals` working directory); the
+committed file is left untouched.
 
 Usage:
     HARBOR_MODEL=fireworks:accounts/... \\
-        python prune_agent_deps.py path/to/langgraph.json
+        python3 prune_agent_deps.py path/to/langgraph.json
 """
 
 from __future__ import annotations
@@ -123,17 +125,26 @@ def main() -> None:
         )
     provider = model.split(":", 1)[0]
 
-    with open(path, encoding="utf-8") as f:  # noqa: PTH123
-        config = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:  # noqa: PTH123
+            config = json.load(f)
+    except OSError as exc:
+        raise SystemExit(f"::error::Could not read {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"::error::{path} is not valid JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise SystemExit(f"::error::{path} must contain a top-level JSON object.")
     deps = config.get("dependencies", [])
 
     if provider not in PROVIDER_TO_PACKAGE:
         # An unmapped provider is non-functional in this workflow anyway:
         # harbor.yml only wires credentials and agent env for the providers in
         # PROVIDER_TO_PACKAGE, and langgraph.json ships only their packages.
-        # Leaving deps in place would keep langchain-fireworks (a prerelease
-        # dependency) and fail the agent-env install with a cryptic resolver
-        # error; fail fast here with an actionable one instead.
+        # Leaving deps in place would keep langchain-fireworks, whose transitive
+        # fireworks-ai dependency is a prerelease (>=1.2.0a71); that fails the
+        # agent-env install unless UV_PRERELEASE=allow is set — and harbor.yml
+        # sets it only for the fireworks arm. Fail fast with an actionable error
+        # here instead of a cryptic resolver failure later.
         supported = ", ".join(sorted(PROVIDER_TO_PACKAGE))
         raise SystemExit(
             f"::error::Unsupported model provider {provider!r} (from {model!r}). "
@@ -142,12 +153,21 @@ def main() -> None:
             "the credential and agent-env steps in harbor.yml."
         )
 
-    pruned = prune_dependencies(deps, provider)
+    try:
+        pruned = prune_dependencies(deps, provider)
+    except ValueError as exc:
+        # Drift between PROVIDER_TO_PACKAGE and the config: surface it as a
+        # GitHub annotation (like the paths above) rather than a raw traceback.
+        raise SystemExit(f"::error::{exc}") from exc
     config["dependencies"] = pruned
 
-    with open(path, "w", encoding="utf-8") as f:  # noqa: PTH123
+    # Write atomically (temp file + os.replace) so an interrupted run can never
+    # leave a truncated langgraph.json for the subsequent Harbor steps to read.
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:  # noqa: PTH123
         json.dump(config, f, indent=2)
         f.write("\n")
+    os.replace(tmp_path, path)  # noqa: PTH105
 
     removed = [dependency_package(d) for d in deps if d not in pruned]
     print(  # noqa: T201

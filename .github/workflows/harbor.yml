@@ -386,8 +386,12 @@ jobs:
         # provider (for local `langgraph dev`); a single job needs just one, so
         # drop the rest before Harbor builds the agent env. In-place edit of the
         # ephemeral checkout only — the committed file is untouched. Pure stdlib,
-        # unit-tested in .github/scripts/test_prune_agent_deps.py.
-        run: python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" deepagents_harbor/langgraph_project/langgraph.json
+        # unit-tested in .github/scripts/test_prune_agent_deps.py. Both paths are
+        # absolute ($GITHUB_WORKSPACE) so this step doesn't depend on the job's
+        # `working-directory: libs/evals` default.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
+            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
       - name: "⚓ Run Harbor"
         env:

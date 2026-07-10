@@ -1,0 +1,23 @@
+.github/scripts/prune_agent_deps.py
+  s_965e75b1ea2124::t_85f4049c8ab7b0 1-156
+.github/scripts/test_prune_agent_deps.py
+  s_965e75b1ea2124::t_21ae106f6f403f 1-194
+.github/workflows/harbor.yml
+  s_965e75b1ea2124::t_022fc69c3ed891 383-391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bfa1c2bf25f86e76b2a0f9f843d71ec387ebccb2",
+  "prompts": {},
+  "sessions": {
+    "s_965e75b1ea2124": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ddd397b-2b84-4b35-b980-88905441f22d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

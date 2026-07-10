@@ -171,6 +171,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "ibm": "IBM watsonx",
     "langsmith": "LangSmith (tracing)",
     "litellm": "LiteLLM",
+    "meta": "Meta",
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
     "openai": "OpenAI",

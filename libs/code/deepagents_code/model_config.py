@@ -535,6 +535,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
+    "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -624,6 +625,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "google_vertexai": "max_retries",
     "groq": "max_retries",
     "litellm": "max_retries",
+    "meta": "max_retries",
     "mistralai": "max_retries",
     "openai": "max_retries",
     "openrouter": "max_retries",
@@ -669,6 +671,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   huggingface   the integration and huggingface_hub both read
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   meta          ChatMetaModel reads MODEL_API_BASE.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
     #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
@@ -702,6 +705,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
+    "meta": ("MODEL_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
@@ -835,13 +839,15 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     """Build a `(provider, profile_module)` list from langchain's provider registry.
 
     Reads the built-in provider registry from `langchain.chat_models.base`
-    to discover every provider that `init_chat_model` knows about, then derives
-    the `<package>.data._profiles` module path for each.
+    to discover every provider that `init_chat_model` knows about, supplements
+    integrations supported directly by Deep Agents Code, then derives the
+    `<package>.data._profiles` module path for each.
 
     Returns:
         List of `(provider_name, profile_module_path)` tuples.
     """
-    providers = _get_builtin_providers()
+    providers = dict(_get_builtin_providers())
+    providers.setdefault("meta", ("langchain_meta", "ChatMetaModel", None))
 
     result: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()

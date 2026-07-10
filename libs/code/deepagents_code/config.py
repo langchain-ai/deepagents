@@ -4116,6 +4116,10 @@ def _create_model_via_init(
     )
 
     try:
+        if provider == "meta":
+            from langchain_meta import ChatMetaModel
+
+            return ChatMetaModel(model=model_name, **kwargs)
         if provider:
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)

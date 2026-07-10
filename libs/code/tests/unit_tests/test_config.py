@@ -4516,6 +4516,23 @@ class TestCreateModelEdgeCaseParsing:
         mock_default.assert_called_once()
 
 
+class TestCreateMetaModel:
+    """Tests for Meta's dedicated model initializer."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    @patch("langchain_meta.ChatMetaModel")
+    def test_uses_langchain_meta(self, mock_meta: Mock, mock_init: Mock) -> None:
+        """Meta models use the installed integration until LangChain registers it."""
+        expected = Mock()
+        mock_meta.return_value = expected
+
+        result = _create_model_via_init("muse-spark-1.1", "meta", {"max_retries": 3})
+
+        assert result is expected
+        mock_meta.assert_called_once_with(model="muse-spark-1.1", max_retries=3)
+        mock_init.assert_not_called()
+
+
 class TestCreateModelViaInitImportError:
     """Tests for _create_model_via_init() ImportError handling."""
 

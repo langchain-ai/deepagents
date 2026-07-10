@@ -906,19 +906,17 @@ def override_subagent_middleware(
 ) -> "SubAgentMiddleware":
     """Build a `SubAgentMiddleware` with custom delegation guidance.
 
-    `create_deep_agent` auto-assembles a `SubAgentMiddleware` for its
-    general-purpose subagent but doesn't expose a way to customize the
-    `task` tool's `task_description`/`system_prompt`. Use this to construct
-    the general-purpose subagent spec yourself (`gp_subagent`) and feed it,
-    along with any other `subagents`, into a `SubAgentMiddleware` built with
-    custom guidance. Pass the result via `middleware=[...]` to
-    `create_deep_agent`, which replaces its own auto-assembled instance
-    (matched by `.name`) with this one instead of building its own.
+    `create_deep_agent` auto-assembles a `SubAgentMiddleware` but doesn't
+    expose a way to customize the `task` tool's `task_description`/
+    `system_prompt`. Build the general-purpose subagent spec yourself
+    (`gp_subagent`), then feed it and any other `subagents` into a
+    `SubAgentMiddleware` with custom guidance. Pass the result via
+    `middleware=[...]` to `create_deep_agent`, which replaces its own
+    auto-assembled instance (matched by `.name`) with this one.
 
     `gp_subagent` is always included first. Subagents without an explicit
-    `model` or `middleware` inherit those defaults so they behave like the SDK's
-    built-in subagents. `AsyncSubAgent`s are ignored here and continue to use
-    `AsyncSubAgentMiddleware`.
+    `model`/`middleware` inherit those defaults, matching the SDK's built-ins.
+    `AsyncSubAgent`s are ignored and still use `AsyncSubAgentMiddleware`.
     """
 
     def _fill_defaults(spec: SubAgent) -> SubAgent:

@@ -1,0 +1,38 @@
+.github/scripts/test_aggregate_shards.py
+  s_10479b16728ab1::t_42c95d4de7b409 56-59
+  s_10479b16728ab1::t_4cb05da7b544dc 151
+  s_10479b16728ab1::t_4920690bac229a 91-93,95-96,103-130
+  s_10479b16728ab1::t_741a1ac47f6293 131-132
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_10479b16728ab1::t_54e468755852bd 72-80,88-103
+.github/workflows/harbor.yml
+  s_10479b16728ab1::t_5561b6afa98128 107
+  s_10479b16728ab1::t_2ba5d853b7e587 234
+  s_10479b16728ab1::t_31ac446206ed59 236-241,250,258,263-269,279-280
+  s_10479b16728ab1::t_1cd4f702675283 741,743,754-756
+  s_10479b16728ab1::t_9d529da4c4728e 45-47
+  s_10479b16728ab1::t_cbc3a6e2b89fdd 790-793,797
+  s_10479b16728ab1::t_2cbf0805c42da3 235
+.github/scripts/aggregate_shards.py
+  s_10479b16728ab1::t_d76bf35cce8f4a 175-176,180-182,184-188
+  s_10479b16728ab1::t_f1202d409435c3 9-14
+  s_10479b16728ab1::t_95d870095b73e4 118-123,137-140,151-156,158,160
+  s_10479b16728ab1::t_6fbae797dce0e5 230-235,243,246-247,252-255,271-274,279-281,286-293
+  s_10479b16728ab1::t_e597a4fa457e0d 221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "a236df69faf4c47f490390d9b17285972f5ef7fd",
+  "prompts": {},
+  "sessions": {
+    "s_10479b16728ab1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79b4670e-d763-4f74-9a3c-be7c4233f971",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

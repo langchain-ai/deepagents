@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       dataset:
-        description: "Terminal-bench dataset to run through Harbor."
+        description: "Dataset to run through Harbor."
         required: true
         default: "terminal-bench/terminal-bench-2"
         type: choice
@@ -35,38 +35,18 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "harbor-index/harbor-index-1.0"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false
         default: ""
         type: string
       models:
-        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
-        required: false
-        default: ""
+        description: "The single model to evaluate (provider:model). This workflow runs exactly one model — model groups are not accepted. Override with models_override."
+        required: true
+        default: "fireworks:accounts/fireworks/models/glm-5p2"
         type: choice
         options:
-          - ""
-          - all
-          - set0
-          - set1
-          - set2
-          - frontier
-          - mega
-          - fast
-          - open
-          - open-fireworks
-          - docs
-          - anthropic
-          - baseten
-          - fireworks
-          - google_genai
-          - groq
-          - nvidia
-          - openai
-          - ollama
-          - openrouter
-          - xai
           - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
@@ -124,7 +104,7 @@ on:
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        description: "Override: a single model ref not in the dropdown (e.g. 'openai:gpt-5.6'). Takes priority over the dropdown when non-empty. Must resolve to exactly one model."
         required: false
         default: ""
         type: string
@@ -156,14 +136,14 @@ on:
         default: ""
         type: string
       rollouts_per_task:
-        description: "Rollouts per task."
+        description: "Rollouts (attempts) per task = K. Reported as a single pass@K and avg@K. No cap."
         required: true
-        default: "1"
+        default: "3"
         type: string
       concurrency:
-        description: "Concurrent trials (sandbox slots)."
+        description: "Concurrent trials (sandbox slots) per shard job. Capped at 4."
         required: true
-        default: "1"
+        default: "4"
         type: string
       agent_timeout_multiplier:
         description: "Multiplier for the agent EXECUTION timeout (e.g. 0.1 caps each rollout's wall-clock to bound model cost). Setup + env-build timeouts are unaffected, so the agent-setup phase is still tested at full budget — useful for cheap concurrency stress tests."
@@ -176,9 +156,9 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation. Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped so models x shards <= 256 (GitHub's matrix limit)."
+        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10 (with concurrency capped at 4 and a single model, at most 40 concurrent sandboxes)."
         required: false
-        default: "1"
+        default: "10"
         type: string
       harbor_package_override:
         description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
@@ -251,7 +231,20 @@ jobs:
         id: set-matrix
         run: python .github/scripts/models.py harbor
         env:
-          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'fireworks:accounts/fireworks/models/glm-5p2' }}
+
+      - name: "🔒 Validate single model + resource limits"
+        # This workflow evaluates exactly ONE model. Fail fast (before the matrix
+        # fans out) if the resolved model set is not a single model, or if the
+        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; with one
+        # model their product bounds concurrent sandboxes to 40). Inputs are read
+        # via env (no shell interpolation) and int-parsed in the script.
+        # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
+        env:
+          N_SHARDS: ${{ inputs.n_shards || '10' }}
+          CONCURRENCY: ${{ inputs.concurrency || '4' }}
+          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+        run: python .github/scripts/validate_harbor_limits.py
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -702,7 +695,106 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: harbor-${{ strategy.job-index }}
+          # shard-* so the aggregate job can glob every per-shard upload (this
+          # workflow is single-model, so job-index == shard index).
+          name: shard-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
+
+  aggregate:
+    name: "📊 Aggregate shards (pass@k / avg@k)"
+    needs: harbor
+    # Runs after all shards. Skipped only when the matrix never ran (prep failed
+    # the validation -> harbor skipped) or the run was cancelled; otherwise it
+    # aggregates whatever shards uploaded, even if some shards failed.
+    if: ${{ always() && needs.harbor.result != 'skipped' && needs.harbor.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write        # download shard artifacts, then delete them after merging
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      # Matrix job result: aggregation flags the run incomplete if a shard job
+      # failed. Empty shards (task-filtered slices) no-op successfully, so a
+      # filtered run is not falsely reported as incomplete.
+      HARBOR_RESULT: ${{ needs.harbor.result }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🔖 Compute dataset slug"
+        id: slug
+        # Sanitized dataset ref -> artifact-name suffix, so a future orchestrator
+        # calling this workflow per category yields one distinctly-named zip each.
+        env:
+          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
+        run: |
+          slug=$(printf '%s' "$DATASET" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+      - name: "⬇️ Download shard results"
+        # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
+        # download failure (auth / network / rate-limit). Only the former aggregates
+        # an empty set; anything else fails the step, so a transient failure is never
+        # mistaken for a complete, zero-result run. Transient errors are retried.
+        run: |
+          mkdir -p _shards
+          attempt=1
+          while :; do
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards >dl.log 2>&1; then
+              break
+            fi
+            if grep -qi 'no artifact' dl.log; then
+              echo "::warning::No shard-* artifacts matched; aggregating an empty set."
+              break
+            fi
+            echo "Shard download attempt ${attempt} failed:"; cat dl.log
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Shard download failed after ${attempt} attempts (not an empty-artifact case)."
+              exit 1
+            fi
+            attempt=$((attempt + 1)); sleep $((attempt * 5))
+          done
+          echo "Contents of _shards:"
+          ls -1 _shards || true
+
+      - name: "📊 Compute pass@k / avg@k"
+        # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
+        # avoid workflow-input injection; argparse int-parses --rollouts.
+        env:
+          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
+          ROLLOUTS: ${{ inputs.rollouts_per_task }}
+        run: |
+          if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
+            exit 1
+          fi
+          python3 .github/scripts/aggregate_shards.py _shards \
+            --rollouts "$ROLLOUTS" \
+            --dataset "$DATASET" \
+            --harbor-result "$HARBOR_RESULT" \
+            --out-dir _shards
+
+      - name: "📤 Upload combined results"
+        # One zip per category: the merged shard harbor data plus summary.json
+        # and per_task.jsonl.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: harbor-combined-${{ steps.slug.outputs.slug }}
+          path: _shards
+          if-no-files-found: warn
+
+      - name: "🧹 Delete per-shard artifacts"
+        # The combined zip supersedes the intermediates, leaving one artifact per
+        # category. Best-effort: a delete failure must not fail the run.
+        continue-on-error: true
+        run: |
+          ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | startswith("shard-")) | .id')
+          for id in $ids; do
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" \
+              && echo "deleted shard artifact $id" || echo "could not delete $id"
+          done

@@ -128,14 +128,19 @@ def main() -> None:
     deps = config.get("dependencies", [])
 
     if provider not in PROVIDER_TO_PACKAGE:
-        # Ad-hoc / newly-added provider (e.g. a one-off `models_override`): we
-        # can't know which package to keep, so leave the deps untouched rather
-        # than guess wrong. Mirrors the credential-check step's warning fallback.
-        print(  # noqa: T201
-            f"::warning::Unknown provider {provider!r}; leaving all agent provider "
-            "dependencies in place."
+        # An unmapped provider is non-functional in this workflow anyway:
+        # harbor.yml only wires credentials and agent env for the providers in
+        # PROVIDER_TO_PACKAGE, and langgraph.json ships only their packages.
+        # Leaving deps in place would keep langchain-fireworks (a prerelease
+        # dependency) and fail the agent-env install with a cryptic resolver
+        # error; fail fast here with an actionable one instead.
+        supported = ", ".join(sorted(PROVIDER_TO_PACKAGE))
+        raise SystemExit(
+            f"::error::Unsupported model provider {provider!r} (from {model!r}). "
+            f"Supported providers: {supported}. To add one, extend "
+            "PROVIDER_TO_PACKAGE and wire its package into langgraph.json plus "
+            "the credential and agent-env steps in harbor.yml."
         )
-        return
 
     pruned = prune_dependencies(deps, provider)
     config["dependencies"] = pruned

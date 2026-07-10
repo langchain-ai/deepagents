@@ -165,17 +165,23 @@ def test_main_rewrites_file_in_place(
     assert written["graphs"] == {"g": "x:y"}
 
 
-def test_main_unknown_provider_leaves_file_unchanged(
+def test_main_unknown_provider_fails_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unknown provider warns and no-ops rather than dropping every provider."""
+    """An unmapped provider hard-fails (its plumbing isn't wired in harbor.yml).
+
+    Failing fast beats the no-op fallback, which would retain langchain-fireworks
+    (a prerelease dep) and fail the agent-env install with a cryptic resolver
+    error. The file is left untouched because we fail before writing.
+    """
     config_path = tmp_path / "langgraph.json"
     _write_config(config_path, SAMPLE_DEPS)
     original = config_path.read_text()
     monkeypatch.setenv("HARBOR_MODEL", "some-new-provider:whatever")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
-    prune.main()
+    with pytest.raises(SystemExit):
+        prune.main()
 
     assert config_path.read_text() == original
 

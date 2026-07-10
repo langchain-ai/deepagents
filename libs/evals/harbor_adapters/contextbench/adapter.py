@@ -3,9 +3,66 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 from pathlib import Path
+
+_TASK_ID_RE = re.compile(r"^cb-(?P<suite>[a-z0-9]+)-(?P<index>\d+)$")
+
+
+def vendor_dir() -> Path:
+    """Return the directory containing vendored Context-Bench data.
+
+    Defined as a function (rather than a module-level constant) so tests can
+    monkeypatch it to point at a fixture directory.
+
+    Returns:
+        Path to the `vendor/` directory shipped alongside this module.
+    """
+    return Path(__file__).resolve().parent / "vendor"
+
+
+def parse_task_id(task_id: str) -> tuple[str, int]:
+    """Parse a `cb-<suite>-<i>` task id.
+
+    Args:
+        task_id: Identifier of the form `cb-<suite>-<i>`, where `<i>` is the
+            zero-based line index into `filesystem_<suite>.jsonl`.
+
+    Returns:
+        A `(suite, line_index)` tuple.
+
+    Raises:
+        ValueError: If `task_id` does not match the expected `cb-<suite>-<i>` form.
+    """
+    match = _TASK_ID_RE.match(task_id)
+    if match is None:
+        msg = f"`task_id` {task_id!r} must match `cb-<suite>-<i>` (e.g. `cb-cloud-1`)"
+        raise ValueError(msg)
+    return match.group("suite"), int(match.group("index"))
+
+
+def record_for_task_id(task_id: str) -> dict[str, object]:
+    """Look up the Context-Bench record identified by a `cb-<suite>-<i>` task id.
+
+    Args:
+        task_id: Identifier of the form `cb-<suite>-<i>`.
+
+    Returns:
+        The parsed Context-Bench record (a JSON object).
+
+    Raises:
+        ValueError: If `task_id` does not match the expected `cb-<suite>-<i>` form.
+        FileNotFoundError: If no vendored data exists for the parsed suite.
+        IndexError: If the parsed line index does not identify a record.
+    """
+    suite, line_index = parse_task_id(task_id)
+    source_jsonl = vendor_dir() / f"filesystem_{suite}.jsonl"
+    if not source_jsonl.is_file():
+        msg = f"No vendored Context-Bench data for suite {suite!r} (expected {source_jsonl})"
+        raise FileNotFoundError(msg)
+    return _read_record(source_jsonl, line_index)
 
 
 def generate_task(

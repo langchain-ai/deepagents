@@ -80,9 +80,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auth",
-        description="Connect and manage model provider credentials",
+        description="Connect and manage provider and service credentials",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="key keys credential credentials login token api",
+        hidden_keywords=(
+            "key keys credential credentials login token api tracing langsmith"
+        ),
         aliases=("/connect",),
     ),
     SlashCommand(
@@ -103,9 +105,25 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset interrupt",
     ),
     SlashCommand(
+        name="/goal",
+        description="Set a persistent objective by drafting acceptance criteria",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords=(
+            "objective criteria acceptance rubric grader grading model iterations"
+        ),
+        argument_hint="[<objective>|show|clear|model|max-iterations]",
+    ),
+    SlashCommand(
         name="/editor",
         description="Open prompt in an external editor ($EDITOR)",
         bypass_tier=BypassTier.QUEUED,
+    ),
+    SlashCommand(
+        name="/effort",
+        description="Set reasoning effort for the current model",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="reasoning thinking level",
+        argument_hint="[none|low|medium|high|xhigh|max|clear]",
     ),
     SlashCommand(
         name="/mcp",
@@ -127,7 +145,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/offload",
-        description="Offload older messages to free context",
+        description="Summarize and offload older messages to free context",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="compact",
         aliases=("/compact",),
@@ -168,6 +186,14 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="refresh",
     ),
     SlashCommand(
+        name="/rubric",
+        description="Set explicit acceptance criteria for rubric grading",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="criteria acceptance grader grading evaluation iterations",
+        argument_hint="[set|next|file|show|clear|model|max-iterations]",
+        aliases=("/criteria",),
+    ),
+    SlashCommand(
         name="/restart",
         description="Restart the agent server",
         bypass_tier=BypassTier.ALWAYS,
@@ -178,6 +204,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Change color theme",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="dark light color appearance",
+    ),
+    SlashCommand(
+        name="/scrollbar",
+        description="Show or hide the chat scrollbar",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="scroll scroller bar vertical",
     ),
     SlashCommand(
         name="/timestamps",

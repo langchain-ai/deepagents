@@ -50,12 +50,12 @@ logger = logging.getLogger(__name__)
 # These are the single source of truth for `[interpreter]` defaults. The
 # `Settings` dataclass references them so the default is defined once.
 
-INTERPRETER_ENABLE_DEFAULT = False
+INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
+INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
@@ -71,12 +71,13 @@ class OptionKind(Enum):
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
     `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
-    and `PTC_DELEGATE` defer to a bespoke parser (their semantics — colon-split
-    Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
-    do not compress into a generic coercion). `THEME_DELEGATE` is resolved
-    separately at the top of `resolve_scalar` and never reaches the inline
-    coercers. `STRUCTURED` marks user-defined tables that the scalar resolver
-    only passes through for display.
+    `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to bespoke parsers (their
+    semantics — colon-split Path resolution, comma + `recommended`/`all`
+    sentinels, the PTC/startup-mode allowlists — do not compress into a generic
+    coercion). `THEME_DELEGATE` is resolved separately at the top of
+    `resolve_scalar` and never reaches the inline coercers. `STRUCTURED` marks
+    user-defined tables that the scalar resolver only passes through for
+    display.
     """
 
     BOOL = "bool"
@@ -101,6 +102,9 @@ class OptionKind(Enum):
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
 
+    STARTUP_MODE_DELEGATE = "startup_mode"
+    """Delegates to the `[startup].mode` runtime allowlist."""
+
     THEME_DELEGATE = "theme"
     """Delegates to the app theme-preference loader semantics."""
 
@@ -117,6 +121,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
 }
@@ -137,6 +142,7 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
 
@@ -209,6 +215,16 @@ class ConfigOption:
 
     install_extra: str | None = None
     """Optional `deepagents-code[...]` extra that provides `dependency_module`."""
+
+    provider: str | None = None
+    """Provider/service name a credential option authenticates, or `None`.
+
+    Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
+    where it is the key `/auth` stores the credential under and the name passed
+    to `model_config.is_service`. Carrying it as a structured field lets
+    `config show`/`get` look up the stored credential without re-parsing it out
+    of `key`. `None` for every other option.
+    """
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -410,6 +426,17 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # validation. Falling back to the validated default is the safe choice.
         logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
         return _INVALID
+    if kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            name,
+            raw,
+        )
+        return _INVALID
     assert_never(kind)
 
 
@@ -457,6 +484,17 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
@@ -740,6 +778,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 kind=OptionKind.STR,
                 env_var=env_var,
                 redacted=redacted,
+                provider=name,
                 settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,
@@ -778,11 +817,45 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_HEADER,
     ),
     ConfigOption(
+        key="display.splash_show_model",
+        group="Display",
+        summary="Show the active model row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_MODEL,
+    ),
+    ConfigOption(
+        key="display.splash_show_cwd",
+        group="Display",
+        summary="Show the working-directory row in the startup welcome banner.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SPLASH_SHOW_CWD,
+    ),
+    ConfigOption(
         key="display.kitty_keyboard",
         group="Display",
         summary="Override kitty-keyboard detection (1 forces on, 0 forces off).",
         kind=OptionKind.BOOL,
         env_var=_env_vars.KITTY_KEYBOARD,
+    ),
+    ConfigOption(
+        key="display.show_scrollbar",
+        group="Display",
+        summary="Show the vertical scrollbar in the chat area (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_SCROLLBAR,
+        toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
+        key="display.collapse_pastes",
+        group="Display",
+        summary="Collapse large chat-input pastes into compact placeholders.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.COLLAPSE_PASTES,
+        toml_keys=("ui", "collapse_pastes"),
     ),
     ConfigOption(
         key="display.hide_cwd",
@@ -819,7 +892,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="display.hide_splash_tips",
         group="Display",
-        summary="Hide rotating tips in the startup splash.",
+        summary="Hide the startup tip shown above the chat input.",
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.HIDE_SPLASH_TIPS,
@@ -839,6 +912,23 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
+    ),
+    ConfigOption(
+        key="display.show_url_open_toast",
+        group="Display",
+        summary="Show a confirmation toast after clicking a URL.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_URL_OPEN_TOAST,
+        toml_keys=("ui", "show_url_open_toast"),
+    ),
+    ConfigOption(
+        key="display.onboarding_integrations_screen",
+        group="Display",
+        summary="Show the integrations summary screen during first-run onboarding.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.ONBOARDING_INTEGRATIONS_SCREEN,
     ),
     # --- Models --------------------------------------------------------
     ConfigOption(
@@ -866,6 +956,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.LANGSMITH_PROJECT,
         fallback_env_vars=("LANGSMITH_PROJECT",),
         settings_field="deepagents_langchain_project",
+    ),
+    ConfigOption(
+        key="tracing.langsmith_redact",
+        group="Tracing",
+        summary="Redact detected secrets from LangSmith agent traces before upload.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.LANGSMITH_REDACT,
+        toml_keys=("tracing", "langsmith_redact"),
     ),
     ConfigOption(
         key="tracing.user_id",
@@ -941,7 +1040,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
-        cli_flag="--enable-interpreter",
+        cli_flag="--interpreter",
         settings_field="enable_interpreter",
     ),
     ConfigOption(
@@ -1025,13 +1124,59 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
     ),
-    # --- Warnings (config.toml-only) -----------------------------------
+    # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary="Warning keys to suppress (e.g. 'ripgrep').",
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
+    ),
+    ConfigOption(
+        key="warnings.suppress_env_override",
+        group="Warnings",
+        summary="Silence the LangSmith env-var override warning at startup.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
+    ),
+    # --- MCP ------------------------------------------------------------
+    # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
+    # which reads them only from the user-level config.toml (never a project file),
+    # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
+    # env overrides are named in the summaries instead of `env_var` because the
+    # scalar resolver rejects env-backed STRUCTURED options by design.
+    ConfigOption(
+        key="mcp.enabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to pre-approve by name from an untrusted "
+            ".mcp.json; command/URL changes under the same name still match "
+            "(env: DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "enabled_project_servers"),
+    ),
+    ConfigOption(
+        key="mcp.disabled_project_servers",
+        group="MCP",
+        summary=(
+            "Project MCP server names to always reject; reject wins over approval "
+            "and trust (env: DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS)."
+        ),
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_project_servers"),
+    ),
+    # Unlike the two trust lists above, this one is managed by `mcp_disabled`
+    # (the server viewer's disable toggle), not `load_mcp_server_trust_lists`;
+    # it plays no part in the project-trust security boundary. It is STRUCTURED
+    # here purely for discovery.
+    ConfigOption(
+        key="mcp.disabled_servers",
+        group="MCP",
+        summary="MCP server names disabled by the user from the server viewer.",
+        kind=OptionKind.STRUCTURED,
+        toml_keys=("mcp", "disabled_servers"),
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(
@@ -1062,6 +1207,24 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.OFFLINE,
+    ),
+    ConfigOption(
+        key="runtime.ripgrep_installer",
+        group="Runtime",
+        summary="Select ripgrep provisioning mode ('managed' or 'system').",
+        kind=OptionKind.STR,
+        default="managed",
+        env_var=_env_vars.RIPGREP_INSTALLER,
+    ),
+    # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.mode",
+        group="Startup",
+        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        kind=OptionKind.STARTUP_MODE_DELEGATE,
+        default="manual",
+        toml_keys=("startup", "mode"),
+        cli_flag="--auto-approve",
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
@@ -1112,13 +1275,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.DEBUG_MCP_PROJECT_TRUST,
     ),
-    ConfigOption(
-        key="debug.override_startup_subheader",
-        group="Debug",
-        summary="Override the startup splash subheader text.",
-        kind=OptionKind.STR,
-        env_var=_env_vars.DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
-    ),
 )
 
 
@@ -1131,6 +1287,12 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,
+        # Env equivalents of the STRUCTURED `[mcp]` lists. They are read by the
+        # dedicated `model_config.load_mcp_server_trust_lists` loader (which the
+        # `mcp.*` STRUCTURED options describe for discovery), not by the scalar
+        # resolver, so they intentionally have no scalar `env_var` ConfigOption.
+        _env_vars.ENABLED_PROJECT_MCP_SERVERS,
+        _env_vars.DISABLED_PROJECT_MCP_SERVERS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

@@ -68,7 +68,7 @@ When you finish all work, write your final answer in the message AFTER your last
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -77,6 +77,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
+- delete: delete a file or directory (recursively) from the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 

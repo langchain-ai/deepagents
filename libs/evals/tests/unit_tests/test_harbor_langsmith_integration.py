@@ -12,7 +12,7 @@ EVALS = ROOT / "libs" / "evals"
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert "harbor[langsmith]>=0.13.2,<0.14.0" in pyproject["project"]["dependencies"]
+    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 
@@ -77,23 +77,28 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'default: "dcode"' in workflow
     assert "          - dcode" in workflow
     assert "dataset:" in workflow
-    assert (
-        "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or "
-        "terminal-bench/terminal-bench-2-1)"
-    ) in workflow
+    assert "Terminal-bench dataset to run through Harbor." in workflow
+    assert '- "terminal-bench/terminal-bench-2"' in workflow
+    assert '- "terminal-bench/terminal-bench-2-1"' in workflow
+    assert '- "sierra-research/tau3-bench"' in workflow
+    assert "dataset_override:" in workflow
+    assert "          - tau3" in workflow
     assert "include_tasks:" in workflow
-    assert "Space-separated task-name globs to include" in workflow
+    assert "Space-separated task-name globs" in workflow
     assert "rollouts_per_task:" in workflow
     assert 'default: "1"' in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
     assert "HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}" in workflow
     assert "HARBOR_PACKAGE_OVERRIDE:" in workflow
     assert (
-        "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@nh/langgraph-respect-uv-prerelease"
+        "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@5a5e1204858ff1715f1d74002255b40488348b46"
         in workflow
     )
     assert "HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
     assert "HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}" in workflow
+    assert "from fnmatch import fnmatch" in workflow
+    assert "No Harbor tasks matched include_tasks filters" in workflow
+    assert "select_shard_tasks(selected, [], n_tasks, n, i)" in workflow
     assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
     assert 'echo "| \\`harbor_package_override\\` | \\`${HARBOR_PACKAGE_OVERRIDE}\\` |"' in workflow
     assert "INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow

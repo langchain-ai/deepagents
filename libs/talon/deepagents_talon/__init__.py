@@ -22,13 +22,17 @@ from deepagents_talon.interfaces import (
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     ChannelStatus,
     CronScheduler,
+    ReactionChannelAdapter,
+    ReactionHandler,
+    SendResult,
     ToolApprovalDecision,
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
-from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime, RuntimeAgentComponents
+from deepagents_talon.runtime import DeepAgentRuntime, EchoAgentRuntime
 from deepagents_talon.speech import (
     DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL,
     LocalParakeetVoiceTranscriber,
@@ -44,6 +48,7 @@ __all__ = [
     "ChannelAdapter",
     "ChannelMedia",
     "ChannelMessage",
+    "ChannelReaction",
     "ChannelStatus",
     "CronJob",
     "CronJobError",
@@ -57,7 +62,9 @@ __all__ = [
     "LocalParakeetVoiceTranscriber",
     "OpenAIVoiceTranscriber",
     "PersistentCronScheduler",
-    "RuntimeAgentComponents",
+    "ReactionChannelAdapter",
+    "ReactionHandler",
+    "SendResult",
     "TalonConfig",
     "TalonHost",
     "ToolApprovalDecision",

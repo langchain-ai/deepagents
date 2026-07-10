@@ -7,12 +7,13 @@ import re
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
 from langchain.chat_models import init_chat_model
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -277,4 +278,126 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         model=model,
         backend=backend,
         system_prompt=_SYSTEM_PROMPT,
+    )
+
+
+_TAU3_SYSTEM_PROMPT = """You are a customer-service agent in a Harbor benchmark, \
+talking with a simulated user through the `tau3-runtime` MCP tools. Follow the \
+task's policy exactly.
+
+Protocol:
+- Call `start_conversation` exactly once at the very start to begin (or resume) the
+  conversation and read the user's first message.
+- Call `send_message_to_user` to say anything to the user; it returns their next
+  message.
+- Use the domain tools (also on the `tau3-runtime` server) to inspect or modify the
+  environment.
+- In each step, either talk to the user OR call one domain tool — never both, and
+  only one tool call at a time.
+- When you are confident the case is resolved, end the conversation by calling
+  `end_conversation` (or, if your agent emits stop tokens directly, reply
+  `###STOP###`).
+
+Unlike terminal tasks, there IS a user to talk to here: do not try to finish
+silently. Keep working with the user until the case is resolved.
+"""
+
+
+def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
+    """Build langchain-mcp-adapters connections from Harbor-forwarded servers.
+
+    Harbor's LangGraph agent forwards the task environment's declared MCP servers
+    via ``configurable["mcp_servers"]`` (a list of dicts shaped like Harbor's
+    ``MCPServerConfig``: ``name``/``transport``/``url``/``command``/``args``). We
+    connect only to those environment-declared servers, and only over remote
+    transports.
+
+    ``stdio`` servers are rejected on purpose: they carry a local ``command``/
+    ``args`` that ``MultiServerMCPClient`` would execute inside the agent sandbox.
+    Since the dataset (selectable via the workflow's ``dataset_override``) controls
+    this config, honoring ``stdio`` would let an untrusted dataset run arbitrary
+    commands in CI. tau3-runtime is a remote ``streamable-http`` server, so only
+    ``streamable-http``/``sse`` (URL-based) transports are allowed.
+
+    Args:
+        configurable: The graph's ``configurable`` mapping.
+
+    Returns:
+        A mapping of server name to a langchain-mcp-adapters connection dict.
+
+    Raises:
+        ValueError: If no MCP servers were forwarded, a server uses an
+            unsupported (e.g. ``stdio``) transport, or a server lacks a URL.
+        TypeError: If ``mcp_servers`` is not a list of mappings.
+    """
+    servers = configurable.get("mcp_servers")
+    if not servers:
+        msg = (
+            "tau3 graph requires MCP servers forwarded via "
+            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
+            "the task environment's MCP servers into the graph configurable; the "
+            "pinned Harbor release does not yet do this, so run tau3 with a "
+            "`harbor_package_override` that includes MCP-server forwarding until it "
+            "ships in a release."
+        )
+        raise ValueError(msg)
+    if not isinstance(servers, list):
+        msg = "`configurable.mcp_servers` must be a list"
+        raise TypeError(msg)
+
+    connections: dict[str, Any] = {}
+    for raw in servers:
+        if not isinstance(raw, dict):
+            msg = "Each entry in `configurable.mcp_servers` must be a mapping"
+            raise TypeError(msg)
+        server = cast("dict[str, Any]", raw)
+        name = str(server["name"])
+        transport = server.get("transport", "sse")
+        if transport in ("streamable-http", "http"):
+            transport = "streamable_http"
+        if transport not in ("streamable_http", "sse"):
+            msg = (
+                f"MCP server {name!r} uses unsupported transport {transport!r}; the "
+                "tau3 graph only allows remote transports (streamable-http, sse). "
+                "stdio servers are rejected to avoid executing dataset-provided "
+                "commands in the agent sandbox."
+            )
+            raise ValueError(msg)
+        url = server.get("url")
+        if not url:
+            msg = f"MCP server {name!r} must declare a 'url' for transport {transport!r}"
+            raise ValueError(msg)
+        connections[name] = {"transport": transport, "url": url}
+    return connections
+
+
+async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
+    """Create a conversational Deep Agents graph for tau3-bench (and tau2) tasks.
+
+    Unlike the terminal-bench graphs, this attaches the task environment's
+    ``tau3-runtime`` MCP tools (``start_conversation``, ``send_message_to_user``,
+    domain tools, ...) so the agent can converse with the simulated user. The MCP
+    server connection comes from Harbor's forwarded ``configurable["mcp_servers"]``;
+    no URL is hardcoded.
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the selected model in
+            ``configurable.model`` and the task's MCP servers in
+            ``configurable.mcp_servers``.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no model name or MCP servers are provided.
+    """
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    client = MultiServerMCPClient(_mcp_connections(configurable))
+    tools = await client.get_tools()
+    return create_deep_agent(
+        model=model,
+        tools=tools,
+        system_prompt=_TAU3_SYSTEM_PROMPT,
     )

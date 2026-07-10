@@ -2,6 +2,8 @@
 
 This document provides context to understand the Deep Agents Python project and assist with development.
 
+For environment setup, pre-commit installation, and the standard edit-test-lint loop, see [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md). The rest of this document covers conventions and architecture reference.
+
 ## Project architecture and context
 
 ### Monorepo structure
@@ -83,6 +85,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
 
@@ -134,6 +137,7 @@ The description *is* the summary — do not add a `# Summary` header.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
 - Wrap class, function, method, parameter, and variable names in backticks.
+- For net new features or behavior-changing bugfixes, PR descriptions should include a `## Release note` section that states the user-visible change in release-note-ready language. Otherwise, omit the header.
 - Skip dedicated "Test plan" or "Testing" sections in most cases. Mention tests only when coverage is non-obvious, risky, or otherwise notable.
 - Call out areas of the change that require careful review.
 
@@ -243,7 +247,48 @@ Always use the latest generally available models when referencing LLMs in docstr
 
 ## Package-specific guidance
 
+### Deep Agents SDK (`libs/deepagents/`)
+
+For SDK questions about `create_deep_agent`, middleware, tools, subagents, or agent construction, start in:
+
+- `libs/deepagents/deepagents/graph.py`
+  - `create_deep_agent` is the public construction entry point.
+  - It builds the Deep Agents middleware stack and delegates to `langchain.agents.create_agent(...)`.
+  - The final call currently happens near the end of `create_deep_agent`, followed by `.with_config(...)` for Deep Agents metadata and recursion config.
+- `libs/deepagents/deepagents/middleware/`
+  - Built-in Deep Agents middleware lives here.
+  - `subagents.py` handles subagent middleware and nested `create_agent` use.
+  - `filesystem.py`, `skills.py`, `memory.py`, `permissions.py`, and `summarization.py` are feature-specific middleware modules.
+- `libs/deepagents/tests/`
+  - Unit tests for SDK behavior.
+
+If investigating LangChain `create_agent` internals, Deep Agents usually delegates into LangChain rather than owning the graph node assembly itself. Resolve the installed dependency source directly rather than searching the whole repo.
+
+### Search hygiene
+
+Avoid broad repo-level `glob` / `grep` for normal SDK work. This repo contains package `.venv`s, hidden worktrees, generated metadata, and scratch files that make broad searches noisy.
+
+Prefer targeted paths:
+
+- SDK source: `libs/deepagents/deepagents`
+- SDK tests: `libs/deepagents/tests`
+- Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
+- CLI deploy package: `libs/cli`
+- ACP package: `libs/acp`
+
+Avoid searching these unless explicitly needed:
+
+- `.venv/`
+- `.worktrees/`
+- `.claude/worktrees/`
+- `deepagents.egg-info/`
+- benchmark result JSONs and scratch scripts at repo root
+
+For dependency internals, first locate the dependency file from the package environment, then read that exact file instead of grepping all `site-packages`.
+
 ### Deep Agents Code (`libs/code/`)
+
+The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).
 
 See `libs/code/AGENTS.md` for package-specific guidance — Textual, startup performance, slash commands, model providers, SDK pin, help-screen drift.
 

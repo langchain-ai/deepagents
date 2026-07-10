@@ -27,9 +27,12 @@ from deepagents.backends.sandbox import (
     _EDIT_INLINE_MAX_BYTES,
     _EDIT_TMPFILE_TEMPLATE,
     _GLOB_COMMAND_TEMPLATE,
+    _GREP_PATH_GLOB_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_grep_cmd,
+    _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
     _parse_grep_output,
@@ -41,10 +44,13 @@ class MockSandbox(BaseSandbox):
 
     def __init__(self) -> None:
         self.last_command: str | None = None
+        self.commands: list[str] = []
         self._next_output: str = "1"
         self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
+        # exit_code is int | None (a backend may report an unknown status).
+        self._responses: list[tuple[str, int | None]] = []
 
     @property
     def id(self) -> str:
@@ -52,15 +58,19 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
+        self.commands.append(command)
         # Detect temp-file upload path: upload_files() stores .deepagents_edit_*
         # keys in _file_store before execute() is called.
         has_tmp = any(".deepagents_edit_" in k for k in self._file_store)
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
-        output = self._next_output
-        exit_code = self._next_exit_code
-        self._next_output = "1"
-        self._next_exit_code = 0
+        if self._responses:
+            output, exit_code = self._responses.pop(0)
+        else:
+            output = self._next_output
+            exit_code = self._next_exit_code
+            self._next_output = "1"
+            self._next_exit_code = 0
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
@@ -456,6 +466,143 @@ def test_grep_passes_glob_include() -> None:
     assert "--include='*.py'" in sandbox.last_command
 
 
+def test_build_grep_cmd_uses_grep_include_for_basename_glob() -> None:
+    """Basename-only globs (no slash) use GNU grep --include."""
+    cmd = _build_grep_cmd("needle", "/test", "*.py")
+    assert "--include='*.py'" in cmd
+    assert "python3" not in cmd
+
+
+def test_build_grep_cmd_routes_slash_glob_to_python_template() -> None:
+    """Slash-containing globs use the Python template, not grep --include."""
+    cmd = _build_grep_cmd("needle", "/test", "src/**/*.py")
+    assert "python3" in cmd
+    assert "--include=" not in cmd
+    # Raw parameters must not appear in the command...
+    assert "src/**/*.py" not in cmd
+    assert "needle" not in cmd
+    # ...because each is base64-encoded. Assert the encodings are actually
+    # present (a bare absence check passes vacuously if a param is dropped).
+    assert base64.b64encode(b"src/**/*.py").decode("ascii") in cmd
+    assert base64.b64encode(b"needle").decode("ascii") in cmd
+    assert base64.b64encode(b"/test").decode("ascii") in cmd
+
+
+def test_build_grep_cmd_routes_simple_slash_glob_to_python_template() -> None:
+    """A simple slash glob (no **) also uses the Python template."""
+    cmd = _build_grep_cmd("needle", None, "src/*.py")
+    assert "python3" in cmd
+    assert "--include=" not in cmd
+    # path=None falls back to ".", which must be base64-encoded like the rest.
+    assert base64.b64encode(b"src/*.py").decode("ascii") in cmd
+    assert base64.b64encode(b".").decode("ascii") in cmd
+
+
+def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
+    """The Python-template command must not force exit 0 with `|| true`.
+
+    Unlike grep (which exits 1 on no-match), the template exits 0 on a
+    legitimate no-match, so `|| true` would only mask genuine crashes and
+    reintroduce the silent-zero-results failure this route exists to fix.
+    """
+    cmd = _build_grep_cmd("needle", "/test", "src/**/*.py")
+    assert "|| true" not in cmd
+
+
+def test_build_grep_cmd_no_glob_uses_grep() -> None:
+    """No glob falls through to the plain grep command."""
+    cmd = _build_grep_cmd("needle", "/test", None)
+    assert "grep" in cmd
+    assert "--include=" not in cmd
+    assert "python3" not in cmd
+
+
+def test_grep_slash_glob_returns_matches_from_python_template() -> None:
+    """grep() with a slash-containing glob parses output from the Python template."""
+    sandbox = MockSandbox()
+    # Record structure: path\0line_num:text. The template prefixes each match
+    # with the search root, mirroring grep -HnFZ's `<root>/<match>` output.
+    sandbox._next_output = "/test/src/pkg/a.py\0001:needle"
+
+    result = sandbox.grep("needle", "/test", "src/**/*.py")
+
+    assert result.error is None
+    assert result.matches == [
+        {"path": "/test/src/pkg/a.py", "line": 1, "text": "needle"},
+    ]
+    assert sandbox.last_command is not None
+    assert "python3" in sandbox.last_command
+
+
+def test_grep_slash_glob_empty_results() -> None:
+    """grep() with a slash glob and no matches returns empty list."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.grep("needle", "/test", "src/**/*.py")
+
+    assert result.error is None
+    assert result.matches == []
+
+
+def test_grep_path_glob_template_no_shell_injection() -> None:
+    """The Python path-glob template base64-encodes all parameters."""
+    malicious_glob = "src/x' ; echo injected ; #"
+    cmd = _build_grep_cmd("needle", "/test", malicious_glob)
+    # The raw glob must not appear in the command — only its base64 encoding.
+    assert malicious_glob not in cmd
+    assert "echo injected" not in cmd
+    assert "python3" in cmd
+    # The glob is neutralized because it is base64-encoded, not because it was
+    # silently dropped: assert the encoding is present.
+    assert base64.b64encode(malicious_glob.encode("utf-8")).decode("ascii") in cmd
+
+
+def test_grep_path_glob_is_routed_for_slash_in_glob() -> None:
+    """grep() routes slash-containing globs to the Python template."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    sandbox.grep("needle", "/test", "src/**/*.py")
+
+    assert sandbox.last_command is not None
+    assert "python3" in sandbox.last_command
+    assert "--include=" not in sandbox.last_command
+
+
+def test_grep_path_glob_template_strips_leading_slash() -> None:
+    """Anchored globs (leading /) stay relative to the search root, not the filesystem root."""
+    assert "lstrip" in _GREP_PATH_GLOB_TEMPLATE
+    assert "rel_glob" in _GREP_PATH_GLOB_TEMPLATE
+    # The raw glob_pat must not be passed directly to glob.glob — only rel_glob.
+    # Verify the template uses rel_glob in the glob() call, not glob_pat.
+    assert "glob.glob(rel_glob" in _GREP_PATH_GLOB_TEMPLATE
+    assert "glob.glob(glob_pat" not in _GREP_PATH_GLOB_TEMPLATE
+
+
+def test_grep_path_glob_template_terminates_each_record() -> None:
+    """Each match record is explicitly newline-terminated to prevent concatenation."""
+    # The template must strip the line's trailing newline and add an explicit one
+    # so a file whose last line lacks a final newline doesn't merge with the next.
+    assert "rstrip" in _GREP_PATH_GLOB_TEMPLATE
+    assert "line.rstrip" in _GREP_PATH_GLOB_TEMPLATE
+
+
+def test_grep_path_glob_parses_multiple_matches_no_trailing_newline() -> None:
+    """Two matches where the first line has no trailing newline parse correctly."""
+    # Simulate the fixed template output: each record explicitly newline-terminated.
+    sandbox = MockSandbox()
+    sandbox._next_output = "file1.py\x001:needle\nfile2.py\x002:needle\n"
+
+    result = sandbox.grep("needle", "/test", "src/**/*.py")
+
+    assert result.error is None
+    assert result.matches == [
+        {"path": "file1.py", "line": 1, "text": "needle"},
+        {"path": "file2.py", "line": 2, "text": "needle"},
+    ]
+
+
 def test_grep_returns_empty_matches_for_successful_empty_output() -> None:
     """grep() returns no matches when grep succeeds with no output."""
     sandbox = MockSandbox()
@@ -540,17 +687,31 @@ def test_sandbox_write_with_special_content() -> None:
     assert sandbox._uploaded[0][1] == content.encode("utf-8")
 
 
-def test_sandbox_write_returns_error_on_existing_file() -> None:
-    """Test that write() returns an error when the check command fails."""
+def test_sandbox_write_overwrites_existing_file() -> None:
+    """Test that write() replaces an existing file without error."""
+    sandbox = MockSandbox()
+
+    result = sandbox.write("/test/file.txt", "original content")
+    assert result.error is None
+
+    result = sandbox.write("/test/file.txt", "new content")
+    assert result.error is None
+
+    assert len(sandbox._uploaded) == 2
+    assert sandbox._uploaded[-1] == ("/test/file.txt", b"new content")
+
+
+def test_sandbox_write_returns_error_on_preflight_failure() -> None:
+    """Test that write() returns an error and skips upload when the preflight fails."""
     sandbox = MockSandbox()
 
     def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
         sandbox.last_command = command
-        return ExecuteResponse(output="Error: File already exists", exit_code=1)
+        return ExecuteResponse(output="Error: Permission denied", exit_code=1)
 
     sandbox.execute = fail_execute
 
-    result = sandbox.write("/test/existing.txt", "content")
+    result = sandbox.write("/test/protected.txt", "content")
     assert result.error is not None
     assert "Error:" in result.error
     assert len(sandbox._uploaded) == 0  # upload should not have been called
@@ -1129,6 +1290,13 @@ def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
     assert result["encoding"] == "base64"
 
 
+def test_build_read_cmd_classifies_mkv_as_video() -> None:
+    """`.mkv` reads must run the binary path, not the text path, in the sandbox."""
+    assert "file_type = 'video'" in _build_read_cmd("/clips/a.mkv", 0, 100)
+    # Sanity: a plain text file still classifies as text.
+    assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
+
+
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
     """Corruption inside the prefix must still route to base64 (not swallowed)."""
     target = tmp_path / "midbad.dat"
@@ -1250,6 +1418,191 @@ def test_glob_script_permission_denied(tmp_path: Path) -> None:
         assert data == {"error": "permission_denied"}
     finally:
         locked.chmod(stat.S_IRWXU)
+
+
+def test_glob_script_keeps_absolute_pattern_under_search_root(tmp_path: Path) -> None:
+    """Absolute glob patterns are treated as search-root-relative, not host-rooted."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    (workspace / "src").mkdir(parents=True)
+    outside.mkdir()
+    (workspace / "src" / "ok.py").write_text("print('ok')")
+    (outside / "secret.py").write_text("print('secret')")
+
+    output = _run_glob_script(workspace, "/src/*.py")
+    records = [json.loads(line) for line in output.strip().split("\n") if line]
+
+    assert [record["path"] for record in records] == [str(Path("src") / "ok.py")]
+    assert str(outside / "secret.py") not in output
+
+
+def test_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
+    """Relative patterns must not climb outside the requested search root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.py").write_text("print('secret')")
+
+    output = _run_glob_script(workspace, "../outside/*.py")
+    records = [json.loads(line) for line in output.strip().split("\n") if line]
+
+    assert records == [{"error": "invalid_pattern"}]
+    assert str(outside / "secret.py") not in output
+
+
+# -- grep path-glob template runtime behavior ---------------------------------
+# Direct execution of the formatted _GREP_PATH_GLOB_TEMPLATE script. Mock-based
+# tests stub execute() output and so cannot catch a real defect in the template
+# body (a dropped `recursive=True`, a wrong delimiter, a broken chdir) — exactly
+# the silent-zero-results class this route exists to fix.
+
+
+def _run_grep_glob_script(path: Path, pattern: str, glob: str) -> subprocess.CompletedProcess[str]:
+    """Execute the formatted `_GREP_PATH_GLOB_TEMPLATE` script directly.
+
+    Extracts the inline `python3 -c` body from the command `_build_grep_cmd`
+    produces (dropping the shell wrapper) and runs it via the interpreter,
+    mirroring `_run_glob_script`. Returns the `CompletedProcess` so callers can
+    assert on both stdout and the exit code — the template's error-surfacing
+    contract depends on a non-zero exit propagating rather than being masked.
+    """
+    cmd = _build_grep_cmd(pattern, str(path), glob)
+    _, _, tail = cmd.partition('python3 -c "')
+    script, _, _ = tail.rpartition('"')
+    return subprocess.run(  # noqa: S603  # script is the project's own _GREP_PATH_GLOB_TEMPLATE, not user input
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _parse_script_records(stdout: str) -> list[tuple[str, int, str]]:
+    r"""Parse the template's `path\0line_num:text\n` records for assertions."""
+    records: list[tuple[str, int, str]] = []
+    for line in stdout.split("\n"):
+        if not line:
+            continue
+        file_path, rest = line.split("\0", 1)
+        num, text = rest.split(":", 1)
+        records.append((file_path, int(num), text))
+    return records
+
+
+def test_grep_glob_script_matches_recursively_and_prefixes_path(tmp_path: Path) -> None:
+    """`src/**/*.py` matches .py files at any depth under src, path-prefixed and sorted."""
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "a.py").write_text("alpha needle here\n")
+    (tmp_path / "src" / "pkg" / "b.py").write_text("needle in b\n")
+    (tmp_path / "src" / "pkg" / "c.txt").write_text("needle in c\n")  # excluded: not .py
+    (tmp_path / "other.py").write_text("needle in other\n")  # excluded: not under src
+
+    proc = _run_grep_glob_script(tmp_path, "needle", "src/**/*.py")
+
+    assert proc.returncode == 0
+    records = _parse_script_records(proc.stdout)
+    # Paths are prefixed with the search root and sorted, and only src/*.py match.
+    assert [r[0] for r in records] == [
+        str(tmp_path / "src" / "a.py"),
+        str(tmp_path / "src" / "pkg" / "b.py"),
+    ]
+    assert "c.txt" not in proc.stdout
+    assert "other.py" not in proc.stdout
+
+
+def test_grep_glob_script_terminates_records_end_to_end(tmp_path: Path) -> None:
+    """Two matched files whose last line lacks a newline parse as two records.
+
+    Drives the real template (not a hand-written mock string) through
+    `_parse_grep_output` to prove the newline-termination fix prevents record
+    concatenation across files.
+    """
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_bytes(b"needle")  # no trailing newline
+    (tmp_path / "src" / "b.py").write_bytes(b"needle")  # no trailing newline
+
+    proc = _run_grep_glob_script(tmp_path, "needle", "src/*.py")
+
+    assert proc.returncode == 0
+    resp = ExecuteResponse(output=proc.stdout, exit_code=proc.returncode, truncated=False)
+    result = _parse_grep_output(resp, str(tmp_path))
+    assert result.error is None
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert {m["path"] for m in result.matches} == {
+        str(tmp_path / "src" / "a.py"),
+        str(tmp_path / "src" / "b.py"),
+    }
+
+
+def test_grep_glob_script_strips_leading_slash(tmp_path: Path) -> None:
+    """A leading `/` in the glob stays relative to the search root, not the host root."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "top.py").write_text("needle\n")
+    (tmp_path / "sub" / "deep.py").write_text("needle\n")
+
+    proc = _run_grep_glob_script(tmp_path, "needle", "/*.py")
+
+    assert proc.returncode == 0
+    records = _parse_script_records(proc.stdout)
+    # `/*.py` -> `*.py`: matches only the top-level file under the search root.
+    assert [r[0] for r in records] == [str(tmp_path / "top.py")]
+
+
+def test_grep_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
+    """Slash globs must not allow `..` to escape the search root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("needle\n")
+
+    proc = _run_grep_glob_script(workspace, "needle", "../outside/*.txt")
+
+    assert proc.returncode != 0
+    assert proc.stdout == ""
+    assert "path traversal" in proc.stderr
+
+
+def test_grep_glob_script_skips_symlinks_outside_root(tmp_path: Path) -> None:
+    """Realpath containment keeps symlink matches inside the declared root."""
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    src = workspace / "src"
+    outside.mkdir()
+    src.mkdir(parents=True)
+    (outside / "secret.py").write_text("needle\n")
+    (src / "link.py").symlink_to(outside / "secret.py")
+    (src / "safe.py").write_text("needle\n")
+
+    proc = _run_grep_glob_script(workspace, "needle", "src/*.py")
+
+    assert proc.returncode == 0
+    records = _parse_script_records(proc.stdout)
+    assert [r[0] for r in records] == [str(src / "safe.py")]
+
+
+@_PERMISSION_DENIED_SKIP
+def test_grep_glob_script_surfaces_error_on_unreadable_root(tmp_path: Path) -> None:
+    """An inaccessible search root yields a non-zero exit, not a silent empty result.
+
+    Confirms `|| true` was removed: a `chdir` failure propagates so
+    `_parse_grep_output` reports an error instead of `matches=[]`.
+    """
+    locked = tmp_path / "locked_dir"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        proc = _run_grep_glob_script(locked, "needle", "src/*.py")
+    finally:
+        locked.chmod(stat.S_IRWXU)
+
+    assert proc.returncode != 0
+    resp = ExecuteResponse(output=proc.stdout, exit_code=proc.returncode, truncated=False)
+    result = _parse_grep_output(resp, str(locked))
+    assert result.error is not None
+    assert result.matches is None
 
 
 # -- glob host-side error surfacing -------------------------------------------
@@ -1530,3 +1883,103 @@ def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
     # The only line has a bad line number; no valid matches → error is set.
     assert result.matches is None or result.matches == []
     assert result.error is not None
+
+
+class TestSandboxDelete:
+    """BaseSandbox.delete probes existence then maps the `rm -rf` exit onto DeleteResult."""
+
+    def test_delete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        # The shell command quotes the path and uses rm -rf (recursive)
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+
+    def test_delete_directory_uses_recursive_rm(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/some/dir")
+        assert result.error is None
+        assert result.path == "/some/dir"
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/some/dir" in sandbox.last_command
+
+    def test_delete_missing_returns_not_found(self) -> None:
+        # `test -e` exits 1 for a missing path; delete must return a not-found error.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # test -e reports path absent
+        result = sandbox.delete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_delete_probe_checks_broken_symlink(self) -> None:
+        # The existence probe must also `test -L` so a broken symlink (where
+        # `test -e` fails but the link exists) is still deleted, not reported
+        # missing. Guards the `|| test -L` clause, which the mock's single
+        # exit code cannot otherwise distinguish.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 0)]  # probe ok, rm ok
+        sandbox.delete("/link")
+        probe = sandbox.commands[0]
+        assert "test -e" in probe
+        assert "test -L" in probe
+
+    def test_delete_unknown_probe_exit_is_not_treated_as_missing(self) -> None:
+        # `exit_code` may be None when the backend cannot determine a status.
+        # An unknown probe result must NOT be reported as not-found; it falls
+        # through to `rm` instead of fabricating a diagnosis.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", None), ("", 0)]  # probe unknown, rm ok
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        assert len(sandbox.commands) == 2  # probe did not short-circuit
+
+    def test_delete_failure_reports_output(self) -> None:
+        # A non-zero exit from rm (e.g. a permission error) surfaces rm's stderr.
+        sandbox = MockSandbox()
+        # Queue: test -e succeeds (file exists), then rm -rf fails with output.
+        sandbox._responses = [
+            ("", 0),
+            ("rm: cannot remove '/some/dir': Is a directory", 1),
+        ]
+        result = sandbox.delete("/some/dir")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert "Is a directory" in result.error
+
+    def test_delete_failure_unknown_error(self) -> None:
+        # Non-zero exit from rm with no output falls back to a generic message.
+        sandbox = MockSandbox()
+        # Queue: test -e succeeds (file exists), then rm -rf fails silently.
+        sandbox._responses = [("", 0), ("", 1)]
+        result = sandbox.delete("/file.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_adelete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = await sandbox.adelete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+
+    async def test_adelete_missing_returns_not_found(self) -> None:
+        # `adelete` delegates to `delete`, so the not-found contract holds async.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # test -e reports path absent
+        result = await sandbox.adelete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error

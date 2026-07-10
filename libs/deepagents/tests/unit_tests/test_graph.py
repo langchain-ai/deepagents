@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import sys
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -16,19 +20,22 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
+from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
     DeepAgentState,
+    _apply_custom_middleware,
+    _create_bedrock_prompt_caching_middleware,
     create_deep_agent,
     get_default_model,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.subagents import SubAgentMiddleware, create_sub_agent
-from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
+from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness.harness_profiles import (
     _HARNESS_PROFILES,
@@ -348,6 +355,88 @@ class TestGeneralPurposeSubagentProfileWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestPromptCachingWiring:
+    """Tests for provider-specific prompt caching middleware wiring."""
+
+    def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_explicit_subagent_gets_prompt_caching(self) -> None:
+        main_model = GenericFakeChatModel(messages=iter([AIMessage(content="main")]))
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="sub")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        subagent_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model=main_model,
+                subagents=[
+                    {
+                        "name": "bedrock-worker",
+                        "description": "Uses Bedrock.",
+                        "system_prompt": "Help with Bedrock tasks.",
+                        "model": bedrock_model,
+                    }
+                ],
+            )
+
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        bedrock_worker = next(spec for spec in subagents if spec["name"] == "bedrock-worker")
+        assert subagent_cache in bedrock_worker["middleware"]
+
+    def test_bedrock_prompt_caching_is_optional_when_middleware_unavailable(self) -> None:
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch(
+                "deepagents.graph.import_module",
+                side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=bedrock_model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert None not in general_purpose["middleware"]
+        assert None not in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_prompt_caching_preserves_unrelated_import_errors(self) -> None:
+        with (
+            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            pytest.raises(ImportError),
+        ):
+            _create_bedrock_prompt_caching_middleware()
+
+
 class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
 
@@ -632,6 +721,69 @@ class TestToolExclusionWiring:
             exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 1
             assert "my_tool" in exclusion_mws[0]._excluded
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_tool_exclusion_middleware_is_last_in_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after custom middleware so it strips tools last."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(excluded_tools=frozenset({"write_file"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomMW")
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", middleware=[custom])
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            custom_idx = next(i for i, m in enumerate(mw_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(mw_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_tool_exclusion_middleware_is_last_in_subagent_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after subagent custom middleware."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(
+                    excluded_tools=frozenset({"write_file"}),
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomSubMW")
+            subagent: SubAgent = {
+                "name": "worker",
+                "description": "A worker subagent",
+                "system_prompt": "You are a worker.",
+                "model": "exclprov:some-model",
+                "middleware": [custom],
+            }
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", subagents=[subagent])
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            worker_spec = next(s for s in sub_mw._subagents if s.get("name") == "worker")
+            subagent_stack = worker_spec["middleware"]
+            custom_idx = next(i for i, m in enumerate(subagent_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(subagent_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware in subagent"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -2081,3 +2233,396 @@ class TestBuildDefaultModelContract:
         msg = str(deprecations[0].message)
         assert "deprecated" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
+
+
+class TestMiddlewareTyping:
+    """Type-level coverage for `create_deep_agent`'s `middleware` parameter."""
+
+    def test_context_aware_middleware_type_checks(self) -> None:
+        """Context-aware middleware must type-check under `context_schema` (#4051).
+
+        Runs `ty` over a fixture that passes an
+        `AgentMiddleware[AgentState, Context]` alongside `context_schema=Context`.
+        Before the fix the `middleware` parameter pinned `ContextT=None`, so the
+        type checker rejected the call.
+        """
+        if shutil.which("ty") is None:
+            pytest.skip("ty is not installed in this environment")
+
+        package_root = Path(__file__).parents[2]
+        fixture = Path(__file__).parent / "_typing_fixtures" / "context_aware_middleware.py"
+        result = subprocess.run(  # noqa: S603  # fixed args, no user input
+            [sys.executable, "-m", "ty", "check", str(fixture)],
+            cwd=package_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"ty reported diagnostics:\n{result.stdout}\n{result.stderr}"
+
+
+def _named_mw(name: str) -> AgentMiddleware[Any, Any, Any]:
+    """Return a minimal AgentMiddleware whose .name returns `name`."""
+
+    class _MW(AgentMiddleware[Any, Any, Any]):
+        @property
+        def name(self) -> str:
+            return name
+
+    return _MW()
+
+
+class TestApplyUserMiddleware:
+    """Unit tests for the _apply_user_middleware helper."""
+
+    def test_matching_name_replaces_at_same_position(self) -> None:
+        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
+        replacement = _named_mw("B")
+        result = _apply_custom_middleware([a, b, c], [replacement])
+        assert result[1] is replacement
+        assert result[0] is a
+        assert result[2] is c
+        assert len(result) == 3
+
+    def test_non_matching_name_is_appended(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        new = _named_mw("Z")
+        result = _apply_custom_middleware([a, b], [new])
+        assert result[-1] is new
+        assert len(result) == 3
+
+    def test_empty_user_list_returns_base_unchanged(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        result = _apply_custom_middleware([a, b], [])
+        assert result == [a, b]
+
+    def test_multiple_replacements_in_one_call(self) -> None:
+        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
+        r_a, r_c = _named_mw("A"), _named_mw("C")
+        result = _apply_custom_middleware([a, b, c], [r_a, r_c])
+        assert result[0] is r_a
+        assert result[1] is b
+        assert result[2] is r_c
+        assert len(result) == 3
+
+    def test_non_matching_appended_in_original_order(self) -> None:
+        base = _named_mw("Base")
+        x, y = _named_mw("X"), _named_mw("Y")
+        result = _apply_custom_middleware([base], [x, y])
+        assert result[1] is x
+        assert result[2] is y
+
+    def test_mix_of_replacements_and_new_entries(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        r_a, new = _named_mw("A"), _named_mw("New")
+        result = _apply_custom_middleware([a, b], [r_a, new])
+        assert result[0] is r_a
+        assert result[1] is b
+        assert result[2] is new
+
+
+class TestUserMiddlewareOverride:
+    """Integration tests: user-supplied middleware replaces same-named defaults in create_deep_agent."""
+
+    def _run(self, user_mw: list[Any]) -> list[Any]:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", middleware=user_mw)
+        return mock_create.call_args.kwargs["middleware"]
+
+    def test_custom_middleware_precedes_prompt_caching(self) -> None:
+        """User middleware must wrap outside AnthropicPromptCachingMiddleware.
+
+        The relative order fixes the Anthropic prompt-cache prefix: user
+        middleware that mutates the request/system prompt has to run before the
+        cache breakpoint, else it can invalidate the cached prefix.
+        """
+        custom = _named_mw("CustomMW")
+        stack = self._run([custom])
+
+        custom_idx = next(i for i, m in enumerate(stack) if m is custom)
+        pc_idx = next(
+            (i for i, m in enumerate(stack) if m.name == "AnthropicPromptCachingMiddleware"),
+            None,
+        )
+        assert pc_idx is not None, f"expected prompt caching middleware in stack; got {[m.name for m in stack]}"
+        assert custom_idx < pc_idx, f"user middleware must precede prompt caching; got order {[m.name for m in stack]}"
+
+    def test_summarization_middleware_replaces_default(self) -> None:
+        """Passing SummarizationMiddleware in middleware= replaces the built-in instance."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1, "expected exactly one SummarizationMiddleware in stack"
+        assert summ_entries[0] is custom
+
+    def test_same_name_subclass_replaces_default(self) -> None:
+        """A subclass whose .name == 'SummarizationMiddleware' replaces the default."""
+
+        class MySummarizationMiddleware(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "SummarizationMiddleware"
+
+        custom = MySummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_diff_name_subclass_is_appended(self) -> None:
+        """A subclass with a different .name doesn't replace the default. Both are present."""
+
+        class CompactSummarizationMiddleware(SummarizationMiddleware):
+            pass
+
+        custom = CompactSummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 2
+        assert any(m is custom for m in summ_entries)
+
+    def test_replacement_preserves_stack_position(self) -> None:
+        """The replaced entry sits at the same index as the original default."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        default_index = next(i for i, m in enumerate(stack) if isinstance(m, _DeepAgentsSummarizationMiddleware))
+        assert stack[default_index] is custom
+
+    def test_subagent_middleware_replaces_default(self) -> None:
+        """SubAgent middleware= field also replaces same-named defaults in that subagent's stack."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "researcher",
+            "description": "Research subagent",
+            "system_prompt": "You are a researcher.",
+            "middleware": [custom],
+        }
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "samwprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="samwprov:some-model", subagents=[subagent])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        sub_specs = mock_create.call_args.kwargs["middleware"]
+        # SubAgentMiddleware is in the main stack; the processed subagent specs
+        # are accessible via the subagents kwarg passed to its constructor.
+        sub_mw = next(m for m in sub_specs if isinstance(m, SubAgentMiddleware))
+        researcher_spec = next(s for s in sub_mw._subagents if s.get("name") == "researcher")
+        subagent_stack = researcher_spec["middleware"]
+        summ_entries = [m for m in subagent_stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_same_name_subclass_with_exclusion_does_not_raise(self) -> None:
+        """Profile-excluded default replaced by same-name subclass does not raise ValueError."""
+
+        class MySummarizationMiddleware(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "SummarizationMiddleware"
+
+        custom = MySummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excsamwprov",
+                HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                # Should not raise ValueError from coverage verification
+                create_deep_agent(model="excsamwprov:some-model", middleware=[custom])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        stack = mock_create.call_args.kwargs["middleware"]
+        assert any(m is custom for m in stack)
+
+
+class TestSubagentMiddlewareIsolation:
+    """GP inherits main-agent overrides; declarative subagents build stacks independently."""
+
+    _GP_NAME = "general-purpose"
+
+    def _setup(
+        self,
+        user_mw: list[Any],
+        subagents: list[SubAgent] | None = None,
+        *,
+        enable_gp: bool = True,
+        excluded_middleware: frozenset[type[Any]] | None = None,
+    ) -> tuple[list[Any], SubAgentMiddleware]:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "mwinhrt",
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=enable_gp),
+                    excluded_middleware=excluded_middleware or frozenset(),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="mwinhrt:some-model",
+                    subagents=subagents or [],
+                    middleware=user_mw,
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+        return main_stack, sub_mw
+
+    # ── GP inherits main-agent overrides ──────────────────────────────────────
+
+    def test_gp_inherits_main_middleware_override(self) -> None:
+        """GP subagent receives the main agent's SummarizationMiddleware override."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        summ_entries = [m for m in gp_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_gp_does_not_inherit_non_default_main_middleware(self) -> None:
+        """Main-agent middleware whose name isn't a GP default is not inherited by GP."""
+
+        class _ParentOnlyMW(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "ParentOnlyMW"
+
+        custom = _ParentOnlyMW(model=GenericFakeChatModel(messages=iter([])), backend=StateBackend())
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(m is custom for m in gp_spec["middleware"])
+
+    def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup(
+            [custom],
+            enable_gp=True,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in gp_spec["middleware"])
+
+    # ── Declarative subagents are isolated from main-agent overrides ──────────
+
+    def test_declarative_subagent_does_not_inherit_main_middleware_override(self) -> None:
+        """Declarative subagent with no spec middleware is not affected by main-agent overrides."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(m is custom for m in helper_spec["middleware"])
+        assert any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+    def test_declarative_subagent_spec_middleware_replaces_default(self) -> None:
+        """Spec-supplied middleware replaces the matching default in that subagent's stack."""
+        spec_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [spec_custom],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is spec_custom
+
+    def test_declarative_subagent_profile_exclusion_removes_default(self) -> None:
+        """Profile-excluded middleware is removed from a declarative subagent's stack."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "model": "mwinhrt:some-model",
+        }
+        _, sub_mw = self._setup(
+            [],
+            subagents=[subagent],
+            enable_gp=False,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])

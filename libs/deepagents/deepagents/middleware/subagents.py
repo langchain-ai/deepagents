@@ -61,7 +61,10 @@ class SubAgent(TypedDict):
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-5.5'`).
         middleware: Additional middleware for custom behavior, logging,
-            or rate limiting.
+            or rate limiting. To restrict filesystem tools, include a
+            `FilesystemMiddleware(tools=...)` instance here — it
+            will be used as the subagent's filesystem middleware instead of
+            the default one.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
@@ -607,7 +610,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
 
         structured = result.get("structured_response")
         if structured is not None:

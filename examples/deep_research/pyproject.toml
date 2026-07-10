@@ -4,32 +4,32 @@ version = "0.1.0"
 description = "Deep research agent example using deepagents package"
 requires-python = ">=3.11"
 dependencies = [
-    "langchain-openai>=1.2.2",
-    "langchain-anthropic>=1.4.6",
-    "langchain_tavily>=0.2.18",
+    "deepagents>=0.6.12",
+    "langchain-openai>=1.3.4",
+    "langchain-anthropic>=1.4.8",
+    "langchain-tavily>=0.2.18",
+    "langchain-google-genai>=4.2.7",
     "pydantic>=2.13.4",
     "rich>=15.0.0",
     "jupyter>=1.1.1",
-    "ipykernel>=7.2.0",
-    "tavily-python>=0.7.25",
+    "ipykernel>=7.3.0",
+    "tavily-python>=0.7.26",
     "httpx>=0.28.1",
     "markdownify>=1.2.2",
-    "deepagents>=0.6.8",
     "python-dotenv>=1.2.2",
-    "langgraph-cli[inmem]>=0.4.27",
-    "langchain-google-genai>=4.2.4",
+    "langgraph-cli[inmem]>=0.4.30",
 ]
 
 [tool.uv]
 override-dependencies = [
     "nbconvert>=7.17.1",  # CVE-2025-53000
-    "protobuf>=7.35.0",  # CVE-2026-0994
+    "protobuf>=7.35.1",  # CVE-2026-0994
 ]
 
 [project.optional-dependencies]
 dev = [
     "mypy>=2.1.0",
-    "ruff>=0.15.16",
+    "ruff>=0.15.20",
 ]
 
 [build-system]

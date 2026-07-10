@@ -10,6 +10,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,8 +39,9 @@ from deepagents_talon.interfaces import (
 from deepagents_talon.observability import log_event, stable_log_ref
 
 if TYPE_CHECKING:
-    from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.async_subagents import AsyncSubAgent
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
@@ -48,17 +50,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RECURSION_LIMIT = 150
+DEFAULT_RECURSION_LIMIT = 500
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
+INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
+_ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
+    {"start_async_task", "update_async_task", "cancel_async_task"}
+)
+RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
 _BAD_REQUEST_STATUS_CODE = 400
-_AUTH_STATUS_CODES = frozenset({401, 403})
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
 _BACKEND_ENV_ALLOWED_KEYS = frozenset(
     {
@@ -135,40 +141,6 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "temporarily unavailable",
     "temporary failure",
 )
-_AUTH_MESSAGE_MARKERS = (
-    "401 unauthorized",
-    "403 forbidden",
-    "http 401",
-    "http 403",
-    "invalid_token",
-    "invalid token",
-    "oauth token",
-    "status 401",
-    "status 403",
-    "status_code=401",
-    "status_code=403",
-    "token expired",
-    "unauthorized",
-)
-_MCP_AUTH_MESSAGE_MARKERS = (
-    "bearer",
-    "fleet mcp",
-    "invalid_token",
-    "mcp",
-    "oauth",
-    "refresh token",
-)
-_PROVIDER_AUTH_MESSAGE_MARKERS = (
-    "anthropic",
-    "api key",
-    "apikey",
-    "authentication_error",
-    "invalid api",
-    "invalid x-api-key",
-    "no api key",
-    "openai",
-    "x-api-key",
-)
 
 _CONTINUATION_NUDGE = (
     "Your action budget was exhausted mid-task. Continue working and complete the task. "
@@ -184,6 +156,7 @@ _CRON_AUTO_DENY_MESSAGE = (
 _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
+_LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -210,29 +183,6 @@ class EchoAgentRuntime:
             Echo response tagged as placeholder runtime output.
         """
         return AgentResult(text=request.text)
-
-
-@dataclass(frozen=True, slots=True)
-class RuntimeAgentComponents:
-    """Runtime components used when rebuilding a `DeepAgentRuntime` graph.
-
-    Args:
-        model: Chat model identifier for `create_deep_agent`.
-        tools: Runtime tools exposed to the agent.
-        system_prompt: Optional system prompt.
-        subagents: Optional subagent specs available to the main agent.
-        skills: Optional explicit skill source paths.
-        middleware: Optional middleware to pass through to `create_deep_agent`.
-        interrupt_on: Optional human-in-the-loop tool approval configuration.
-    """
-
-    model: str
-    tools: Sequence[BaseTool | Callable[..., object]] = ()
-    system_prompt: str | None = None
-    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None
-    skills: Sequence[str] | None = None
-    middleware: Sequence[AgentMiddleware[Any, Any, Any]] = ()
-    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,9 +223,6 @@ class DeepAgentRuntime:
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
-        reload_agent_components: Optional callback used after an MCP
-            authorization failure to refresh credentials, rebuild tools, and
-            retry the failed invocation once.
     """
 
     def __init__(  # noqa: PLR0913  # runtime construction mirrors graph wiring knobs
@@ -298,10 +245,11 @@ class DeepAgentRuntime:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
         env: Mapping[str, str] | None = None,
-        reload_agent_components: Callable[[], Awaitable[RuntimeAgentComponents]] | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
-        if recursion_limit <= 0:
+        values = os.environ if env is None else env
+        resolved_recursion_limit = _recursion_limit_from_env(values, recursion_limit)
+        if resolved_recursion_limit <= 0:
             msg = "recursion_limit must be positive"
             raise ValueError(msg)
         if max_retries < 1:
@@ -315,21 +263,20 @@ class DeepAgentRuntime:
         self.tools = tuple(tools)
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
+        self._has_async_subagents = _has_async_subagents(self.subagents)
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self.backend = backend if backend is not None else _default_backend(env)
+        self.env = dict(os.environ if env is None else env)
+        self.backend = backend if backend is not None else _default_backend(self.env)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
-        self.interrupt_on = dict(interrupt_on) if interrupt_on is not None else None
+        self.interrupt_on = interrupt_on_with_env_overlay(interrupt_on, self.env)
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
-        self.recursion_limit = recursion_limit
+        self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
         self.max_continuations = max_continuations
-        self.env = dict(os.environ if env is None else env)
-        self.reload_agent_components = reload_agent_components
-        self._reload_lock = asyncio.Lock()
         self._graph: object | None = None
 
     async def start(self) -> None:
@@ -344,31 +291,17 @@ class DeepAgentRuntime:
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=list(self.subagents) if self.subagents is not None else None,
+            subagents=self._resolve_subagents(),
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
-            interrupt_on=self.interrupt_on,
+            interrupt_on=_interrupt_on_with_async_subagents(
+                self.interrupt_on,
+                has_async_subagents=self._has_async_subagents,
+            ),
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
-
-    async def reload(self, components: RuntimeAgentComponents) -> None:
-        """Rebuild the graph with refreshed runtime components.
-
-        Args:
-            components: Components to apply before graph construction.
-        """
-        self.model = components.model
-        self.tools = tuple(components.tools)
-        self.system_prompt = components.system_prompt
-        self.subagents = tuple(components.subagents) if components.subagents is not None else None
-        self.skills = tuple(components.skills) if components.skills is not None else None
-        self.middleware = tuple(components.middleware)
-        self.interrupt_on = (
-            dict(components.interrupt_on) if components.interrupt_on is not None else None
-        )
-        await self.start()
 
     async def stop(self) -> None:
         """Release runtime resources."""
@@ -458,32 +391,12 @@ class DeepAgentRuntime:
             "configurable": {"thread_id": conversation_id},
         }
         last_exc: Exception | None = None
-        refreshed_auth = False
         for attempt in range(self.max_retries):
             try:
                 return await invoke(payload, config=config)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if self.reload_agent_components is not None and _is_mcp_auth_failure(exc):
-                    if refreshed_auth:
-                        logger.warning(
-                            "Fleet MCP authorization failed after credential reload "
-                            "for conversation %s; returning structured tool error",
-                            conversation_id,
-                        )
-                        return _structured_auth_failure_state(exc)
-
-                    refreshed_auth = True
-                    reloaded = await self._reload_after_auth_failure(
-                        conversation_id,
-                        status_code=_status_code(exc),
-                    )
-                    if not reloaded:
-                        return _structured_auth_failure_state(exc)
-                    invoke = self._graph_invoke()
-                    continue
-
                 if not _is_retryable(exc) or attempt + 1 >= self.max_retries:
                     raise
                 last_exc = exc
@@ -506,36 +419,6 @@ class DeepAgentRuntime:
             msg = "Deep Agents graph does not expose async invocation"
             raise TypeError(msg)
         return cast("Callable[..., Awaitable[object]]", ainvoke)
-
-    async def _reload_after_auth_failure(
-        self,
-        conversation_id: str,
-        *,
-        status_code: int | None,
-    ) -> bool:
-        async with self._reload_lock:
-            reload_agent_components = self.reload_agent_components
-            if reload_agent_components is None:
-                return False
-
-            logger.info(
-                "Refreshing Fleet MCP credentials after authorization failure in conversation %s%s",
-                conversation_id,
-                f" (status {status_code})" if status_code is not None else "",
-            )
-            try:
-                components = await reload_agent_components()
-                await self.reload(components)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001  # return sanitized error for loader-specific failures.
-                logger.warning(
-                    "Fleet MCP credential reload failed for conversation %s; "
-                    "returning structured tool error",
-                    conversation_id,
-                )
-                return False
-            return True
 
     async def _invoke_until_unblocked(
         self,
@@ -612,6 +495,14 @@ class DeepAgentRuntime:
             if path not in sources:
                 sources.append(path)
         return sources or None
+
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+        resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+        if self.assistant_dir is not None:
+            resolved.extend(_load_local_subagents(self.assistant_dir))
+        if self.subagents is not None:
+            resolved.extend(self.subagents)
+        return resolved or None
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
@@ -777,6 +668,62 @@ def _decision_payload(
     return [{"type": "reject"} for _ in range(count)]
 
 
+def interrupt_on_with_env_overlay(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    env: Mapping[str, str],
+) -> dict[str, bool | InterruptOnConfig] | None:
+    """Merge Talon's local tool approval env overlay into an `interrupt_on` mapping.
+
+    Args:
+        interrupt_on: Base human-in-the-loop tool approval configuration.
+        env: Environment values to inspect for Talon approval overrides.
+
+    Returns:
+        Merged approval configuration, or `None` when neither source configures
+        approval.
+    """
+    overlay = _interrupt_on_tools_from_env(env)
+    if interrupt_on is None and not overlay:
+        return None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    merged.update(overlay)
+    return merged
+
+
+def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
+    raw = env.get(INTERRUPT_ON_TOOLS_ENV_KEY)
+    if raw is None or not raw.strip():
+        return {}
+    return {name: True for name in (part.strip() for part in raw.split(",")) if name}
+
+
+def _interrupt_on_with_async_subagents(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    has_async_subagents: bool,
+) -> dict[str, bool | InterruptOnConfig] | None:
+    if not has_async_subagents:
+        return dict(interrupt_on) if interrupt_on is not None else None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    for tool_name in _ASYNC_SUBAGENT_TOOL_NAMES:
+        merged.setdefault(tool_name, True)
+    return merged
+
+
+def _has_async_subagents(
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None,
+) -> bool:
+    return any(
+        isinstance(subagent, Mapping) and "graph_id" in subagent for subagent in subagents or ()
+    )
+
+
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
@@ -831,16 +778,31 @@ def _resolve_model_from_env(
 
 
 def _context_size_from_env(env: Mapping[str, str]) -> int | None:
-    raw = env.get(CONTEXT_SIZE_ENV_KEY)
+    return _positive_int_from_env(env, CONTEXT_SIZE_ENV_KEY)
+
+
+def _recursion_limit_from_env(env: Mapping[str, str], fallback: int) -> int:
+    """Resolve the recursion limit from the environment with a code fallback.
+
+    The `DEEPAGENTS_TALON_RECURSION_LIMIT` env var, when set, overrides the
+    caller-supplied value so operators can tune the graph recursion limit
+    without changing code. Falls back to the caller value when unset.
+    """
+    resolved = _positive_int_from_env(env, RECURSION_LIMIT_ENV_KEY)
+    return resolved if resolved is not None else fallback
+
+
+def _positive_int_from_env(env: Mapping[str, str], key: str) -> int | None:
+    raw = env.get(key)
     if raw is None or not raw.strip():
         return None
     try:
         value = int(raw)
     except ValueError as exc:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg) from exc
     if value <= 0:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg)
     return value
 
@@ -937,6 +899,79 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
     return paths
 
 
+def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
+    agents_dir = _local_subagents_dir(assistant_dir)
+    if agents_dir is None:
+        return []
+    subagents: list[SubAgent] = []
+    for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        path = child / "AGENTS.md"
+        if not path.is_file():
+            continue
+        if not _valid_local_subagent_name(child.name):
+            logger.warning(
+                "Skipping Talon subagent prompt from %s: unsafe subagent name %r",
+                path,
+                child.name,
+            )
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
+            continue
+        description, system_prompt, model = _parse_local_subagent_prompt(text, child.name)
+        subagent: SubAgent = {
+            "name": child.name,
+            "description": description,
+            "system_prompt": system_prompt,
+        }
+        if model is not None:
+            subagent["model"] = model
+        subagents.append(subagent)
+    return subagents
+
+
+def _local_subagents_dir(assistant_dir: Path) -> Path | None:
+    local = assistant_dir / "agents"
+    if local.is_dir():
+        return local
+    sibling = assistant_dir.parent / "agents"
+    if sibling.is_dir():
+        return sibling
+    return None
+
+
+def _valid_local_subagent_name(name: str) -> bool:
+    return _LOCAL_SUBAGENT_NAME_PATTERN.fullmatch(name) is not None and name not in {".", ".."}
+
+
+def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
+    if match is None:
+        return _default_subagent_description(name), text, None
+    frontmatter = match.group(1)
+    description = _frontmatter_value(frontmatter, "description") or _default_subagent_description(
+        name
+    )
+    return description, match.group(2).lstrip(), _frontmatter_value(frontmatter, "model_id")
+
+
+def _frontmatter_value(frontmatter: str, field: str) -> str | None:
+    for line in frontmatter.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == field:
+            parsed = value.strip().strip("\"'")
+            return parsed or None
+    return None
+
+
+def _default_subagent_description(name: str) -> str:
+    return f"Use the {name} subagent."
+
+
 def _prepare_memory_path(raw: str) -> str | None:
     path = Path(raw).expanduser()
     try:
@@ -947,39 +982,6 @@ def _prepare_memory_path(raw: str) -> str | None:
     except OSError:
         logger.warning("Could not prepare Talon memory file %s", path, exc_info=True)
         return None
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (ConnectionError, TimeoutError)):
-        return True
-
-    text = str(exc).lower()
-    status_code = _status_code(exc)
-    if status_code in _RETRYABLE_STATUS_CODES:
-        return True
-    if status_code == _BAD_REQUEST_STATUS_CODE:
-        return _contains_marker(text, _RETRYABLE_BAD_REQUEST_MARKERS)
-    return _contains_marker(text, _RETRYABLE_MESSAGE_MARKERS)
-
-
-def _is_auth_failure(exc: BaseException) -> bool:
-    if _status_code(exc) in _AUTH_STATUS_CODES:
-        return True
-    if isinstance(exc, BaseExceptionGroup):
-        return any(_is_auth_failure(item) for item in exc.exceptions)
-    return _contains_marker(str(exc).lower(), _AUTH_MESSAGE_MARKERS)
-
-
-def _is_mcp_auth_failure(exc: BaseException) -> bool:
-    if not _is_auth_failure(exc):
-        return False
-    if isinstance(exc, BaseExceptionGroup):
-        return any(_is_mcp_auth_failure(item) for item in exc.exceptions)
-
-    text = str(exc).lower()
-    if _contains_marker(text, _PROVIDER_AUTH_MESSAGE_MARKERS):
-        return False
-    return _contains_marker(text, _MCP_AUTH_MESSAGE_MARKERS)
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -998,18 +1000,17 @@ def _status_code(exc: BaseException) -> int | None:
     return None
 
 
-def _structured_auth_failure_state(exc: BaseException) -> dict[str, list[dict[str, object]]]:
-    error: dict[str, object] = {
-        "error": "mcp_auth_failed",
-        "message": (
-            "Fleet MCP tool authorization failed after refreshing OAuth credentials. "
-            "Run the Fleet pre-authorization step, then retry."
-        ),
-    }
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+
+    text = str(exc).lower()
     status_code = _status_code(exc)
-    if status_code is not None:
-        error["status_code"] = status_code
-    return {"messages": [{"content": json.dumps(error, sort_keys=True)}]}
+    if status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    if status_code == _BAD_REQUEST_STATUS_CODE:
+        return _contains_marker(text, _RETRYABLE_BAD_REQUEST_MARKERS)
+    return _contains_marker(text, _RETRYABLE_MESSAGE_MARKERS)
 
 
 def _contains_marker(text: str, markers: Sequence[str]) -> bool:

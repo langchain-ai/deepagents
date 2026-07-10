@@ -44,7 +44,7 @@ from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _merge_fs_interrupt_on
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -268,25 +268,6 @@ def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any,
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)
-
-
-def _merge_fs_interrupt_on(
-    fs_interrupt_on: dict[str, InterruptOnConfig],
-    user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
-) -> dict[str, bool | InterruptOnConfig] | None:
-    """Combine filesystem-permission configs with user-defined interrupts.
-
-    User-defined `interrupt_on` entries take precedence over generated
-    filesystem-permission entries with the same tool name. Returns `None` when
-    there are no interrupts to configure, allowing `HumanInTheLoopMiddleware` to
-    be omitted.
-    """
-    if not fs_interrupt_on and not user_interrupt_on:
-        return None
-    merged: dict[str, bool | InterruptOnConfig] = {**fs_interrupt_on}
-    if user_interrupt_on:
-        merged.update(user_interrupt_on)
-    return merged
 
 
 def _apply_custom_middleware(

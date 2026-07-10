@@ -22,7 +22,8 @@ collect = []
 [agent]
 
 [environment]
-network_mode = "no-network"
+network_mode = "allowlist"
+allowed_hosts = ["astral.sh", "github.com", "*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", "api.anthropic.com", "api.smith.langchain.com"]
 build_timeout_sec = 600.0
 os = "linux"
 mcp_servers = []

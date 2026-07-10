@@ -58,7 +58,14 @@ def test_generate_task_creates_self_contained_harbor_task(tmp_path: Path) -> Non
         "bank_accounts.txt source data\n"
     )
     assert (task_dir / "environment" / "Dockerfile").read_text() == (
-        "FROM python:3.12-slim\n\nCOPY files/ /app/files/\n"
+        "FROM python:3.12-slim\n\n"
+        "# Pre-install curl at build time (the build phase has network) so the\n"
+        "# in-sandbox agent's runtime bootstrap skips apt; runtime egress is then\n"
+        "# all-HTTPS via the task's network allowlist.\n"
+        "RUN apt-get update \\\n"
+        "    && apt-get install -y --no-install-recommends curl ca-certificates \\\n"
+        "    && rm -rf /var/lib/apt/lists/*\n\n"
+        "COPY files/ /app/files/\n"
     )
     assert (task_dir / "environment" / ".dockerignore").read_text() == (
         ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n.git\n__pycache__/\n.venv/\n.DS_Store\n"
@@ -89,5 +96,8 @@ def test_generate_task_creates_self_contained_harbor_task(tmp_path: Path) -> Non
         'difficulty = "easy"\n'
         'question_type = "comparison_tiebreak"\n\n'
         "[environment]\n"
-        'network_mode = "no-network"\n'
+        'network_mode = "allowlist"\n'
+        'allowed_hosts = ["astral.sh", "github.com", "*.githubusercontent.com", '
+        '"pypi.org", "*.pythonhosted.org", "api.anthropic.com", '
+        '"api.smith.langchain.com"]\n'
     )

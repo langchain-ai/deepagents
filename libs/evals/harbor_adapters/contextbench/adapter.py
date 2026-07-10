@@ -84,7 +84,14 @@ def _write_task_files(
 ) -> None:
     environment_dir = task_dir / "environment"
     (environment_dir / "Dockerfile").write_text(
-        "FROM python:3.12-slim\n\nCOPY files/ /app/files/\n"
+        "FROM python:3.12-slim\n\n"
+        "# Pre-install curl at build time (the build phase has network) so the\n"
+        "# in-sandbox agent's runtime bootstrap skips apt; runtime egress is then\n"
+        "# all-HTTPS via the task's network allowlist.\n"
+        "RUN apt-get update \\\n"
+        "    && apt-get install -y --no-install-recommends curl ca-certificates \\\n"
+        "    && rm -rf /var/lib/apt/lists/*\n\n"
+        "COPY files/ /app/files/\n"
     )
     (environment_dir / ".dockerignore").write_text(
         ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n.git\n__pycache__/\n.venv/\n.DS_Store\n"
@@ -125,7 +132,14 @@ def _write_task_files(
         f'difficulty = "{difficulty}"\n'
         f'question_type = "{question_type}"\n\n'
         "[environment]\n"
-        'network_mode = "no-network"\n'
+        # Allowlist (not no-network): the langgraph/dcode agent runs in-sandbox
+        # and must reach its own infra (model API + package mirrors) to bootstrap
+        # and call the model. Arbitrary web stays blocked, so answer-lookup is
+        # still prevented. LangSmith enforces this statically via its egress proxy.
+        'network_mode = "allowlist"\n'
+        'allowed_hosts = ["astral.sh", "github.com", "*.githubusercontent.com", '
+        '"pypi.org", "*.pythonhosted.org", "api.anthropic.com", '
+        '"api.smith.langchain.com"]\n'
     )
 
 

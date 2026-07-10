@@ -154,8 +154,16 @@ configuration already meets the stated bar.
 """
 
 
-def register() -> None:
-    """Register the GLM-5.2 harness profile under each spec in `_GLM_5P2_MODEL_KEYS`."""
+_registered = False
+
+
+def _ensure_glm_5p2_profile_registered() -> None:
+    """Register the GLM-5.2 harness profile once for each supported provider spec."""
+    global _registered  # noqa: PLW0603
+    if _registered:
+        return
+
     profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
     for key in _GLM_5P2_MODEL_KEYS:
         register_harness_profile(key, profile)
+    _registered = True

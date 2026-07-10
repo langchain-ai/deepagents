@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "deepagents-code"
 version = "0.1.36"
-description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"

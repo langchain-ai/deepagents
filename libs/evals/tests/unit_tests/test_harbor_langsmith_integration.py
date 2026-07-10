@@ -5,6 +5,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from deepagents_evals.tau3_subset import DATASET, INCLUDE_TASKS, TASKS
+
 ROOT = Path(__file__).parents[4]
 EVALS = ROOT / "libs" / "evals"
 
@@ -69,75 +71,57 @@ def test_makefile_no_longer_uses_custom_harbor_wrapper() -> None:
 
 
 def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> None:
+    """Harbor drives LangSmith via its plugin (not the retired manual
+    create-experiment / add-feedback steps), and the run wires the langgraph
+    agent to its graph, dataset, attempts, jobs dir, and plugin arguments.
+
+    The functional flag checks run against the EXTRACTED `⚓ Run Harbor` step (as
+    the secret-scoping test below does), not the whole file, so a flag that only
+    appears in a comment or unrelated step wouldn't satisfy them — while cosmetic
+    edits elsewhere (descriptions, input defaults, dataset options, echo lines)
+    don't break the test.
+    """
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
 
+    # The retired manual experiment wiring must stay gone.
     assert "create-experiment" not in workflow
     assert "add-feedback" not in workflow
-    assert "agent_impl:" in workflow
-    assert 'default: "dcode"' in workflow
-    assert "          - dcode" in workflow
-    assert "dataset:" in workflow
-    assert "Terminal-bench dataset to run through Harbor." in workflow
-    assert '- "terminal-bench/terminal-bench-2"' in workflow
-    assert '- "terminal-bench/terminal-bench-2-1"' in workflow
-    assert '- "sierra-research/tau3-bench"' in workflow
-    assert "dataset_override:" in workflow
-    assert "          - tau3" in workflow
-    assert "include_tasks:" in workflow
-    assert "Space-separated task-name globs" in workflow
-    assert "rollouts_per_task:" in workflow
-    assert 'default: "1"' in workflow
-    assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow
-    assert (
-        "HARBOR_DATASET: ${{ inputs.dataset_override || inputs.dataset || "
-        "'terminal-bench/terminal-bench-2' }}"
-    ) in workflow
-    assert "HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
-    assert "HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}" in workflow
-    assert "from fnmatch import fnmatch" in workflow
-    assert "No Harbor tasks matched include_tasks filters" in workflow
-    assert "select_shard_tasks(selected, [], n_tasks, n, i)" in workflow
-    assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
-    assert "INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
-    assert 'echo "| \\`include_tasks\\` | \\`${INCLUDE_TASKS}\\` |"' in workflow
-    assert 'echo "| \\`rollouts_per_task\\` | \\`${ROLLOUTS_PER_TASK}\\` |"' in workflow
-    assert '[[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]' in workflow
-    assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in workflow
-    assert '[[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]' in workflow
-    assert '"${include_args[@]}"' in workflow
-    assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in workflow
-    assert 'echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"' in workflow
-    assert 'echo "- Included tasks: all"' in workflow
-    assert 'echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"' in workflow
-    assert 'HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"' in workflow
-    assert "HARBOR_AGENT_GRAPH=deepagent" in workflow
-    assert "HARBOR_AGENT_GRAPH=bare_deepagent" in workflow
-    assert "--agent langgraph" in workflow
-    assert "--agent-kwarg project_path=deepagents_harbor/langgraph_project" in workflow
-    assert "--agent-kwarg config=langgraph.json" in workflow
-    assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in workflow
-    assert 'local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"' in workflow
-    assert '../deepagents/ "$local_deps_dir/deepagents/"' in workflow
-    assert '../code/ "$local_deps_dir/deepagents-code/"' in workflow
-    assert "agent_env_args=(" in workflow
-    assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
-    assert (
-        "fireworks)\n"
-        "              agent_env_args+=(\n"
-        "                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'\n"
-        "                --agent-env UV_PRERELEASE=allow\n"
-        "              )" in workflow
-    )
-    assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
-    assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
-    assert '"${agent_env_args[@]}"' in workflow
-    assert '--dataset "$HARBOR_DATASET"' in workflow
-    assert "--plugin langsmith" in workflow
-    assert "--jobs-dir harbor-jobs/terminal-bench" in workflow
-    assert 'Path("harbor-jobs/terminal-bench")' in workflow
-    assert "libs/evals/harbor-jobs/terminal-bench" in workflow
-    assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in workflow
-    assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
+
+    # Isolate the actual `harbor run` invocation.
+    run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+
+    # Agent is the langgraph deep agent wired to the selected graph.
+    assert "--agent langgraph" in run_step
+    assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in run_step
+    # Dataset and per-task attempts come from the dispatch inputs.
+    assert '--dataset "$HARBOR_DATASET"' in run_step
+    assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
+    # Results are written under a jobs dir the aggregate job later collects.
+    assert "--jobs-dir harbor-jobs/" in run_step
+    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
+    assert "--plugin langsmith" in run_step
+    assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
+    assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
+
+
+def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
+    """The `⚓ Run Harbor` step must allowlist-validate every dispatch input it
+    interpolates into a shell command, so a malicious `workflow_dispatch` value
+    can't inject shell. These regexes are security-relevant; the prior whole-file
+    test asserted them but the functional-flag refactor dropped that coverage, so
+    pin them here — scoped to the extracted step, which is stronger than a
+    whole-file substring match (a regex in an unrelated step wouldn't satisfy it).
+    """
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+
+    # rollouts must be a positive integer; dataset and resolved task names must
+    # match a conservative allowlist before reaching the shell / harbor CLI.
+    assert '[[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]' in run_step
+    assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in run_step
+    assert '[[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]' in run_step
 
 
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
@@ -239,3 +223,48 @@ def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
     assert "inputs.provider == 'fireworks'" in run_step
     assert "inputs.provider == 'ollama'" in run_step
     assert "startsWith(inputs.analysis_model, 'anthropic:')" in analysis_step
+
+
+def test_harbor_workflow_wires_tau3_subset() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+
+    # "tau3-subset" is a selectable dataset.
+    assert '- "tau3-subset"' in workflow
+    # Its resolution step pulls the committed task filter, runs against the real
+    # registry dataset, and names the LangSmith dataset "tau3-subset".
+    assert "if: env.HARBOR_DATASET == 'tau3-subset'" in workflow
+    assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
+    assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
+    assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+    # Injecting the task filter is the whole point of the step: it must be
+    # written and it must land in $GITHUB_ENV, or the run silently uses the full
+    # dataset. Guard both the payload line and the redirect.
+    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in workflow
+    assert '} >> "$GITHUB_ENV"' in workflow
+    # The resolve step must fail loudly on a wrong-sized filter (empty => full
+    # dataset), so the count tripwire must stay wired.
+    assert 'if [ "$task_count" -ne 30 ]; then' in workflow
+    # tau3's verifier/user simulator needs OpenAI even when the agent model is
+    # hosted by another provider, so missing credentials should fail preflight.
+    assert "contains(inputs.dataset, 'tau3')" in workflow
+    assert "contains(inputs.dataset_override, 'tau3')" in workflow
+    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in workflow
+    assert '[ "$model_provider" != "openai" ]' in workflow
+
+
+def test_tau3_subset_constant_is_well_formed() -> None:
+    tiers = [t.tier for t in TASKS]
+    assert len(TASKS) == 30
+    assert (tiers.count("easy"), tiers.count("medium"), tiers.count("hard")) == (
+        2,
+        7,
+        21,
+    )
+    entries = INCLUDE_TASKS.split()
+    assert len(entries) == 30
+    assert all(e.startswith(f"{DATASET}__tau3-") for e in entries)
+    assert all(t.justification for t in TASKS)
+    # A swap-duplicate task_id keeps len(entries)==30 and the tier tuple intact,
+    # so pin uniqueness and the exact {DATASET}__{task_id} round-trip explicitly.
+    assert len(set(entries)) == len(TASKS)
+    assert set(entries) == {f"{DATASET}__{t.task_id}" for t in TASKS}

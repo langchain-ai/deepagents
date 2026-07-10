@@ -729,7 +729,57 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: harbor-${{ strategy.job-index }}
+          name: shard-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
+
+  aggregate:
+    name: "Aggregate shards and compute pass@k"
+    needs: harbor
+    # Runs after all shards. Skipped when prep rejected the run (harbor skipped)
+    # or the run was cancelled; otherwise aggregates whatever shards uploaded.
+    if: ${{ always() && needs.harbor.result != 'skipped' && needs.harbor.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write        # download shard artifacts and delete them after merging
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: "Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "Download shard results"
+        run: |
+          mkdir -p _shards
+          gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards \
+            || echo "No shard-* artifacts found; aggregating an empty set."
+          echo "Contents of _shards:"
+          ls -1 _shards || true
+
+      - name: "Compute pass@k"
+        run: |
+          python3 .github/scripts/aggregate_shards.py _shards \
+            --rollouts "${{ inputs.rollouts_per_task }}" \
+            --dataset "${{ inputs.dataset_override || inputs.dataset }}" \
+            --out-dir _shards
+
+      - name: "Upload combined results"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: harbor-index-combined
+          path: _shards
+          if-no-files-found: warn
+
+      - name: "Delete per-shard intermediate artifacts"
+        if: always()
+        run: |
+          ids=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+                  -q '.artifacts[] | select(.name | startswith("shard-")) | .id')
+          for id in $ids; do
+            echo "Deleting artifact $id"
+            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" || true
+          done

@@ -5815,6 +5815,13 @@ class TestCodexProviderMirror:
     `openai_codex`; other openai models are not mirrored.
     """
 
+    def test_gpt_56_models_are_allowlisted(self) -> None:
+        assert {
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        } <= model_config.CODEX_MODELS
+
     def test_available_models_mirror_codex_allowlist(self) -> None:
         model_config.clear_caches()
         available = model_config.get_available_models()

@@ -39,8 +39,25 @@ def _restore_settings() -> Iterator[None]:
     [
         ("openai:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
         ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+        (
+            "openai:gpt-5.6-sol",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai:gpt-5.6-terra",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai:gpt-5.6-luna",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai_codex:gpt-5.6-sol",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
         # A generic (non-5.5) gpt-5 still gets the full OpenAI range.
         ("openai:gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
+        ("openai:gpt-5.60-sol", ("none", "low", "medium", "high", "xhigh")),
         ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
         # Opus 4.7 is the first version documented for the full range; assert the
         # named boundary directly rather than relying on 4.8 to exercise it.
@@ -97,8 +114,12 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
     [
         ("openai:gpt-5.5", "medium"),
         ("openai_codex:gpt-5.5", "medium"),
-        # Only gpt-5.5 has a documented default; other gpt-5 variants are None.
+        ("openai:gpt-5.6-sol", "medium"),
+        ("openai:gpt-5.6-terra", "medium"),
+        ("openai:gpt-5.6-luna", "medium"),
+        ("openai_codex:gpt-5.6-sol", "medium"),
         ("openai:gpt-5.4", None),
+        ("openai:gpt-5.60-sol", None),
         ("anthropic:claude-opus-4-8", "high"),
         ("anthropic:claude-opus-4-7", "high"),
         ("anthropic:claude-sonnet-4-6", "high"),
@@ -122,6 +143,9 @@ def test_default_effort_for_model(model_spec: str, default: str | None) -> None:
 def test_model_params_for_effort_maps_provider_kwargs() -> None:
     assert model_params_for_effort("openai:gpt-5.5", "high") == {
         "reasoning": {"effort": "high", "summary": "auto"}
+    }
+    assert model_params_for_effort("openai:gpt-5.6-sol", "max") == {
+        "reasoning": {"effort": "max", "summary": "auto"}
     }
     assert model_params_for_effort("anthropic:claude-opus-4-8", "xhigh") == {
         "thinking": {"type": "adaptive", "display": "summarized"},

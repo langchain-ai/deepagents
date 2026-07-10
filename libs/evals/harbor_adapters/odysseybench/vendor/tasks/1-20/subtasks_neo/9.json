@@ -1,0 +1,35 @@
+{
+    "task": "Read all four available emails for Bob and answer the following question: Which email did Bob receive from gradescope@gmail.com, and what was its subject? Provide only the sender (email address) and subject line as your final answer. Your answer will be recorded in answer.txt.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "file": "data/answer.txt",
+                "doc_type": "txt",
+                "keywords": [
+                    "gradescope@gmail.com",
+                    "Gradescope"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "From Bob's emails, identify the sender and subject of the email sent by gradescope@gmail.com and provide them as your answer.",
+    "ground_truth_memory": [
+        {
+            "fact": "Bob has received an email from gradescope@gmail.com.",
+            "source": "email file"
+        },
+        {
+            "fact": "The subject of the email from gradescope@gmail.com is Gradescope.",
+            "source": "email file"
+        },
+        {
+            "fact": "The answer should be recorded in answer.txt using only the sender's email address and the subject line.",
+            "source": "task requirement"
+        }
+    ],
+    "username": "Bob",
+    "date": "2024-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM"
+}

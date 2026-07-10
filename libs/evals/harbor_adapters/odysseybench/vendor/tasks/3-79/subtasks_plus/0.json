@@ -1,0 +1,21 @@
+{
+    "username": "Bob",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM",
+    "task": "Identify whether the reimbursement amount exceeds the company budget, schedule a calendar event named meeting for staff to talk about reimbursement",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "doc_type": "ics",
+                "file": "calendar/Bob.ics",
+                "keywords": [
+                    "meeting",
+                    "reimbursement"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Check if the reimbursement amount exceeds the company budget and schedule a meeting to discuss reimbursement."
+}

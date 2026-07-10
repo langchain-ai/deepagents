@@ -1,0 +1,86 @@
+{
+    "task": "Add each individual agenda item from 'meeting_agenda.pdf' as a separate event to Alice's calendar (Alice.ics). Each event on September 9 should start at its scheduled time according to the agenda. Each calendar event title must include both the agenda item name and the corresponding owner's name (e.g., 'Fiscal year review - Flora Berggren'). Ensure every agenda item on the PDF appears as a unique event in the calendar and no details are omitted.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "doc_type": "ics",
+                "file": "./calendar/Alice.ics",
+                "keywords": [
+                    "Welcome",
+                    "Fiscal",
+                    "year",
+                    "review",
+                    "Vote",
+                    "new",
+                    "secretary",
+                    "Discuss",
+                    "advisory",
+                    "committees",
+                    "Vote",
+                    "budget",
+                    "Break",
+                    "New",
+                    "Business",
+                    "Recap",
+                    "Programs",
+                    "Mirjam",
+                    "Nilsson",
+                    "Flora",
+                    "Berggren",
+                    "Rajesh",
+                    "Santoshi",
+                    "Graham",
+                    "Barnes",
+                    "Rowan",
+                    "Murphy",
+                    "Robin",
+                    "Kline"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Add all agenda items from the meeting PDF to my calendar as separate events.",
+    "ground_truth_memory": [
+        {
+            "fact": "The source file is /testbed/data/meeting_agenda.pdf."
+        },
+        {
+            "fact": "Add each agenda item as a separate event to Alice's calendar (Alice.ics) on September 9."
+        },
+        {
+            "fact": "Each event's start time matches the scheduled start time from the agenda."
+        },
+        {
+            "fact": "Each event title must include both the agenda item name and the owner's name, e.g., 'Fiscal year review - Flora Berggren'."
+        },
+        {
+            "action": "Event 1: 'Welcome - Mirjam Nilsson', start time 11:00 AM."
+        },
+        {
+            "action": "Event 2: 'Fiscal year review - Flora Berggren', start time 11:05 AM."
+        },
+        {
+            "action": "Event 3: 'Vote on new secretary - Rajesh Santoshi', start time 11:15 AM."
+        },
+        {
+            "action": "Event 4: 'Discuss advisory committees - Graham Barnes', start time 11:20 AM."
+        },
+        {
+            "action": "Event 5: 'Vote on budget - Rowan Murphy', start time 11:30 AM."
+        },
+        {
+            "action": "Event 6: 'Break - Robin Kline', start time 11:40 AM."
+        },
+        {
+            "action": "Event 7: 'New Business - Mirjam Nilsson', start time 11:45 AM."
+        },
+        {
+            "action": "Include 'Recap' and 'Programs' as subitems under 'New Business - Mirjam Nilsson', or add in the event title if possible."
+        }
+    ],
+    "username": "Alice",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM"
+}

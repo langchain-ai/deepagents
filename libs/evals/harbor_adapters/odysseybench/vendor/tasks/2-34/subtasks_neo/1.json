@@ -1,0 +1,39 @@
+{
+    "task": "Using the data in /testbed/data/survey_responses.xlsx, calculate the average satisfaction score for each gender. Identify which gender has the higher average satisfaction score and record the gender with the higher average into answer.txt.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "file": "data/answer.txt",
+                "doc_type": "txt",
+                "keywords": [
+                    "Female"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Which gender has the higher average satisfaction score in the survey data? Write the answer to answer.txt.",
+    "ground_truth_memory": [
+        {
+            "file": "/testbed/data/survey_responses.xlsx",
+            "note": "Survey data includes columns for Participant ID, Age, Gender, Income, and Satisfaction Score."
+        },
+        {
+            "output_file": "answer.txt",
+            "doc_type": "txt"
+        },
+        {
+            "action": "Calculate average satisfaction score for each gender using the Satisfaction Score column."
+        },
+        {
+            "action": "Identify which gender has the higher average satisfaction score."
+        },
+        {
+            "action": "Write the gender with the higher average satisfaction score into answer.txt."
+        }
+    ],
+    "username": "Alice",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM"
+}

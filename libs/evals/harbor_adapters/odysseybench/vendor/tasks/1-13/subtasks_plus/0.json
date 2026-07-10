@@ -1,0 +1,20 @@
+{
+    "username": "Alice",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM",
+    "task": "Given an Excel containing student's previous courses, does he/she satisfy the prerequiste of CS161 if prerequiste classes are CS101, CS 102, Math 151, and Math 152? Answer should be Yes or No.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "doc_type": "txt",
+                "file": "./data/answer.txt",
+                "keywords": [
+                    "Yes"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Check if the student satisfies the prerequisites for CS161."
+}

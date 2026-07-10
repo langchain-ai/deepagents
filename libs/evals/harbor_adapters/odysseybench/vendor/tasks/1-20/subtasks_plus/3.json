@@ -1,0 +1,21 @@
+{
+    "username": "Alice",
+    "date": "2024-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM",
+    "task": "does Bob receive emails in last month? if does, how many? Answer with yes or no and a arabic number.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "file": "data/answer.txt",
+                "doc_type": "txt",
+                "keywords": [
+                    "yes",
+                    "1"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Check if Bob has received emails in the last month and provide the count."
+}

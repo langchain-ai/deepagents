@@ -1,0 +1,33 @@
+{
+    "task": "Review the content of 'fellowship_application.pdf' to determine if the applicant, Alice Johnson, provides a compelling statement of purpose including evidence of research excellence, commitment to the research community, and the intent to gain experience through the fellowship. Summarize whether these elements are present in the application, and provide a justification for your answer based on specific aspects mentioned in the Statement of Purpose section.",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "file": "data/answer.txt",
+                "doc_type": "txt",
+                "keywords": [
+                    "research excellence",
+                    "commitment",
+                    "gain experience"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Review Alice Johnson's fellowship application and evaluate whether her statement of purpose convincingly demonstrates research excellence, commitment to the research community, and the intent to gain experience through the fellowship.",
+    "ground_truth_memory": [
+        {
+            "fact": "The PDF file 'fellowship_application.pdf' contains a Statement of Purpose written by Alice Johnson."
+        },
+        {
+            "action_item": "The summary and evaluation should be written clearly to answer whether all three elements (research excellence, commitment, intent to gain experience) appear in Alice's application."
+        },
+        {
+            "fact": "The applicant mentions academic excellence, participation in several research projects, and desire to work with experts in her field."
+        }
+    ],
+    "username": "Alice",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM"
+}

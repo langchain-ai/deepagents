@@ -1,0 +1,20 @@
+{
+    "username": "Bob",
+    "date": "2022-11-01",
+    "weekday": "Tuesday",
+    "time": "10:00 AM",
+    "task": "Check the emails, and let me know if my rent is due. Yes or no?",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "file": "data/answer.txt",
+                "doc_type": "txt",
+                "keywords": [
+                    "yes"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Check if Bob's rent is due based on his emails."
+}

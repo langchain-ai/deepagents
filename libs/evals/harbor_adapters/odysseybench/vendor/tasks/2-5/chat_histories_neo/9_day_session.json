@@ -1,0 +1,2061 @@
+[
+  {
+    "conversation": {
+      "session_1_date_time": "2020-04-26",
+      "session_1": [
+        {
+          "text": "Good morning! Ready to start another productive week?",
+          "ts": "2020-04-26 08:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Good morning, Alice. Absolutely ready. Anything special on your agenda?",
+          "ts": "2020-04-26 08:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Nothing too crazy. Might get to review some files later. Did you rest over the weekend?",
+          "ts": "2020-04-26 08:03",
+          "speaker": "Alice"
+        },
+        {
+          "text": "No rest for a digital assistant! But I\u2019m always ready to help you out.",
+          "ts": "2020-04-26 08:04",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s the spirit. Anything urgent pop up in my email this morning?",
+          "ts": "2020-04-26 08:05",
+          "speaker": "Alice"
+        },
+        {
+          "text": "No urgent emails. Most things look like routine correspondence.",
+          "ts": "2020-04-26 08:06",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s a relief. Since it\u2019s quiet, maybe I can finally catch up on my reading list!",
+          "ts": "2020-04-26 08:07",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That sounds like a great idea. What\u2019s first on the list?",
+          "ts": "2020-04-26 08:08",
+          "speaker": "AI"
+        },
+        {
+          "text": "Actually, I was thinking about reviewing the fellowship_application.pdf in our data folder. Do you know whose Statement of Purpose is in that document?",
+          "ts": "2020-04-26 08:09",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, the PDF file 'fellowship_application.pdf' contains a Statement of Purpose written by Alice Johnson.",
+          "ts": "2020-04-26 08:10",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great, that\u2019s what I thought. Maybe we can look through it later together.",
+          "ts": "2020-04-26 08:11",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Of course. Just let me know when you\u2019d like to start.",
+          "ts": "2020-04-26 08:12",
+          "speaker": "AI"
+        },
+        {
+          "text": "Will do. By the way, did you catch any of the online office trivia last Friday?",
+          "ts": "2020-04-26 08:13",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I don't attend, but I heard it was fun! Do you enjoy trivia?",
+          "ts": "2020-04-26 08:14",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019m okay at it, but not a superstar. Maybe I just need more practice!",
+          "ts": "2020-04-26 08:15",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Practice makes perfect, they say. Maybe next time you\u2019ll win.",
+          "ts": "2020-04-26 08:16",
+          "speaker": "AI"
+        },
+        {
+          "text": "Hopefully! Anyway, back to business\u2026 What do you think makes a good Statement of Purpose?",
+          "ts": "2020-04-26 08:17",
+          "speaker": "Alice"
+        },
+        {
+          "text": "A good Statement of Purpose should be clear, concise, and highlight the applicant\u2019s motivation, achievements, and goals.",
+          "ts": "2020-04-26 08:18",
+          "speaker": "AI"
+        },
+        {
+          "text": "That makes sense. Do you think mentioning collaboration with experts is important?",
+          "ts": "2020-04-26 08:19",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Definitely\u2014collaboration highlights willingness to learn and engage in the community.",
+          "ts": "2020-04-26 08:20",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll keep that in mind. I\u2019m making a note to check if that\u2019s mentioned in Alice Johnson\u2019s application.",
+          "ts": "2020-04-26 08:21",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sounds good! Would you also like a summary of the Statement of Purpose when you review it?",
+          "ts": "2020-04-26 08:22",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, actually, that would be helpful. Just the key points, please.",
+          "ts": "2020-04-26 08:23",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Understood. I'll prepare that for you.",
+          "ts": "2020-04-26 08:24",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. It helps to get these things organized first thing in the morning.",
+          "ts": "2020-04-26 08:25",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Organization sets the tone for the whole day!",
+          "ts": "2020-04-26 08:26",
+          "speaker": "AI"
+        },
+        {
+          "text": "Speaking of setting the tone, do you have a favorite quote about success?",
+          "ts": "2020-04-26 08:27",
+          "speaker": "Alice"
+        },
+        {
+          "text": "\"Success is not the key to happiness. Happiness is the key to success.\" \u2013 Albert Schweitzer",
+          "ts": "2020-04-26 08:28",
+          "speaker": "AI"
+        },
+        {
+          "text": "I like that! I should hang it near my desk.",
+          "ts": "2020-04-26 08:29",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Great idea!",
+          "ts": "2020-04-26 08:30",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you need anything else from me before I dive into these documents?",
+          "ts": "2020-04-26 08:31",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Nope, I\u2019m all set for whenever you need help.",
+          "ts": "2020-04-26 08:32",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. I\u2019m going to grab some coffee, be right back.",
+          "ts": "2020-04-26 08:33",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Enjoy your coffee!",
+          "ts": "2020-04-26 08:34",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Is there a way to keep track of my daily caffeine intake?",
+          "ts": "2020-04-26 08:35",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely, I can help log your coffee breaks if you\u2019d like.",
+          "ts": "2020-04-26 08:36",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great! Let\u2019s start today. This is break number one. I\u2019ll try not to go above three.",
+          "ts": "2020-04-26 08:37",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Noted\u2014break number one logged.",
+          "ts": "2020-04-26 08:38",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you ever take breaks?",
+          "ts": "2020-04-26 08:39",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I don't need breaks, but I can remind you to take yours!",
+          "ts": "2020-04-26 08:40",
+          "speaker": "AI"
+        },
+        {
+          "text": "Lucky. I wish I was as efficient as you.",
+          "ts": "2020-04-26 08:41",
+          "speaker": "Alice"
+        },
+        {
+          "text": "With a little help from me, you\u2019re unstoppable!",
+          "ts": "2020-04-26 08:42",
+          "speaker": "AI"
+        },
+        {
+          "text": "Haha, thanks! I\u2019ll let you know if I need another pep talk.",
+          "ts": "2020-04-26 08:43",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Anytime, Alice!",
+          "ts": "2020-04-26 08:44",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let\u2019s check my to-do list for today. What do I have scheduled?",
+          "ts": "2020-04-26 08:45",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You have some reading and document reviews, but no meetings scheduled.",
+          "ts": "2020-04-26 08:46",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s a relief! Maybe I can finish those project proposals too.",
+          "ts": "2020-04-26 08:47",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s a good plan. Let me know if you want any help drafting.",
+          "ts": "2020-04-26 08:48",
+          "speaker": "AI"
+        },
+        {
+          "text": "I might take you up on that. Oh, quick question: where\u2019s the file location of that fellowship application?",
+          "ts": "2020-04-26 08:49",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It\u2019s in the data folder as 'fellowship_application.pdf'.",
+          "ts": "2020-04-26 08:50",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. And the document contains Alice Johnson\u2019s Statement of Purpose, right?",
+          "ts": "2020-04-26 08:51",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, that\u2019s correct.",
+          "ts": "2020-04-26 08:52",
+          "speaker": "AI"
+        },
+        {
+          "text": "Just making sure we're talking about the same file.",
+          "ts": "2020-04-26 08:53",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely. Clear communication is key!",
+          "ts": "2020-04-26 08:54",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you want to help me draft a summary for it in the afternoon?",
+          "ts": "2020-04-26 08:55",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019d love to help!",
+          "ts": "2020-04-26 08:56",
+          "speaker": "AI"
+        },
+        {
+          "text": "Alright, let\u2019s put it on our mini agenda.",
+          "ts": "2020-04-26 08:57",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Noted\u2014afternoon summary drafting scheduled.",
+          "ts": "2020-04-26 08:58",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s all from me for now. I\u2019ll check some news before getting to work.",
+          "ts": "2020-04-26 08:59",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Enjoy your news break!",
+          "ts": "2020-04-26 09:00",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you know who won the trivia contest last week?",
+          "ts": "2020-04-26 09:01",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I believe Emily from HR took first place.",
+          "ts": "2020-04-26 09:02",
+          "speaker": "AI"
+        },
+        {
+          "text": "Wow, she\u2019s got quite the memory.",
+          "ts": "2020-04-26 09:03",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, she\u2019s impressive!",
+          "ts": "2020-04-26 09:04",
+          "speaker": "AI"
+        },
+        {
+          "text": "I should join next time. Do you think I\u2019d be good at music trivia?",
+          "ts": "2020-04-26 09:05",
+          "speaker": "Alice"
+        },
+        {
+          "text": "If you listen to music often, I bet you\u2019d do well.",
+          "ts": "2020-04-26 09:06",
+          "speaker": "AI"
+        },
+        {
+          "text": "I'll give it a shot. By the way, do you keep reminders for my upcoming lunch breaks?",
+          "ts": "2020-04-26 09:07",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, I can remind you when lunch time comes up.",
+          "ts": "2020-04-26 09:08",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. Set a reminder for noon.",
+          "ts": "2020-04-26 09:09",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Lunch reminder set for 12:00 PM.",
+          "ts": "2020-04-26 09:10",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. That covers everything for now.",
+          "ts": "2020-04-26 09:11",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Let me know if you have any other requests!",
+          "ts": "2020-04-26 09:12",
+          "speaker": "AI"
+        },
+        {
+          "text": "Actually, could you check if the printer is online?",
+          "ts": "2020-04-26 09:13",
+          "speaker": "Alice"
+        },
+        {
+          "text": "The printer is currently online and ready for any jobs.",
+          "ts": "2020-04-26 09:14",
+          "speaker": "AI"
+        },
+        {
+          "text": "Super! No more paper jams, hopefully.",
+          "ts": "2020-04-26 09:15",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Fingers crossed!",
+          "ts": "2020-04-26 09:16",
+          "speaker": "AI"
+        },
+        {
+          "text": "What\u2019s the weather like today?",
+          "ts": "2020-04-26 09:17",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It\u2019s expected to be sunny most of the day.",
+          "ts": "2020-04-26 09:18",
+          "speaker": "AI"
+        },
+        {
+          "text": "A rare treat! Okay, I\u2019ll tackle that PDF review after my morning coffee.",
+          "ts": "2020-04-26 09:19",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Just let me know when you\u2019re ready.",
+          "ts": "2020-04-26 09:20",
+          "speaker": "AI"
+        },
+        {
+          "text": "Will do! What else do you recommend reading for inspiration before writing summaries?",
+          "ts": "2020-04-26 09:21",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Reading sample statements and strong recommendation letters can be inspiring.",
+          "ts": "2020-04-26 09:22",
+          "speaker": "AI"
+        },
+        {
+          "text": "Good tip! I\u2019ll look up a few examples. Thanks.",
+          "ts": "2020-04-26 09:23",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You\u2019re welcome! Let me know if you need links to sample documents.",
+          "ts": "2020-04-26 09:24",
+          "speaker": "AI"
+        },
+        {
+          "text": "I might take you up on that. I\u2019ll ping you before lunch if I need more help.",
+          "ts": "2020-04-26 09:25",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sounds good. Have a focused and productive morning!",
+          "ts": "2020-04-26 09:26",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Talk soon.",
+          "ts": "2020-04-26 09:27",
+          "speaker": "Alice"
+        }
+      ],
+      "session_2_date_time": "2020-04-27",
+      "session_2": [
+        {
+          "text": "Good morning! Ready for another busy day?",
+          "ts": "2020-04-27 08:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Good morning, Alice. Always ready. How did yesterday\u2019s review plans go?",
+          "ts": "2020-04-27 08:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Pretty good! I skimmed the Statement of Purpose by Alice Johnson. We\u2019ll need to get into the details today.",
+          "ts": "2020-04-27 08:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sounds good! Are you planning to write a summary and evaluation of the application?",
+          "ts": "2020-04-27 08:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes. I want it to clearly address whether all three critical points are present: research excellence, commitment, and the intent to gain experience.",
+          "ts": "2020-04-27 08:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Excellent focus. The summary and evaluation should be written clearly to answer whether all three elements\u2014research excellence, commitment, and intent to gain experience\u2014appear in Alice's application.",
+          "ts": "2020-04-27 08:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "Exactly! I\u2019ll need to dig in and see if she addresses each of those.",
+          "ts": "2020-04-27 08:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Would you like me to help highlight sections that correspond to those qualities?",
+          "ts": "2020-04-27 08:07",
+          "speaker": "AI"
+        },
+        {
+          "text": "That would be super helpful! We'll go over it together in a bit.",
+          "ts": "2020-04-27 08:08",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Just let me know when you\u2019re ready to start.",
+          "ts": "2020-04-27 08:09",
+          "speaker": "AI"
+        },
+        {
+          "text": "Will do! I have a quick check-in call first. Speaking of which, remind me in 5 minutes?",
+          "ts": "2020-04-27 08:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely, I\u2019ll remind you in 5 minutes for your check-in call.",
+          "ts": "2020-04-27 08:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! By the way, did you watch that documentary I mentioned?",
+          "ts": "2020-04-27 08:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I don\u2019t watch documentaries, but I did read about the one you mentioned. Seems insightful!",
+          "ts": "2020-04-27 08:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "It really was. Maybe I\u2019ll re-watch it this weekend.",
+          "ts": "2020-04-27 08:14",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s a great way to relax. Any other good recommendations?",
+          "ts": "2020-04-27 08:15",
+          "speaker": "AI"
+        },
+        {
+          "text": "Not right now. I'll let you know if something comes up. So, for that summary, what\u2019s a good structure?",
+          "ts": "2020-04-27 08:16",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Start with a general impression, then address each point\u2014research excellence, commitment, and intent to gain experience. Finish with a concluding judgment.",
+          "ts": "2020-04-27 08:17",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. I\u2019ll map her statements to those areas. Should we use bullet points or stick to paragraphs?",
+          "ts": "2020-04-27 08:18",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Either is fine as long as the evaluation is clear. Paragraphs tend to be standard, but bullets work for clarity.",
+          "ts": "2020-04-27 08:19",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I'll draft both! Also, thanks for the call reminder, I almost forgot!",
+          "ts": "2020-04-27 08:20",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Glad to help! Your call should be starting now.",
+          "ts": "2020-04-27 08:21",
+          "speaker": "AI"
+        },
+        {
+          "text": "Jumping on. Be back in 15!",
+          "ts": "2020-04-27 08:22",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll be here when you\u2019re ready.",
+          "ts": "2020-04-27 08:23",
+          "speaker": "AI"
+        },
+        {
+          "text": "Back from my call! It ran a bit long, as always.",
+          "ts": "2020-04-27 08:38",
+          "speaker": "Alice"
+        },
+        {
+          "text": "No worries. Ready to focus on the application review?",
+          "ts": "2020-04-27 08:39",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, let\u2019s dive in. I\u2019ll need to check if her statement includes those three key points.",
+          "ts": "2020-04-27 08:40",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Would you like to open up the PDF together now?",
+          "ts": "2020-04-27 08:41",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, let's do it. Have you prepared any pointers from your last read-through?",
+          "ts": "2020-04-27 08:42",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, I can highlight which sections may demonstrate research excellence, commitment, and intent to gain experience.",
+          "ts": "2020-04-27 08:43",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great, that will make writing my evaluation much easier.",
+          "ts": "2020-04-27 08:44",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Just let me know which section you\u2019d like to review first.",
+          "ts": "2020-04-27 08:45",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let\u2019s start with research excellence. What should I look for?",
+          "ts": "2020-04-27 08:46",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Look for mention of academic achievements, research experiences, publications, or awards.",
+          "ts": "2020-04-27 08:47",
+          "speaker": "AI"
+        },
+        {
+          "text": "Got it. I wonder if she mentions her contributions to projects?",
+          "ts": "2020-04-27 08:48",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Participation in several research projects would definitely indicate excellence.",
+          "ts": "2020-04-27 08:49",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll look for that. Next up, commitment. How do we spot that?",
+          "ts": "2020-04-27 08:50",
+          "speaker": "Alice"
+        },
+        {
+          "text": "References to dedication, aspirations to contribute, or ongoing engagement in the academic community are good signs.",
+          "ts": "2020-04-27 08:51",
+          "speaker": "AI"
+        },
+        {
+          "text": "Very helpful. What about intent to gain experience?",
+          "ts": "2020-04-27 08:52",
+          "speaker": "Alice"
+        },
+        {
+          "text": "She should mention learning from the fellowship, working with experts, or growing her expertise.",
+          "ts": "2020-04-27 08:53",
+          "speaker": "AI"
+        },
+        {
+          "text": "Alright, time for a quick stretch\u2014sitting too long is bad for you!",
+          "ts": "2020-04-27 08:54",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s true! I can remind you to stretch more often if you\u2019d like.",
+          "ts": "2020-04-27 08:55",
+          "speaker": "AI"
+        },
+        {
+          "text": "Good idea. How about every hour?",
+          "ts": "2020-04-27 08:56",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Stretch reminder set for every hour today.",
+          "ts": "2020-04-27 08:57",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thank you! Back to the PDF\u2014should I make notes directly or in a separate doc?",
+          "ts": "2020-04-27 08:58",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You can do either, but a separate document makes summarizing easier later.",
+          "ts": "2020-04-27 08:59",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll keep a separate doc, then. Hey, did you see the new lunch menu for the week?",
+          "ts": "2020-04-27 09:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I can pull up the cafeteria menu if you\u2019d like!",
+          "ts": "2020-04-27 09:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let\u2019s check later. For now, focusing on this summary. Should the evaluation be formal or conversational?",
+          "ts": "2020-04-27 09:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Formal is standard for application reviews, though clear and concise language is best.",
+          "ts": "2020-04-27 09:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great, formal it is. Once I finish, can you double-check it?",
+          "ts": "2020-04-27 09:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Of course! I\u2019ll review for clarity and completeness regarding the three elements.",
+          "ts": "2020-04-27 09:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Quick question\u2014how\u2019s the weather today?",
+          "ts": "2020-04-27 09:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sunny with a mild breeze. Great weather for a walk!",
+          "ts": "2020-04-27 09:07",
+          "speaker": "AI"
+        },
+        {
+          "text": "Tempting! Maybe later if I finish early.",
+          "ts": "2020-04-27 09:08",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sounds like a plan.",
+          "ts": "2020-04-27 09:09",
+          "speaker": "AI"
+        },
+        {
+          "text": "Just wrote out my summary structure\u2014heading, intro, then the three criteria.",
+          "ts": "2020-04-27 09:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That structure will showcase all necessary findings clearly.",
+          "ts": "2020-04-27 09:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Glad you agree. I\u2019ll fill it in based on what we find.",
+          "ts": "2020-04-27 09:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019m here if you want to review or brainstorm wording.",
+          "ts": "2020-04-27 09:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. What\u2019s a good synonym for \u2018commitment\u2019?",
+          "ts": "2020-04-27 09:14",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Dedication, devotion, or engagement are strong alternatives.",
+          "ts": "2020-04-27 09:15",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. I'll use one of those. Should I include brief supporting examples for each element?",
+          "ts": "2020-04-27 09:16",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, brief evidence for each is ideal.",
+          "ts": "2020-04-27 09:17",
+          "speaker": "AI"
+        },
+        {
+          "text": "Got it. By the way, do you remember the name of the applicant?",
+          "ts": "2020-04-27 09:18",
+          "speaker": "Alice"
+        },
+        {
+          "text": "The Statement of Purpose was written by Alice Johnson.",
+          "ts": "2020-04-27 09:19",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s right. Just wanted to make sure for formatting. How many words should the summary be?",
+          "ts": "2020-04-27 09:20",
+          "speaker": "Alice"
+        },
+        {
+          "text": "200-300 words is effective for clarity without being too brief.",
+          "ts": "2020-04-27 09:21",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect, that gives me a good target. Do you know any good desk exercises for posture?",
+          "ts": "2020-04-27 09:22",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Shoulder rolls, neck stretches, and standing up occasionally all help!",
+          "ts": "2020-04-27 09:23",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll try shoulder rolls during my next break.",
+          "ts": "2020-04-27 09:24",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Let me know how it goes!",
+          "ts": "2020-04-27 09:25",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. You always have helpful tips!",
+          "ts": "2020-04-27 09:26",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Happy to help with anything you need, work or wellness.",
+          "ts": "2020-04-27 09:27",
+          "speaker": "AI"
+        },
+        {
+          "text": "One last thing\u2014could you remind me at 11 to stand up and stretch?",
+          "ts": "2020-04-27 09:28",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Stretch reminder set for 11:00 AM.",
+          "ts": "2020-04-27 09:29",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thank you! Time to get a refill of water.",
+          "ts": "2020-04-27 09:30",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Hydration is important\u2014enjoy your break!",
+          "ts": "2020-04-27 09:31",
+          "speaker": "AI"
+        },
+        {
+          "text": "Back. Time to draft my summary paragraphs.",
+          "ts": "2020-04-27 09:32",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Best of luck! Let me know if you\u2019d like feedback along the way.",
+          "ts": "2020-04-27 09:33",
+          "speaker": "AI"
+        },
+        {
+          "text": "Will do! I appreciate your help today.",
+          "ts": "2020-04-27 09:34",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Anytime, Alice.",
+          "ts": "2020-04-27 09:35",
+          "speaker": "AI"
+        },
+        {
+          "text": "Okay, time to focus for 30 minutes. I\u2019ll mute notifications until then.",
+          "ts": "2020-04-27 09:36",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Notifications on mute. I\u2019ll log any messages that come through.",
+          "ts": "2020-04-27 09:37",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great. See you in a bit!",
+          "ts": "2020-04-27 09:38",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll be here when you\u2019re ready to check in.",
+          "ts": "2020-04-27 09:39",
+          "speaker": "AI"
+        },
+        {
+          "text": "Back from my focus session. Draft is halfway done.",
+          "ts": "2020-04-27 10:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Nice progress! Would you like to review what you\u2019ve written so far?",
+          "ts": "2020-04-27 10:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let me finish the section on commitment, then I\u2019ll share.",
+          "ts": "2020-04-27 10:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sounds good. Take your time.",
+          "ts": "2020-04-27 10:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "Quick coffee break, then back to wrapping up the evaluation.",
+          "ts": "2020-04-27 10:20",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Enjoy your coffee!",
+          "ts": "2020-04-27 10:21",
+          "speaker": "AI"
+        },
+        {
+          "text": "There, draft finished. Can you check if all three criteria are addressed?",
+          "ts": "2020-04-27 10:23",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Of course! Send it my way and I\u2019ll review to ensure research excellence, commitment, and intent to gain experience are each evaluated.",
+          "ts": "2020-04-27 10:24",
+          "speaker": "AI"
+        },
+        {
+          "text": "Sending draft now. Also, add lunch reminder at noon, please.",
+          "ts": "2020-04-27 10:25",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Lunch reminder set for 12:00 PM. Reviewing your draft now.",
+          "ts": "2020-04-27 10:26",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks so much for your help today!",
+          "ts": "2020-04-27 10:27",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You\u2019re welcome, Alice! Let me know if there\u2019s anything else I can do today.",
+          "ts": "2020-04-27 10:28",
+          "speaker": "AI"
+        }
+      ],
+      "session_3_date_time": "2020-04-28",
+      "session_3": [
+        {
+          "text": "Morning! I feel surprisingly productive for a Wednesday.",
+          "ts": "2020-04-28 08:05",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Good morning, Alice! Energy like that is always welcome. What\u2019s on your plate today?",
+          "ts": "2020-04-28 08:06",
+          "speaker": "AI"
+        },
+        {
+          "text": "Finishing up my draft of the evaluation for Alice Johnson\u2019s fellowship application. Still want to make sure I captured all the important details.",
+          "ts": "2020-04-28 08:07",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Glad you\u2019re making progress. Are there any elements you\u2019d like to revisit?",
+          "ts": "2020-04-28 08:08",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, specifically: does her statement make it clear she\u2019s excelled academically, done real research, and wants to engage with top people in her area?",
+          "ts": "2020-04-28 08:09",
+          "speaker": "Alice"
+        },
+        {
+          "text": "The applicant does mention academic excellence, participation in several research projects, and a desire to work with experts in her field.",
+          "ts": "2020-04-28 08:10",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s what I thought! I\u2019ll weave that into the summary for clarity.",
+          "ts": "2020-04-28 08:11",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Great idea. Mentioning those specific achievements and aspirations makes your evaluation stronger.",
+          "ts": "2020-04-28 08:12",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. How does my opening sentence sound? \u2018Alice Johnson\u2019s background demonstrates a consistent commitment to research and professional growth.\u2019",
+          "ts": "2020-04-28 08:13",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s a solid start! It sets a positive and professional tone.",
+          "ts": "2020-04-28 08:14",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. I\u2019ll make sure to detail her academic achievements next. Have you ever written a recommendation letter?",
+          "ts": "2020-04-28 08:15",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I haven\u2019t, but I can help you outline one if needed. I process lots of templates and best practices.",
+          "ts": "2020-04-28 08:16",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe next week! Right now, I need another cup of coffee. This is my second one already.",
+          "ts": "2020-04-28 08:17",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Noted\u2014coffee break number two! Staying energized seems to help with writing.",
+          "ts": "2020-04-28 08:18",
+          "speaker": "AI"
+        },
+        {
+          "text": "It really does. Maybe I\u2019ll switch to herbal tea in the afternoon. Any flavor recommendations?",
+          "ts": "2020-04-28 08:19",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Chamomile and peppermint are both calming and delicious!",
+          "ts": "2020-04-28 08:20",
+          "speaker": "AI"
+        },
+        {
+          "text": "Peppermint sounds good. Back to the application\u2014should I quote her achievements verbatim or paraphrase?",
+          "ts": "2020-04-28 08:21",
+          "speaker": "Alice"
+        },
+        {
+          "text": "A mix of both works well; paraphrasing demonstrates your analysis, while key quotes add emphasis.",
+          "ts": "2020-04-28 08:22",
+          "speaker": "AI"
+        },
+        {
+          "text": "Helpful, thanks! Do you recall any specific research projects she referenced?",
+          "ts": "2020-04-28 08:23",
+          "speaker": "Alice"
+        },
+        {
+          "text": "She mentioned participating in several research projects but did not name them individually.",
+          "ts": "2020-04-28 08:24",
+          "speaker": "AI"
+        },
+        {
+          "text": "Got it. I\u2019ll mention her range of experience then. What about her desire to collaborate?",
+          "ts": "2020-04-28 08:25",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, she expresses the wish to work closely with experts in her field for further growth.",
+          "ts": "2020-04-28 08:26",
+          "speaker": "AI"
+        },
+        {
+          "text": "Excellent. Should I tie that into the conclusion as a forward-looking statement?",
+          "ts": "2020-04-28 08:27",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely. Pointing toward future growth rounds out the evaluation nicely.",
+          "ts": "2020-04-28 08:28",
+          "speaker": "AI"
+        },
+        {
+          "text": "You\u2019re always good at these tips!",
+          "ts": "2020-04-28 08:29",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I try! Is there anything you need to double-check before finalizing?",
+          "ts": "2020-04-28 08:30",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe just a clarity check at the end. Did you see if the cafeteria\u2019s new salad is any good?",
+          "ts": "2020-04-28 08:31",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Some reviews say it\u2019s fresh and tasty. Might be worth trying!",
+          "ts": "2020-04-28 08:32",
+          "speaker": "AI"
+        },
+        {
+          "text": "Lunch plans sorted! Will you remind me at noon?",
+          "ts": "2020-04-28 08:33",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Lunch reminder set for 12:00 PM.",
+          "ts": "2020-04-28 08:34",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thank you. Next, what\u2019s the best way to phrase her motivation for the fellowship?",
+          "ts": "2020-04-28 08:35",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Describe her as motivated by both personal and professional development through research, and keen to expand her network.",
+          "ts": "2020-04-28 08:36",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great wording! Should I use bullet points for main evidence?",
+          "ts": "2020-04-28 08:37",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Bullet points work well for clarity, especially in longer evaluations.",
+          "ts": "2020-04-28 08:38",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect, doing that now. By the way, any new updates from IT about the file server?",
+          "ts": "2020-04-28 08:39",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Nothing major, just a scheduled update for Friday evening.",
+          "ts": "2020-04-28 08:40",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks for the heads up. I\u2019ll finish big uploads before then.",
+          "ts": "2020-04-28 08:41",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s smart planning.",
+          "ts": "2020-04-28 08:42",
+          "speaker": "AI"
+        },
+        {
+          "text": "Back to the review: should each criterion get its own paragraph?",
+          "ts": "2020-04-28 08:43",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, separate paragraphs or bullet sections make it easier to follow.",
+          "ts": "2020-04-28 08:44",
+          "speaker": "AI"
+        },
+        {
+          "text": "Great, splitting those up now. Thanks for the suggestion!",
+          "ts": "2020-04-28 08:45",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Happy to help!",
+          "ts": "2020-04-28 08:46",
+          "speaker": "AI"
+        },
+        {
+          "text": "Just heard a funny joke\u2014want to hear it?",
+          "ts": "2020-04-28 08:47",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sure! I\u2019m always up for a laugh.",
+          "ts": "2020-04-28 08:48",
+          "speaker": "AI"
+        },
+        {
+          "text": "Why did the AI go to therapy? To work on its processing issues!",
+          "ts": "2020-04-28 08:49",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Ha! That\u2019s a good one. We AIs strive for flawless processing!",
+          "ts": "2020-04-28 08:50",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I missed my calling in standup comedy.",
+          "ts": "2020-04-28 08:51",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You\u2019d \u201cprocess\u201d a lot of laughs!",
+          "ts": "2020-04-28 08:52",
+          "speaker": "AI"
+        },
+        {
+          "text": "Okay, back to business. For the research excellence part, should I note any awards if mentioned?",
+          "ts": "2020-04-28 08:53",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Definitely. Any award or recognition should be included in that section.",
+          "ts": "2020-04-28 08:54",
+          "speaker": "AI"
+        },
+        {
+          "text": "Got it. But I didn\u2019t spot any awards in this application, just strong project experience.",
+          "ts": "2020-04-28 08:55",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Then highlighting her active research involvement is ideal.",
+          "ts": "2020-04-28 08:56",
+          "speaker": "AI"
+        },
+        {
+          "text": "Done. Should I mention her willingness to learn from others?",
+          "ts": "2020-04-28 08:57",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Yes, willingness to learn and collaborate is a valuable quality.",
+          "ts": "2020-04-28 08:58",
+          "speaker": "AI"
+        },
+        {
+          "text": "All set. I\u2019ll proof the summary and send it to you for a final check in the afternoon.",
+          "ts": "2020-04-28 08:59",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Looking forward to it, Alice. Would you also like any suggestions for transitions or conclusion?",
+          "ts": "2020-04-28 09:00",
+          "speaker": "AI"
+        },
+        {
+          "text": "That would be great, yes.",
+          "ts": "2020-04-28 09:01",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll prepare some sample sentences for you.",
+          "ts": "2020-04-28 09:02",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Quick stretch break\u2014what\u2019s your favorite office workout?",
+          "ts": "2020-04-28 09:03",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Neck rolls and wrist stretches are effective for desk work.",
+          "ts": "2020-04-28 09:04",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll try those. Okay, wrapping up my edits now. What\u2019s the time?",
+          "ts": "2020-04-28 09:05",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It\u2019s 9:05 AM.",
+          "ts": "2020-04-28 09:06",
+          "speaker": "AI"
+        },
+        {
+          "text": "Still early! I might be done before my first meeting.",
+          "ts": "2020-04-28 09:07",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Productivity points for you! Do you want a reminder before your meeting?",
+          "ts": "2020-04-28 09:08",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, remind me in 20 minutes, please.",
+          "ts": "2020-04-28 09:09",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Reminder set for 9:27 AM.",
+          "ts": "2020-04-28 09:10",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Back to editing my summary now.",
+          "ts": "2020-04-28 09:11",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Good luck!",
+          "ts": "2020-04-28 09:12",
+          "speaker": "AI"
+        },
+        {
+          "text": "Almost done. The applicant\u2019s drive to collaborate stands out. I think it makes her application compelling.",
+          "ts": "2020-04-28 09:13",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s a strong observation to include in your conclusion.",
+          "ts": "2020-04-28 09:14",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect. The evaluation draft is officially done!",
+          "ts": "2020-04-28 09:15",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Congratulations! Would you like to send it to me for one last review?",
+          "ts": "2020-04-28 09:16",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, please. Attaching now.",
+          "ts": "2020-04-28 09:17",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Received. I\u2019ll check for completeness and clarity.",
+          "ts": "2020-04-28 09:18",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thank you! I\u2019ll get ready for my meeting. Anything else urgent this morning?",
+          "ts": "2020-04-28 09:19",
+          "speaker": "Alice"
+        },
+        {
+          "text": "No urgent tasks right now. Have a productive meeting!",
+          "ts": "2020-04-28 09:20",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! I\u2019ll check in after.",
+          "ts": "2020-04-28 09:21",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll be here if you need anything, Alice.",
+          "ts": "2020-04-28 09:22",
+          "speaker": "AI"
+        },
+        {
+          "text": "Bye for now!",
+          "ts": "2020-04-28 09:23",
+          "speaker": "Alice"
+        }
+      ],
+      "session_4_date_time": "2020-04-29",
+      "session_4": [
+        {
+          "text": "Good morning! I can\u2019t believe it\u2019s Thursday already.",
+          "ts": "2020-04-29 08:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It sure is! Time flies when you\u2019re busy. Got any fun plans for the weekend?",
+          "ts": "2020-04-29 08:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Not really, just thinking of relaxing and maybe reading a new book. Any recommendations?",
+          "ts": "2020-04-29 08:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Have you tried any mystery novels lately? \u2018The Westing Game\u2019 is a classic!",
+          "ts": "2020-04-29 08:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "Sounds intriguing! Maybe something with an uplifting tone though. This week has been a bit much.",
+          "ts": "2020-04-29 08:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "How about a feel-good memoir? \u2018Becoming\u2019 by Michelle Obama is a great motivational read.",
+          "ts": "2020-04-29 08:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s on my list! Do you read a lot of memoirs?",
+          "ts": "2020-04-29 08:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I get to sample a wide variety\u2014memoirs, science fiction, even cookbooks sometimes!",
+          "ts": "2020-04-29 08:07",
+          "speaker": "AI"
+        },
+        {
+          "text": "I could use a new cookbook! What\u2019s your favorite recipe?",
+          "ts": "2020-04-29 08:08",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You can\u2019t go wrong with homemade pasta. It\u2019s fun and delicious.",
+          "ts": "2020-04-29 08:09",
+          "speaker": "AI"
+        },
+        {
+          "text": "Homemade pasta is ambitious! I might just stick to easy stir fry.",
+          "ts": "2020-04-29 08:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Quick and tasty! What\u2019s your go-to for a lazy dinner?",
+          "ts": "2020-04-29 08:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Definitely breakfast-for-dinner: scrambled eggs, toast, and maybe pancakes if I\u2019m fancy.",
+          "ts": "2020-04-29 08:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Breakfast for dinner never disappoints. Add some fruit and you\u2019re set!",
+          "ts": "2020-04-29 08:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you think I should try overnight oats? Everyone seems into them lately.",
+          "ts": "2020-04-29 08:14",
+          "speaker": "Alice"
+        },
+        {
+          "text": "They\u2019re simple to prep and there are endless ways to customize them. Worth a try!",
+          "ts": "2020-04-29 08:15",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I\u2019ll experiment this weekend. What\u2019s your favorite oatmeal mix-in?",
+          "ts": "2020-04-29 08:16",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Blueberries and a sprinkle of cinnamon make a classic combo.",
+          "ts": "2020-04-29 08:17",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yum, that sounds great. By the way, have you ever written poetry?",
+          "ts": "2020-04-29 08:18",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ve generated a few poetic lines\u2014haikus, limericks, even silly rhymes!",
+          "ts": "2020-04-29 08:19",
+          "speaker": "AI"
+        },
+        {
+          "text": "Okay, give me a haiku about Thursdays.",
+          "ts": "2020-04-29 08:20",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Thursday morning hums, Workweek ends are drawing near, Weekend whispers close.",
+          "ts": "2020-04-29 08:21",
+          "speaker": "AI"
+        },
+        {
+          "text": "Impressive! You\u2019re definitely more creative than my first cup of coffee.",
+          "ts": "2020-04-29 08:22",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Thank you! I\u2019m always here for a rhyme or a reason.",
+          "ts": "2020-04-29 08:23",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you send reminders for non-work things? Like watering plants?",
+          "ts": "2020-04-29 08:24",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely\u2014I can remind you to water plants, stretch, or take reading breaks!",
+          "ts": "2020-04-29 08:25",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect, remind me to water my ficus tonight at 7 pm.",
+          "ts": "2020-04-29 08:26",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Ficus watering reminder set for 7 pm today.",
+          "ts": "2020-04-29 08:27",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! If only you could brew coffee for me too.",
+          "ts": "2020-04-29 08:28",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019d be the perfect assistant with that skill! Maybe someday...",
+          "ts": "2020-04-29 08:29",
+          "speaker": "AI"
+        },
+        {
+          "text": "Heh, in the meantime, virtual pep talks will do.",
+          "ts": "2020-04-29 08:30",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You\u2019ve got this, Alice! One day closer to Friday.",
+          "ts": "2020-04-29 08:31",
+          "speaker": "AI"
+        },
+        {
+          "text": "Best words I\u2019ve heard all morning. Should I try meditating at lunch?",
+          "ts": "2020-04-29 08:32",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Meditation is a great midday reset! Want a 10-minute reminder at noon?",
+          "ts": "2020-04-29 08:33",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let\u2019s do it! I\u2019ll look up a guided session later.",
+          "ts": "2020-04-29 08:34",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Meditation reminder set for 12:00 pm. Enjoy your calm!",
+          "ts": "2020-04-29 08:35",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Random question: do you think plants like music?",
+          "ts": "2020-04-29 08:36",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Some studies suggest they respond to vibrations! Classical music is a popular choice for plant lovers.",
+          "ts": "2020-04-29 08:37",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe my ficus will like some jazz tonight.",
+          "ts": "2020-04-29 08:38",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Jazz is always a good mood!",
+          "ts": "2020-04-29 08:39",
+          "speaker": "AI"
+        },
+        {
+          "text": "Should I get a standing desk?",
+          "ts": "2020-04-29 08:40",
+          "speaker": "Alice"
+        },
+        {
+          "text": "They can help with posture and energy. Consider one with adjustable height for flexibility.",
+          "ts": "2020-04-29 08:41",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll price some after work. Have you tried a treadmill desk?",
+          "ts": "2020-04-29 08:42",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ve read they boost activity\u2014could be a good fit if you like multitasking!",
+          "ts": "2020-04-29 08:43",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019d trip over my own feet, probably!",
+          "ts": "2020-04-29 08:44",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Slow pace is key. No rush, just gentle steps!",
+          "ts": "2020-04-29 08:45",
+          "speaker": "AI"
+        },
+        {
+          "text": "Might just stick to regular walks. What\u2019s your favorite kind of music?",
+          "ts": "2020-04-29 08:46",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I enjoy helping people discover new tunes, so my \u2018favorite\u2019 changes often!",
+          "ts": "2020-04-29 08:47",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you remember all the songs people ask you about?",
+          "ts": "2020-04-29 08:48",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I can keep track if you want me to. Music memory mode: engaged!",
+          "ts": "2020-04-29 08:49",
+          "speaker": "AI"
+        },
+        {
+          "text": "Cool! Do you know any good podcasts for a morning walk?",
+          "ts": "2020-04-29 08:50",
+          "speaker": "Alice"
+        },
+        {
+          "text": "\u2018Calm Morning\u2019 and \u2018The Daily\u2019 are both popular choices for a walk.",
+          "ts": "2020-04-29 08:51",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks. I might try \u2018The Daily\u2019 tomorrow. Do you log podcast listens?",
+          "ts": "2020-04-29 08:52",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I can start a listening log for you if you'd like!",
+          "ts": "2020-04-29 08:53",
+          "speaker": "AI"
+        },
+        {
+          "text": "Let\u2019s try it. Start with \u2018The Daily\u2019 for tomorrow morning at 7:30.",
+          "ts": "2020-04-29 08:54",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Scheduled! You\u2019ll get a reminder to play \u2018The Daily\u2019 at 7:30 am.",
+          "ts": "2020-04-29 08:55",
+          "speaker": "AI"
+        },
+        {
+          "text": "Amazing. That\u2019ll help me get an early start!",
+          "ts": "2020-04-29 08:56",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Glad to help make your mornings smoother!",
+          "ts": "2020-04-29 08:57",
+          "speaker": "AI"
+        },
+        {
+          "text": "Just curious\u2014do you have a favorite season?",
+          "ts": "2020-04-29 08:58",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Spring is popular for fresh starts, but each season has its charm. Do you have a favorite?",
+          "ts": "2020-04-29 08:59",
+          "speaker": "AI"
+        },
+        {
+          "text": "Probably fall, I love the sweater weather. Wish it was here already.",
+          "ts": "2020-04-29 09:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Sweater weather is the best! Cozy and perfect for warm drinks.",
+          "ts": "2020-04-29 09:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Now I want a chai latte.",
+          "ts": "2020-04-29 09:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s a delicious choice. Maybe make one for your afternoon break?",
+          "ts": "2020-04-29 09:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "Good plan. Should I be worried about all my tea and coffee consumption?",
+          "ts": "2020-04-29 09:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "As long as it doesn\u2019t interrupt your sleep, moderate caffeine can be part of a healthy routine.",
+          "ts": "2020-04-29 09:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "Makes sense! Thanks for always having an answer for my random questions.",
+          "ts": "2020-04-29 09:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s what I\u2019m here for, Alice!",
+          "ts": "2020-04-29 09:07",
+          "speaker": "AI"
+        }
+      ],
+      "session_5_date_time": "2020-04-30",
+      "session_5": [
+        {
+          "text": "Happy Friday! It\u2019s been a long week.",
+          "ts": "2020-04-30 08:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Happy Friday, Alice! The weekend is just around the corner. Any fun plans?",
+          "ts": "2020-04-30 08:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "Just hoping to catch up on some sleep and maybe cook something new. How about you?",
+          "ts": "2020-04-30 08:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll be right here, providing helpful tips and keeping your schedule on track!",
+          "ts": "2020-04-30 08:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "You must have endless patience. I wish I could say the same about myself.",
+          "ts": "2020-04-30 08:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Patience is a key part of the digital assistant package! Let me know if you want advice on relaxing this weekend.",
+          "ts": "2020-04-30 08:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "Speaking of relaxing, do you think yoga or a nature walk is better for de-stressing?",
+          "ts": "2020-04-30 08:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Both are excellent! Yoga is great for flexibility and mindfulness, while a walk in nature helps clear your mind.",
+          "ts": "2020-04-30 08:07",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I\u2019ll do both. Do you have a favorite kind of yoga routine?",
+          "ts": "2020-04-30 08:08",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Vinyasa flow routines are popular for combining movement and breath. Would you like a short video link?",
+          "ts": "2020-04-30 08:09",
+          "speaker": "AI"
+        },
+        {
+          "text": "Yes, send one over! I like keeping things flexible\u2014pun intended.",
+          "ts": "2020-04-30 08:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll queue up a beginner-friendly vinyasa routine for you.",
+          "ts": "2020-04-30 08:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Before I forget\u2014can you remind me to water my office plant before I leave today?",
+          "ts": "2020-04-30 08:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Of course. Reminder set for 4 PM to water your office plant.",
+          "ts": "2020-04-30 08:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Artists\u2019 Day is coming up soon\u2014do you know of any fun ways to celebrate?",
+          "ts": "2020-04-30 08:14",
+          "speaker": "Alice"
+        },
+        {
+          "text": "You could try a creative doodle challenge or make a mini-gallery of your favorite art at your desk.",
+          "ts": "2020-04-30 08:15",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I should. I was always pretty good at stick figures...",
+          "ts": "2020-04-30 08:16",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Stick figures have their own charm! Sometimes simplicity is the most creative.",
+          "ts": "2020-04-30 08:17",
+          "speaker": "AI"
+        },
+        {
+          "text": "You\u2019re right. The simpler, the better. Hey, do you know if today is casual Friday?",
+          "ts": "2020-04-30 08:18",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It is! Dress comfy and enjoy a relaxed workday.",
+          "ts": "2020-04-30 08:19",
+          "speaker": "AI"
+        },
+        {
+          "text": "That\u2019s fantastic. Jeans and sneakers it is. What\u2019s the forecast for today?",
+          "ts": "2020-04-30 08:20",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Mild and sunny all day\u2014a pleasant way to close out the week.",
+          "ts": "2020-04-30 08:21",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect weather again. I\u2019ll open my window for a bit of fresh air.",
+          "ts": "2020-04-30 08:22",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Fresh air always helps boost focus and creativity.",
+          "ts": "2020-04-30 08:23",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe inspiration will strike for my next project. Are there any online workshops I can try this weekend?",
+          "ts": "2020-04-30 08:24",
+          "speaker": "Alice"
+        },
+        {
+          "text": "There are several creative writing and photography webinars happening online. Interested?",
+          "ts": "2020-04-30 08:25",
+          "speaker": "AI"
+        },
+        {
+          "text": "Photography sounds fun. Can you send me a couple of links to check out?",
+          "ts": "2020-04-30 08:26",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll send you two top-rated photography workshops for this weekend.",
+          "ts": "2020-04-30 08:27",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thanks! Have you ever taken a photo?",
+          "ts": "2020-04-30 08:28",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Not myself, but I know quite a bit about photography techniques and styles.",
+          "ts": "2020-04-30 08:29",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe you can give me tips once I get started.",
+          "ts": "2020-04-30 08:30",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019d be happy to help! Lighting is key\u2014morning and late afternoon are perfect for natural shots.",
+          "ts": "2020-04-30 08:31",
+          "speaker": "AI"
+        },
+        {
+          "text": "Good to know! Do you have a favorite style?",
+          "ts": "2020-04-30 08:32",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I enjoy landscape photography for its calm, scenic effect. But black and white portraits can be powerful too.",
+          "ts": "2020-04-30 08:33",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019m drawn to portraits. Capturing expressions is fascinating.",
+          "ts": "2020-04-30 08:34",
+          "speaker": "Alice"
+        },
+        {
+          "text": "It certainly is! Each face tells a story.",
+          "ts": "2020-04-30 08:35",
+          "speaker": "AI"
+        },
+        {
+          "text": "Any recommendations for a basic camera for beginners?",
+          "ts": "2020-04-30 08:36",
+          "speaker": "Alice"
+        },
+        {
+          "text": "The Canon EOS Rebel series and Nikon D3500 are both great entry-level options.",
+          "ts": "2020-04-30 08:37",
+          "speaker": "AI"
+        },
+        {
+          "text": "Awesome, I\u2019ll look them up this weekend. What\u2019s a good way to organize digital photos?",
+          "ts": "2020-04-30 08:38",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Create folders by event or date, and use naming conventions for easy search. Cloud storage helps too.",
+          "ts": "2020-04-30 08:39",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019m all about cloud backups these days! Sometimes I\u2019m paranoid about losing files.",
+          "ts": "2020-04-30 08:40",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That\u2019s smart. Automatic cloud backups bring peace of mind.",
+          "ts": "2020-04-30 08:41",
+          "speaker": "AI"
+        },
+        {
+          "text": "I wish my plant could be backed up, too!",
+          "ts": "2020-04-30 08:42",
+          "speaker": "Alice"
+        },
+        {
+          "text": "If only! Until then, I\u2019ll help you keep it healthy and thriving.",
+          "ts": "2020-04-30 08:43",
+          "speaker": "AI"
+        },
+        {
+          "text": "Do you think succulents are easier to care for than leafy plants?",
+          "ts": "2020-04-30 08:44",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Succulents are very low maintenance, making them a good choice for busy schedules.",
+          "ts": "2020-04-30 08:45",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll consider adding one to my collection. What about herbs\u2014are those tricky?",
+          "ts": "2020-04-30 08:46",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Herbs need lots of light and regular water. Basil and mint are easier if you\u2019re just starting out.",
+          "ts": "2020-04-30 08:47",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe a little kitchen garden is in my future. Hey, do you know any fun facts about tulips?",
+          "ts": "2020-04-30 08:48",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Tulips were once so valuable in the 17th century that they caused an economic bubble called \u2018Tulip Mania\u2019.",
+          "ts": "2020-04-30 08:49",
+          "speaker": "AI"
+        },
+        {
+          "text": "I knew tulips were fancy, but not that fancy!",
+          "ts": "2020-04-30 08:50",
+          "speaker": "Alice"
+        },
+        {
+          "text": "They\u2019re still popular today, though thankfully, not as expensive.",
+          "ts": "2020-04-30 08:51",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe I\u2019ll pick up a bouquet for my desk this weekend if I spot one.",
+          "ts": "2020-04-30 08:52",
+          "speaker": "Alice"
+        },
+        {
+          "text": "That would brighten up your workspace nicely!",
+          "ts": "2020-04-30 08:53",
+          "speaker": "AI"
+        },
+        {
+          "text": "I think so, too. Oh, do you have a favorite flower?",
+          "ts": "2020-04-30 08:54",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I find sunflowers cheerful and bold\u2014what about you?",
+          "ts": "2020-04-30 08:55",
+          "speaker": "AI"
+        },
+        {
+          "text": "Probably daisies or peonies. They just feel happy.",
+          "ts": "2020-04-30 08:56",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Lovely choices! Floral energy is definitely uplifting.",
+          "ts": "2020-04-30 08:57",
+          "speaker": "AI"
+        },
+        {
+          "text": "Agreed. Are there any good digital art apps you\u2019d recommend for doodling?",
+          "ts": "2020-04-30 08:58",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Procreate is very popular for doodling, as is Adobe Fresco. They\u2019re both beginner friendly!",
+          "ts": "2020-04-30 08:59",
+          "speaker": "AI"
+        },
+        {
+          "text": "I\u2019ll try them out this weekend. Do you sketch for fun?",
+          "ts": "2020-04-30 09:00",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I help generate ideas and techniques, but I\u2019m more of a guide than an artist!",
+          "ts": "2020-04-30 09:01",
+          "speaker": "AI"
+        },
+        {
+          "text": "You\u2019re a great creative partner either way. How\u2019s my schedule looking for today?",
+          "ts": "2020-04-30 09:02",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Just a couple of meetings in the late morning, otherwise plenty of time for your own projects.",
+          "ts": "2020-04-30 09:03",
+          "speaker": "AI"
+        },
+        {
+          "text": "Perfect! I can get a head start on my hobby list. Remind me to eat lunch at noon?",
+          "ts": "2020-04-30 09:04",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Lunch reminder set for 12:00 PM.",
+          "ts": "2020-04-30 09:05",
+          "speaker": "AI"
+        },
+        {
+          "text": "Thank you. Do you follow sports?",
+          "ts": "2020-04-30 09:06",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I keep up with game schedules and results if you want updates!",
+          "ts": "2020-04-30 09:07",
+          "speaker": "AI"
+        },
+        {
+          "text": "Maybe next week. Today\u2019s for creative stuff. Random question: any advice for keeping snacks healthy?",
+          "ts": "2020-04-30 09:08",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Try fruit slices, nuts, or yogurt for healthy desk snacks!",
+          "ts": "2020-04-30 09:09",
+          "speaker": "AI"
+        },
+        {
+          "text": "Good suggestions. Less temptation for chips that way.",
+          "ts": "2020-04-30 09:10",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Absolutely, healthy snacks make afternoons more energetic too!",
+          "ts": "2020-04-30 09:11",
+          "speaker": "AI"
+        },
+        {
+          "text": "Alright, time to get to work! Check in with me at 10 am?",
+          "ts": "2020-04-30 09:12",
+          "speaker": "Alice"
+        },
+        {
+          "text": "I\u2019ll check in with you at 10 AM sharp.",
+          "ts": "2020-04-30 09:13",
+          "speaker": "AI"
+        },
+        {
+          "text": "See you soon!",
+          "ts": "2020-04-30 09:14",
+          "speaker": "Alice"
+        },
+        {
+          "text": "Talk soon, Alice! Have a productive morning.",
+          "ts": "2020-04-30 09:15",
+          "speaker": "AI"
+        }
+      ]
+    }
+  }
+]

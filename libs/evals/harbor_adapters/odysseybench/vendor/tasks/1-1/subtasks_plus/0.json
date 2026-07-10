@@ -1,0 +1,22 @@
+{
+    "username": "Bob",
+    "date": "2020-05-01",
+    "weekday": "Friday",
+    "time": "10:00 AM",
+    "task": "Add a meeting to Bob's calendar at 5/17/2024 10:30 a.m to 11:00 a.m",
+    "evaluation": [
+        {
+            "function": "evaluate_contain",
+            "args": {
+                "doc_type": "ics",
+                "file": "./calendar/Bob.ics",
+                "keywords": [
+                    "DTSTART:20240517T103000",
+                    "Meeting",
+                    "DTEND:20240517T110000"
+                ]
+            }
+        }
+    ],
+    "query_sentence": "Add the meeting to Bob's calendar."
+}

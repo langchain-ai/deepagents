@@ -17,9 +17,10 @@ non-numeric; or (when ``--expected-shards`` is given) fewer shards reported than
 expected. Legitimately-empty shards (task-filtered slices) no-op successfully
 and are not treated as losses.
 
-A trial is a pass only when its verifier reward is >= PASS_THRESHOLD *and* the
-trial did not error. Errored, timed-out, or missing-verifier trials count as
-failures; ``passed`` and ``errored`` are mutually exclusive tallies.
+A trial is a pass when its verifier reward is >= PASS_THRESHOLD. ``errored`` is
+an independent diagnostic tally: a Harbor result that records ``exception_info``
+and a verifier-passing reward counts as both passed and errored. Missing or
+non-numeric verifier rewards are not passes and are counted as errored.
 
 Aggregation is single-model on purpose: a run is one model's evaluation of one
 dataset (a "category" in the wider harness). If results from more than one model
@@ -166,8 +167,9 @@ def aggregate(root: Path) -> Aggregation:
 
     Per-trial results carry a ``task_name``; the job-level ``result.json`` does
     not, so it is skipped silently (it is expected, not a loss). Files that
-    cannot be read/parsed are counted in ``skipped_files``. ``passed`` and
-    ``errored`` are mutually exclusive: an errored trial never counts as a pass.
+    cannot be read/parsed are counted in ``skipped_files``. ``passed`` follows
+    the verifier reward, while ``errored`` separately tracks exception or
+    missing-reward diagnostics.
     """
     models: set[str] = set()
     job_ids: set[str] = set()
@@ -203,10 +205,9 @@ def aggregate(root: Path) -> Aggregation:
         stats["trials"] += 1
         if trial_errored(result):
             stats["errored"] += 1
-        else:
-            reward = trial_reward(result)
-            if reward is not None and reward >= PASS_THRESHOLD:
-                stats["passed"] += 1
+        reward = trial_reward(result)
+        if reward is not None and reward >= PASS_THRESHOLD:
+            stats["passed"] += 1
 
     return Aggregation(models, job_ids, dict(by_task), skipped_files, malformed_rewards)
 

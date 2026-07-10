@@ -226,9 +226,9 @@ def test_non_numeric_reward_is_malformed_and_flags_incomplete(tmp_path: Path):
     assert summary["incomplete"] is True
 
 
-def test_errored_trial_with_reward_is_not_double_counted(tmp_path: Path):
-    # exception_info present AND a passing reward: errored wins, never a pass, so
-    # passed + errored can never exceed trials.
+def test_errored_trial_with_reward_counts_as_pass_and_error(tmp_path: Path):
+    # exception_info is diagnostic. A trial can still pass when Harbor records a
+    # verifier-passing reward alongside the exception.
     dirpath = tmp_path / "t__0"
     dirpath.mkdir()
     (dirpath / "result.json").write_text(
@@ -242,7 +242,7 @@ def test_errored_trial_with_reward_is_not_double_counted(tmp_path: Path):
         )
     )
     by_task = agg.aggregate(tmp_path).by_task
-    assert by_task["taskA"] == {"trials": 1, "passed": 0, "errored": 1}
+    assert by_task["taskA"] == {"trials": 1, "passed": 1, "errored": 1}
 
 
 def test_missing_config_is_handled_gracefully(tmp_path: Path):

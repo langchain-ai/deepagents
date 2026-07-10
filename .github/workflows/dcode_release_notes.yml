@@ -1,8 +1,13 @@
 # Draft and apply curated release notes for ready deepagents-code release PRs.
-# The drafting agent runs from a trusted main checkout with no repository-write
-# token. A dedicated bot token performs the curated-notes comments, PR-body
-# updates, and the non-force push to the release-please branch. (The validate
-# job's permission/readiness feedback comments use the default GITHUB_TOKEN.)
+# The drafting agent and all helper scripts run from a trusted `main` checkout
+# (`trusted-source`) with no repository-write token. The release PR head is also
+# checked out (`release-pr`), but that content is untrusted: it is only ever fed to
+# the agent as data (framed as untrusted source material) or edited via the trusted
+# scripts, never executed — which is why the agent runs with the shell/interpreter/
+# MCP/network all disabled (see the shell_allow_list note below). A dedicated bot
+# token performs the curated-notes comments, PR-body updates, and the non-force push
+# to the release-please branch. (The validate job's permission/readiness feedback
+# comments use the default GITHUB_TOKEN.)
 
 name: "📝 Curate dcode release notes"
 
@@ -23,11 +28,16 @@ jobs:
   validate:
     name: Validate release-notes command
     # Skip the noise: run only for ready_for_review PR events, or PR comments that
-    # mention the bot. commandFromComment still re-validates the exact command, so
-    # this filter can only drop comments that could never have triggered an action.
+    # mention the bot AND come from a repo insider. The author_association filter
+    # stops an external drive-by mention from spawning a run (Actions-minute burn)
+    # and mirrors the in-script FEEDBACK_ASSOCIATIONS gate; validateTrigger still
+    # re-checks the exact command and write permission, so this only drops comments
+    # that could never have triggered an action.
     if: >-
       github.event_name == 'pull_request_target' ||
-      (github.event.issue.pull_request && contains(github.event.comment.body, '@dcode-release-bot'))
+      (github.event.issue.pull_request &&
+        contains(github.event.comment.body, '@dcode-release-bot') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -52,10 +62,19 @@ jobs:
       - name: Validate event, PR, and maintainer permission
         id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
           script: |
             const { validateTrigger } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
-            const result = await validateTrigger({ github, context, core });
+            const result = await validateTrigger({
+              github,
+              context,
+              core,
+              botLogin: process.env.BOT_LOGIN,
+              botId: process.env.BOT_ID,
+            });
             core.setOutput('should-run', String(result.shouldRun === true));
             for (const key of ['command', 'number', 'version', 'head', 'branch']) {
               core.setOutput(key, result[key] ?? '');
@@ -72,6 +91,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout trusted automation
+        id: checkout-trusted
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: main
@@ -79,6 +99,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout exact release PR head
+        id: checkout-head
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.validate.outputs.head }}
@@ -188,13 +209,22 @@ jobs:
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
           POST_ERROR: ${{ steps.post.outputs.error }}
           AGENT_OUTCOME: ${{ steps.agent.outcome }}
+          CHECKOUT_TRUSTED_OUTCOME: ${{ steps.checkout-trusted.outcome }}
+          CHECKOUT_HEAD_OUTCOME: ${{ steps.checkout-head.outcome }}
         with:
           github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
           script: |
             const { postDraftFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            // Prefer a captured error; otherwise attribute the failure to the actual
+            // failing step. A failed release-PR-head checkout leaves prepare/agent
+            // "skipped", so without this the message would misblame the agent.
             const details = process.env.PREPARE_ERROR
               || process.env.POST_ERROR
-              || `The drafting agent step did not succeed (outcome: ${process.env.AGENT_OUTCOME || 'skipped'}); see the workflow logs.`;
+              || (process.env.CHECKOUT_TRUSTED_OUTCOME !== 'success'
+                ? 'Checking out the trusted automation failed; see the workflow logs.'
+                : process.env.CHECKOUT_HEAD_OUTCOME !== 'success'
+                  ? 'Checking out the release PR head failed; see the workflow logs.'
+                  : `The drafting agent step did not succeed (outcome: ${process.env.AGENT_OUTCOME || 'skipped'}); see the workflow logs.`);
             await postDraftFailure({
               github,
               ...context.repo,
@@ -278,9 +308,15 @@ jobs:
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         run: |
           set -euo pipefail
+          # Backstop the symlink guard: prepareApply already refuses to write through
+          # a symlinked changelog in the untrusted checkout (fs.lstatSync), but this
+          # rejects it here too so a link can never reach `git add`/the commit.
           test ! -L libs/code/CHANGELOG.md
           git add -- libs/code/CHANGELOG.md
 
+          # The apply commit must touch ONLY the curated changelog. Fail if anything
+          # else in the untrusted checkout is dirty, so unrelated changes can't be
+          # smuggled into the commit that gets pushed to the release branch.
           UNEXPECTED=$(git status --porcelain | grep -vE '^M  libs/code/CHANGELOG.md$' || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::Unexpected working-tree changes while applying release notes:"

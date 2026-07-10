@@ -16,7 +16,18 @@ const CONTENT_END = '<!-- dcode-release-notes-content-end -->';
 const STALE_MARKER = '<!-- dcode-release-notes-stale';
 const FAILURE_MARKER = '<!-- dcode-release-notes-draft-failure';
 const APPLY_FAILURE_MARKER = '<!-- dcode-release-notes-apply-failure';
+// The PR-body preview section ends at release-please's pull-request-footer line
+// (see release-please-config.json). sectionRange requires exactly one terminator,
+// so if that footer text ever changes this parsing fails closed (blocks the merge
+// gate) rather than mis-applying — keep this in lockstep with the config.
+const PREVIEW_TERMINATOR = '\n_End release notes preview._';
 const PERMITTED_ROLES = new Set(['admin', 'maintain', 'write']);
+// Who may receive a manual-command feedback reply. Gating replies on the comment's
+// author_association (a field already in the event payload, no API call) stops an
+// external drive-by `@dcode-release-bot` mention from amplifying into a bot comment
+// on any PR. This is only about *feedback*; the privileged draft/apply jobs still
+// re-check write permission via getCollaboratorPermissionLevel before mutating.
+const FEEDBACK_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 // These field sets are a strict, bidirectional contract with overrideBody/
 // appliedBody: parseMetadata rejects a comment missing any listed field or
@@ -130,7 +141,7 @@ function extractVersionSection(document, version) {
 }
 
 function extractPreviewSection(document, version) {
-  const { text, start, end } = sectionRange(document, version, '\n_End release notes preview._');
+  const { text, start, end } = sectionRange(document, version, PREVIEW_TERMINATOR);
   return canonical(text.slice(start, end));
 }
 
@@ -146,7 +157,7 @@ function replaceVersionSection(document, version, replacement) {
 }
 
 function replacePreviewSection(document, version, replacement) {
-  return replaceSection(document, version, replacement, '\n_End release notes preview._');
+  return replaceSection(document, version, replacement, PREVIEW_TERMINATOR);
 }
 
 // Intentionally strict, fail-closed parser: the body must start at byte 0 with
@@ -184,12 +195,16 @@ function parseOverrideComment(comment) {
   try {
     const extracted = extractVersionSection(section, parsed.metadata.version);
     if (canonical(extracted) !== section) return null;
-  } catch {
-    // Intentional fail-closed: the only expected throw is extractVersionSection's
-    // "exactly one section" error on a malformed override body. Reclassify any
-    // parse failure as "not a valid override" (null) so the gate blocks rather
-    // than trusts unvalidated content.
-    return null;
+  } catch (error) {
+    // Fail-closed on the ONE expected throw — extractVersionSection's "exactly one
+    // section" error on a malformed override body — by reclassifying it to null so
+    // the gate blocks unvalidated content. Re-throw anything else (a future
+    // refactor's TypeError, say) so a genuine regression is loud instead of
+    // silently swallowed into a fail-closed null.
+    if (error instanceof Error && /Expected exactly one release-notes section/.test(error.message)) {
+      return null;
+    }
+    throw error;
   }
   return { comment, metadata: parsed.metadata, section };
 }
@@ -210,31 +225,39 @@ function latest(items) {
   return [...items].sort((left, right) => Number(right.comment.id) - Number(left.comment.id))[0] ?? null;
 }
 
-function latestOverride(comments, login, id, version) {
+function latestParsed(comments, login, id, version, parse) {
   return latest(
     comments
       .filter(comment => matchesBot(comment, login, id))
-      .map(parseOverrideComment)
+      .map(parse)
       .filter(Boolean)
       .filter(item => item.metadata.package === PACKAGE && item.metadata.version === version),
   );
+}
+
+function latestOverride(comments, login, id, version) {
+  return latestParsed(comments, login, id, version, parseOverrideComment);
 }
 
 function latestApplied(comments, login, id, version) {
-  return latest(
-    comments
-      .filter(comment => matchesBot(comment, login, id))
-      .map(parseAppliedComment)
-      .filter(Boolean)
-      .filter(item => item.metadata.package === PACKAGE && item.metadata.version === version),
-  );
+  return latestParsed(comments, login, id, version, parseAppliedComment);
 }
 
-function commandFromComment(body) {
+// Distinguish "no command" from "ambiguous" (2+ commands) so the caller can stay
+// silent on a casual mention but explain a genuinely ambiguous one. Refusing to
+// guess between two commands is deliberate; the bot's own instructions mention
+// both `draft` and `apply`, so a quote-reply can legitimately contain two.
+function parseCommand(body) {
   const mention = escapeRegex(COMMAND_MENTION);
   const pattern = new RegExp(`(?:^|[^A-Za-z0-9_-])${mention}\\s+(draft|apply)\\b`, 'g');
   const commands = [...normalize(body ?? '').matchAll(pattern)].map(match => match[1]);
-  return commands.length === 1 ? commands[0] : null;
+  if (commands.length === 0) return { command: null, ambiguous: false };
+  if (commands.length > 1) return { command: null, ambiguous: true };
+  return { command: commands[0], ambiguous: false };
+}
+
+function commandFromComment(body) {
+  return parseCommand(body).command;
 }
 
 function overrideBody({ version, head, headingHash, fingerprint, section }) {
@@ -326,20 +349,42 @@ async function getPr(github, owner, repo, number) {
   return response.data;
 }
 
-async function validateTrigger({ github, context, core }) {
+async function validateTrigger({ github, context, core, botLogin = null, botId = null }) {
   const { owner, repo } = context.repo;
   const event = context.eventName;
   let command;
   let number;
   let automatic = false;
+  // Automatic ready_for_review fires on every PR, so it must never comment on
+  // unrelated PRs; manual replies go only to repo insiders (see below).
+  let canNotify = false;
 
   if (event === 'pull_request_target' && context.payload.action === 'ready_for_review') {
     command = 'draft';
     number = context.payload.pull_request.number;
     automatic = true;
   } else if (event === 'issue_comment' && context.payload.action === 'created') {
-    command = commandFromComment(context.payload.comment?.body);
-    if (!command || !context.payload.issue?.pull_request) return { shouldRun: false };
+    const comment = context.payload.comment;
+    if (botLogin && botId && matchesBot(comment, botLogin, botId)) return { shouldRun: false };
+    if (!context.payload.issue?.pull_request) return { shouldRun: false };
+    canNotify = FEEDBACK_ASSOCIATIONS.has(comment?.author_association);
+    const parsed = parseCommand(comment?.body);
+    if (parsed.ambiguous) {
+      // Unambiguous intent can't be recovered from two commands in one comment.
+      // Tell insiders how to fix it rather than dropping it silently.
+      if (canNotify) {
+        await createComment(
+          github,
+          owner,
+          repo,
+          context.payload.issue.number,
+          `Issue exactly one \`${COMMAND_MENTION}\` command (\`draft\` or \`apply\`) per comment.`,
+        );
+      }
+      return { shouldRun: false };
+    }
+    if (!parsed.command) return { shouldRun: false };
+    command = parsed.command;
     number = context.payload.issue.number;
   } else {
     return { shouldRun: false };
@@ -347,10 +392,9 @@ async function validateTrigger({ github, context, core }) {
 
   const pr = await getPr(github, owner, repo, number);
   if (!isReleasePr(pr)) {
-    // An explicit command on some other PR gets a short explanation instead of a
-    // silent no-op. Automatic ready_for_review fires on every PR, so stay quiet
-    // there to avoid commenting on unrelated PRs.
-    if (!automatic) {
+    // An explicit command from an insider on some other PR gets a short
+    // explanation instead of a silent no-op.
+    if (canNotify) {
       await createComment(
         github,
         owner,
@@ -363,7 +407,7 @@ async function validateTrigger({ github, context, core }) {
   }
 
   if (pr.draft) {
-    if (!automatic) {
+    if (canNotify) {
       await createComment(
         github,
         owner,
@@ -380,13 +424,15 @@ async function validateTrigger({ github, context, core }) {
     const response = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: actor });
     const permission = response.data.user?.permissions?.admin ? 'admin' : response.data.permission;
     if (!PERMITTED_ROLES.has(permission)) {
-      await createComment(
-        github,
-        owner,
-        repo,
-        number,
-        `Only release maintainers with write access can run \`${COMMAND_MENTION} ${command}\`.`,
-      );
+      if (canNotify) {
+        await createComment(
+          github,
+          owner,
+          repo,
+          number,
+          `Only release maintainers with write access can run \`${COMMAND_MENTION} ${command}\`.`,
+        );
+      }
       return { shouldRun: false };
     }
   }
@@ -413,13 +459,22 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, workspa
     throw new Error('Release PR changed before drafting started; re-run the draft command');
   }
   const version = releaseVersion(pr.title);
-  const changelog = fs.readFileSync(path.join(workspace, CHANGELOG_PATH), 'utf8');
+  const changelogFile = path.join(workspace, CHANGELOG_PATH);
+  // The changelog lives in the untrusted release-PR checkout; reject a symlink so
+  // fs.readFileSync can't follow a link outside the workspace.
+  if (fs.lstatSync(changelogFile).isSymbolicLink()) {
+    throw new Error(`${CHANGELOG_PATH} is a symlink; refusing to read curated release-note source through it`);
+  }
+  const changelog = fs.readFileSync(changelogFile, 'utf8');
   const section = extractVersionSection(changelog, version);
   const fingerprint = sha256(section);
   const work = fs.mkdtempSync(path.join(runnerTemp, 'dcode-release-notes-'));
   const input = path.join(work, 'input.md');
   const output = path.join(work, 'output.md');
-  const state = path.join(work, 'draft-state.json');
+  // Keep the trusted draft state OUTSIDE `work`, the agent's writable working
+  // directory. The agent writes only output.md inside `work`; it must not be able
+  // to overwrite the state postDraft re-validates the PR/head/version against.
+  const state = path.join(runnerTemp, 'dcode-draft-state.json');
   fs.writeFileSync(
     input,
     [
@@ -475,36 +530,34 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, login, id
   });
 }
 
-async function postDraftFailure({ github, owner, repo, number, head, login, id, message }) {
+// Post a bot-authored failure notice once per PR head (deduped by the head-scoped
+// marker) and only under the configured bot identity, so a draft/apply failure
+// surfaces its reason on the PR instead of only as a red Actions run.
+async function postFailure({ github, owner, repo, number, head, login, id, message, markerBase, headline, remediation }) {
   await authenticatedBot(github, login, id);
-  const marker = `${FAILURE_MARKER}\nhead: ${head}\n-->`;
-  const body = [
-    marker,
-    'Automatic release-note drafting failed.',
-    '',
-    `Resolve the workflow failure, then run \`${COMMAND_MENTION} draft\` again.`,
-    '',
-    `Details: ${message}`,
-  ].join('\n');
+  const marker = `${markerBase}\nhead: ${head}\n-->`;
+  const body = [marker, headline, '', remediation, '', `Details: ${message}`].join('\n');
   const comments = await listComments(github, owner, repo, number);
   const existing = comments.find(comment => matchesBot(comment, login, id) && (comment.body ?? '').startsWith(marker));
   if (!existing) await createComment(github, owner, repo, number, body);
 }
 
+async function postDraftFailure({ github, owner, repo, number, head, login, id, message }) {
+  return postFailure({
+    github, owner, repo, number, head, login, id, message,
+    markerBase: FAILURE_MARKER,
+    headline: 'Automatic release-note drafting failed.',
+    remediation: 'Resolve the workflow failure, then have a release maintainer request another draft run.',
+  });
+}
+
 async function postApplyFailure({ github, owner, repo, number, head, login, id, message }) {
-  await authenticatedBot(github, login, id);
-  const marker = `${APPLY_FAILURE_MARKER}\nhead: ${head}\n-->`;
-  const body = [
-    marker,
-    'Applying curated release notes failed.',
-    '',
-    `Resolve the issue below, then run \`${COMMAND_MENTION} apply\` again (run \`${COMMAND_MENTION} draft\` first if the changelog changed).`,
-    '',
-    `Details: ${message}`,
-  ].join('\n');
-  const comments = await listComments(github, owner, repo, number);
-  const existing = comments.find(comment => matchesBot(comment, login, id) && (comment.body ?? '').startsWith(marker));
-  if (!existing) await createComment(github, owner, repo, number, body);
+  return postFailure({
+    github, owner, repo, number, head, login, id, message,
+    markerBase: APPLY_FAILURE_MARKER,
+    headline: 'Applying curated release notes failed.',
+    remediation: `Resolve the issue below, then run \`${COMMAND_MENTION} apply\` again (run \`${COMMAND_MENTION} draft\` first if the changelog changed).`,
+  });
 }
 
 async function prepareApply({ github, owner, repo, number, expectedHead, workspace, stateFile, login, id }) {
@@ -520,6 +573,13 @@ async function prepareApply({ github, owner, repo, number, expectedHead, workspa
   if (!override.comment.updated_at) throw new Error('Curated release-note draft is missing its GitHub revision');
 
   const changelogFile = path.join(workspace, CHANGELOG_PATH);
+  // The changelog lives in the untrusted release-PR checkout. Reject a symlink
+  // before reading or writing so fs.*Sync can't follow a link outside the
+  // workspace. The apply-commit shell step's `test ! -L` is a post-write backstop;
+  // this is the pre-write gate.
+  if (fs.lstatSync(changelogFile).isSymbolicLink()) {
+    throw new Error(`${CHANGELOG_PATH} is a symlink; refusing to curate release notes through it`);
+  }
   const changelog = fs.readFileSync(changelogFile, 'utf8');
   const currentSection = extractVersionSection(changelog, version);
   const currentHeading = currentSection.split('\n')[0];
@@ -665,14 +725,18 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
     .filter(Boolean)
     .sort();
   const labels = labelNames(pr);
+  // True when a freshly re-read PR differs from the `pr` snapshot on any field the
+  // gate relies on. Used both for the draft/bypass early-out and the final TOCTOU
+  // re-read, so a mid-check edit can't slip past a stale snapshot.
+  const prSnapshotChanged = live =>
+    live.head.sha !== pr.head.sha ||
+    live.body !== pr.body ||
+    live.draft !== pr.draft ||
+    live.title !== pr.title ||
+    JSON.stringify(labelNames(live)) !== JSON.stringify(labels);
   if (pr.draft || labels.includes(BYPASS_LABEL)) {
     const live = await getPr(github, owner, repo, number);
-    const unchanged = live.head.sha === pr.head.sha &&
-      live.body === pr.body &&
-      live.draft === pr.draft &&
-      live.title === pr.title &&
-      JSON.stringify(labelNames(live)) === JSON.stringify(labels);
-    if (!unchanged) {
+    if (prSnapshotChanged(live)) {
       core.setFailed('The release PR changed while the curated-notes check was running');
       return { status: 'changed' };
     }
@@ -696,18 +760,16 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const currentSection = extractVersionSection(changelog, version);
   const currentFingerprint = sha256(currentSection);
-  if (!applied) {
+  // Warn (idempotently; deduped by head+fingerprint) when the changelog has moved
+  // away from the curated override. Same condition and args at both call sites: the
+  // pre-applied miss and the post-applied mismatch below.
+  const maybeWarnNewEntries = async () => {
     if (currentSection !== override.section && currentFingerprint !== override.metadata['changelog-fingerprint']) {
-      await warnForNewEntries({
-        github,
-        owner,
-        repo,
-        number,
-        comments,
-        head: pr.head.sha,
-        fingerprint: currentFingerprint,
-      });
+      await warnForNewEntries({ github, owner, repo, number, comments, head: pr.head.sha, fingerprint: currentFingerprint });
     }
+  };
+  if (!applied) {
+    await maybeWarnNewEntries();
     core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
     return { status: 'missing' };
   }
@@ -736,17 +798,7 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
     failures.push('the applied commit is not an ancestor of the current release PR head');
   }
 
-  if (currentSection !== override.section && currentFingerprint !== override.metadata['changelog-fingerprint']) {
-    await warnForNewEntries({
-      github,
-      owner,
-      repo,
-      number,
-      comments,
-      head: pr.head.sha,
-      fingerprint: currentFingerprint,
-    });
-  }
+  await maybeWarnNewEntries();
 
   // TOCTOU guard: after all comparisons, re-read the PR and its comments and fail
   // if anything moved while the check ran, so a mid-check edit can't slip past a
@@ -755,13 +807,7 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
     getPr(github, owner, repo, number),
     listComments(github, owner, repo, number),
   ]);
-  if (
-    live.head.sha !== pr.head.sha ||
-    live.body !== pr.body ||
-    live.draft !== pr.draft ||
-    live.title !== pr.title ||
-    JSON.stringify(labelNames(live)) !== JSON.stringify(labels)
-  ) {
+  if (prSnapshotChanged(live)) {
     failures.push('the release PR changed while the curated-notes check was running');
   }
   const liveOverride = latestOverride(liveComments, login, id, version);

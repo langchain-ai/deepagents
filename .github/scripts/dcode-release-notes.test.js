@@ -225,7 +225,9 @@ test('manual commands require write permission and ready status', async () => {
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot apply', user: { login: 'reader' } },
+      // A read-access collaborator: an insider (so feedback is allowed) who still
+      // lacks the write permission the command requires.
+      comment: { body: '@dcode-release-bot apply', user: { login: 'reader' }, author_association: 'COLLABORATOR' },
     },
   };
   const denied = makeGithub({ permission: 'read' });
@@ -235,6 +237,28 @@ test('manual commands require write permission and ready status', async () => {
   const draft = makeGithub({ pr: releasePr({ draft: true }) });
   assert.equal((await releaseNotes.validateTrigger({ github: draft.github, context, core: makeCore() })).shouldRun, false);
   assert.match(draft.calls.createComment[0].body, /ready for review/);
+});
+
+test('manual commands ignore comments authored by the configured bot', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@dcode-release-bot draft', user: BOT },
+    },
+  };
+  const run = makeGithub({ permission: 'write' });
+  const result = await releaseNotes.validateTrigger({
+    github: run.github,
+    context,
+    core: makeCore(),
+    botLogin: BOT.login,
+    botId: BOT.id,
+  });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
 });
 
 test('ready_for_review automatically validates as draft command', async () => {
@@ -703,6 +727,18 @@ test('postApplyFailure posts once per head and requires the configured bot', asy
   assert.equal(wrong.calls.createComment.length, 0);
 });
 
+test('postDraftFailure posts non-command failure guidance once per head', async () => {
+  const run = makeGithub({ comments: [] });
+  await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, login: BOT.login, id: BOT.id, message: 'boom' });
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Automatic release-note drafting failed/);
+  assert.match(run.calls.createComment[0].body, /boom/);
+  assert.equal(releaseNotes.commandFromComment(run.calls.createComment[0].body), null);
+  // Dedup: a second failure for the same head does not add another comment.
+  await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, login: BOT.login, id: BOT.id, message: 'boom again' });
+  assert.equal(run.calls.createComment.length, 1);
+});
+
 test('manual commands run for maintainers and admins', async () => {
   const context = {
     eventName: 'issue_comment',
@@ -731,7 +767,7 @@ test('an explicit command on a non-release PR is explained, not silently ignored
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' } },
+      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
     },
   };
   const run = makeGithub({ pr: releasePr({ title: 'feat: something else' }) });
@@ -805,5 +841,133 @@ test('required check surfaces an unreadable changelog', async () => {
   await assert.rejects(
     releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: makeCore(), number: 123, login: BOT.login, id: BOT.id }),
     /Could not read/,
+  );
+});
+
+test('rejects a fork PR whose head branch mimics the release branch', () => {
+  // Fork PR: head and base are DIFFERENT repos but the head branch name matches the
+  // release branch. The headRepository === baseRepository guard must reject it so a
+  // fork can never be treated as the trusted internal release PR.
+  const fork = releasePr({
+    head: { ref: releaseNotes.RELEASE_BRANCH, sha: HEAD, repo: { full_name: 'attacker/deepagents' } },
+    base: { ref: 'main', repo: { full_name: 'langchain-ai/deepagents' } },
+  });
+  assert.equal(releaseNotes.isReleaseBranchPr(fork), false);
+  assert.equal(releaseNotes.isReleasePr(fork), false);
+  // The same-repo release PR still passes, so the guard isn't over-broad.
+  assert.equal(releaseNotes.isReleaseBranchPr(releasePr()), true);
+});
+
+test('rejects a bot impostor in both identity directions', () => {
+  // Right id, wrong login: a renamed/cloned account must not impersonate the bot.
+  const rightIdWrongLogin = { ...overrideComment({ id: 12 }), user: { login: 'evil-clone', id: BOT.id } };
+  assert.equal(releaseNotes.latestOverride([rightIdWrongLogin], BOT.login, BOT.id, VERSION), null);
+  // Right login, wrong id: a reused login must not impersonate the bot either.
+  const rightLoginWrongId = { ...overrideComment({ id: 13 }), user: { login: BOT.login, id: 999 } };
+  assert.equal(releaseNotes.latestOverride([rightLoginWrongId], BOT.login, BOT.id, VERSION), null);
+});
+
+test('parseOverrideComment enforces the content-marker boundary', () => {
+  const valid = overrideComment();
+  assert.ok(releaseNotes.parseOverrideComment(valid));
+
+  // No content markers at all.
+  const noMarkers = {
+    ...valid,
+    body: valid.body.replace(releaseNotes.CONTENT_START, '').replace(releaseNotes.CONTENT_END, ''),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(noMarkers), null);
+
+  // End marker positioned before the start marker (end <= start).
+  const reversed = {
+    ...valid,
+    body: valid.body
+      .replace(releaseNotes.CONTENT_START, '__PLACEHOLDER__')
+      .replace(releaseNotes.CONTENT_END, releaseNotes.CONTENT_START)
+      .replace('__PLACEHOLDER__', releaseNotes.CONTENT_END),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(reversed), null);
+
+  // Two version headings inside the content — exercises the fail-closed catch.
+  const twoHeadings = {
+    ...valid,
+    body: valid.body.replace(CURATED_SECTION.trimEnd(), `${CURATED_SECTION.trimEnd()}\n\n${CURATED_SECTION.trimEnd()}`),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(twoHeadings), null);
+
+  // Text smuggled before the version heading inside the markers — the round-trip
+  // guard (canonical(extracted) !== section) must reject content the heading omits.
+  const smuggled = {
+    ...valid,
+    body: valid.body.replace(
+      `${releaseNotes.CONTENT_START}\n`,
+      `${releaseNotes.CONTENT_START}\nSMUGGLED PREAMBLE\n`,
+    ),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(smuggled), null);
+});
+
+test('an ambiguous two-command comment from an insider is explained, not dropped', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@dcode-release-bot draft and then @dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub();
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /exactly one/);
+});
+
+test('an external comment never amplifies into a bot reply', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      // A drive-by outsider (association NONE) issuing a valid-looking command.
+      comment: { body: '@dcode-release-bot apply', user: { login: 'drive-by' }, author_association: 'NONE' },
+    },
+  };
+  const run = makeGithub({ pr: releasePr({ title: 'feat: unrelated' }) });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('re-drafting updates the existing override comment instead of creating a new one', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-redraft-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.sha256(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, login: BOT.login, id: BOT.id });
+  assert.equal(run.calls.updateComment.length, 1);
+  assert.equal(run.calls.updateComment[0].comment_id, 55);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('prepareApply fails when no valid override is present', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const missing = makeGithub({ comments: [] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github: missing.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    /No valid bot-authored curated release-note draft exists/,
+  );
+
+  // Override present but missing its GitHub revision timestamp.
+  const noRevision = makeGithub({ comments: [overrideComment({ updatedAt: '' })] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github: noRevision.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, workspace: workspace.root, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    /missing its GitHub revision/,
   );
 });

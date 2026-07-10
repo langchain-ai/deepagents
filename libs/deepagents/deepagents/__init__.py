@@ -14,6 +14,8 @@ from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    default_subagent_middleware,
+    override_subagent_middleware,
 )
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
@@ -45,6 +47,8 @@ __all__ = [
     "SystemPromptConfig",
     "__version__",
     "create_deep_agent",
+    "default_subagent_middleware",
+    "override_subagent_middleware",
     "register_harness_profile",
     "register_provider_profile",
 ]

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -27,7 +27,10 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.async_subagents import AsyncSubAgent
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.summarization import create_summarization_middleware
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -869,3 +872,74 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             new_system_message = append_to_system_message(request.system_message, self.system_prompt)
             return await handler(request.override(system_message=new_system_message))
         return await handler(request)
+
+
+def default_subagent_middleware(
+    model: BaseChatModel | str | None,
+    backend: BackendProtocol | BackendFactory,
+) -> list[AgentMiddleware]:
+    """Build the default per-subagent middleware stack.
+
+    Mirrors the stack `create_deep_agent` gives its own subagents
+    (`TodoListMiddleware`, `FilesystemMiddleware`, summarization, then
+    `PatchToolCallsMiddleware`). Use this alongside `override_subagent_middleware`
+    when assembling a `SubAgent` by hand so it behaves like a default one.
+    """
+    stack: list[AgentMiddleware] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(backend=backend),
+    ]
+    if isinstance(model, BaseChatModel):
+        stack.append(create_summarization_middleware(model, backend))
+    stack.append(PatchToolCallsMiddleware())
+    return stack
+
+
+def override_subagent_middleware(
+    *,
+    backend: BackendProtocol | BackendFactory,
+    gp_subagent: SubAgent,
+    subagents: Sequence[SubAgent | AsyncSubAgent] = (),
+    task_description: str | None = None,
+    system_prompt: str | None = TASK_SYSTEM_PROMPT,
+    state_schema: type | None = None,
+) -> "SubAgentMiddleware":
+    """Build a `SubAgentMiddleware` with custom delegation guidance.
+
+    `create_deep_agent` auto-assembles a `SubAgentMiddleware` for its
+    general-purpose subagent but doesn't expose a way to customize the
+    `task` tool's `task_description`/`system_prompt`. Use this to construct
+    the general-purpose subagent spec yourself (`gp_subagent`) and feed it,
+    along with any other `subagents`, into a `SubAgentMiddleware` built with
+    custom guidance. Pass the result via `middleware=[...]` to
+    `create_deep_agent`, which replaces its own auto-assembled instance
+    (matched by `.name`) with this one instead of building its own.
+
+    `gp_subagent` is always included first. Subagents without an explicit
+    `model` or `middleware` inherit those defaults so they behave like the SDK's
+    built-in subagents. `AsyncSubAgent`s are ignored here and continue to use
+    `AsyncSubAgentMiddleware`.
+    """
+
+    def _fill_defaults(spec: SubAgent) -> SubAgent:
+        merged_spec = dict(spec)
+        merged_spec.setdefault("model", gp_subagent.get("model"))
+        merged_spec.setdefault(
+            "middleware",
+            default_subagent_middleware(merged_spec.get("model"), backend),
+        )
+        return cast("SubAgent", merged_spec)
+
+    merged: list[SubAgent] = [_fill_defaults(gp_subagent)]
+    for spec in subagents:
+        if "graph_id" in spec:
+            continue
+        merged.append(_fill_defaults(cast("SubAgent", spec)))
+
+    return SubAgentMiddleware(
+        backend=backend,
+        subagents=merged,
+        task_description=task_description,
+        system_prompt=system_prompt,
+        state_schema=state_schema,
+    )

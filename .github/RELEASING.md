@@ -69,7 +69,7 @@ For an exceptional release that must skip curation, add the `release: dangerousl
 
 The draft and apply jobs use the `release-dcode` environment. It needs `DCODE_RELEASE_BOT_TOKEN`, the model-provider API key matching `DCODE_RELEASE_MODEL` (only the one for the configured model is required), and the `DCODE_RELEASE_BOT_LOGIN`, `DCODE_RELEASE_BOT_ID`, `DCODE_RELEASE_MODEL`, and `DCODE_RELEASE_CLI_VERSION` variables. The bot token needs read/write access to contents, issues, and pull requests. Do not require environment approval, because that would block automatic drafting.
 
-For the check to actually gate merges, add the `curated release notes` check to `main`'s required status checks (repo settings). The check reports a passing status on non-release PRs, so requiring it does not block unrelated work.
+For the check to actually gate merges, add the `curated release notes` workflow job to `main`'s required status checks (repo settings). The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.
 
 ### Releasable Commit Types and Version Bumping
 

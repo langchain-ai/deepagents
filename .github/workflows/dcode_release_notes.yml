@@ -1,12 +1,14 @@
 # Draft and apply curated release notes for ready deepagents-code release PRs.
-# The drafting agent and all helper scripts run from a trusted `main` checkout
-# (`trusted-source`) with no repository-write token. Release PR content is read only
-# through GitHub's API at the validated commit SHA and treated as untrusted data;
-# it is never checked out or executed. The agent runs with shell/interpreter/MCP/
-# network access disabled (see the shell_allow_list note below). A dedicated bot
-# token performs curated-notes comments, PR-body updates, and a non-force Git Data
-# API update to the release-please branch. (The validate job's permission/readiness
-# feedback comments use the default GITHUB_TOKEN.)
+# All automation runs from a trusted `main` checkout (`trusted-source`); the ambient
+# GITHUB_TOKEN is read-only for contents. Release PR content is read only through
+# GitHub's API at the validated commit SHA and treated as untrusted data; it is
+# never checked out or executed. The drafting agent gets no GitHub token and runs
+# with shell/interpreter/MCP disabled, which removes its ability to make arbitrary
+# network calls (there is no separate network toggle; see the shell_allow_list note
+# below). Repository mutations — curated-notes comments, PR-body updates, and a
+# non-force Git Data API update to the release-please branch — are performed only by
+# specific helper steps that receive the dedicated bot token. (The validate job's
+# permission/readiness feedback comments use the default GITHUB_TOKEN.)
 
 name: "📝 Curate dcode release notes"
 
@@ -77,6 +79,27 @@ jobs:
             core.setOutput('should-run', String(result.shouldRun === true));
             for (const key of ['command', 'number', 'version', 'head', 'branch']) {
               core.setOutput(key, result[key] ?? '');
+            }
+
+      # A transient error while validating an insider's manual @dcode-release-bot
+      # command would otherwise leave only a red job in the Actions tab; surface it
+      # on the PR so the maintainer who ran the command knows to retry. Scoped to the
+      # manual (issue_comment) path so a transient failure on an unrelated
+      # ready_for_review PR does not draw a comment, and best-effort so it can never
+      # mask the underlying failure that already reds the job.
+      - name: Comment on validation failure
+        if: ${{ failure() && github.event_name == 'issue_comment' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            try {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.payload.issue.number,
+                body: 'Could not validate the `@dcode-release-bot` command because of a workflow error; see the run logs and try the command again.',
+              });
+            } catch (error) {
+              core.warning(`Could not post the validation-failure comment: ${error instanceof Error ? error.message : String(error)}`);
             }
 
   draft:
@@ -229,7 +252,7 @@ jobs:
               await github.rest.issues.createComment({
                 ...context.repo,
                 issue_number: number,
-                body: `Automatic release-note drafting failed.\n\n${details}`,
+                body: `Automatic release-note drafting failed.\n\n${details}\n\nAfter resolving the issue, a maintainer should run \`@dcode-release-bot draft\` again.`,
               });
             }
 

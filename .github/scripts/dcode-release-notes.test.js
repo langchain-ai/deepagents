@@ -40,7 +40,7 @@ function releasePr(overrides = {}) {
   };
 }
 
-function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = releaseNotes.sha256(GENERATED_SECTION), head = HEAD, updatedAt = OVERRIDE_UPDATED_AT } = {}) {
+function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), head = HEAD, updatedAt = OVERRIDE_UPDATED_AT } = {}) {
   return {
     id,
     updated_at: updatedAt,
@@ -62,7 +62,7 @@ function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = rel
   };
 }
 
-function appliedComment({ id = 20, overrideId = 10, overrideUpdatedAt = OVERRIDE_UPDATED_AT, fingerprint = releaseNotes.sha256(GENERATED_SECTION), contentHash = releaseNotes.sha256(CURATED_SECTION), sourceHead = HEAD, appliedHead = APPLIED_HEAD, updatedAt = APPLIED_UPDATED_AT } = {}) {
+function appliedComment({ id = 20, overrideId = 10, overrideUpdatedAt = OVERRIDE_UPDATED_AT, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), contentHash = releaseNotes.sha256(CURATED_SECTION), sourceHead = HEAD, appliedHead = APPLIED_HEAD, updatedAt = APPLIED_UPDATED_AT } = {}) {
   return {
     id,
     updated_at: updatedAt,
@@ -227,13 +227,16 @@ test('requires exactly one PR-body preview terminator', () => {
   );
 });
 
-test('fingerprint changes only with the selected release section', () => {
+test('fingerprint changes only with generated entries', () => {
   const original = releaseNotes.extractVersionSection(changelog(), VERSION);
+  const fingerprint = releaseNotes.changelogFingerprint(original);
   const unrelated = `${changelog()}\n## unrelated package text\n`;
-  assert.equal(releaseNotes.sha256(original), releaseNotes.sha256(releaseNotes.extractVersionSection(unrelated, VERSION)));
-  const changed = GENERATED_SECTION.replace('useful feature', 'new entry');
-  assert.notEqual(releaseNotes.sha256(original), releaseNotes.sha256(changed));
-  assert.equal(releaseNotes.sha256(original.replace(/\n/g, '\r\n')), releaseNotes.sha256(original));
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(releaseNotes.extractVersionSection(unrelated, VERSION)));
+  const changedHeading = original.replace('(2026-07-09)', '(2026-07-10)');
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(changedHeading));
+  const changedEntries = GENERATED_SECTION.replace('useful feature', 'new entry');
+  assert.notEqual(fingerprint, releaseNotes.changelogFingerprint(changedEntries));
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(original.replace(/\n/g, '\r\n')));
 });
 
 test('parses commands in surrounding text and rejects ambiguous comments', () => {
@@ -327,7 +330,11 @@ test('prepares agent input from the exact validated head', async t => {
     runnerTemp,
   });
   assert.match(fs.readFileSync(prepared.input, 'utf8'), /untrusted source material/);
-  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).fingerprint, releaseNotes.sha256(GENERATED_SECTION));
+  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).fingerprint, releaseNotes.changelogFingerprint(GENERATED_SECTION));
+  // The trusted state file must live outside `work` (the agent's only writable dir)
+  // so a compromised agent can't overwrite what postDraft re-validates against.
+  assert.ok(!prepared.state.startsWith(prepared.work));
+  assert.ok(prepared.state.startsWith(runnerTemp));
   assert.equal(calls.getContent.length, 1);
   assert.equal(calls.getContent[0].ref, HEAD);
 });
@@ -337,7 +344,7 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.sha256(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, login: BOT.login, id: BOT.id });
@@ -607,7 +614,7 @@ test('postDraft fails when the token is not the configured bot', async t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.sha256(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub({ authenticated: { login: 'someone-else', id: 7 } });
   await assert.rejects(
@@ -695,7 +702,7 @@ test('postDraft output round-trips through parseOverrideComment', async t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.sha256(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, login: BOT.login, id: BOT.id });
@@ -829,13 +836,13 @@ test('postApplyFailure posts once per head and requires the configured bot', asy
   assert.equal(wrong.calls.createComment.length, 0);
 });
 
-test('postDraftFailure posts non-command failure guidance once per head', async () => {
+test('postDraftFailure posts rerun guidance once per head', async () => {
   const run = makeGithub({ comments: [] });
   await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, login: BOT.login, id: BOT.id, message: 'boom' });
   assert.equal(run.calls.createComment.length, 1);
   assert.match(run.calls.createComment[0].body, /Automatic release-note drafting failed/);
   assert.match(run.calls.createComment[0].body, /boom/);
-  assert.equal(releaseNotes.commandFromComment(run.calls.createComment[0].body), null);
+  assert.equal(releaseNotes.commandFromComment(run.calls.createComment[0].body), 'draft');
   // Dedup: a second failure for the same head does not add another comment.
   await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, login: BOT.login, id: BOT.id, message: 'boom again' });
   assert.equal(run.calls.createComment.length, 1);
@@ -1048,7 +1055,7 @@ test('re-drafting updates the existing override comment instead of creating a ne
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.sha256(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
   await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, login: BOT.login, id: BOT.id });
@@ -1143,4 +1150,90 @@ test('a comment on a plain issue (not a PR) never triggers the bot', async () =>
   const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
   assert.equal(result.shouldRun, false);
   assert.equal(run.calls.createComment.length, 0);
+});
+
+test('rejects a closed or merged release PR', () => {
+  // A dropped state check would let both the automation and the merge gate act on a
+  // closed/merged release PR.
+  assert.equal(releaseNotes.isReleaseBranchPr(releasePr({ state: 'closed' })), false);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ state: 'closed' })), false);
+});
+
+test('prepare apply rejects a changelog heading that drifted from the override', async t => {
+  // The override heading is self-consistent (passes the first guard via its
+  // release-heading-hash), but release-please regenerated the heading date at HEAD, so
+  // it no longer matches the changelog's current heading. The second, distinct heading
+  // guard must reject it even though the generated entries (fingerprint) are unchanged
+  // — proving it is not redundant with the fingerprint guard.
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const reheaded = GENERATED_SECTION.replace('(2026-07-09)', '(2026-07-11)');
+  const files = new Map([[HEAD, changelog(reheaded)]]);
+  const { github } = makeGithub({ comments: [overrideComment()], files });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), login: BOT.login, id: BOT.id }),
+    /Keep the generated release version heading unchanged/,
+  );
+});
+
+test('required check warns about a marked-but-unparsable bot comment without trusting it', async () => {
+  // A bot-authored comment carrying the override marker but failing strict parsing must
+  // (a) produce a warning distinguishing it from "draft never ran" and (b) never be
+  // treated as a valid override — the gate stays fail-closed on `missing`.
+  const marked = {
+    id: 30,
+    updated_at: OVERRIDE_UPDATED_AT,
+    user: BOT,
+    body: '<!-- dcode-release-notes-override\npackage: deepagents-code\n-->\nnot a valid draft',
+  };
+  const { github } = makeGithub({ comments: [marked] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    login: BOT.login,
+    id: BOT.id,
+  });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then @dcode-release-bot apply/);
+  assert.ok(core.warnings.some(message => message.includes('failed validation')));
+});
+
+test('createApplyCommit rejects a canonically-invisible changelog edit before commit', async t => {
+  // Trailing-whitespace tamper: invisible to canonical()/sha256 but visible to the
+  // byte-exact changelogHash, proving the exact-hash guard — not canonicalization — is
+  // what blocks a changelog altered between prepare and commit.
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
+  });
+  const prepared = fs.readFileSync(workspace.file, 'utf8');
+  const tampered = `${prepared}   `;
+  assert.equal(releaseNotes.sha256(tampered), releaseNotes.sha256(prepared));
+  assert.notEqual(releaseNotes.exactSha256(tampered), releaseNotes.exactSha256(prepared));
+  fs.writeFileSync(workspace.file, tampered);
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, login: BOT.login, id: BOT.id,
+    }),
+    /Prepared changelog changed before commit creation/,
+  );
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('latest override ignores a bot comment for a different package', () => {
+  // parseMetadata accepts any package string, so latestParsed's package filter is the
+  // only thing rejecting a well-formed bot comment scoped to another package.
+  const wrongPackage = overrideComment();
+  wrongPackage.body = wrongPackage.body.replace('package: deepagents-code', 'package: deepagents');
+  assert.equal(releaseNotes.latestOverride([wrongPackage], BOT.login, BOT.id, VERSION), null);
+  assert.ok(releaseNotes.latestOverride([overrideComment()], BOT.login, BOT.id, VERSION));
 });

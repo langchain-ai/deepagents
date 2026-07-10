@@ -51,25 +51,24 @@ def test_required_check_uses_default_branch_workflow_definition() -> None:
         "deleted",
     }
     assert workflow["permissions"] == {
-        "checks": "write",
         "contents": "read",
         "issues": "write",
         "pull-requests": "read",
     }
     job = workflow["jobs"]["curated-release-notes"]
+    assert job["name"] == "curated release notes"
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "main"
     assert checkout["with"]["persist-credentials"] is False
     assert "environment" not in job
     check_workflow = CHECK_WORKFLOW.read_text()
-    assert "head_sha: pr.head.sha" in check_workflow
     assert "expectedHead: pr.head.sha" in check_workflow
-    assert "name: 'curated release notes'" in check_workflow
-    # The check reports the `curated release notes` context on every PR (a pass for
-    # non-release PRs, full validation for the release PR) so it can be a required
-    # status check on main without blocking unrelated PRs.
+    assert "head_sha: pr.head.sha" not in check_workflow
+    assert "github.rest.checks" not in check_workflow
+    # The workflow job itself reports the required `curated release notes` status.
+    # Non-release PRs exit successfully, including fork PRs whose head SHAs cannot
+    # receive base-repository check runs through the Checks API.
     assert "isReleaseBranchPr(pr)" in check_workflow
-    assert check_workflow.count("checks.create") >= 2
     release_please = RELEASE_PLEASE_WORKFLOW.read_text()
     assert "--ref main" in release_please
     assert "needs.update-lockfiles.result == 'success'" not in release_please
@@ -99,3 +98,28 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     assert "working-directory: release-pr" not in automation
     assert "git push" not in automation
     assert "createApplyCommit" in automation
+
+    # The privileged draft/apply jobs must stay gated on the validate job's
+    # should-run output, pinned to the release-dcode environment, and read-only for
+    # contents. Dropping the gate would let the bot-token jobs run without the
+    # permission/identity check; widening permissions would be privilege escalation.
+    for job_name in ("draft", "apply"):
+        job = workflow["jobs"][job_name]
+        assert "needs.validate.outputs.should-run == 'true'" in job["if"]
+        assert job["environment"] == "release-dcode"
+        assert job["permissions"] == {"contents": "read"}
+
+    # The drafting agent must stay sandboxed: no GitHub token and shell/MCP/
+    # interpreter/memory off. Flipping shell_allow_list to a non-empty value would
+    # hand a prompt-injected agent shell access, so assert the containment by value.
+    agent_step = next(
+        step
+        for step in workflow["jobs"]["draft"]["steps"]
+        if step.get("uses") == "./trusted-source"
+    )
+    agent_with = agent_step["with"]
+    assert agent_with["github_token"] == ""
+    assert agent_with["shell_allow_list"] == ""
+    assert agent_with["no_mcp"] == "true"
+    assert agent_with["interpreter"] == "false"
+    assert agent_with["enable_memory"] == "false"

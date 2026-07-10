@@ -25,8 +25,9 @@ const PERMITTED_ROLES = new Set(['admin', 'maintain', 'write']);
 // Who may receive a manual-command feedback reply. Gating replies on the comment's
 // author_association (a field already in the event payload, no API call) stops an
 // external drive-by `@dcode-release-bot` mention from amplifying into a bot comment
-// on any PR. This is only about *feedback*; the privileged draft/apply jobs still
-// re-check write permission via getCollaboratorPermissionLevel before mutating.
+// on any PR. This is only about *feedback*; the privileged path still verifies
+// write permission via getCollaboratorPermissionLevel in validateTrigger (the
+// validate job) before the draft/apply jobs run.
 const FEEDBACK_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 // These field sets are a strict, bidirectional contract with overrideBody/
@@ -139,6 +140,14 @@ function sectionRange(document, version, terminator = null) {
 function extractVersionSection(document, version) {
   const { text, start, end } = sectionRange(document, version);
   return canonical(text.slice(start, end));
+}
+
+// Fingerprint only the generated entries below the release heading. release-please
+// may refresh the heading's date or comparison URL without changing the entries;
+// heading integrity is tracked separately by release-heading-hash.
+function changelogFingerprint(section) {
+  const text = canonical(section);
+  return sha256(text.slice(text.indexOf('\n') + 1));
 }
 
 function extractPreviewSection(document, version) {
@@ -462,7 +471,7 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, runnerT
   const version = releaseVersion(pr.title);
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const section = extractVersionSection(changelog, version);
-  const fingerprint = sha256(section);
+  const fingerprint = changelogFingerprint(section);
   const work = fs.mkdtempSync(path.join(runnerTemp, 'dcode-release-notes-'));
   const input = path.join(work, 'input.md');
   const output = path.join(work, 'output.md');
@@ -542,7 +551,7 @@ async function postDraftFailure({ github, owner, repo, number, head, login, id, 
     github, owner, repo, number, head, login, id, message,
     markerBase: FAILURE_MARKER,
     headline: 'Automatic release-note drafting failed.',
-    remediation: 'Resolve the workflow failure, then have a release maintainer request another draft run.',
+    remediation: `Resolve the workflow failure, then have a release maintainer run \`${COMMAND_MENTION} draft\` again.`,
   });
 }
 
@@ -578,7 +587,7 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   if (!alreadyApplied && overrideHeading !== currentHeading) {
     throw new Error('Keep the generated release version heading unchanged');
   }
-  if (!alreadyApplied && sha256(currentSection) !== override.metadata['changelog-fingerprint']) {
+  if (!alreadyApplied && changelogFingerprint(currentSection) !== override.metadata['changelog-fingerprint']) {
     throw new Error(`New generated release entries appeared; run ${COMMAND_MENTION} draft before apply`);
   }
 
@@ -728,8 +737,11 @@ async function warnForNewEntries({ github, owner, repo, number, comments, head, 
 
 // Surface (logs only) bot-authored comments that carry a curated-notes marker
 // but fail strict parsing, so a corrupted or hand-edited draft is distinguishable
-// from "draft never ran". Never changes control flow: the gate stays fail-closed
-// on the null the parsers return.
+// from "draft never ran". This only ever logs — it never treats a bad comment as
+// valid, so the gate stays fail-closed on the null the parsers return. (It can
+// still propagate a parser's non-expected re-throw, e.g. parseOverrideComment's;
+// callers already ran the same parsers via latestOverride/latestApplied, so any
+// such throw surfaces there first and still lands fail-closed in the check job.)
 function warnUnparsableMarkedComments({ core, comments, login, id }) {
   for (const [marker, parse] of [[OVERRIDE_MARKER, parseOverrideComment], [APPLIED_MARKER, parseAppliedComment]]) {
     for (const comment of comments) {
@@ -797,13 +809,21 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
 
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const currentSection = extractVersionSection(changelog, version);
-  const currentFingerprint = sha256(currentSection);
+  const currentFingerprint = changelogFingerprint(currentSection);
   // Warn (idempotently; deduped by head+fingerprint) when the changelog has moved
   // away from the curated override. Same condition and args at both call sites: the
   // pre-applied miss and the post-applied mismatch below.
   const maybeWarnNewEntries = async () => {
     if (currentSection !== override.section && currentFingerprint !== override.metadata['changelog-fingerprint']) {
-      await warnForNewEntries({ github, owner, repo, number, comments, head: pr.head.sha, fingerprint: currentFingerprint });
+      // Best-effort courtesy comment: if posting it fails (rate limit, transient
+      // 5xx) it must not throw, or the raw API error would replace the specific,
+      // actionable gate reason (the setFailed message / failures list) reported
+      // right after this. The gate still fails closed via those.
+      try {
+        await warnForNewEntries({ github, owner, repo, number, comments, head: pr.head.sha, fingerprint: currentFingerprint });
+      } catch (error) {
+        core.warning(`Could not post the new-entries warning comment: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   };
   if (!applied) {
@@ -872,17 +892,13 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
 }
 
 module.exports = {
-  APPLIED_MARKER,
-  APPLY_FAILURE_MARKER,
   BYPASS_LABEL,
   CHANGELOG_PATH,
   CONTENT_END,
   CONTENT_START,
-  OVERRIDE_MARKER,
-  PACKAGE,
   RELEASE_BRANCH,
-  appliedBody,
   canonical,
+  changelogFingerprint,
   checkCuratedState,
   commandFromComment,
   createApplyCommit,

@@ -26,6 +26,7 @@ from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _merge_fs_interrupt_on
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -877,17 +878,19 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 def _default_subagent_middleware(
     model: BaseChatModel | str | None,
     backend: BackendProtocol | BackendFactory,
+    permissions: list[FilesystemPermission] | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Build the default per-subagent middleware stack.
 
     Mirrors the stack `create_deep_agent` gives its own subagents
     (`TodoListMiddleware`, `FilesystemMiddleware`, summarization, then
-    `PatchToolCallsMiddleware`). Used by `create_subagent_middleware` when
+    `PatchToolCallsMiddleware`), including enforcing `permissions` on the
+    `FilesystemMiddleware`. Used by `create_subagent_middleware` when
     assembling a `SubAgent` by hand so it behaves like a default one.
     """
     stack: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
-        FilesystemMiddleware(backend=backend),
+        FilesystemMiddleware(backend=backend, _permissions=permissions),
     ]
     if isinstance(model, BaseChatModel):
         stack.append(create_summarization_middleware(model, backend))
@@ -903,6 +906,7 @@ def create_subagent_middleware(
     task_description: str | None = None,
     system_prompt: str | None = TASK_SYSTEM_PROMPT,
     state_schema: type | None = None,
+    permissions: list[FilesystemPermission] | None = None,
 ) -> "SubAgentMiddleware":
     """Build a `SubAgentMiddleware` with custom delegation guidance.
 
@@ -917,15 +921,31 @@ def create_subagent_middleware(
     `gp_subagent` is always included first. Subagents without an explicit
     `model`/`middleware` inherit those defaults, matching the SDK's built-ins.
     `AsyncSubAgent`s are ignored and still use `AsyncSubAgentMiddleware`.
+
+    `permissions` is the fallback `FilesystemPermission` set for subagents without their own, matching `create_deep_agent`'s own precedence and enforcement.
     """
 
     def _fill_defaults(spec: SubAgent) -> SubAgent:
         merged_spec = dict(spec)
         merged_spec.setdefault("model", gp_subagent.get("model"))
+        spec_permissions = cast(
+            "list[FilesystemPermission] | None",
+            merged_spec.get("permissions", permissions),
+        )
         merged_spec.setdefault(
             "middleware",
-            _default_subagent_middleware(cast("BaseChatModel | str | None", merged_spec.get("model")), backend),
+            _default_subagent_middleware(
+                cast("BaseChatModel | str | None", merged_spec.get("model")),
+                backend,
+                permissions=spec_permissions,
+            ),
         )
+        spec_interrupt_on = _merge_fs_interrupt_on(
+            _build_interrupt_on_from_permissions(spec_permissions or []),
+            cast("dict[str, bool | InterruptOnConfig] | None", merged_spec.get("interrupt_on")),
+        )
+        if spec_interrupt_on is not None:
+            merged_spec["interrupt_on"] = spec_interrupt_on
         return cast("SubAgent", merged_spec)
 
     merged: list[SubAgent] = [_fill_defaults(gp_subagent)]

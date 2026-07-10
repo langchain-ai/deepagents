@@ -1306,6 +1306,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "mcp_reconnect",
     "rubric_model_switch",
     "rubric_max_iterations_switch",
 ]
@@ -15357,10 +15358,13 @@ class DeepAgentsApp(App):
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
         to restart), or while an agent switch is in progress. When the local
-        server is still connecting or the session is mid-run, the login is
-        queued via `_defer_action` and runs once the server is ready and the
-        user is idle. Config resolution and server-name validation happen
-        later, in `_run_mcp_login_worker`.
+        server is still connecting the login is queued via `_defer_action`
+        and runs once the server is ready. An active agent or shell run does
+        *not* defer login: the OAuth handshake and token write never touch the
+        running server, so they proceed concurrently; only the follow-up
+        server restart is queued (see `_prompt_mcp_reconnect`). Config
+        resolution and server-name validation happen later, in
+        `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -15412,20 +15416,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running or self._shell_running:
-            self.notify(
-                "MCP login will start once the current task completes.",
-                timeout=5,
-                markup=False,
-            )
-            self._defer_action(
-                DeferredAction(
-                    kind="mcp_login",
-                    execute=lambda: self._run_mcp_login_worker(server_name),
-                ),
-            )
-            return
-
+        # An active agent/shell run is intentionally not a defer gate: the
+        # OAuth handshake and on-disk token write are independent of the
+        # running server, so login proceeds immediately and only the restart
+        # is queued once the task finishes (`_prompt_mcp_reconnect`).
         self.run_worker(
             self._run_mcp_login_worker(server_name),
             exclusive=False,
@@ -15616,6 +15610,30 @@ class DeepAgentsApp(App):
                 choice = "later"
 
         if choice == "reconnect":
+            if self._agent_running or self._shell_running:
+                # The restart tears down the server the active run lives on,
+                # so honor the user's "reconnect now" intent without killing
+                # the in-flight generation: queue the restart to fire once the
+                # task finishes (drained via `_maybe_drain_deferred`). The
+                # token is already on disk, so mark the reconnect pending for
+                # `/mcp reconnect` and the splash banner in the meantime.
+                self._pending_mcp_login_reconnect = True
+                self._sync_pending_mcp_reconnect()
+                self._apply_optimistic_mcp_login_pending_state(server_name)
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(server_name),
+                    ),
+                )
+                self.notify(
+                    f"Logged in to {server_name!r}. The server will reconnect "
+                    "once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
@@ -15665,6 +15683,23 @@ class DeepAgentsApp(App):
                     timeout=8,
                     markup=False,
                 )
+
+    async def _run_deferred_mcp_reconnect(self, server_name: str) -> None:
+        """Restart for MCP token refresh once the busy state clears.
+
+        Queued by `_prompt_mcp_reconnect` when the user accepts the restart
+        while an agent or shell task is still running — restarting then would
+        tear down the server the active run depends on. Re-checks the pending
+        flag so a manual `/mcp reconnect` (or relaunch) in the interim isn't
+        followed by a redundant restart.
+
+        Args:
+            server_name: Server whose login triggered the reconnect.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        self._clear_mcp_login_reconnect_banner_counts(server_name)
+        await self._restart_server_for_mcp_refresh(server_name)
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.

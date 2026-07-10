@@ -165,6 +165,11 @@ on:
         required: true
         default: "1"
         type: string
+      n_retries:
+        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        required: true
+        default: "0"
+        type: string
       concurrency:
         description: "Concurrent trials (sandbox slots)."
         required: true
@@ -294,6 +299,7 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
@@ -471,6 +477,10 @@ jobs:
           fi
           if ! [[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
+            exit 1
+          fi
+          if ! [[ "$HARBOR_N_RETRIES" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
@@ -704,6 +714,7 @@ jobs:
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
+            --max-retries "$HARBOR_N_RETRIES" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             "${force_build_flag[@]}" \

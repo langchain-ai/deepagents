@@ -528,6 +528,7 @@ class ServerProcess:
             stderr=subprocess.STDOUT,
         )
 
+        started = False
         try:
             await wait_for_server_healthy(
                 self.url,
@@ -536,9 +537,24 @@ class ServerProcess:
                 read_log=self._read_log_file,
                 local=True,
             )
-        except Exception:
-            self.stop()
-            raise
+            started = True
+        finally:
+            if not started:
+                # Reap the subprocess we just spawned if startup did not
+                # complete — including cancellation (e.g. Ctrl+D / SIGINT before
+                # the health check returns). A `finally` rather than `except
+                # Exception` is deliberate: `asyncio.CancelledError` is a
+                # `BaseException`, so an `except Exception` guard would skip this
+                # and orphan the process. The inner guard stops a `stop()` error
+                # from masking the exception already propagating; `stop()` is
+                # effectively non-raising today, so if it does fire it signals an
+                # unexpected leak — hence `error`, not `warning`.
+                try:
+                    self.stop()
+                except Exception:
+                    logger.exception(
+                        "Error stopping server during startup cleanup",
+                    )
 
     async def wait_for_graph_ready(
         self,
@@ -634,12 +650,27 @@ class ServerProcess:
                 self._process.wait(timeout=_SHUTDOWN_TIMEOUT)
             except subprocess.TimeoutExpired:
                 logger.warning("Server did not stop gracefully, killing")
-                self._process.kill()
+                # `kill()` lives in this handler, so a raise here would escape
+                # the sibling `except OSError` below. Guard it explicitly:
+                # `ProcessLookupError` just means the process already exited
+                # (benign — nothing left to reap), while any other `OSError`
+                # means SIGKILL failed and the process is likely orphaned.
                 try:
+                    self._process.kill()
                     self._process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     logger.warning(
                         "Server process pid=%d did not exit after SIGKILL",
+                        self._process.pid,
+                    )
+                except ProcessLookupError:
+                    logger.debug(
+                        "Server process pid=%d already exited before SIGKILL",
+                        self._process.pid,
+                    )
+                except OSError:
+                    logger.exception(
+                        "Failed to SIGKILL server process pid=%d; it may be orphaned",
                         self._process.pid,
                     )
             except OSError:

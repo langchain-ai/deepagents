@@ -132,6 +132,8 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "tail -f /tmp/dcode-update.log" in printed
         restart.assert_called_once_with()
 
     def test_successful_update_skips_restart_when_shadowed(self) -> None:
@@ -1529,8 +1531,9 @@ class TestCheckOptionalTools:
 
         assert missing == ["ripgrep"]
 
-    def test_returns_tavily_when_key_missing(self) -> None:
+    def test_returns_tavily_when_key_missing(self, tmp_path: Path) -> None:
         """Returns `'tavily'` when TAVILY_API_KEY is not set."""
+        config_path = tmp_path / "config.toml"
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
@@ -1538,7 +1541,7 @@ class TestCheckOptionalTools:
                 SimpleNamespace(has_tavily=False),
             ),
         ):
-            missing = check_optional_tools()
+            missing = check_optional_tools(config_path=config_path)
 
         assert missing == ["tavily"]
 
@@ -1680,6 +1683,30 @@ class TestAutoInstallRipgrepCli:
         assert result == ["ripgrep"]
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "SHA-256" in printed
+
+    def test_managed_tool_unavailable_keeps_ripgrep_and_reports(self) -> None:
+        """Permanent managed-tool gaps report remediation and keep fallback active."""
+        from deepagents_code.managed_tools import ManagedToolUnavailableError
+
+        message = (
+            "Managed ripgrep is not available for this system. "
+            "Set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        )
+        error = ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="unsupported",
+            message=message,
+        )
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=error),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert f"[yellow]Warning:[/yellow] {message}" in printed
 
     def test_unexpected_failure_keeps_ripgrep(self) -> None:
         """An unexpected error degrades gracefully to the missing-tool path."""

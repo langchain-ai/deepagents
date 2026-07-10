@@ -2900,12 +2900,20 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.text = val
 
-    def set_value_at_end(self, val: str) -> None:
-        """Set the input value and place the cursor at the end of the text."""
+    def set_value_at_end(self, val: str) -> bool:
+        """Set the input value and place the cursor at the end of the text.
+
+        Returns:
+            `True` when the value was written, `False` when the text area is
+            unavailable and the value could not be set. Callers that surface a
+            "restored"/"moved to input" toast should gate it on this so the
+            toast never claims a write that did not happen.
+        """
         if not self._text_area:
-            return
+            return False
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
+        return True
 
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).

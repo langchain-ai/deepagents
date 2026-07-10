@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -279,6 +280,111 @@ class TestStartServerAndGetAgent:
         mock_server.stop.assert_called_once()
         mock_agent.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "interrupt",
+        [asyncio.CancelledError, KeyboardInterrupt, SystemExit],
+    )
+    async def test_stops_server_when_start_interrupted(
+        self, interrupt: type[BaseException], tmp_path: Path, monkeypatch
+    ) -> None:
+        """A quit during startup must still reap the half-started server.
+
+        The langgraph subprocess is spawned inside `ServerProcess.start()`
+        before this function returns, so the caller has not yet stored a
+        reference to it (`DeepAgentsApp._server_proc` is assigned only on
+        successful return). When the background startup worker is interrupted
+        mid-`start()` — e.g. the user presses Ctrl+D before the health check
+        completes — this `except` clause is the only thing that can stop the
+        orphaned subprocess. The interrupts covered here are all `BaseException`
+        subclasses rather than `Exception`, so an `except Exception` guard would
+        leak the process (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=interrupt)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent") as mock_agent,
+            pytest.raises(interrupt),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.start.assert_awaited_once()
+        mock_server.stop.assert_called_once()
+        # The interrupt must propagate: graph readiness is never reached, and
+        # no client is handed back to a caller that is being torn down.
+        mock_server.wait_for_graph_ready.assert_not_awaited()
+        mock_agent.assert_not_called()
+
+    async def test_start_cleanup_error_does_not_mask_interrupt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A failure inside `stop()` must not replace the in-flight interrupt.
+
+        Cleanup runs while a `BaseException` (here `CancelledError`) is
+        propagating. If `stop()` itself raises, that error is swallowed and
+        logged so the original cancellation stays the propagated exception,
+        preserving cancellation semantics instead of surfacing the teardown
+        error (regression: PR #4629).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.stop = MagicMock(side_effect=RuntimeError("kill failed"))
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch("deepagents_code.client.remote_client.RemoteAgent"),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.stop.assert_called_once()
+
     def test_relative_paths_written_verbatim_to_langgraph_json(
         self, tmp_path: Path
     ) -> None:
@@ -312,15 +418,24 @@ class TestWritePyproject:
 
         assert dependency == f"deepagents-code @ {package_root.as_uri()}"
 
-    def test_runtime_dependency_default_uses_package_project_root(self) -> None:
+    def test_runtime_dependency_default_uses_package_project_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The default root should not depend on `server_manager.py` depth."""
         from pathlib import Path
+
+        import deepagents_code
 
         # Derive the expected project root independently, from this test file's
         # own location (libs/code/tests/unit_tests/ -> libs/code), rather than
         # reusing the implementation's package-anchored expression. Mirroring the
         # implementation would let a bug in that expression pass unnoticed.
         project_root = Path(__file__).resolve().parents[2]
+        monkeypatch.setattr(
+            deepagents_code,
+            "__file__",
+            str(project_root / "deepagents_code" / "__init__.py"),
+        )
 
         dependency = _runtime_package_dependency()
 

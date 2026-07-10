@@ -9,6 +9,7 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    GlobResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -236,6 +237,29 @@ async def test_composite_backend_multiple_routes_async():
     updated_content = await comp.aread("/memories/important.md")
     assert updated_content.file_data is not None
     assert "persistent memory" in updated_content.file_data["content"]
+
+
+async def test_composite_backend_aglob_path_isolation():
+    """Test that aglob with path=/tools doesn't return results from /memories."""
+    mem_store = InMemoryStore()
+
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    await comp.awrite("/tools/hammer.md", "tool for nailing")
+    await comp.awrite("/notes/other.md", "unrelated note")
+    await comp.awrite("/memories/secret.md", "private memory")
+
+    result = await comp.aglob("*.md", path="/tools")
+    matches = result.matches
+    match_paths = [m["path"] for m in matches] if matches is not None else []
+
+    # Only /tools files: excludes routed backend (/memories) and other default dirs (/notes)
+    assert match_paths == ["/tools/hammer.md"]
+    assert "/memories/secret.md" not in match_paths
+    assert "/notes/other.md" not in match_paths
 
 
 async def test_composite_backend_als_nested_directories_async(tmp_path: Path):
@@ -977,6 +1001,31 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     # When searching from root and default backend errors, return the error
     result = await comp.agrep("test", path="/")
     assert result.error == "Default backend error"
+
+
+async def test_composite_aglob_default_error_short_circuits_routes_async() -> None:
+    """A root glob default error should return before consulting routed backends."""
+
+    class ErrorDefaultBackend(StoreBackend):
+        async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+            return GlobResult(error="Default backend error")
+
+    class TrackingRouteBackend(StoreBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.called = False
+
+        async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+            self.called = True
+            return GlobResult(matches=[])
+
+    routed_backend = TrackingRouteBackend()
+    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+
+    result = await comp.aglob("*", path="/")
+
+    assert result.error == "Default backend error"
+    assert not routed_backend.called
 
 
 async def test_composite_agrep_non_root_path_on_default_backend_async(tmp_path: Path) -> None:

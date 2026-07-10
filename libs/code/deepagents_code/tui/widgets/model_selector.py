@@ -89,11 +89,17 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openai:gpt-5.4-pro": "GPT-5.4 Pro",
     "openai:gpt-5.5": "GPT-5.5",
     "openai:gpt-5.5-pro": "GPT-5.5 Pro",
+    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
+    "openai:gpt-5.6-sol": "GPT-5.6 Sol",
+    "openai:gpt-5.6-terra": "GPT-5.6 Terra",
     "openai_codex:gpt-5.2": "GPT-5.2",
     "openai_codex:gpt-5.3-codex": "GPT-5.3 Codex",
     "openai_codex:gpt-5.4": "GPT-5.4",
     "openai_codex:gpt-5.4-mini": "GPT-5.4 mini",
     "openai_codex:gpt-5.5": "GPT-5.5",
+    "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
+    "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
+    "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
     "openrouter:anthropic/claude-opus-4.6": "Claude Opus 4.6",
     "openrouter:anthropic/claude-opus-4.7": "Claude Opus 4.7",
     "openrouter:anthropic/claude-opus-4.7-fast": "Claude Opus 4.7 Fast",
@@ -114,6 +120,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
+    "xai:grok-4.5": "Grok 4.5",
 }
 """Hand-curated frontier-tier models promoted across the UI, mapped to a
 human-readable display name.
@@ -1401,7 +1408,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Returns:
             Styled `Content` for the 4-line footer.
         """
-        from deepagents_code.textual_adapter import format_token_count
+        from deepagents_code._session_stats import format_token_count
 
         if profile_entry is None or not profile_entry["profile"]:
             return Content.styled("Model profile not available :(\n\n\n", "dim")

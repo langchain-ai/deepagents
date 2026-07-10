@@ -1521,7 +1521,9 @@ async def _load_tools_from_config(
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
             elif server_type == "stdio":
-                _check_stdio_server(server_name, server_config)
+                # `shutil.which` makes blocking `os.access` calls; run it
+                # off the event loop so blockbuster doesn't reject it.
+                await asyncio.to_thread(_check_stdio_server, server_name, server_config)
         except RuntimeError as exc:
             logger.warning(
                 "MCP server '%s' skipped: pre-flight failed: %s",

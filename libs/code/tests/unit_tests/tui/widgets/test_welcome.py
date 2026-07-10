@@ -21,6 +21,7 @@ from deepagents_code.tui.widgets.welcome import (
     _home_prefixed,
     _langsmith_project_link,
     _langsmith_project_link_style,
+    _local_tag_style,
 )
 
 _EDITABLE = "deepagents_code.tui.widgets.welcome._is_editable_install"
@@ -160,6 +161,28 @@ class TestLangsmithLinkHelpers:
         )
         assert style.bold is True
         assert style.link is not None
+
+
+class TestLocalTagStyle:
+    """Tests for the editable-install `(local)` tag style."""
+
+    def test_ansi_uses_bold_markup(self) -> None:
+        """Under ANSI themes the tag stays visible via bold terminal text."""
+        from deepagents_code.theme import DARK_COLORS
+
+        assert _local_tag_style(ansi=True, colors=DARK_COLORS) == "bold"
+
+    def test_non_ansi_uses_themed_color(self) -> None:
+        """Non-ANSI themes color the tag with the theme's tool color."""
+        from textual.color import Color as TColor
+        from textual.style import Style as TStyle
+
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _local_tag_style(ansi=False, colors=DARK_COLORS)
+        assert isinstance(style, TStyle)
+        assert style.bold is True
+        assert style.foreground == TColor.parse(DARK_COLORS.tool)
 
 
 class TestTitle:
@@ -598,7 +621,7 @@ class TestRemovedSections:
     def test_no_legacy_sections(self) -> None:
         """None of the old splash footer sections appear."""
         plain = _make_banner()._build_banner().plain
-        for absent in ("Ready to code", "Tip:"):
+        for absent in ("Ready to code", "Tip:", "tip:"):
             assert absent not in plain
 
 

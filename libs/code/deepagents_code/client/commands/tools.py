@@ -283,6 +283,7 @@ def _run_tools_install(args: argparse.Namespace) -> int:
     from deepagents_code.managed_tools import (
         RIPGREP_VERSION,
         ChecksumMismatchError,
+        ManagedToolUnavailableError,
         ensure_ripgrep,
         is_offline,
         managed_rg_path,
@@ -306,6 +307,13 @@ def _run_tools_install(args: argparse.Namespace) -> int:
                 "ripgrep install aborted: the downloaded archive failed SHA-256 "
                 "verification. Refusing to install."
             ),
+        )
+    except ManagedToolUnavailableError as exc:
+        logger.info("ripgrep install unavailable: %s", exc.reason)
+        return _emit_install_result(
+            output_format,
+            status="error",
+            message=exc.message,
         )
     except Exception:
         # Backstop for a clean exit instead of a raw traceback.
@@ -359,8 +367,8 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         output_format,
         status="error",
         message=(
-            "Could not install ripgrep (unsupported platform or download failure). "
-            "See logs, or install ripgrep manually."
+            "Could not install ripgrep (download failure). See logs, or install "
+            "ripgrep manually."
         ),
     )
 

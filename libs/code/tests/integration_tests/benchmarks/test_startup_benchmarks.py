@@ -146,7 +146,7 @@ class TestImportIsolation:
             "import deepagents_code.skills.commands",
             "from deepagents_code._cli_context import CLIContext",
             "import deepagents_code._ask_user_types",
-            "import deepagents_code.textual_adapter",
+            "import deepagents_code.tui.textual_adapter",
             "import deepagents_code.tool_display",
             "import deepagents_code.file_ops",
         ],

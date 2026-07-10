@@ -3,9 +3,11 @@
 #
 # Usage:
 #   curl -LsSf https://langch.in/dcode | bash
+#   curl -LsSf https://langch.in/dcode | bash -s -- VERSION
 #
 # Install an exact pre-release version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_VERSION="0.1.0rc1" bash
+#   curl -LsSf https://langch.in/dcode | bash -s -- 0.1.0rc1
 #
 # Override uv's pre-release strategy when resolving the latest version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
@@ -96,10 +98,14 @@ Install deepagents-code.
 Usage:
   curl -LsSf https://langch.in/dcode | bash
   curl -LsSf https://langch.in/dcode | bash -s -- [options]
+  curl -LsSf https://langch.in/dcode | bash -s -- VERSION
 
 Options:
   --help, -h        Show this help message and exit
   --version, -v     Print installer version and exit
+
+Target:
+  VERSION           Install an exact version, e.g. 0.1.0rc1
 
 Environment variables:
   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
@@ -137,6 +143,7 @@ For full documentation: https://docs.langchain.com/deepagents-code
 HELP
 }
 
+POSITIONAL_TARGET=""
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
@@ -147,13 +154,33 @@ for _arg in "$@"; do
       printf '%s\n' "$INSTALLER_VERSION"
       exit 0
       ;;
-    *)
-      # Reject unknown flags instead of silently ignoring them, so a typo
-      # (e.g. --verison) surfaces as an error rather than a silent full install.
+    -*)
+      # Reject unknown flags (single- or double-dash) instead of silently
+      # ignoring them, so a typo (e.g. --verison, -V) surfaces as an error
+      # rather than a silent full install. Matching every dash-led token here
+      # also keeps such typos out of the positional-target arm below, where a
+      # leading dash would otherwise be reported as an "invalid version".
       # log_* helpers aren't defined yet at this point, so write plainly.
       printf 'Unrecognized argument: %s\n' "$_arg" >&2
       printf 'Run with --help to see available options.\n' >&2
       exit 2
+      ;;
+    *)
+      if [ -n "$POSITIONAL_TARGET" ]; then
+        printf 'Only one target is allowed. Got both %s and %s.\n' "$POSITIONAL_TARGET" "$_arg" >&2
+        printf 'Run with --help to see available options.\n' >&2
+        exit 2
+      fi
+      # Same validation (and rationale) as the DEEPAGENTS_CODE_VERSION check
+      # further down: require a leading alphanumeric and a class free of shell
+      # metacharacters, so the value is a version, not a smuggled option, and is
+      # safe to interpolate into the single argv token passed to uv.
+      if [[ ! "$_arg" =~ ^[A-Za-z0-9][A-Za-z0-9_.!+-]*$ ]]; then
+        printf 'Invalid version target: %s\n' "$_arg" >&2
+        printf 'Use an exact version like 0.1.0rc1.\n' >&2
+        exit 2
+      fi
+      POSITIONAL_TARGET="$_arg"
       ;;
   esac
 done
@@ -161,6 +188,15 @@ done
 # Registry of temp files to clean up on exit or interrupt. Functions that
 # create tempfiles append their paths here; cleanup_on_signal removes them all.
 TEMP_FILES=()
+INSTALL_LOCK_KIND=""
+INSTALL_LOCK_DIR=""
+INSTALL_LOCK_TOKEN=""
+INSTALL_LOCK_STALE_ID=""
+INSTALL_LOCK_RECLAIM_DIR=""
+INSTALL_LOCK_RECLAIM_TOKEN=""
+# How old a mkdir-based lock (dead/unknown holder) must be before it's treated
+# as abandoned and reclaimed. 10 min comfortably exceeds a normal install.
+INSTALL_LOCK_STALE_AFTER_SECS=600
 register_temp() {
   TEMP_FILES+=("$1")
 }
@@ -194,6 +230,32 @@ log_success() { printf "${GREEN}✔${NC} %s\n" "$*"; }
 log_warn()    { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
 log_error()   { printf "${RED}✖${NC} %s\n" "$*" >&2; }
 
+is_linux_os() {
+  [ "${OS:-}" = "linux" ] || [ "$(uname -s 2>/dev/null)" = "Linux" ]
+}
+
+restore_terminal_after_signal() {
+  local exit_code="$1"
+  if [ "$exit_code" -ge 128 ] && [ -t 0 ]; then
+    stty sane 2>/dev/null || true
+  fi
+}
+
+log_signal_failure_hint() {
+  local exit_code="$1"
+  if [ "${SIGNAL_FAILURE_HINT_SHOWN:-false}" = true ]; then
+    return 0
+  fi
+  if [ "$exit_code" -eq 137 ] && is_linux_os; then
+    log_error "Installation was killed before it could finish (exit code 137). This usually means the system ran out of memory."
+    log_error "Free up memory or use a machine with more memory, then run this installer again."
+    SIGNAL_FAILURE_HINT_SHOWN=true
+  elif [ "$exit_code" -ge 128 ]; then
+    log_error "Installation was killed before it could finish (exit code ${exit_code})."
+    SIGNAL_FAILURE_HINT_SHOWN=true
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Exit / interrupt traps — ensures the user always sees an actionable message
 # on failure and temp files are cleaned up on Ctrl-C / SIGTERM.
@@ -201,8 +263,13 @@ log_error()   { printf "${RED}✖${NC} %s\n" "$*" >&2; }
 cleanup_on_signal() {
   local exit_code=$?
   cleanup_temp_files
+  if declare -F release_install_lock >/dev/null 2>&1; then
+    release_install_lock
+  fi
   if [ $exit_code -ne 0 ]; then
+    restore_terminal_after_signal "$exit_code"
     echo "" >&2
+    log_signal_failure_hint "$exit_code"
     log_error "Installation failed (exit code ${exit_code}). See errors above."
     log_error "For help, visit: https://docs.langchain.com/deepagents-code"
   fi
@@ -215,9 +282,15 @@ cleanup_on_interrupt() {
   # after the friendly interrupt notice below. Temp files are still cleaned up
   # explicitly here, so nothing leaks despite the disarm.
   trap - EXIT
+  if [ -t 0 ]; then
+    stty sane 2>/dev/null || true
+  fi
   echo "" >&2
   log_warn "Installation interrupted."
   cleanup_temp_files
+  if declare -F release_install_lock >/dev/null 2>&1; then
+    release_install_lock
+  fi
   exit 1
 }
 trap cleanup_on_interrupt INT TERM
@@ -450,12 +523,272 @@ copy_install_log() {
   ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
 }
 
+# Epoch mtime of the lock directory, used as a fallback reference time when the
+# started_at metadata is missing. Portable across BSD (macOS) and GNU stat.
+lock_dir_mtime() {
+  local dir="${1:-$INSTALL_LOCK_DIR}"
+  local mtime
+  mtime="$(stat -f %m "$dir" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$mtime"; return 0 ;;
+  esac
+
+  mtime="$(stat -c %Y "$dir" 2>/dev/null || true)"
+  case "$mtime" in
+    ''|*[!0-9]*) printf '0' ;;
+    *) printf '%s' "$mtime" ;;
+  esac
+}
+
+# A fingerprint of the lock instance currently at the canonical path, used to
+# detect whether it is still the same lock a prior check inspected (see the
+# reclaim path in acquire_install_lock). Prints four newline-separated fields —
+# token, pid, started_at, dir mtime — compared only by string equality, so the
+# field set and order are load-bearing. Returns 1 (empty output) when the lock
+# dir is gone; an unreadable field reads as empty, i.e. is treated as absent.
+install_lock_identity() {
+  [ -d "$INSTALL_LOCK_DIR" ] || return 1
+
+  local token pid started_at mtime
+  token="$(cat "$INSTALL_LOCK_DIR/token" 2>/dev/null || true)"
+  pid="$(cat "$INSTALL_LOCK_DIR/pid" 2>/dev/null || true)"
+  started_at="$(cat "$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true)"
+  mtime="$(lock_dir_mtime)"
+  printf '%s\n%s\n%s\n%s' "$token" "$pid" "$started_at" "$mtime"
+}
+
+# Decide whether an existing mkdir-based lock may be reclaimed. Only ever called
+# in the mkdir fallback path (kernel advisory locks self-release on holder death,
+# so they need no staleness heuristic). On a "stale" result, also sets the global
+# INSTALL_LOCK_STALE_ID to the lock's identity fingerprint (consumed by the
+# reclaim path in acquire_install_lock); clears it otherwise. Must be called in a
+# condition context (`if install_lock_is_stale`) so `set -e` is suppressed for
+# its body: the bare `[ -n ... ]` test near the end returns non-zero on the
+# not-stale branch and would otherwise abort the script.
+install_lock_is_stale() {
+  INSTALL_LOCK_STALE_ID=""
+  [ -d "$INSTALL_LOCK_DIR" ] || return 1
+
+  local pid started_at now
+  pid="$(cat "$INSTALL_LOCK_DIR/pid" 2>/dev/null || true)"
+  started_at="$(cat "$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true)"
+  now="$(date +%s 2>/dev/null || printf '0')"
+
+  # A live owner is authoritative: never reclaim a lock whose PID is running.
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    return 1
+  fi
+
+  # When started_at is missing or not yet written, fall back to the lock dir's
+  # mtime. This covers the window between `mkdir` winning and the metadata being
+  # written by the new owner: treating that window as "stale" would let a racing
+  # installer delete a lock that was just acquired, so age it out via mtime
+  # instead of reclaiming it on sight.
+  case "$started_at" in
+    ''|*[!0-9]*) started_at="$(lock_dir_mtime)" ;;
+  esac
+  case "$started_at" in
+    ''|*[!0-9]*) started_at=0 ;;
+  esac
+
+  # Without a usable reference or current time we cannot prove the lock is old.
+  # Be conservative and keep waiting rather than risk deleting a live lock; a
+  # working host always has these, so this only guards pathological environments.
+  if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then
+    return 1
+  fi
+
+  if [ $((now - started_at)) -ge "$INSTALL_LOCK_STALE_AFTER_SECS" ]; then
+    # Capture the identity for the reclaim guard. If the lock dir vanished
+    # between the age check and here, the fingerprint is empty; the bare test
+    # then returns non-zero, so `return` reports "not stale" (see header note on
+    # why this is safe under `set -e`).
+    INSTALL_LOCK_STALE_ID="$(install_lock_identity 2>/dev/null || true)"
+    [ -n "$INSTALL_LOCK_STALE_ID" ]
+    return
+  fi
+  return 1
+}
+
+install_lock_reclaim_guard_is_stale() {
+  local started_at
+  local now
+
+  started_at="$(cat "$INSTALL_LOCK_RECLAIM_DIR/started_at" 2>/dev/null || true)"
+  now="$(date +%s 2>/dev/null || printf '0')"
+
+  case "$started_at" in
+    ''|*[!0-9]*) started_at="$(lock_dir_mtime "$INSTALL_LOCK_RECLAIM_DIR")" ;;
+  esac
+  case "$started_at" in
+    ''|*[!0-9]*) started_at=0 ;;
+  esac
+
+  if [ "$started_at" -eq 0 ] || [ "$now" -eq 0 ]; then
+    return 1
+  fi
+
+  [ $((now - started_at)) -ge "$INSTALL_LOCK_STALE_AFTER_SECS" ]
+}
+
+wait_for_install_lock_reclaim_guard() {
+  if [ ! -d "$INSTALL_LOCK_RECLAIM_DIR" ]; then
+    return 0
+  fi
+
+  if install_lock_reclaim_guard_is_stale; then
+    log_error "Installer lock reclaim is stuck at $INSTALL_LOCK_RECLAIM_DIR."
+    log_error "Remove it manually, then retry."
+    exit 1
+  fi
+
+  sleep 1
+  return 1
+}
+
+acquire_install_lock_reclaim_guard() {
+  local token
+
+  token="$$:$(date +%s 2>/dev/null || printf '0'):${RANDOM:-0}"
+  if ! mkdir "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null; then
+    if [ -d "$INSTALL_LOCK_RECLAIM_DIR" ]; then
+      return 1
+    fi
+    log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+    log_error "Cannot create reclaim guard at $INSTALL_LOCK_RECLAIM_DIR."
+    exit 1
+  fi
+
+  if ! printf '%s\n' "$token" >"$INSTALL_LOCK_RECLAIM_DIR/token" 2>/dev/null; then
+    rm -rf "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null || true
+    log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+    log_error "Cannot write reclaim guard metadata at $INSTALL_LOCK_RECLAIM_DIR."
+    exit 1
+  fi
+
+  INSTALL_LOCK_RECLAIM_TOKEN="$token"
+  printf '%s\n' "$$" >"$INSTALL_LOCK_RECLAIM_DIR/pid" 2>/dev/null || true
+  date +%s >"$INSTALL_LOCK_RECLAIM_DIR/started_at" 2>/dev/null || true
+  return 0
+}
+
+release_install_lock_reclaim_guard() {
+  # Token-guarded like release_install_lock: only drop the guard if it is still
+  # ours (see that function for why an unreadable token errs toward keeping it).
+  if [ -n "${INSTALL_LOCK_RECLAIM_TOKEN:-}" ] && \
+    [ "$(cat "$INSTALL_LOCK_RECLAIM_DIR/token" 2>/dev/null || true)" = "$INSTALL_LOCK_RECLAIM_TOKEN" ]; then
+    rm -rf "$INSTALL_LOCK_RECLAIM_DIR" 2>/dev/null || true
+  fi
+  INSTALL_LOCK_RECLAIM_TOKEN=""
+}
+
+# Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
+# uv tool dir). Use an atomic mkdir lock dir with a PID + timestamp so a crashed
+# holder's lock can be aged out (see install_lock_is_stale). Avoid shell
+# redirection to a lock file here: when the installer runs as root and HOME is
+# user-writable, opening ~/.deepagents/install.lock would follow a symlink before
+# any post-open validation can run.
+acquire_install_lock() {
+  local lock_root="$HOME/.deepagents"
+  mkdir -p "$lock_root"
+  fix_owner "$lock_root"
+
+  INSTALL_LOCK_DIR="$lock_root/install.lock.d"
+  INSTALL_LOCK_RECLAIM_DIR="$lock_root/install.lock.reclaim.d"
+
+  while true; do
+    wait_for_install_lock_reclaim_guard || continue
+
+    if mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+      break
+    fi
+
+    if install_lock_is_stale; then
+      local _stale_id="${INSTALL_LOCK_STALE_ID:-}"
+      if [ -z "$_stale_id" ] || ! acquire_install_lock_reclaim_guard; then
+        continue
+      fi
+      if [ "$(install_lock_identity 2>/dev/null || true)" != "$_stale_id" ]; then
+        release_install_lock_reclaim_guard
+        continue
+      fi
+
+      log_warn "Removing stale installer lock at $INSTALL_LOCK_DIR"
+      # Only reclaim the exact lock instance that was inspected as stale, so this
+      # rename can never move a fresh owner's lock aside. Two mechanisms cover
+      # the window: the identity re-check above rejects a lock that was already
+      # replaced before we took the reclaim guard, and the guard then blocks
+      # peers (via wait_for_install_lock_reclaim_guard) from creating a fresh
+      # lock at the canonical path until this rename completes.
+      local _stale_reclaim="${INSTALL_LOCK_DIR}.reclaim.$$"
+      if mv "$INSTALL_LOCK_DIR" "$_stale_reclaim" 2>/dev/null; then
+        rm -rf "$_stale_reclaim" 2>/dev/null || true
+        release_install_lock_reclaim_guard
+      elif [ "$(install_lock_identity 2>/dev/null || true)" != "$_stale_id" ]; then
+        release_install_lock_reclaim_guard
+        continue
+      else
+        release_install_lock_reclaim_guard
+        # The stale lock can be neither renamed nor removed (typically it is
+        # owned by another user). Fail loudly rather than spin: `continue` skips
+        # the `sleep` below, so silently swallowing this error would busy-loop
+        # and spam the warning above forever.
+        log_error "Cannot reclaim stale installer lock at $INSTALL_LOCK_DIR."
+        log_error "Remove it manually or rerun as its owner, then retry."
+        exit 1
+      fi
+      continue
+    fi
+    sleep 1
+  done
+
+  INSTALL_LOCK_TOKEN="$$:$(date +%s 2>/dev/null || printf '0'):${RANDOM:-0}"
+  if ! printf '%s\n' "$INSTALL_LOCK_TOKEN" >"$INSTALL_LOCK_DIR/token" 2>/dev/null; then
+    rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
+    log_error "Cannot write installer lock metadata at $INSTALL_LOCK_DIR."
+    exit 1
+  fi
+  printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
+  date +%s >"$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true
+  fix_owner "$INSTALL_LOCK_DIR"
+  INSTALL_LOCK_KIND="mkdir"
+}
+
+release_install_lock() {
+  case "${INSTALL_LOCK_KIND:-}" in
+    mkdir)
+      # Remove the lock only while the on-disk token is still ours. A clean read
+      # that differs means a reclaimer took over the canonical path — never
+      # delete their live lock. An unreadable token is treated the same (skip):
+      # we cannot prove ownership, and erring toward a leak is safe because a
+      # stale lock ages out via install_lock_is_stale, whereas removing on an
+      # unverifiable read could delete a reclaimer's lock. Do not turn this into
+      # an unconditional `rm -rf`.
+      if [ -n "${INSTALL_LOCK_TOKEN:-}" ] && [ "$(cat "$INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$INSTALL_LOCK_TOKEN" ]; then
+        rm -rf "$INSTALL_LOCK_DIR" 2>/dev/null || true
+      fi
+      ;;
+  esac
+  release_install_lock_reclaim_guard
+  INSTALL_LOCK_KIND=""
+  INSTALL_LOCK_TOKEN=""
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
 PRERELEASE_REQUESTED="${DEEPAGENTS_CODE_PRERELEASE:-}"
+if [ -n "$POSITIONAL_TARGET" ]; then
+  if [ -n "$VERSION" ]; then
+    log_error "Do not combine a positional version with DEEPAGENTS_CODE_VERSION."
+    log_error "Use either the version argument, or the environment variable — not both."
+    exit 1
+  fi
+  VERSION="$POSITIONAL_TARGET"
+fi
 PRERELEASE="${PRERELEASE_REQUESTED:-allow}"
 PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
@@ -464,7 +797,11 @@ fi
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
-ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+ASSUME_YES="$(printf '%s' "${DEEPAGENTS_CODE_YES:-0}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+case "$ASSUME_YES" in
+  1|true|yes) ASSUME_YES="1" ;;
+  *)          ASSUME_YES="0" ;;
+esac
 # How ripgrep gets provisioned: "managed" (default) eagerly fetches the
 # pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
 # install`; "system" keeps the interactive package-manager path below. Any
@@ -615,11 +952,17 @@ install_uv() {
   if [ "$uv_install_rc" -ne 0 ]; then
     # Surface the downloader's own error (captured above) before the generic
     # line, so the user sees the real cause and the downloader's exit code.
+    if declare -F restore_terminal_after_signal >/dev/null 2>&1; then
+      restore_terminal_after_signal "$uv_install_rc"
+    fi
     cat "$uv_install_out" >&2
     rm -f "$uv_install_out" "$uv_script"
+    if declare -F log_signal_failure_hint >/dev/null 2>&1; then
+      log_signal_failure_hint "$uv_install_rc"
+    fi
     log_error "Failed to download uv installer (exit ${uv_install_rc}) from https://astral.sh/uv/install.sh"
     log_error "  Try again, or install uv manually: https://docs.astral.sh/uv/getting-started/installation/"
-    exit 1
+    exit "$uv_install_rc"
   fi
 
   # Verify the downloaded script starts with a shell shebang before executing
@@ -642,8 +985,14 @@ install_uv() {
   fi
   rm -f "$uv_install_out" "$uv_script"
   if [ "$uv_install_rc" -ne 0 ]; then
+    if declare -F restore_terminal_after_signal >/dev/null 2>&1; then
+      restore_terminal_after_signal "$uv_install_rc"
+    fi
+    if declare -F log_signal_failure_hint >/dev/null 2>&1; then
+      log_signal_failure_hint "$uv_install_rc"
+    fi
     log_error "uv installation failed. See errors above."
-    exit 1
+    exit "$uv_install_rc"
   fi
 }
 
@@ -689,6 +1038,7 @@ if ! resolve_uv_bin; then
     log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
     exit 1
   fi
+  acquire_install_lock
   log_info "uv not found — installing..."
   install_uv
   fix_owner "${HOME}/.local/bin"  # root installs: restore user ownership
@@ -784,7 +1134,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   # release literal would merely re-prompt an up-to-date user, never silently
   # skip a real upgrade. A shell installer can't import `packaging` to compare
   # semantically the way `update_check.py` does.
-  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
@@ -795,7 +1145,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_success "deepagents-code is already up to date."
+    log_success "Already up to date!"
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
@@ -814,7 +1164,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
   fi
 elif [ -n "$PRE_VERSION" ]; then
-  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  log_info "dcode ${PRE_VERSION} found — checking for updates..."
 else
   log_info "Installing ${PACKAGE}..."
 fi
@@ -868,6 +1218,9 @@ if [ -n "$cache_root" ]; then
       esac
     fi
   fi
+fi
+if [ -z "$INSTALL_LOCK_KIND" ]; then
+  acquire_install_lock
 fi
 if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
@@ -959,6 +1312,8 @@ if [ -n "$INSTALL_LOG" ]; then
 fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
+  restore_terminal_after_signal "$uv_rc"
+  log_signal_failure_hint "$uv_rc"
   log_error "Failed to install ${PACKAGE}. See errors above."
   # The log captured uv's full stderr (copied just above, before this exit), so
   # point the user at it — non-verbose mode trims uv's lines from the terminal
@@ -967,7 +1322,7 @@ if [ "$uv_rc" -ne 0 ]; then
     log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
   fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
-  exit 1
+  exit "$uv_rc"
 fi
 fix_owner "${HOME}/.local/bin" "${HOME}/.local/share/uv"  # uv binaries + tool data
 if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
@@ -1087,11 +1442,86 @@ detect_shell_profile() {
 # Check if ~/.local/bin is already referenced in the shell profile's PATH
 # config. Matches non-commented lines containing .local/bin in a PATH
 # assignment or fish_add_path. Returns 0 if already present.
+#
+# The alternation also recognizes the un-normalized ~/.local/share/../bin
+# spelling (share/.. collapses to .local, so it resolves to the same directory
+# as ~/.local/bin). Some tools write that spelling into a profile from
+# $XDG_DATA_HOME/../bin; without this we'd fail to see ~/.local/bin as already
+# on PATH and append a duplicate entry. This covers the common alias only — it
+# is not a full path normalizer, so other exotic spellings still slip through.
 local_bin_in_profile() {
   local profile="$1"
   [ -f "$profile" ] || return 1
-  grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*\.local/bin' \
-    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*\.local/bin'
+  grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*(\.local/bin|\.local/share/\.\./bin)' \
+    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*(\.local/bin|\.local/share/\.\./bin)'
+}
+
+managed_path_block_present() {
+  local profile="$1"
+  [ -f "$profile" ] || return 1
+  grep -F '# >>> deepagents-code installer >>>' "$profile" >/dev/null 2>&1
+}
+
+managed_path_block_has_line() {
+  local profile="$1" path_export="$2"
+  [ -f "$profile" ] || return 1
+  grep -F "$path_export" "$profile" >/dev/null 2>&1
+}
+
+append_managed_path_block() {
+  local profile="$1" path_export="$2"
+  {
+    echo ""
+    echo "# >>> deepagents-code installer >>>"
+    echo "$path_export"
+    echo "# <<< deepagents-code installer <<<"
+  } >>"$profile"
+}
+
+rewrite_managed_path_block() {
+  local profile="$1" path_export="$2" tmp_profile mode
+  tmp_profile=$(mktemp "$(dirname "$profile")/.deepagents-code-profile.XXXXXX") || return 1
+  register_temp "$tmp_profile"
+
+  awk -v begin="# >>> deepagents-code installer >>>" \
+    -v end="# <<< deepagents-code installer <<<" \
+    -v line="$path_export" '
+    BEGIN { in_block = 0; replaced = 0 }
+    $0 == begin {
+      # Emit the replacement only for the first marker: any accidental
+      # duplicate managed blocks are collapsed into this single one.
+      if (!replaced) {
+        print begin
+        print line
+        print end
+        replaced = 1
+      }
+      in_block = 1
+      next
+    }
+    in_block {
+      if ($0 == end) {
+        in_block = 0
+      }
+      next
+    }
+    { print }
+    END {
+      # A begin marker with no matching end marker means the block is malformed.
+      # Fail so the caller keeps the original profile (the mv below is skipped)
+      # rather than writing back a truncated file.
+      if (in_block != 0) {
+        exit 1
+      }
+    }
+  ' "$profile" >"$tmp_profile" || return 1
+  # mktemp created tmp_profile as 0600; carry over the profile's real perms so
+  # an in-place rewrite doesn't silently tighten (e.g.) a 0644 ~/.zshrc.
+  mode=$(stat -f '%OLp' "$profile" 2>/dev/null || stat -c '%a' "$profile" 2>/dev/null || true)
+  if [ -n "$mode" ]; then
+    chmod "$mode" "$tmp_profile" 2>/dev/null || true
+  fi
+  mv "$tmp_profile" "$profile"
 }
 
 # Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or
@@ -1146,19 +1576,35 @@ ensure_path_setup() {
     return 1
   fi
 
+  # Collapse $HOME prefix to ~ for a tidier display path.
+  local tilde_profile="${SHELL_PROFILE/#$HOME/\~}"
+
+  if managed_path_block_present "$SHELL_PROFILE"; then
+    if managed_path_block_has_line "$SHELL_PROFILE" "$PATH_EXPORT"; then
+      if [ "$VERBOSE" = "1" ]; then
+        log_info "deepagents-code PATH block already configured in ${tilde_profile}."
+      fi
+      return 2
+    fi
+    if rewrite_managed_path_block "$SHELL_PROFILE" "$PATH_EXPORT"; then
+      fix_owner "$SHELL_PROFILE"
+      log_success "Updated deepagents-code PATH block in ${tilde_profile}."
+      return 2
+    fi
+    log_warn "Could not update deepagents-code PATH block in ${tilde_profile}."
+    return 1
+  fi
+
   # Already in profile? No changes needed, but the current shell may still
   # lack ~/.local/bin on PATH (stale shell). Return 2 so the caller can emit
   # a reload/source hint instead of silently returning success.
   if local_bin_in_profile "$SHELL_PROFILE"; then
     if [ "$VERBOSE" = "1" ]; then
       # shellcheck disable=SC2088  # display string, literal ~/ is intended for readability
-      log_info "~/.local/bin already in ${SHELL_PROFILE}."
+      log_info "~/.local/bin already in ${tilde_profile}."
     fi
     return 2
   fi
-
-  # Collapse $HOME prefix to ~ for a tidier display path.
-  local tilde_profile="${SHELL_PROFILE/#$HOME/\~}"
 
   # Prompt interactively, or auto-add when non-interactive.
   local should_add=true
@@ -1177,11 +1623,7 @@ ensure_path_setup() {
         return 1
       }
     fi
-    {
-      echo ""
-      echo "# Added by deepagents-code installer"
-      echo "$PATH_EXPORT"
-    } >> "$SHELL_PROFILE"
+    append_managed_path_block "$SHELL_PROFILE" "$PATH_EXPORT"
     fix_owner "$SHELL_PROFILE"
     log_success "Added ~/.local/bin to PATH in ${tilde_profile}."
   else
@@ -1189,6 +1631,49 @@ ensure_path_setup() {
     log_info "  To use ${binary_name}, add to PATH:  ${PATH_EXPORT}"
   fi
 }
+
+classify_shadowing_command() {
+  local path="$1"
+  case "$path" in
+    /opt/homebrew/*|/usr/local/*)
+      if [ "$OS" = "macos" ]; then
+        printf 'Homebrew-managed'
+        return 0
+      fi
+      ;;
+    *pipx*)
+      printf 'pipx-managed'
+      return 0
+      ;;
+    */.local/bin/*)
+      printf 'user-local'
+      return 0
+      ;;
+  esac
+  printf 'existing'
+}
+
+detect_shadowing_install() {
+  local candidate expected original manager
+  for candidate in dcode deepagents-code; do
+    expected="${HOME}/.local/bin/${candidate}"
+    [ -x "$expected" ] || continue
+    original=$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)
+    [ -n "$original" ] || continue
+    # Same file reached via a different PATH spelling (e.g. ~/.local/share/../bin
+    # vs ~/.local/bin) is not a shadowing install. Keep the string equality as a
+    # fast path, but also accept `-ef` (true when both paths are the same device
+    # and inode, resolving `..` and symlinks) so aliases don't trigger a false
+    # "existing install" warning. A genuinely different binary has a distinct
+    # inode and still fails both checks, so only the false positive is skipped.
+    { [ "$original" = "$expected" ] || [ "$original" -ef "$expected" ]; } && continue
+    manager=$(classify_shadowing_command "$original")
+    log_warn "Detected ${manager} ${candidate} at ${original}."
+    log_warn "PATH order may run that binary instead of the uv tool at ${expected}."
+    log_warn "Restart your shell after this installer updates PATH, or remove the older install."
+  done
+}
+
 DCODE_BIN=""
 DCODE_NAME=""
 # Tracks whether the binary would have resolved via the user's original PATH,
@@ -1198,19 +1683,27 @@ DCODE_NAME=""
 # restarted or the env file is sourced.
 DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
-  if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
-    DCODE_BIN="$resolved"
+  if [ -x "${HOME}/.local/bin/${candidate}" ]; then
+    DCODE_BIN="${HOME}/.local/bin/${candidate}"
     DCODE_NAME="$candidate"
-    if PATH="$ORIGINAL_PATH" command -v "$candidate" >/dev/null 2>&1; then
+    if [ "$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)" = "$DCODE_BIN" ]; then
       DCODE_ON_PATH=true
     fi
     break
-  elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
-    DCODE_BIN="${HOME}/.local/bin/${candidate}"
-    DCODE_NAME="$candidate"
-    break
   fi
 done
+if [ -z "$DCODE_BIN" ]; then
+  for candidate in dcode deepagents-code; do
+    if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
+      DCODE_BIN="$resolved"
+      DCODE_NAME="$candidate"
+      if [ "$(PATH="$ORIGINAL_PATH" command -v "$candidate" 2>/dev/null || true)" = "$DCODE_BIN" ]; then
+        DCODE_ON_PATH=true
+      fi
+      break
+    fi
+  done
+fi
 
 # Collapse $HOME prefix to ~ for a tidier display path. Used in user-facing
 # log lines only; DCODE_BIN keeps the absolute path for any exec needs.
@@ -1220,6 +1713,8 @@ if [ -n "$DCODE_BIN" ] && [ -n "${HOME:-}" ]; then
     "$HOME"/*) DCODE_BIN_DISPLAY="~${DCODE_BIN#"$HOME"}" ;;
   esac
 fi
+
+detect_shadowing_install
 
 NEW_VERSION=""
 VERIFY_OK=false

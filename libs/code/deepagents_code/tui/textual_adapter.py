@@ -1,5 +1,4 @@
 """Textual UI adapter for agent execution."""
-# This module has complex streaming logic ported from execution.py
 
 from __future__ import annotations
 
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.types import Command, Interrupt
     from pydantic import TypeAdapter
-    from rich.console import Console
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 
@@ -54,6 +52,7 @@ from deepagents_code._session_stats import (
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
+    print_usage_table as print_usage_table,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -69,7 +68,6 @@ from deepagents_code._tool_stream import (
 )
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -188,82 +186,6 @@ def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     return _hitl_adapter_cache
 
 
-def print_usage_table(
-    stats: SessionStats,
-    wall_time: float,
-    console: Console,
-) -> None:
-    """Print a model-usage stats table to a Rich console.
-
-    Each row shows the serving provider alongside the model name. When the
-    session spans multiple models each gets its own row with a totals row
-    appended; single-model sessions show one row.
-
-    Args:
-        stats: Cumulative session stats.
-        wall_time: Total wall-clock time in seconds.
-        console: Rich console for output.
-    """
-    from rich.table import Table
-
-    has_time = wall_time >= 0.1  # noqa: PLR2004
-    if not (stats.request_count or stats.input_tokens or has_time):
-        return
-
-    if stats.per_model:
-        multi_model = len(stats.per_model) > 1
-
-        table = Table(
-            show_header=True,
-            header_style="bold",
-            box=None,
-            padding=(0, 2, 0, 0),
-            show_edge=False,
-        )
-        table.add_column("Provider", style="dim")
-        table.add_column("Model", style="dim")
-        table.add_column("Reqs", justify="right", style="dim")
-        table.add_column("InputTok", justify="right", style="dim")
-        table.add_column("OutputTok", justify="right", style="dim")
-
-        if multi_model:
-            for ms in stats.per_model.values():
-                table.add_row(
-                    ms.provider,
-                    ms.model_name,
-                    str(ms.request_count),
-                    format_token_count(ms.input_tokens),
-                    format_token_count(ms.output_tokens),
-                )
-            table.add_row(
-                "",
-                "Total",
-                str(stats.request_count),
-                format_token_count(stats.input_tokens),
-                format_token_count(stats.output_tokens),
-            )
-        else:
-            ms = next(iter(stats.per_model.values()))
-            table.add_row(
-                ms.provider,
-                ms.model_name,
-                str(stats.request_count),
-                format_token_count(stats.input_tokens),
-                format_token_count(stats.output_tokens),
-            )
-
-        console.print()
-        console.print("[bold]Usage Stats[/bold]")
-        console.print(table)
-    if has_time:
-        console.print()
-        console.print(
-            f"Agent active  {format_duration(wall_time)}",
-            style="dim",
-            highlight=False,
-        )
-
-
 _ask_user_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the `ask_user` interrupt validator."""
 
@@ -377,6 +299,7 @@ class TextualUIAdapter:
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
         request_ask_user: (
             Callable[
                 [list[Question]],
@@ -414,6 +337,9 @@ class TextualUIAdapter:
         self._sync_message_content = sync_message_content
         """Callback to sync final message content back to the store after streaming."""
 
+        self._sync_tool_message = sync_tool_message
+        """Callback to sync a tool widget's mutable state back to the store."""
+
         self._request_ask_user = request_ask_user
         """Async callback for `ask_user` interrupts.
 
@@ -450,6 +376,20 @@ class TextualUIAdapter:
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
 
+    def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
+        """Sync a tool widget when the app provided a store callback.
+
+        Total by contract: never raises. Call sites are scattered across the
+        turn loop, some outside try/except, so a sync failure must not abort
+        the turn — it is logged and swallowed here.
+        """
+        if self._sync_tool_message is None:
+            return
+        try:
+            self._sync_tool_message(tool_msg)
+        except Exception:
+            logger.exception("Failed to sync tool widget state to store")
+
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
 
@@ -466,6 +406,7 @@ class TextualUIAdapter:
         _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
+            self._sync_tool_widget(tool_msg)
         self._current_tool_messages.clear()
 
         # Clear active streaming message to avoid stale "active" state in the store.
@@ -1079,6 +1020,7 @@ async def execute_task_textual(
                                     tool_msg.set_success(output_str)
                                 else:
                                     tool_msg.set_error(output_str or "Error")
+                                adapter._sync_tool_widget(tool_msg)
                             except Exception:
                                 logger.exception(
                                     "Failed to update tool row for %s", tool_id
@@ -1361,6 +1303,7 @@ async def execute_task_textual(
                                     # the group, so this drives state, not a
                                     # visible per-tool spinner.
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
 
                             if buffer_id is not None:
@@ -1417,6 +1360,7 @@ async def execute_task_textual(
                 for tool_msg in adapter._current_tool_messages.values():
                     try:
                         tool_msg.pause_running()
+                        adapter._sync_tool_widget(tool_msg)
                     except Exception:
                         logger.exception(
                             "Failed to pause running state on tool widget %s",
@@ -1490,6 +1434,7 @@ async def execute_task_textual(
                                 if tool_msg is not None:
                                     try:
                                         tool_msg.set_success(output)
+                                        adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(
                                             "Failed to update ask_user row for %s",
@@ -1525,6 +1470,7 @@ async def execute_task_textual(
                                 if tool_msg is not None:
                                     try:
                                         tool_msg.set_error(output)
+                                        adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(
                                             "Failed to update ask_user row for %s",
@@ -1549,6 +1495,7 @@ async def execute_task_textual(
                             if tool_msg is not None:
                                 try:
                                     tool_msg.set_rejected()
+                                    adapter._sync_tool_widget(tool_msg)
                                 except Exception:
                                     logger.exception(
                                         "Failed to update ask_user row for %s",
@@ -1579,6 +1526,7 @@ async def execute_task_textual(
                             if tool_msg is not None:
                                 try:
                                     tool_msg.set_error(error_text)
+                                    adapter._sync_tool_widget(tool_msg)
                                 except Exception:
                                     logger.exception(
                                         "Failed to update ask_user row for %s",
@@ -1608,6 +1556,7 @@ async def execute_task_textual(
                         if tool_msg is not None:
                             try:
                                 tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                                adapter._sync_tool_widget(tool_msg)
                             except Exception:
                                 logger.exception(
                                     "Failed to update ask_user row for %s", tool_id
@@ -1623,6 +1572,7 @@ async def execute_task_textual(
                         resume_payload[interrupt_id] = {"decisions": decisions}
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
+                            adapter._sync_tool_widget(tool_msg)
                     else:
                         # Batch approval - one dialog for all parallel tool calls
                         await dispatch_hook(
@@ -1691,6 +1641,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
                                     if tool_name in {
@@ -1714,6 +1665,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
                                     if tool_name in {
@@ -1748,6 +1700,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
+                                    adapter._sync_tool_widget(tool_msg)
                                 # Bare reject aborts the turn and shows the
                                 # canned "Command rejected" banner so the user
                                 # can redirect. When a reason is supplied, the
@@ -1776,6 +1729,7 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
+                                    adapter._sync_tool_widget(tool_msg)
                                 completed_tool_result_ids.update(
                                     _dispatch_terminal_tool_result_hooks(
                                         adapter._current_tool_messages,
@@ -1796,6 +1750,7 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
+                                adapter._sync_tool_widget(tool_msg)
                             completed_tool_result_ids.update(
                                 _dispatch_terminal_tool_result_hooks(
                                     adapter._current_tool_messages,
@@ -2141,6 +2096,7 @@ async def _handle_interrupt_cleanup(
     for tool_msg in list(adapter._current_tool_messages.values()):
         try:
             tool_msg.set_rejected()
+            adapter._sync_tool_widget(tool_msg)
         except Exception:
             logger.exception(
                 "Failed to mark tool row rejected during interrupt cleanup"

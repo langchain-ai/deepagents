@@ -2007,6 +2007,30 @@ class TestCtrlDChatInput:
 
             exit_mock.assert_called_once()
 
+    async def test_ctrl_d_quits_with_non_empty_draft_hidden_by_modal(self) -> None:
+        """Ctrl+D should quit instead of editing a draft hidden behind a modal."""
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("d", "r", "a", "f", "t", "ctrl+a")
+
+            app.push_screen(UpdateAvailableScreen(_update_entry()))
+            await pilot.pause()
+
+            assert text_area.has_focus
+            assert app.focused is not text_area
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "draft"
+            exit_mock.assert_called_once()
+
 
 class TestCtrlCCopySelection:
     """Test Ctrl+C copying a focused input's selection instead of quitting."""

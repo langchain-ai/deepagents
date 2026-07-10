@@ -12590,7 +12590,7 @@ class DeepAgentsApp(App):
         chat_input = self._chat_input
         if chat_input is not None:
             text_area = chat_input.input_widget
-            if text_area is not None and text_area.has_focus and chat_input.value:
+            if text_area is not None and self.focused is text_area and chat_input.value:
                 text_area.action_delete_right()
                 return
         self.exit()

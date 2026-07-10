@@ -738,7 +738,7 @@ jobs:
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
-    needs: [prep, harbor]
+    needs: harbor
     # Runs after all shards. Skipped only when the matrix never ran (prep failed
     # the validation -> harbor skipped) or the run was cancelled; otherwise it
     # aggregates whatever shards uploaded, even if some shards failed.
@@ -751,9 +751,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       RUN_ID: ${{ github.run_id }}
-      # Effective shard count from prep; aggregation flags the run incomplete if
-      # fewer shards uploaded (a shard failed before writing its artifact).
-      EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
+      # Matrix job result: aggregation flags the run incomplete if a shard job
+      # failed. Empty shards (task-filtered slices) no-op successfully, so a
+      # filtered run is not falsely reported as incomplete.
+      HARBOR_RESULT: ${{ needs.harbor.result }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -787,14 +788,10 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
             exit 1
           fi
-          if ! [[ "$EXPECTED_SHARDS" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Invalid expected shard count: $EXPECTED_SHARDS"
-            exit 1
-          fi
           python3 .github/scripts/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
             --dataset "$DATASET" \
-            --expected-shards "$EXPECTED_SHARDS" \
+            --harbor-result "$HARBOR_RESULT" \
             --out-dir _shards
 
       - name: "📤 Upload combined results"

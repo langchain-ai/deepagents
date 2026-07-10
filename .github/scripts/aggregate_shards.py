@@ -9,9 +9,10 @@ of all shard artifacts), groups trials by task, and computes:
   - avg@K   passing trials over the EXPECTED trial count (tasks * rollouts), so
             missing rollouts of a present task count as failures.
 
-The summary is flagged ``incomplete`` when fewer shards uploaded than expected
-(``--expected-shards``) or a present task ran fewer than K rollouts, so scores
-from a partial run are not mistaken for a full one.
+The summary is flagged ``incomplete`` when the matrix job did not fully succeed
+(``--harbor-result`` != "success") or a present task ran fewer than K rollouts,
+so scores from a partial run are not mistaken for a full one. Legitimately-empty
+shards (task-filtered slices) no-op successfully and are not treated as losses.
 
 A trial is a pass only when its verifier reward is >= PASS_THRESHOLD. Errored,
 timed-out, or missing-verifier trials count as failures.
@@ -172,8 +173,7 @@ def render_step_summary(summary: dict) -> str:
         f"- Dataset: {summary.get('dataset') or 'n/a'}",
         f"- Model: {summary.get('model') or 'n/a'}",
         f"- Rollouts per task: {summary.get('rollouts_per_task')}",
-        f"- Shards: {summary.get('shards_found')}"
-        + (f" / {summary['expected_shards']} expected" if summary.get("expected_shards") else ""),
+        f"- Shards with results: {summary.get('shards_found')}",
     ]
     totals = summary["totals"]
     lines.append(
@@ -228,10 +228,13 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--dataset", default=None, help="Dataset ref, recorded in the summary.")
     parser.add_argument(
-        "--expected-shards",
-        type=int,
+        "--harbor-result",
         default=None,
-        help="Expected number of shards; the run is flagged incomplete if fewer uploaded.",
+        help=(
+            "The matrix job result (GitHub needs.harbor.result). Anything other "
+            "than 'success' means a shard failed, so the run is flagged incomplete. "
+            "Legitimately-empty shards (from task filtering) still count as success."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -241,17 +244,18 @@ def main(argv=None) -> int:
     out_dir = args.out_dir or args.root
     models, job_ids, by_task = aggregate(args.root)
     shards_found = len(job_ids)
+    # A shard actually failed only if the matrix job did not fully succeed. Empty
+    # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
+    shard_failure = args.harbor_result not in (None, "", "success")
 
     if not by_task:
-        # No results at all: incomplete whenever any shard was expected.
-        incomplete = bool(args.expected_shards and shards_found < args.expected_shards)
         summary = {
             "dataset": args.dataset,
             "model": None,
             "rollouts_per_task": args.rollouts,
             "shards_found": shards_found,
-            "expected_shards": args.expected_shards,
-            "incomplete": incomplete,
+            "harbor_result": args.harbor_result,
+            "incomplete": shard_failure,
             "totals": {"tasks": 0, "trials": 0, "expected_trials": 0, "passed": 0, "errored": 0},
             f"pass@{args.rollouts}": None,
             f"avg@{args.rollouts}": 0.0,
@@ -268,16 +272,15 @@ def main(argv=None) -> int:
         )
 
     dataset_passk, avg_at_k, totals, per_task = build_summary(by_task, args.rollouts)
-    # Incomplete if a shard is missing, or a present task ran fewer than K rollouts.
-    missing_shards = bool(args.expected_shards and shards_found < args.expected_shards)
+    # Incomplete if a shard job failed, or a present task ran fewer than K rollouts.
     missing_trials = totals["trials"] < totals["expected_trials"]
-    incomplete = missing_shards or missing_trials
+    incomplete = shard_failure or missing_trials
     summary = {
         "dataset": args.dataset,
         "model": next(iter(models)) if models else None,
         "rollouts_per_task": args.rollouts,
         "shards_found": shards_found,
-        "expected_shards": args.expected_shards,
+        "harbor_result": args.harbor_result,
         "incomplete": incomplete,
         "totals": totals,
         f"pass@{args.rollouts}": dataset_passk,
@@ -285,9 +288,8 @@ def main(argv=None) -> int:
     }
     if incomplete:
         print(
-            f"::warning::Aggregated an incomplete run "
-            f"(shards {shards_found}/{args.expected_shards}, "
-            f"trials {totals['trials']}/{totals['expected_trials']}); "
+            f"::warning::Aggregated an incomplete run (harbor result "
+            f"'{args.harbor_result}', trials {totals['trials']}/{totals['expected_trials']}); "
             "missing rollouts counted as failures.",
             file=sys.stderr,
         )

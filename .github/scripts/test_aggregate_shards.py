@@ -115,19 +115,33 @@ def test_missing_rollouts_count_as_failures(tmp_path: Path):
     assert summary["incomplete"] is True  # 1 trial < 3 expected
 
 
-def test_missing_shards_flag_incomplete(tmp_path: Path):
-    # A complete task, but the run expected 2 shards and only 1 uploaded.
-    _write_trial(tmp_path / "a__0", "taskA", reward=1.0, job_id="job1")
-    _write_trial(tmp_path / "a__1", "taskA", reward=1.0, job_id="job1")
+def test_shard_failure_flags_incomplete(tmp_path: Path):
+    # A complete task, but the matrix job did not fully succeed (a shard failed).
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
     out = tmp_path / "out"
     rc = agg.main(
-        [str(tmp_path), "--rollouts", "2", "--expected-shards", "2", "--out-dir", str(out)]
+        [str(tmp_path), "--rollouts", "2", "--harbor-result", "failure", "--out-dir", str(out)]
+    )
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["harbor_result"] == "failure"
+    assert summary["incomplete"] is True
+
+
+def test_filtered_run_with_success_is_not_incomplete(tmp_path: Path):
+    # Only one task's results landed (other shard slices were empty by task
+    # filtering), but every present task ran all K rollouts and the job succeeded.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=0.0)
+    out = tmp_path / "out"
+    rc = agg.main(
+        [str(tmp_path), "--rollouts", "2", "--harbor-result", "success", "--out-dir", str(out)]
     )
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
     assert summary["shards_found"] == 1
-    assert summary["expected_shards"] == 2
-    assert summary["incomplete"] is True  # 1 shard < 2 expected
+    assert summary["incomplete"] is False  # empty shards are not losses
 
 
 def test_multiple_models_is_rejected(tmp_path: Path):

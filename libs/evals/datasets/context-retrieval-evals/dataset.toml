@@ -1,14 +1,10 @@
-# Dataset manifest for langchain-ai/context-retrieval-evals
-# Add tasks using: harbor add <org>/<name>
-# Publish using: harbor publish
+# Local Harbor dataset for Deep Agents context-retrieval evals.
+# Run via: harbor run --path libs/evals/datasets/context-retrieval-evals ...
+# Not published to a registry, so tasks are discovered by scanning task dirs;
+# no per-task manifest entries are needed.
 
 [dataset]
 name = "langchain-ai/context-retrieval-evals"
 description = "Context retrieval evaluation tasks for Deep Agents."
 authors = []
 keywords = []
-
-[[tasks]]
-name = "langchain-ai/cb-cloud-1"
-digest = "sha256:2f6c7ae86ba6eb3c98a4ba0c2baf8d7831c8f8ba862cab12d038019077cf567b"
-

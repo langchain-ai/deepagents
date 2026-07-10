@@ -1,11 +1,4 @@
-schema_version = "1.3"
-artifacts = []
-
-[task]
-name = "langchain-ai/cb-cloud-1"
-description = "Context-Bench cloud retrieval task."
-authors = []
-keywords = []
+version = "1.3"
 
 [metadata]
 source = "contextbench"
@@ -13,21 +6,6 @@ suite = "cloud"
 difficulty = "easy"
 question_type = "comparison_tiebreak"
 
-[verifier]
-timeout_sec = 600.0
-collect = []
-
-[verifier.env]
-
-[agent]
-
 [environment]
 network_mode = "allowlist"
 allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", "*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", "api.anthropic.com", "api.smith.langchain.com"]
-build_timeout_sec = 600.0
-os = "linux"
-mcp_servers = []
-
-[environment.env]
-
-[solution.env]

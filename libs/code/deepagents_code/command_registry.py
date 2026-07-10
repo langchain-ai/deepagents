@@ -180,6 +180,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="cost",
     ),
     SlashCommand(
+        name="/tools",
+        description="List the tools available to the agent",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="mcp functions capabilities builtin built-in",
+    ),
+    SlashCommand(
         name="/reload",
         description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,

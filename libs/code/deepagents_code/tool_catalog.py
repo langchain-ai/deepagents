@@ -25,9 +25,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from deepagents_code._fake_models import _ToolBindingFakeModel
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from deepagents_code.mcp_tools import MCPServerStatus
+    from deepagents_code.mcp_tools import MCPServerInfo, MCPServerStatus
 
 logger = logging.getLogger(__name__)
 
@@ -232,9 +234,34 @@ def collect_mcp_catalog(
         logger.warning("MCP tool discovery failed for `tools list`", exc_info=True)
         return [], [], "MCP discovery failed; showing built-in tools only."
 
+    groups, unavailable = split_mcp_server_info(server_info)
+    return groups, unavailable, None
+
+
+def split_mcp_server_info(
+    server_info: Sequence[MCPServerInfo],
+) -> tuple[list[ToolGroup], list[UnavailableServer]]:
+    """Split loaded MCP server metadata into tool groups and unavailable servers.
+
+    Pure function shared by the CLI discovery path (`collect_mcp_catalog`) and
+    the interactive `/tools` command, which passes the app's already-loaded
+    `MCPServerInfo` list rather than re-discovering (Textual's running event
+    loop forbids the `asyncio.run` discovery path).
+
+    Servers that loaded but expose no tools are reported as `UnavailableServer`s
+    (errored, needing login, or disabled) rather than silently dropped —
+    surfacing exactly what a user debugging a missing tool needs to see.
+
+    Args:
+        server_info: Loaded MCP server metadata.
+
+    Returns:
+        `(groups, unavailable)`: per-server tool groups (only servers exposing
+        tools) and servers discovered with no tools and a non-`ok` status.
+    """
     groups: list[ToolGroup] = []
     unavailable: list[UnavailableServer] = []
-    for server in server_info or []:
+    for server in server_info:
         if server.tools:
             entries = tuple(
                 ToolEntry(name=tool.name, description=_first_line(tool.description))
@@ -255,7 +282,35 @@ def collect_mcp_catalog(
                     detail=server.error or "",
                 )
             )
-    return groups, unavailable, None
+    return groups, unavailable
+
+
+def build_catalog_from_server_info(
+    built_in: Sequence[ToolEntry],
+    server_info: Sequence[MCPServerInfo],
+) -> ToolCatalog:
+    """Assemble a `ToolCatalog` from pre-collected built-in tools and live MCP info.
+
+    The interactive `/tools` command entry point: it avoids the `asyncio.run`
+    MCP discovery in `collect_catalog` (unusable inside Textual's running event
+    loop) by reusing the MCP metadata the app already loaded. `mcp_error` is
+    always `None` here because discovery is not attempted — any load failures
+    are already reflected per-server in `server_info` as `UnavailableServer`s.
+
+    Args:
+        built_in: Built-in tools in bind order (from `collect_built_in_tools`).
+        server_info: The app's already-loaded MCP server metadata.
+
+    Returns:
+        A `ToolCatalog` with the built-in group first, then any MCP groups, plus
+        unavailable servers.
+    """
+    groups: list[ToolGroup] = [
+        ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=tuple(built_in))
+    ]
+    mcp_groups, unavailable = split_mcp_server_info(server_info)
+    groups.extend(mcp_groups)
+    return ToolCatalog(groups=tuple(groups), unavailable=tuple(unavailable))
 
 
 async def _load_mcp_server_info(

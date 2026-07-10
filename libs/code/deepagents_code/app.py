@@ -361,6 +361,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.tool_catalog import ToolCatalog
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
@@ -8327,6 +8328,88 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    async def _handle_tools_command(self, command: str) -> None:
+        """List the tools available to the agent as a chat message.
+
+        Built-in tools are enumerated off the UI thread (a synchronous,
+        credential-free agent compile) via `asyncio.to_thread`; MCP tools reuse
+        the already-loaded `self._mcp_server_info` rather than re-discovering,
+        because the MCP discovery path in `tool_catalog.collect_catalog` uses
+        `asyncio.run`, which cannot run inside Textual's live event loop.
+
+        Args:
+            command: The raw command text (displayed as a user message).
+        """
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.tool_catalog import (
+            build_catalog_from_server_info,
+            collect_built_in_tools,
+        )
+
+        await self._mount_message(UserMessage(command))
+
+        server_kwargs = self._server_kwargs or {}
+        enable_interpreter = bool(server_kwargs.get("enable_interpreter"))
+        try:
+            built_in = await asyncio.to_thread(
+                collect_built_in_tools,
+                assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                enable_interpreter=enable_interpreter,
+            )
+        except Exception:
+            logger.exception("Failed to enumerate built-in tools for /tools")
+            built_in = []
+            await self._mount_message(
+                AppMessage(
+                    "Could not enumerate built-in tools; showing MCP tools only.",
+                ),
+            )
+
+        catalog = build_catalog_from_server_info(built_in, self._mcp_server_info or [])
+        await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+
+    @staticmethod
+    def _render_tool_catalog(catalog: ToolCatalog) -> Content:
+        """Render a tool catalog as chat `Content`.
+
+        Shows a count header, each group's heading with its `name  description`
+        rows, then any MCP servers that loaded with no tools. Tool names and
+        descriptions come from tool objects (external), so they are added as
+        plain-text spans that are never parsed as markup.
+
+        Args:
+            catalog: Collected tool groups and unavailable MCP servers.
+
+        Returns:
+            Assembled `Content` ready to mount in an `AppMessage`.
+        """
+        total = sum(len(group.tools) for group in catalog.groups)
+        noun = "tool" if total == 1 else "tools"
+
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            Content.styled(f"{total} {noun} available", "bold"),
+        ]
+        for group in catalog.groups:
+            if not group.tools:
+                continue
+            name_width = max(len(entry.name) for entry in group.tools)
+            parts.extend(("\n\n", Content.styled(group.label, "bold")))
+            for entry in group.tools:
+                padded = entry.name.ljust(name_width)
+                row = f"  {padded}  {entry.description}".rstrip()
+                parts.extend(("\n", (row, "dim")))
+
+        if catalog.unavailable:
+            width = max(len(server.name) for server in catalog.unavailable)
+            parts.extend(("\n\n", Content.styled("Unavailable MCP servers", "bold")))
+            for server in catalog.unavailable:
+                padded = server.name.ljust(width)
+                detail = f": {server.detail}" if server.detail else ""
+                row = f"  {padded}  {server.status}{detail}".rstrip()
+                parts.extend(("\n", (row, "dim")))
+
+        return Content.assemble(*parts)
+
     def _goal_state_update(self) -> dict[str, Any]:
         """Build checkpoint state for TUI-owned goal/rubric metadata.
 
@@ -9633,7 +9716,7 @@ class DeepAgentsApp(App):
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/threads, /trace, "
+                "/tools, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -9829,6 +9912,8 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
+        elif cmd == "/tools":
+            await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.

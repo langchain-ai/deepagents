@@ -15,9 +15,11 @@ from deepagents_code.tool_catalog import (
     UnavailableServer,
     _first_line,
     _load_mcp_server_info,
+    build_catalog_from_server_info,
     collect_built_in_tools,
     collect_catalog,
     collect_mcp_catalog,
+    split_mcp_server_info,
 )
 
 # Core tools the agent always binds, independent of optional integrations.
@@ -209,6 +211,93 @@ class TestCollectMcpCatalog:
         assert mcp_error == "MCP discovery failed; showing built-in tools only."
         assert "secret" not in mcp_error
         assert "/path/mcp.json" not in mcp_error
+
+
+class TestSplitMcpServerInfo:
+    """Tests for the pure server-info splitter shared by CLI and `/tools`."""
+
+    def test_ok_server_becomes_group(self) -> None:
+        servers = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(
+                    MCPToolInfo(name="search_docs", description="Search the docs\nX"),
+                ),
+                status="ok",
+            ),
+        ]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == [
+            ToolGroup(
+                label="docs",
+                source="mcp",
+                tools=(ToolEntry(name="search_docs", description="Search the docs"),),
+            )
+        ]
+        assert unavailable == []
+
+    def test_non_ok_server_becomes_unavailable(self) -> None:
+        servers = [
+            MCPServerInfo(
+                name="broken", transport="http", status="error", error="boom"
+            ),
+        ]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == []
+        assert unavailable == [
+            UnavailableServer(name="broken", status="error", detail="boom")
+        ]
+
+    def test_ok_server_without_tools_is_dropped(self) -> None:
+        servers = [MCPServerInfo(name="empty", transport="http", status="ok")]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == []
+        assert unavailable == []
+
+
+class TestBuildCatalogFromServerInfo:
+    """Tests for the TUI entry point that avoids `asyncio.run` discovery."""
+
+    def test_built_in_first_then_live_mcp_no_error(self) -> None:
+        built_in = [ToolEntry(name="read_file", description="Read a file")]
+        servers = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                status="ok",
+            ),
+            MCPServerInfo(
+                name="broken", transport="http", status="error", error="boom"
+            ),
+        ]
+        catalog = build_catalog_from_server_info(built_in, servers)
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[0].source == "built-in"
+        assert catalog.groups[0].tools == (
+            ToolEntry(name="read_file", description="Read a file"),
+        )
+        assert catalog.groups[-1].label == "docs"
+        assert catalog.unavailable == (
+            UnavailableServer(name="broken", status="error", detail="boom"),
+        )
+        # Discovery is never attempted here, so there is no discovery error.
+        assert catalog.mcp_error is None
+
+    def test_does_not_run_mcp_discovery(self) -> None:
+        # The whole point of this path is to avoid `asyncio.run`-based discovery,
+        # which cannot run inside a live event loop.
+        with patch("deepagents_code.tool_catalog._load_mcp_server_info") as loader:
+            build_catalog_from_server_info([], [])
+        loader.assert_not_called()
+
+    def test_empty_inputs_yield_only_built_in_group(self) -> None:
+        catalog = build_catalog_from_server_info([], [])
+        assert len(catalog.groups) == 1
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[0].tools == ()
+        assert catalog.unavailable == ()
 
 
 class TestLoadMcpServerInfo:

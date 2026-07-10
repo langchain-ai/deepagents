@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import socket
+import subprocess
 import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
@@ -18,6 +19,8 @@ from deepagents_code.client.launch.server import (
     ServerProcess,
     _find_free_port,
     _port_in_use,
+    _server_process_group,
+    _terminate_server_process,
     wait_for_server_healthy,
 )
 
@@ -353,6 +356,23 @@ class TestWaitForServerHealthy:
 
 
 class TestServerProcess:
+    @pytest.fixture(autouse=True)
+    def _no_real_process_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Force the process-only shutdown fallback for placeholder-pid mocks.
+
+        `_stop_process` now tears down the server's whole process group via
+        `os.getpgid`/`os.killpg`. These tests drive `MagicMock` subprocesses
+        with fake pids, so let `_server_process_group` return `None` (by making
+        `os.getpgid` raise) to keep teardown deterministic and guarantee no
+        unrelated real pid is ever signaled. Group-teardown behavior is covered
+        explicitly in `TestTerminateServerProcess`.
+        """
+
+        def _raise(_pid: int) -> int:
+            raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+
     async def test_wait_for_graph_ready_resolves_graph_endpoint(self) -> None:
         """Graph readiness should force LangGraph to resolve graph factories."""
         client = _FakeAsyncClient(SimpleNamespace(status_code=200))
@@ -1058,3 +1078,290 @@ class TestServerProcess:
         assert os.environ.get("DEEPAGENTS_CODE_SERVER_MODEL") == old_value
         # Overrides NOT cleared (available for retry)
         assert "DEEPAGENTS_CODE_SERVER_MODEL" in server._env_overrides
+
+
+class TestServerSessionIsolation:
+    """Tests that `start()` detaches the server from dcode's terminal."""
+
+    @staticmethod
+    def _make_server(tmp_path: Path) -> ServerProcess:
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        return ServerProcess(config_dir=config_dir)
+
+    @staticmethod
+    def _mock_log_file(tmp_path: Path) -> MagicMock:
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+        return log_file
+
+    async def _spawn_and_capture(
+        self, tmp_path: Path, platform: str, monkeypatch: pytest.MonkeyPatch
+    ) -> MagicMock:
+        """Run `start()` on a patched platform and return the `Popen` mock."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", platform
+        )
+        server = self._make_server(tmp_path)
+        process = MagicMock(pid=4321)
+        process.poll.return_value = None
+        popen = MagicMock(return_value=process)
+        with (
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.client.launch.server.subprocess.Popen", popen),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
+            ),
+            patch("deepagents_code.client.launch.server._port_in_use"),
+        ):
+            await server.start()
+        return popen
+
+    async def test_posix_spawn_starts_new_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On POSIX the server is spawned in its own session/process group."""
+        popen = await self._spawn_and_capture(tmp_path, "linux", monkeypatch)
+        assert popen.call_args.kwargs["start_new_session"] is True
+
+    async def test_windows_spawn_without_new_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows the unsupported `setsid()` call is not requested."""
+        popen = await self._spawn_and_capture(tmp_path, "win32", monkeypatch)
+        assert popen.call_args.kwargs["start_new_session"] is False
+
+
+class TestServerProcessGroup:
+    """Tests for `_server_process_group` targeting logic."""
+
+    def test_returns_none_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows has no POSIX process groups, so signaling targets the root."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_process_gone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vanished process yields no group to signal."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+
+        def _raise(_pid: int) -> int:
+            raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_not_group_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A process that does not lead its own group is not group-signaled."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # pgid (5000) != pid (4321): the server shares another group.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 5000 if pid == 4321 else 999,
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_group_is_dcodes_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The server's group is never signaled when it equals dcode's own."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # Both the server and dcode (pid 0) resolve to the same group.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda _pid: 4321,
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_dedicated_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A dedicated leader group distinct from dcode's is returned."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 4321 if pid == 4321 else 999,
+        )
+        assert _server_process_group(4321) == 4321
+
+
+class TestTerminateServerProcess:
+    """Tests for detached process-group teardown."""
+
+    @staticmethod
+    def _own_group_process() -> MagicMock:
+        process = MagicMock()
+        process.pid = 4321
+        process.poll.return_value = None
+        return process
+
+    @staticmethod
+    def _patch_own_group(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make pid 4321 a dedicated group leader distinct from dcode's."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 4321 if pid == 4321 else 999,
+        )
+
+    def test_graceful_group_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGTERM is sent to the whole group and the process exits gracefully."""
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        process.wait.assert_called_once()
+        process.send_signal.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_timeout_escalates_to_group_sigkill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hung group is escalated to a group SIGKILL after the timeout."""
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            None,
+        ]
+
+        _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, signal.SIGKILL),),
+        ]
+        assert process.wait.call_count == 2
+        process.kill.assert_not_called()
+
+    def test_never_signals_dcodes_process_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the server shares dcode's group, only the root proc is signaled."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # Server pid and dcode (pid 0) resolve to the same group id.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda _pid: 4321,
+        )
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        killpg.assert_not_called()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+
+    def test_windows_signals_root_process_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows only the root process is signaled (no `killpg`)."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            None,
+        ]
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.kill.assert_called_once_with()
+
+    async def test_startup_failure_terminates_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed startup tears down the detached server group, not just root."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        process = self._own_group_process()
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await server.start()
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        assert server._process is None
+
+    async def test_restart_terminates_group_and_restarts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart tears down the old server group before starting a new one."""
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._process = self._own_group_process()
+
+        start_mock = AsyncMock()
+        with patch.object(server, "start", start_mock):
+            await server.restart()
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        start_mock.assert_awaited_once()
+        assert server._process is None

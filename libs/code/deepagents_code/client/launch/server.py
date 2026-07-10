@@ -357,6 +357,97 @@ def _build_server_env() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Process-group teardown
+# ---------------------------------------------------------------------------
+
+
+def _server_process_group(pid: int) -> int | None:
+    """Return the server's own process group id to signal, or `None`.
+
+    The server is spawned with `start_new_session=True` on POSIX, so it leads
+    its own session and process group (its pgid equals its pid). Signaling that
+    group terminates the whole `langgraph dev` process tree in one shot so no
+    descendants are left orphaned.
+
+    Returns `None` — meaning "signal only the root process" — on Windows (no
+    POSIX process groups) and whenever the server is not the leader of its own
+    dedicated group. The `pgid == os.getpgid(0)` guard makes it impossible to
+    ever target dcode's own process group, which would suspend or kill the TUI.
+
+    Args:
+        pid: Process id of the server subprocess.
+
+    Returns:
+        The server's dedicated process group id, or `None` to fall back to
+        signaling just the root process.
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        return None
+    if pgid != pid or pgid == os.getpgid(0):
+        return None
+    return pgid
+
+
+def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
+    """Terminate the `langgraph dev` server and its descendants.
+
+    Sends SIGTERM, waits `_SHUTDOWN_TIMEOUT` for a graceful exit, then escalates
+    to SIGKILL. On POSIX the whole detached process group is signaled via
+    `os.killpg` so children spawned by `langgraph dev` cannot be orphaned; on
+    Windows (or if the server is not its own group leader) only the root process
+    is signaled. `_server_process_group` guarantees dcode's own process group is
+    never targeted.
+
+    Args:
+        process: The running server subprocess to terminate.
+    """
+    pid = process.pid
+    pgid = _server_process_group(pid)
+    scope = "process group" if pgid is not None else "process"
+
+    logger.info("Stopping langgraph dev server (pid=%d)", pid)
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            process.send_signal(signal.SIGTERM)
+        process.wait(timeout=_SHUTDOWN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("Server did not stop gracefully, killing %s", scope)
+        # `kill()`/`killpg()` live in this handler, so a raise here would escape
+        # the sibling `except OSError` below. Guard it explicitly:
+        # `ProcessLookupError` just means the process already exited (benign —
+        # nothing left to reap), while any other `OSError` means SIGKILL failed
+        # and the process is likely orphaned.
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                process.kill()
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            logger.warning("Server %s pid=%d did not exit after SIGKILL", scope, pid)
+        except ProcessLookupError:
+            logger.debug("Server %s pid=%d already exited before SIGKILL", scope, pid)
+        except OSError:
+            logger.exception(
+                "Failed to SIGKILL server %s pid=%d; it may be orphaned",
+                scope,
+                pid,
+            )
+    except ProcessLookupError:
+        # The server exited between the `poll()` check and the SIGTERM; nothing
+        # left to reap.
+        logger.debug("Server %s pid=%d already exited before SIGTERM", scope, pid)
+    except OSError:
+        logger.warning("Error stopping server", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # ServerProcess
 # ---------------------------------------------------------------------------
 
@@ -526,6 +617,14 @@ class ServerProcess:
             env=env,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
+            # Detach the server from dcode's controlling terminal and process
+            # group on POSIX. Without a new session the server inherits dcode's
+            # session/process group and is suspended (SIGTSTP) or hung up
+            # (SIGHUP) along with the TUI when its host terminal window/tab is
+            # backgrounded or closed. `start_new_session=True` runs `setsid()`
+            # so the server leads its own session/process group instead.
+            # `setsid()` has no Windows equivalent, so it stays off there.
+            start_new_session=(sys.platform != "win32"),
         )
 
         started = False
@@ -644,37 +743,7 @@ class ServerProcess:
             return
 
         if self._process.poll() is None:
-            logger.info("Stopping langgraph dev server (pid=%d)", self._process.pid)
-            try:
-                self._process.send_signal(signal.SIGTERM)
-                self._process.wait(timeout=_SHUTDOWN_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                logger.warning("Server did not stop gracefully, killing")
-                # `kill()` lives in this handler, so a raise here would escape
-                # the sibling `except OSError` below. Guard it explicitly:
-                # `ProcessLookupError` just means the process already exited
-                # (benign — nothing left to reap), while any other `OSError`
-                # means SIGKILL failed and the process is likely orphaned.
-                try:
-                    self._process.kill()
-                    self._process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Server process pid=%d did not exit after SIGKILL",
-                        self._process.pid,
-                    )
-                except ProcessLookupError:
-                    logger.debug(
-                        "Server process pid=%d already exited before SIGKILL",
-                        self._process.pid,
-                    )
-                except OSError:
-                    logger.exception(
-                        "Failed to SIGKILL server process pid=%d; it may be orphaned",
-                        self._process.pid,
-                    )
-            except OSError:
-                logger.warning("Error stopping server", exc_info=True)
+            _terminate_server_process(self._process)
 
         self._process = None
 

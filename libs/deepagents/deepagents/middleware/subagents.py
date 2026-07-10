@@ -922,7 +922,8 @@ def create_subagent_middleware(
     `model`/`middleware` inherit those defaults, matching the SDK's built-ins.
     `AsyncSubAgent`s are ignored and still use `AsyncSubAgentMiddleware`.
 
-    `permissions` is the fallback `FilesystemPermission` set for subagents without their own, matching `create_deep_agent`'s own precedence and enforcement.
+    `permissions` is the fallback `FilesystemPermission` set for subagents without
+    their own, matching `create_deep_agent`'s own precedence and enforcement.
     """
 
     def _fill_defaults(spec: SubAgent) -> SubAgent:

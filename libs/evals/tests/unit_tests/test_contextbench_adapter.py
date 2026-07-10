@@ -97,7 +97,7 @@ def test_generate_task_creates_self_contained_harbor_task(tmp_path: Path) -> Non
         'question_type = "comparison_tiebreak"\n\n'
         "[environment]\n"
         'network_mode = "allowlist"\n'
-        'allowed_hosts = ["astral.sh", "github.com", "*.githubusercontent.com", '
-        '"pypi.org", "*.pythonhosted.org", "api.anthropic.com", '
-        '"api.smith.langchain.com"]\n'
+        'allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", '
+        '"*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", '
+        '"api.anthropic.com", "api.smith.langchain.com"]\n'
     )

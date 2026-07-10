@@ -10,5 +10,5 @@ keywords = []
 
 [[tasks]]
 name = "langchain-ai/cb-cloud-1"
-digest = "sha256:b113e1b5159f5b065818e856367c372f53bc9bc82b565e76c349c0bb462ad865"
+digest = "sha256:2f6c7ae86ba6eb3c98a4ba0c2baf8d7831c8f8ba862cab12d038019077cf567b"
 

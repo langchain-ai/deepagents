@@ -137,9 +137,9 @@ def _write_task_files(
         # and call the model. Arbitrary web stays blocked, so answer-lookup is
         # still prevented. LangSmith enforces this statically via its egress proxy.
         'network_mode = "allowlist"\n'
-        'allowed_hosts = ["astral.sh", "github.com", "*.githubusercontent.com", '
-        '"pypi.org", "*.pythonhosted.org", "api.anthropic.com", '
-        '"api.smith.langchain.com"]\n'
+        'allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", '
+        '"*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", '
+        '"api.anthropic.com", "api.smith.langchain.com"]\n'
     )
 
 

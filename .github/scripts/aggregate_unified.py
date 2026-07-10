@@ -7,7 +7,10 @@ Each leaf directory contains:
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -110,3 +113,45 @@ def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str 
         with open(step_summary_path, "a") as f:
             f.write("## Unified evals — cross-model comparison\n\n")
             f.write(md)
+
+
+def _discover_leaves(root: Path) -> list[dict]:
+    leaves = []
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and (child / "summary.json").exists() and (child / "category.txt").exists():
+            leaves.append(read_leaf(child))
+    return leaves
+
+
+def _run_radar(radar_results_path: Path, out_dir: Path) -> None:
+    # arg list, no shell=True (Corridor guardrail). cwd = libs/evals per generate_radar CLI.
+    subprocess.run(
+        ["uv", "run", "--extra", "charts", "python", "scripts/generate_radar.py",
+         "--results", str(radar_results_path.resolve()),
+         "-o", str((out_dir / "radar.png").resolve()),
+         "--individual-dir", str((out_dir / "individual").resolve()),
+         "--title", "Deep Agents Unified Evals"],
+        cwd="libs/evals", check=False,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("root", type=Path)
+    parser.add_argument("--rollouts", type=int, required=True)
+    parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--no-radar", action="store_true")
+    args = parser.parse_args(argv)
+    out_dir = args.out_dir or args.root
+
+    leaves = _discover_leaves(args.root)
+    combined = combine(leaves)
+    write_outputs(combined, args.rollouts, out_dir, os.environ.get("GITHUB_STEP_SUMMARY"))
+
+    if not args.no_radar and len(combined["categories"]) >= 3:
+        _run_radar(out_dir / "radar_results.json", out_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

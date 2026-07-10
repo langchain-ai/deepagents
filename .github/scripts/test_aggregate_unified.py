@@ -71,3 +71,18 @@ def test_radar_results_shape():
     }
     rr = au.radar_results(combined)
     assert rr == [{"model": "m", "scores": {"autonomous": 0.5, "context": 0.7}}]
+
+
+def test_main_writes_outputs_and_skips_radar_for_subset(tmp_path, monkeypatch):
+    for name, cat, pk in [("a", "autonomous", 0.5), ("b", "context", 0.6)]:
+        d = tmp_path / f"harbor-m-{cat}"
+        d.mkdir()
+        (d / "summary.json").write_text(json.dumps(_summary("m", 3, pk, pk, 10, 15)))
+        (d / "category.txt").write_text(cat)
+    calls = []
+    monkeypatch.setattr(au.subprocess, "run", lambda *a, **k: calls.append(a))
+    out = tmp_path / "combined"
+    rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
+    assert rc == 0
+    assert (out / "unified_summary.json").exists()
+    assert calls == []  # only 2 categories -> radar skipped

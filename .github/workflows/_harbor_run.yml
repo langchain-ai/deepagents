@@ -19,8 +19,11 @@ on:
         type: string
         default: "dcode"
       langsmith_dataset:
+        # Explicit LangSmith dataset name. Empty = let the leaf derive it in-run
+        # (legacy harbor.yml behavior); non-empty = override, wins over everything
+        # (used by the unified orchestrator for per-(model×category) datasets).
         type: string
-        required: true
+        default: ""
       rollouts:
         type: string
         default: "3"
@@ -125,7 +128,7 @@ jobs:
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
-      HARBOR_LANGSMITH_DATASET_NAME: ${{ inputs.langsmith_dataset }}
+      HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -519,11 +522,13 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          # A dataset-name override (e.g. tau3-subset) wins; otherwise keep the
-          # value already resolved above (local-path-aware `local/...`, or the
+          # Precedence: an explicit caller override (unified orchestrator's
+          # per-(model×category) name) wins; else the tau3-subset name hook; else
+          # the value already resolved above (local-path-aware `local/...`, or the
           # registry ref) rather than falling back to $HARBOR_DATASET, which would
-          # clobber the local-dataset name.
-          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}"
+          # clobber the local-dataset name. HARBOR_LS_DATASET_OVERRIDE is a dedicated
+          # job-env var the tau3 step never writes, so it cannot be clobbered.
+          HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
           # Include the run id + attempt so all shards of this dispatch share one
           # experiment name (Harbor's LangSmith plugin uses an explicit name
           # verbatim and create-or-reuses it, converging the shards) while a

@@ -1,4 +1,4 @@
-"""Unit tests for `default_subagent_middleware` and `override_subagent_middleware`."""
+"""Unit tests for `create_subagent_middleware` and its default middleware stack."""
 
 from langchain.agents.middleware import TodoListMiddleware
 
@@ -8,8 +8,8 @@ from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SubAgentMiddleware,
-    default_subagent_middleware,
-    override_subagent_middleware,
+    _default_subagent_middleware,
+    create_subagent_middleware,
 )
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -19,7 +19,7 @@ def test_default_subagent_middleware_includes_summarization_for_chat_model() -> 
     backend = StateBackend()
     model = GenericFakeChatModel(messages=iter([]))
 
-    stack = default_subagent_middleware(model, backend)
+    stack = _default_subagent_middleware(model, backend)
 
     assert isinstance(stack[0], TodoListMiddleware)
     assert isinstance(stack[1], FilesystemMiddleware)
@@ -28,13 +28,13 @@ def test_default_subagent_middleware_includes_summarization_for_chat_model() -> 
 
 
 def test_default_subagent_middleware_skips_summarization_for_string_model() -> None:
-    stack = default_subagent_middleware("anthropic:claude-sonnet-5", StateBackend())
+    stack = _default_subagent_middleware("anthropic:claude-sonnet-5", StateBackend())
 
     assert not any(isinstance(m, SummarizationMiddleware) for m in stack)
     assert isinstance(stack[-1], PatchToolCallsMiddleware)
 
 
-def test_override_subagent_middleware_fills_in_defaults_for_user_subagents() -> None:
+def test_create_subagent_middleware_fills_in_defaults_for_user_subagents() -> None:
     backend = StateBackend()
     model = GenericFakeChatModel(messages=iter([]))
     gp_subagent = {
@@ -43,7 +43,7 @@ def test_override_subagent_middleware_fills_in_defaults_for_user_subagents() -> 
         "tools": [],
     }
 
-    middleware = override_subagent_middleware(
+    middleware = create_subagent_middleware(
         backend=backend,
         gp_subagent=gp_subagent,
         subagents=[
@@ -68,7 +68,7 @@ def test_override_subagent_middleware_fills_in_defaults_for_user_subagents() -> 
     assert isinstance(researcher["middleware"][0], TodoListMiddleware)
 
 
-def test_override_subagent_middleware_respects_explicit_overrides() -> None:
+def test_create_subagent_middleware_respects_explicit_overrides() -> None:
     backend = StateBackend()
     custom_middleware = [PatchToolCallsMiddleware()]
     default_model = GenericFakeChatModel(messages=iter([]))
@@ -79,7 +79,7 @@ def test_override_subagent_middleware_respects_explicit_overrides() -> None:
         "tools": [],
     }
 
-    middleware = override_subagent_middleware(
+    middleware = create_subagent_middleware(
         backend=backend,
         gp_subagent=gp_subagent,
         subagents=[

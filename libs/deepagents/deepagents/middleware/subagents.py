@@ -874,7 +874,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return await handler(request)
 
 
-def default_subagent_middleware(
+def _default_subagent_middleware(
     model: BaseChatModel | str | None,
     backend: BackendProtocol | BackendFactory,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
@@ -882,8 +882,8 @@ def default_subagent_middleware(
 
     Mirrors the stack `create_deep_agent` gives its own subagents
     (`TodoListMiddleware`, `FilesystemMiddleware`, summarization, then
-    `PatchToolCallsMiddleware`). Use this alongside `override_subagent_middleware`
-    when assembling a `SubAgent` by hand so it behaves like a default one.
+    `PatchToolCallsMiddleware`). Used by `create_subagent_middleware` when
+    assembling a `SubAgent` by hand so it behaves like a default one.
     """
     stack: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
@@ -895,7 +895,7 @@ def default_subagent_middleware(
     return stack
 
 
-def override_subagent_middleware(
+def create_subagent_middleware(
     *,
     backend: BackendProtocol | BackendFactory,
     gp_subagent: SubAgent,
@@ -924,7 +924,7 @@ def override_subagent_middleware(
         merged_spec.setdefault("model", gp_subagent.get("model"))
         merged_spec.setdefault(
             "middleware",
-            default_subagent_middleware(cast("BaseChatModel | str | None", merged_spec.get("model")), backend),
+            _default_subagent_middleware(cast("BaseChatModel | str | None", merged_spec.get("model")), backend),
         )
         return cast("SubAgent", merged_spec)
 

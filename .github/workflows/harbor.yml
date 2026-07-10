@@ -136,7 +136,7 @@ on:
         default: ""
         type: string
       rollouts_per_task:
-        description: "Rollouts (attempts) per task. Reported as pass@1..K and avg@k. No cap."
+        description: "Rollouts (attempts) per task = K. Reported as a single pass@K and avg@K. No cap."
         required: true
         default: "3"
         type: string
@@ -156,7 +156,7 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10; also models x shards x concurrency must be <= 40 concurrent sandboxes."
+        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10 (with concurrency capped at 4 and a single model, at most 40 concurrent sandboxes)."
         required: false
         default: "10"
         type: string
@@ -236,50 +236,15 @@ jobs:
       - name: "🔒 Validate single model + resource limits"
         # This workflow evaluates exactly ONE model. Fail fast (before the matrix
         # fans out) if the resolved model set is not a single model, or if the
-        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; their
-        # product bounds concurrent sandboxes to 40 for the one model). Inputs are
-        # read via env and int-parsed (no shell interpolation).
+        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; with one
+        # model their product bounds concurrent sandboxes to 40). Inputs are read
+        # via env (no shell interpolation) and int-parsed in the script.
+        # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
         env:
           N_SHARDS: ${{ inputs.n_shards || '10' }}
           CONCURRENCY: ${{ inputs.concurrency || '4' }}
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-        run: |
-          python - <<'PY'
-          import json, os, sys
-
-          MAX_SHARDS, MAX_CONCURRENCY = 10, 4
-
-          def parse_positive(name, raw):
-              raw = (raw or "").strip()
-              if not raw.isdigit() or int(raw) < 1:
-                  sys.exit(f"::error::Invalid {name} (must be a positive integer): {raw!r}")
-              return int(raw)
-
-          models = json.loads(os.environ["MODEL_MATRIX"]).get("include", [])
-          n_shards = parse_positive("n_shards", os.environ.get("N_SHARDS"))
-          concurrency = parse_positive("concurrency", os.environ.get("CONCURRENCY"))
-
-          errors = []
-          if len(models) != 1:
-              names = [m.get("model") for m in models]
-              errors.append(
-                  f"this workflow evaluates a single model, but the selection resolved "
-                  f"to {len(models)}: {names}. Pick exactly one model — model groups "
-                  "(all/set0/frontier/...) and comma-separated overrides are not accepted."
-              )
-          if n_shards > MAX_SHARDS:
-              errors.append(f"n_shards={n_shards} exceeds the cap of {MAX_SHARDS}")
-          if concurrency > MAX_CONCURRENCY:
-              errors.append(f"concurrency={concurrency} exceeds the cap of {MAX_CONCURRENCY}")
-          for err in errors:
-              print(f"::error::{err}")
-          if errors:
-              sys.exit(1)
-          print(
-              f"OK: single model ({models[0].get('model')}), n_shards={n_shards} "
-              f"(<= {MAX_SHARDS}), concurrency={concurrency} (<= {MAX_CONCURRENCY})"
-          )
-          PY
+        run: python .github/scripts/validate_harbor_limits.py
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -730,7 +695,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # shard-* so the aggregate job can glob every (model, shard) upload.
+          # shard-* so the aggregate job can glob every per-shard upload (this
+          # workflow is single-model, so job-index == shard index).
           name: shard-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
@@ -770,10 +736,28 @@ jobs:
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
       - name: "⬇️ Download shard results"
+        # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
+        # download failure (auth / network / rate-limit). Only the former aggregates
+        # an empty set; anything else fails the step, so a transient failure is never
+        # mistaken for a complete, zero-result run. Transient errors are retried.
         run: |
           mkdir -p _shards
-          gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards \
-            || echo "No shard-* artifacts found; aggregating an empty set."
+          attempt=1
+          while :; do
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards >dl.log 2>&1; then
+              break
+            fi
+            if grep -qi 'no artifact' dl.log; then
+              echo "::warning::No shard-* artifacts matched; aggregating an empty set."
+              break
+            fi
+            echo "Shard download attempt ${attempt} failed:"; cat dl.log
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Shard download failed after ${attempt} attempts (not an empty-artifact case)."
+              exit 1
+            fi
+            attempt=$((attempt + 1)); sleep $((attempt * 5))
+          done
           echo "Contents of _shards:"
           ls -1 _shards || true
 

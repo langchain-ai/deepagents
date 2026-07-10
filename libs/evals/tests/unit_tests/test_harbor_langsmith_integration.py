@@ -103,6 +103,25 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
 
 
+def test_harbor_run_step_validates_dispatch_inputs_before_use() -> None:
+    """The `⚓ Run Harbor` step must allowlist-validate every dispatch input it
+    interpolates into a shell command, so a malicious `workflow_dispatch` value
+    can't inject shell. These regexes are security-relevant; the prior whole-file
+    test asserted them but the functional-flag refactor dropped that coverage, so
+    pin them here — scoped to the extracted step, which is stronger than a
+    whole-file substring match (a regex in an unrelated step wouldn't satisfy it).
+    """
+    workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
+    run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
+    run_step = run_step.split("      - name:", maxsplit=1)[0]
+
+    # rollouts must be a positive integer; dataset and resolved task names must
+    # match a conservative allowlist before reaching the shell / harbor CLI.
+    assert '[[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]' in run_step
+    assert '[[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]' in run_step
+    assert '[[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]' in run_step
+
+
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
 

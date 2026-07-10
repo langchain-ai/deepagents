@@ -23,6 +23,7 @@ from deepagents_code.configurable_model import (
     _get_context,
     _is_anthropic_model,
     _is_fireworks_model,
+    _is_openai_model,
 )
 
 
@@ -576,9 +577,11 @@ class TestFireworksSessionSettings:
             }
         }
 
-    def test_non_fireworks_model_unchanged_with_thread_id(self) -> None:
+    def test_non_fireworks_non_openai_model_unchanged_with_thread_id(self) -> None:
+        model = _make_model("gemini-3.5-flash")
+        model._get_ls_params.return_value = {"ls_provider": "google_genai"}
         request = _make_request(
-            _make_model("gpt-5.5"),
+            model,
             context=CLIContext(thread_id="thread-123"),
         )
         captured: list[ModelRequest] = []
@@ -719,6 +722,130 @@ class TestFireworksSessionSettings:
         assert captured[0].model_settings["extra_headers"] is not original_headers
 
 
+class TestOpenAIPromptCacheKey:
+    """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
+
+    def test_openai_model_gets_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model is request.model
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_prompt_cache_key_merged_with_existing_settings(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"temperature": 0.5},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "temperature": 0.5,
+            "prompt_cache_key": "thread-123",
+        }
+
+    def test_existing_prompt_cache_key_not_overwritten(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"prompt_cache_key": "custom-cache"},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+        assert captured[0].model_settings == {"prompt_cache_key": "custom-cache"}
+
+    def test_empty_thread_id_skips_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id=""),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_no_prompt_cache_key_without_thread_id(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_openai_swap_gets_prompt_cache_key(self) -> None:
+        override = _make_model("gpt-5.6")
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="openai:gpt-5.6", thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is override
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    async def test_async_openai_model_gets_prompt_cache_key(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        await _mw.awrap_model_call(request, handler)
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    def test_caller_model_settings_not_mutated(self) -> None:
+        """Injection copies the caller's dict instead of mutating in place."""
+        model_settings = {"temperature": 0.5}
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings=model_settings,
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert model_settings == {"temperature": 0.5}
+        assert captured[0].model_settings is not model_settings
+
+
 class TestIsFireworksModel:
     """Direct tests for the `_is_fireworks_model` helper."""
 
@@ -742,6 +869,26 @@ class TestIsFireworksModel:
         model = MagicMock(spec=BaseChatModel)
         model._get_ls_params.return_value = {"ls_provider": 123}
         assert _is_fireworks_model(model) is False
+
+
+class TestIsOpenAIModel:
+    """Direct tests for the `_is_openai_model` helper."""
+
+    def test_returns_true_for_openai(self) -> None:
+        assert _is_openai_model(_make_model("gpt-5.6")) is True
+
+    def test_returns_false_for_non_openai(self) -> None:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        assert _is_openai_model(model) is False
+
+    def test_returns_false_for_plain_object(self) -> None:
+        assert _is_openai_model(object()) is False
+
+    def test_returns_false_when_ls_params_returns_none(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = None
+        assert _is_openai_model(model) is False
 
 
 class TestIsAnthropicModel:

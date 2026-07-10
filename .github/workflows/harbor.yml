@@ -570,7 +570,11 @@ jobs:
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
+          # Include the run id + attempt so all shards of this dispatch share one
+          # experiment name (Harbor's LangSmith plugin uses an explicit name
+          # verbatim and create-or-reuses it, converging the shards) while a
+          # later dispatch or re-run gets its own experiment.
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"

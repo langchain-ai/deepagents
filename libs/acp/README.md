@@ -6,6 +6,9 @@ This directory contains an [Agent Client Protocol (ACP)](https://agentclientprot
 
 It includes an example coding agent that uses Anthropic's Claude models to write code with its built-in filesystem tools and shell, but you can also connect any Deep Agent with additional tools or different agent architectures!
 
+> [!TIP]
+> Want a ready-made coding agent instead of wiring up your own? The [`deepagents-code`](https://pypi.org/project/deepagents-code/) package (the `dcode` terminal coding agent) can expose its prebuilt coding agent as an ACP server with a single command — no custom agent code required. See [Use the prebuilt Deep Agents Code agent (`dcode --acp`)](#use-the-prebuilt-deep-agents-code-agent-dcode---acp) below. The rest of this guide covers running a bare/general Deep Agent, which does not include the `dcode` coding agent.
+
 ## Getting started
 
 First, make sure you have [Zed](https://zed.dev/) and [`uv`](https://docs.astral.sh/uv/) installed.
@@ -116,6 +119,46 @@ toad acp "python path/to/your_server.py" .
 # or
 toad acp "uv run python path/to/your_server.py" .
 ```
+
+## Use the prebuilt Deep Agents Code agent (`dcode --acp`)
+
+If you don't need a custom agent, [`deepagents-code`](https://pypi.org/project/deepagents-code/) — the `dcode` terminal coding agent — can run its prebuilt coding agent as an ACP server over stdio. This ships the full `dcode` coding agent (filesystem tools, shell, MCP support, and subagents), unlike the bare/general Deep Agent used elsewhere in this guide.
+
+Install `deepagents-code` together with the ACP dependencies:
+
+```sh
+uv tool install -U deepagents-code --with deepagents-acp
+```
+
+Then point your ACP-compatible editor at `dcode --acp`. For Zed, add this to your `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Deep Agents Code": {
+      "type": "custom",
+      "command": "dcode",
+      "args": ["--acp"]
+    }
+  }
+}
+```
+
+Select a model by passing `--model` (in `provider:model-name` form) to the command:
+
+```json
+{
+  "agent_servers": {
+    "Deep Agents Code": {
+      "type": "custom",
+      "command": "dcode",
+      "args": ["--acp", "--model", "anthropic:claude-sonnet-4-5"]
+    }
+  }
+}
+```
+
+`dcode` reads provider API keys from the environment (e.g. `ANTHROPIC_API_KEY`), the same way it does in the terminal. Run `dcode --help` to see the other flags supported in ACP mode, such as `--mcp-config` and `--no-mcp`.
 
 ## Model Switching
 

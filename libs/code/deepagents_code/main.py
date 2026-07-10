@@ -276,6 +276,7 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code._version import __version__ as cli_version
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
+        clear_startup_auto_update_failure,
         create_update_log_path,
         detect_shadowed_dcode_safe,
         format_release_age_parenthetical,
@@ -285,9 +286,11 @@ def _run_startup_auto_update(console: "Console") -> None:
         is_installed_version_at_least,
         is_update_check_enabled,
         mark_auto_update_default_acknowledged,
+        mark_startup_auto_update_failed,
         perform_upgrade,
         release_requires_prereleases,
         should_announce_auto_update_default,
+        should_skip_startup_auto_update_after_failure,
         upgrade_command,
     )
 
@@ -339,6 +342,19 @@ def _run_startup_auto_update(console: "Console") -> None:
                 highlight=False,
             )
             return
+        if should_skip_startup_auto_update_after_failure(latest):
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] Skipping automatic update to "
+                f"v{latest} after a recent failed attempt. Update manually: "
+                f"[cyan]{cmd}[/cyan]\nContinuing with v{cli_version}.",
+                highlight=False,
+            )
+            return
         if should_announce_auto_update_default():
             # First-run consent/migration: auto-update is on only because of the
             # opt-out default, not an explicit choice. Announce it once and skip
@@ -386,6 +402,7 @@ def _run_startup_auto_update(console: "Console") -> None:
             perform_upgrade(log_path=log_path, target_version=latest)
         )
         if success:
+            clear_startup_auto_update_failure(latest)
             # If a stale `dcode` is earlier on PATH, the auto-restart would
             # re-exec into the old binary and the user would silently keep
             # running the pre-upgrade version. Detect that *before* the
@@ -434,6 +451,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
+        mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
         cmd = upgrade_command(
             include_prereleases=True if update_needs_prereleases else None,
@@ -3636,7 +3654,9 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
-            _run_startup_auto_update(console)
+            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
+            if resume_thread is None:
+                _run_startup_auto_update(console)
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
@@ -3647,7 +3667,6 @@ def cli_main() -> None:
             # Instead of resolving thread_id here with synchronous asyncio.run()
             # DB calls, pass the raw resume request to the TUI and let it
             # resolve asynchronously during startup.
-            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
             thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess

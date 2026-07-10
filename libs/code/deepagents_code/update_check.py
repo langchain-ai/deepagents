@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -149,6 +150,16 @@ UPDATE_LOG_RETENTION_DAYS = 14
 
 UPDATE_LOG_MAX_FILES = 10
 """Keep at most this many newest update logs."""
+
+STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN = CACHE_TTL
+"""Seconds to suppress same-version startup auto-update retries after failure."""
+
+_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY = "startup_auto_update_failed_version"
+_STARTUP_AUTO_UPDATE_FAILED_AT_KEY = "startup_auto_update_failed_at"
+_STARTUP_AUTO_UPDATE_FAILURE_KEYS: tuple[str, ...] = (
+    _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY,
+    _STARTUP_AUTO_UPDATE_FAILED_AT_KEY,
+)
 
 UpgradeProgressCallback = Callable[[str], Awaitable[None] | None]
 
@@ -928,6 +939,40 @@ def _write_update_state(
     return True
 
 
+def should_skip_startup_auto_update_after_failure(version: str) -> bool:
+    """Return whether startup auto-update should skip a recently failed version."""
+    data = _read_update_state()
+    failed_version = data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY)
+    failed_at = data.get(_STARTUP_AUTO_UPDATE_FAILED_AT_KEY)
+    return bool(
+        failed_version == version
+        and isinstance(failed_at, (int, float))
+        and time.time() - failed_at < STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN
+    )
+
+
+def mark_startup_auto_update_failed(version: str) -> bool:
+    """Persist a same-version startup auto-update retry cooldown marker.
+
+    Returns:
+        `True` if the marker was written, `False` otherwise.
+    """
+    return _write_update_state(
+        {
+            _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY: version,
+            _STARTUP_AUTO_UPDATE_FAILED_AT_KEY: time.time(),
+        }
+    )
+
+
+def clear_startup_auto_update_failure(version: str) -> None:
+    """Clear a startup auto-update failure marker for `version` if present."""
+    data = _read_update_state()
+    if data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY) != version:
+        return
+    _write_update_state({}, remove_keys=_STARTUP_AUTO_UPDATE_FAILURE_KEYS)
+
+
 def should_notify_update(latest: str) -> bool:
     """Return whether the user should be notified about version *latest*.
 
@@ -1544,6 +1589,25 @@ async def _read_stream(
         await _emit_progress(progress, line)
 
 
+async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
+    """Terminate an install subprocess and its descendants when possible."""
+    if proc.returncode is not None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            with suppress(ProcessLookupError):
+                proc.kill()
+    else:
+        with suppress(ProcessLookupError):
+            proc.kill()
+    with suppress(ProcessLookupError):
+        await proc.wait()
+
+
 async def _run_install_subprocess(
     cmd: str,
     *,
@@ -1568,6 +1632,9 @@ async def _run_install_subprocess(
 
     Returns:
         `(success, output)` — *success* is `True` iff the subprocess exited 0.
+
+    Raises:
+        asyncio.CancelledError: If the calling task is cancelled.
     """
     timeout = _UPGRADE_TIMEOUT
     if log_path is None:
@@ -1591,12 +1658,21 @@ async def _run_install_subprocess(
         log_file = None
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
+        if os.name == "posix":
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
@@ -1617,8 +1693,7 @@ async def _run_install_subprocess(
         )
     except TimeoutError:
         if proc is not None:
-            proc.kill()
-            await proc.wait()
+            await _terminate_install_process(proc)
         msg = f"Command timed out after {timeout}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
@@ -1627,6 +1702,13 @@ async def _run_install_subprocess(
         await _emit_progress(progress, msg)
         logger.warning(msg)
         return False, msg
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _terminate_install_process(proc)
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.close()
+        raise
     except OSError as exc:
         if log_file is not None:
             with suppress(OSError):

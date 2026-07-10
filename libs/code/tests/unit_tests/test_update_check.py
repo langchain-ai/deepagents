@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import sys
 import time
 import tomllib
@@ -33,6 +34,7 @@ from deepagents_code.update_check import (
     _requires_prerelease_dependency,
     _uv_tool_bin_dir,
     cleanup_update_logs,
+    clear_startup_auto_update_failure,
     clear_update_notified,
     create_update_log_path,
     dependency_refresh_command,
@@ -71,6 +73,7 @@ from deepagents_code.update_check import (
     is_valid_extra_name,
     is_valid_package_name,
     mark_auto_update_default_acknowledged,
+    mark_startup_auto_update_failed,
     mark_update_notified,
     mark_version_seen,
     parse_dependency_changes,
@@ -84,6 +87,7 @@ from deepagents_code.update_check import (
     set_auto_update,
     should_announce_auto_update_default,
     should_notify_update,
+    should_skip_startup_auto_update_after_failure,
     upgrade_command,
     upgrade_install_command,
 )
@@ -3847,6 +3851,33 @@ class TestRunInstallSubprocessFailureModes:
         assert success is False
         assert "timed out" in output
 
+    async def test_timeout_kills_process_group_on_posix(self, tmp_path) -> None:
+        """Timeout cleanup terminates shell descendants on POSIX."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX-specific")
+        log_path = tmp_path / "install.log"
+        with (
+            patch("deepagents_code.update_check._UPGRADE_TIMEOUT", 0.05),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                return_value="sleep 5",
+            ),
+            patch("deepagents_code.update_check.os.killpg", wraps=os.killpg) as killpg,
+        ):
+            success, output = await perform_install_extra("quickjs", log_path=log_path)
+        assert success is False
+        assert "timed out" in output
+        killpg.assert_called_once()
+        assert killpg.call_args.args[1] == signal.SIGKILL
+
     async def test_oserror_includes_exception_detail(self, tmp_path) -> None:
         """An OSError during exec must surface the exception class + message."""
         log_path = tmp_path / "install.log"
@@ -4452,6 +4483,60 @@ class TestAutoUpdateDefaultMigration:
             "deepagents_code.update_check.UPDATE_STATE_FILE", blocker / "state.json"
         ):
             assert mark_auto_update_default_acknowledged() is False
+
+
+class TestStartupAutoUpdateFailureCooldown:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary file."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_recent_same_version_skips(self, state_file) -> None:  # noqa: ARG002
+        """A recent startup auto-update failure suppresses the same version."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            assert mark_startup_auto_update_failed("2.0.0") is True
+        with patch("deepagents_code.update_check.time.time", return_value=101.0):
+            assert should_skip_startup_auto_update_after_failure("2.0.0") is True
+
+    def test_different_version_does_not_skip(self, state_file) -> None:  # noqa: ARG002
+        """A failure marker is scoped to the failed target version."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            mark_startup_auto_update_failed("2.0.0")
+        with patch("deepagents_code.update_check.time.time", return_value=101.0):
+            assert should_skip_startup_auto_update_after_failure("2.0.1") is False
+
+    def test_expired_failure_does_not_skip(self, state_file) -> None:  # noqa: ARG002
+        """The startup failure cooldown expires after the configured window."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            mark_startup_auto_update_failed("2.0.0")
+        with patch(
+            "deepagents_code.update_check.time.time",
+            return_value=100.0 + CACHE_TTL + 1,
+        ):
+            assert should_skip_startup_auto_update_after_failure("2.0.0") is False
+
+    def test_clear_removes_matching_failure_marker(self, state_file) -> None:
+        """Clearing a matching marker preserves unrelated update state."""
+        mark_version_seen("1.0.0")
+        mark_startup_auto_update_failed("2.0.0")
+
+        clear_startup_auto_update_failure("2.0.0")
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["seen_version"] == "1.0.0"
+        assert "startup_auto_update_failed_version" not in data
+        assert "startup_auto_update_failed_at" not in data
+
+    def test_clear_ignores_different_version(self, state_file) -> None:
+        """Clearing a different version leaves the failure marker intact."""
+        mark_startup_auto_update_failed("2.0.0")
+
+        clear_startup_auto_update_failure("2.0.1")
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["startup_auto_update_failed_version"] == "2.0.0"
 
 
 class TestShouldNotifyUpdate:

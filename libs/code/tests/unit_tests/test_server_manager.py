@@ -37,6 +37,7 @@ class TestServerConfigRoundTrip:
             auto_approve=True,
             interrupt_shell_only=True,
             shell_allow_list=["ls", "cat", "grep"],
+            allow_fs_tools=["ls", "read_file"],
             interactive=False,
             enable_shell=False,
             enable_ask_user=True,

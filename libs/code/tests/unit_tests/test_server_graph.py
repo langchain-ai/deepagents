@@ -200,6 +200,7 @@ class TestServerGraph:
             auto_approve=False,
             interrupt_shell_only=False,
             shell_allow_list=None,
+            fs_tools=None,
             enable_ask_user=False,
             enable_memory=True,
             enable_skills=True,

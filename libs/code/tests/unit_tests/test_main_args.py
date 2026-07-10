@@ -2234,6 +2234,129 @@ class TestParseInterpreterToolsFlag:
         assert exc_info.value.code == 2
 
 
+class TestParseAllowFsToolsFlag:
+    """Tests for `_parse_allow_fs_tools_flag`."""
+
+    def test_none_returns_none(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag(None) is None
+
+    def test_all_sentinel(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("all") == "all"
+
+    def test_explicit_list(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("ls,read_file,grep") == [
+            "ls",
+            "read_file",
+            "grep",
+        ]
+
+    def test_empty_value_exits(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("   ")
+        assert exc_info.value.code == 2
+
+    def test_unknown_tool_name_exits(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("read_file,bogus")
+        assert exc_info.value.code == 2
+
+    def test_missing_read_file_exits(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("ls,grep")
+        assert exc_info.value.code == 2
+
+    def test_all_inside_list_exits(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag("all,read_file")
+        assert exc_info.value.code == 2
+
+
+class TestAllowFsToolsArgument:
+    """Tests for --allow-fs-tools argument parsing and forwarding."""
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.allow_fs_tools is None
+
+    def test_parses_raw_value(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--allow-fs-tools", "ls,read_file"):
+            parsed = parse_args()
+            assert parsed.allow_fs_tools == "ls,read_file"
+
+    def test_forwarded_to_run_non_interactive(self) -> None:
+        """--allow-fs-tools is parsed and forwarded as allow_fs_tools."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "do the thing",
+                    "--allow-fs-tools",
+                    "ls,read_file",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["allow_fs_tools"] == ["ls", "read_file"]  # ty: ignore
+
+    def test_not_forwarded_as_none_when_omitted(self) -> None:
+        """When --allow-fs-tools is omitted, allow_fs_tools=None is forwarded."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["allow_fs_tools"] is None  # ty: ignore
+
+
 class TestInterpreterFlagParsing:
     """`--interpreter` is a tri-state `BooleanOptionalAction` (default `None`)."""
 

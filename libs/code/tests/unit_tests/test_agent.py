@@ -3086,6 +3086,205 @@ class TestCreateCliAgentShellMiddlewareWiring:
         )
 
 
+class TestCreateCliAgentFsToolsWiring:
+    """Verify `create_cli_agent` wires `fs_tools` into `FilesystemMiddleware`."""
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        """Create a settings mock suitable for `create_cli_agent` wiring tests."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = None
+        return mock_settings
+
+    def test_none_does_not_add_filesystem_middleware(self, tmp_path: Path) -> None:
+        """`fs_tools=None` (default) leaves the SDK's own default in place."""
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware_types = [type(m) for m in kwargs["middleware"]]
+        assert FilesystemMiddleware not in middleware_types
+
+    def test_explicit_list_adds_restricted_filesystem_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """`fs_tools=[...]` installs a `FilesystemMiddleware` restricted to it."""
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        fs_middleware = [
+            m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
+        ]
+        assert len(fs_middleware) == 1
+        assert fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
+
+    def test_all_adds_unrestricted_filesystem_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """`fs_tools="all"` installs a `FilesystemMiddleware` with every tool."""
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools="all",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        fs_middleware = [
+            m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
+        ]
+        assert len(fs_middleware) == 1
+        assert "read_file" in fs_middleware[0]._enabled_tools
+        assert "execute" in fs_middleware[0]._enabled_tools
+
+    def test_explicit_list_restricts_general_purpose_subagent(
+        self, tmp_path: Path
+    ) -> None:
+        """The auto-added `general-purpose` subagent inherits the restriction.
+
+        dcode always supplies its own explicit `general-purpose` spec (so the
+        SDK's default-subagent inheritance never fires), so the restriction
+        must be injected into that subagent's own `middleware` list directly, otherwise `task` could bypass `--allow-fs-tools` entirely.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        gp_subagent = next(s for s in subagents if s["name"] == "general-purpose")
+        gp_fs_middleware = [
+            m
+            for m in gp_subagent.get("middleware", [])
+            if isinstance(m, FilesystemMiddleware)
+        ]
+        assert len(gp_fs_middleware) == 1
+        assert gp_fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
+
+
 def _mock_agents_dir(agents_dir: Path) -> Mock:
     mock_settings = Mock()
     mock_settings.user_deepagents_dir = agents_dir

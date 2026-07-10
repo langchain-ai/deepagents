@@ -428,6 +428,19 @@ jobs:
           mkdir -p ~/.cache/harbor
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
+      - name: "✂️ Prune agent provider deps to selected model"
+        # The agent loads its model via init_chat_model, which lazily imports
+        # only the provider matching HARBOR_MODEL. langgraph.json ships every
+        # provider (for local `langgraph dev`); a single job needs just one, so
+        # drop the rest before Harbor builds the agent env. In-place edit of the
+        # ephemeral checkout only — the committed file is untouched. Pure stdlib,
+        # unit-tested in .github/scripts/test_prune_agent_deps.py. Both paths are
+        # absolute ($GITHUB_WORKSPACE) so this step doesn't depend on the job's
+        # `working-directory: libs/evals` default.
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
+            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -618,7 +631,11 @@ jobs:
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
+          # Include the run id + attempt so all shards of this dispatch share one
+          # experiment name (Harbor's LangSmith plugin uses an explicit name
+          # verbatim and create-or-reuses it, converging the shards) while a
+          # later dispatch or re-run gets its own experiment.
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -648,7 +665,7 @@ jobs:
             nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
           esac
 
-          echo "LangSmith plugin experiment base: $HARBOR_LANGSMITH_EXPERIMENT"
+          echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
           echo ""
 
@@ -723,7 +740,7 @@ jobs:
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
-            echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"
+            echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
               echo "- Harbor job dir: $HARBOR_JOB_DIR"
             fi

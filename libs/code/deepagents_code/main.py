@@ -21,9 +21,12 @@ import sys
 import traceback
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 if TYPE_CHECKING:
+    from typing import Literal
+
+    from deepagents import FsToolName
     from rich.console import Console
 
     from deepagents_code.app import AppResult
@@ -591,7 +594,7 @@ _FS_TOOL_NAMES = frozenset(
 
 def _parse_allow_fs_tools_flag(
     raw: str | None,
-) -> str | list[str] | None:
+) -> "Literal['all'] | list[FsToolName] | None":
     """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
 
     Args:
@@ -639,7 +642,7 @@ def _parse_allow_fs_tools_flag(
             "required by FilesystemMiddleware.\n"
         )
         sys.exit(2)
-    return names
+    return cast("list[FsToolName]", names)
 
 
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
@@ -1966,7 +1969,7 @@ async def run_textual_cli_async(
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: str | list[str] | None = None,
+    allow_fs_tools: "Literal['all'] | list[FsToolName] | None" = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2162,7 +2165,7 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    allow_fs_tools: str | list[str] | None = None,
+    allow_fs_tools: "Literal['all'] | list[FsToolName] | None" = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 

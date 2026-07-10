@@ -3192,9 +3192,7 @@ class TestCreateCliAgentFsToolsWiring:
         assert len(fs_middleware) == 1
         assert fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
 
-    def test_all_adds_unrestricted_filesystem_middleware(
-        self, tmp_path: Path
-    ) -> None:
+    def test_all_adds_unrestricted_filesystem_middleware(self, tmp_path: Path) -> None:
         """`fs_tools="all"` installs a `FilesystemMiddleware` with every tool."""
         from deepagents.middleware.filesystem import FilesystemMiddleware
 
@@ -3241,7 +3239,8 @@ class TestCreateCliAgentFsToolsWiring:
 
         dcode always supplies its own explicit `general-purpose` spec (so the
         SDK's default-subagent inheritance never fires), so the restriction
-        must be injected into that subagent's own `middleware` list directly, otherwise `task` could bypass `--allow-fs-tools` entirely.
+        must be injected into that subagent's own `middleware` list directly,
+        otherwise `task` could bypass `--allow-fs-tools` entirely.
         """
         from deepagents.middleware.filesystem import FilesystemMiddleware
 

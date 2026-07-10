@@ -15,12 +15,14 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
+    from deepagents import FsToolName
+
     from deepagents_code.project_utils import ProjectContext
 
 
@@ -258,7 +260,7 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
-    allow_fs_tools: str | list[str] | None = None
+    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None
     """Allowlist for `FilesystemMiddleware`'s `tools` param, from
     `--allow-fs-tools`.
 
@@ -468,7 +470,7 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
-        allow_fs_tools: str | list[str] | None = None,
+        allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
         mcp_config_path: str | None,

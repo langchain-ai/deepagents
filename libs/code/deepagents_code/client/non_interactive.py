@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -83,6 +83,7 @@ from deepagents_code.unicode_security import (
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
 
+    from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
@@ -1342,7 +1343,7 @@ async def run_non_interactive(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: str | list[str] | None = None,
+    allow_fs_tools: Literal["all"] | list[FsToolName] | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
     rubric_model: str | None = None,

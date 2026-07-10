@@ -1813,15 +1813,18 @@ def create_cli_agent(
         agent_middleware.append(
             FilesystemMiddleware(backend=composite_backend, tools=fs_tools)
         )
-    # Sync subagents don't inherit the main agent's `middleware=` (the SDK's
-    # inheritance path is bypassed when an explicit `general-purpose` subagent is
-    # provided). Inject the restriction into each subagent so `task` can't bypass
-    # `--allow-fs-tools`.
+        # Sync subagents don't inherit the main agent's `middleware=` (the SDK's
+        # inheritance path is bypassed when an explicit `general-purpose` subagent is
+        # provided). Inject the restriction into each subagent so `task` can't bypass
+        # `--allow-fs-tools`.
         for subagent in cast("list[SubAgent]", custom_subagents):
-            subagent["middleware"] = [
-                *subagent.get("middleware", []),
-                FilesystemMiddleware(backend=composite_backend, tools=fs_tools),
-            ]
+            subagent["middleware"] = cast(
+                "list[AgentMiddleware]",
+                [
+                    *subagent.get("middleware", []),
+                    FilesystemMiddleware(backend=composite_backend, tools=fs_tools),
+                ],
+            )
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, cast
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
+from deepagents_code.config import detect_provider, settings
+from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -113,6 +115,54 @@ def _workdir(configurable: dict[str, object]) -> Path:
     return Path(value)
 
 
+def _apply_model_identity(model_spec: str, model: object) -> None:
+    """Populate dcode `settings` model identity from the selected model.
+
+    `create_cli_agent` -> `get_system_prompt` builds the prompt's
+    `### Model Identity` section from the global dcode `settings` singleton
+    (`model_name`, `model_provider`, `model_context_limit`,
+    `model_unsupported_modalities`). Harbor builds the model itself via
+    `init_chat_model` and never touches those settings, so without this the
+    identity section renders empty and the eval agent never learns which model
+    it is. We set them here from Harbor's `configurable.model` spec plus the
+    model's resolved profile, mirroring the extraction
+    `deepagents_code.config.create_model` performs for the real CLI.
+
+    This mutates a process-level singleton; tests must snapshot/restore it (see
+    the autouse fixture in the unit tests).
+
+    Args:
+        model_spec: The model spec from `configurable.model` / `HARBOR_MODEL`,
+            e.g. `"anthropic:claude-sonnet-4-5"` or a bare `"claude-sonnet-4-5"`.
+        model: The instantiated chat model (read for its `.profile`).
+    """
+    parsed = ModelSpec.try_parse(model_spec)
+    if parsed is not None:
+        provider, name = parsed.provider, parsed.model
+    else:
+        name = model_spec.lstrip(":")
+        provider = detect_provider(name) or ""
+
+    settings.model_name = name
+    settings.model_provider = provider
+
+    # Mirror create_model: pull context window + unsupported input modalities
+    # from the model profile when the provider exposes one.
+    profile = getattr(model, "profile", None)
+    if isinstance(profile, dict):
+        max_input = profile.get("max_input_tokens")
+        settings.model_context_limit = max_input if isinstance(max_input, int) else None
+        modality_keys = {
+            "image_inputs": "image",
+            "audio_inputs": "audio",
+            "video_inputs": "video",
+            "pdf_inputs": "pdf",
+        }
+        settings.model_unsupported_modalities = frozenset(
+            label for key, label in modality_keys.items() if profile.get(key) is False
+        )
+
+
 def make_graph(config: dict[str, object] | None = None) -> object:
     """Create the Deep Agents Code CLI harness graph Harbor should run.
 
@@ -133,15 +183,30 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model_spec = _model_name(configurable)
+    model = init_chat_model(model_spec, **_model_kwargs(configurable))
+    # Feed the selected model into dcode's system-prompt `### Model Identity`
+    # section (create_cli_agent -> get_system_prompt reads it from `settings`).
+    _apply_model_identity(model_spec, model)
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
     with _scrub_shell_env():
+        # Do not pass `system_prompt`: leaving it unset makes `create_cli_agent`
+        # build the real Deep Agents Code (dcode) production system prompt via
+        # `get_system_prompt(interactive=False, cwd=...)`. Overriding it would mean
+        # the CLI-harness eval never exercises the dcode system prompt we ship. The
+        # sandbox/headless/workdir guidance the old override hand-rolled is already
+        # covered by the generated headless prompt.
+        #
+        # Do not pass `sandbox_type` either. We run locally (`sandbox=None`) on a
+        # shell backend rooted at Harbor's `cwd`, so the local-mode prompt (rooted
+        # at `cwd`) is the accurate description. A non-None `sandbox_type` would
+        # route `get_system_prompt` through `get_default_working_dir(sandbox_type)`,
+        # which raises `ValueError` for any provider not in dcode's sandbox registry
+        # (e.g. "harbor", which is not a registered provider).
         graph, _backend = create_cli_agent(
             model=model,
             assistant_id=assistant_id,
             sandbox=None,
-            sandbox_type="harbor",
-            system_prompt=_SYSTEM_PROMPT,
             interactive=False,
             auto_approve=True,
             enable_memory=False,

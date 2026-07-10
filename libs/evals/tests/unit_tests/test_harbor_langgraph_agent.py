@@ -4,10 +4,38 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+from deepagents_code.config import settings
 
 from deepagents_harbor.langgraph_project import langgraph_agent
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+_MODEL_IDENTITY_FIELDS = (
+    "model_name",
+    "model_provider",
+    "model_context_limit",
+    "model_unsupported_modalities",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_model_identity_settings() -> Iterator[None]:
+    """Snapshot/restore dcode's `settings` model-identity fields.
+
+    `make_graph` writes these process-level singleton fields (so the system
+    prompt's Model Identity section is populated). Without restoring them, a
+    test that runs `make_graph` would leak the model identity into later tests.
+    """
+    saved = {field: getattr(settings, field) for field in _MODEL_IDENTITY_FIELDS}
+    try:
+        yield
+    finally:
+        for field, value in saved.items():
+            setattr(settings, field, value)
 
 
 def test_langgraph_config_points_to_deepagent_factory() -> None:
@@ -104,14 +132,63 @@ def test_make_graph_builds_headless_local_deepagent(
     assert captured_create[0]["assistant_id"] == "trial-session"
     assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["sandbox"] is None
-    assert captured_create[0]["sandbox_type"] == "harbor"
+    # `make_graph` must NOT pass `sandbox_type`: it runs locally (sandbox=None), and
+    # a non-None sandbox_type routes get_system_prompt through
+    # get_default_working_dir(), which raises for unregistered providers like
+    # "harbor". Omitting it selects the local-mode prompt rooted at `cwd`.
+    assert "sandbox_type" not in captured_create[0]
     assert captured_create[0]["interactive"] is False
     assert captured_create[0]["auto_approve"] is True
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
     assert captured_create[0]["enable_shell"] is True
-    assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    # `make_graph` must NOT pass a system prompt: create_cli_agent then builds the
+    # real dcode production prompt (via get_system_prompt), which is what the CLI
+    # harness eval is supposed to evaluate. Passing an override would bypass it.
+    assert "system_prompt" not in captured_create[0]
+
+
+def test_make_graph_populates_model_identity_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`make_graph` must feed `configurable.model` into dcode `settings`.
+
+    create_cli_agent -> get_system_prompt renders the prompt's Model Identity
+    section from these settings, so without this wiring the eval agent's prompt
+    would omit which model it is running as.
+    """
+
+    class _Model:
+        # Shape mirrors a langchain model profile dict.
+        profile = {  # noqa: RUF012
+            "max_input_tokens": 200_000,
+            "image_inputs": True,
+            "audio_inputs": False,
+            "video_inputs": False,
+            "pdf_inputs": True,
+        }
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: _Model())
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_cli_agent",
+        lambda **_kwargs: (object(), object()),
+    )
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": "anthropic:claude-sonnet-4-5",
+                "cwd": str(tmp_path),
+            }
+        }
+    )
+
+    assert settings.model_name == "claude-sonnet-4-5"
+    assert settings.model_provider == "anthropic"
+    assert settings.model_context_limit == 200_000
+    assert settings.model_unsupported_modalities == frozenset({"audio", "video"})
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:

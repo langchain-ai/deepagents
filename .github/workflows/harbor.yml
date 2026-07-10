@@ -8,7 +8,7 @@
 #   LANGSMITH_API_KEY          — experiment tracking (always required)
 #   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
-#   OPENAI_API_KEY             — needed for OpenAI models
+#   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
 #   XAI_API_KEY                — needed for xAI/Grok models
 #   GROQ_API_KEY               — needed for Groq-hosted models
@@ -348,6 +348,10 @@ jobs:
               echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
               ;;
           esac
+
+          if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
+            missing+=("OPENAI_API_KEY")
+          fi
 
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"

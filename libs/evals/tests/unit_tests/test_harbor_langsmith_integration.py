@@ -256,6 +256,12 @@ def test_harbor_workflow_wires_tau3_subset() -> None:
     assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
     assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
     assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+    # tau3's verifier/user simulator needs OpenAI even when the agent model is
+    # hosted by another provider, so missing credentials should fail preflight.
+    assert "contains(inputs.dataset, 'tau3')" in workflow
+    assert "contains(inputs.dataset_override, 'tau3')" in workflow
+    assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in workflow
+    assert '[ "$model_provider" != "openai" ]' in workflow
 
 
 def test_tau3_subset_constant_is_well_formed() -> None:

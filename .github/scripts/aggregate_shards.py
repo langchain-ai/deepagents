@@ -4,9 +4,9 @@
 Reads every per-trial ``result.json`` under a directory tree (the merged output
 of all shard artifacts), groups trials by task, and computes:
 
-  - pass@k  the fraction of tasks that passed at least once within k rollouts
-            (unbiased estimator over k=1..K; the headline is pass@K).
-  - avg@k   the fraction of all rollouts that passed, i.e. passing trials over
+  - pass@K  the fraction of tasks that passed at least once within K rollouts
+            (K = rollouts_per_task; only this single k is reported).
+  - avg@K   the fraction of all rollouts that passed, i.e. passing trials over
             total trials (== passing rollouts / (tasks * rollouts)).
 
 A trial is a pass only when its verifier reward is >= PASS_THRESHOLD. Errored,
@@ -124,16 +124,17 @@ def aggregate(root: Path):
 
 
 def build_summary(by_task: dict, rollouts: int):
-    """Compute per-task rows plus dataset-level pass@k (k=1..K) and avg@k.
+    """Compute per-task rows plus dataset-level pass@K and avg@K, where K = rollouts.
 
-    Dataset pass@k averages each task's pass@k over the tasks that have at least
-    k trials (every task normally has >= rollouts trials, so all are included).
-    avg@k is the overall passing-trial fraction across the whole run.
+    Only the single k = rollouts is reported (no k < K sweep):
+      - pass@K: fraction of tasks that passed at least once within K rollouts.
+        Per task this is pass_at_k at k=min(rollouts, trials); with the usual
+        trials == rollouts it is 1.0 iff the task passed at least once.
+      - avg@K: passing rollouts / total rollouts across the whole run.
     """
-    ks = list(range(1, rollouts + 1))
     per_task = []
-    passk_sum = {k: 0.0 for k in ks}
-    passk_count = {k: 0 for k in ks}
+    passk_sum = 0.0
+    passk_count = 0
     total_trials = total_passed = total_errored = 0
 
     for task in sorted(by_task):
@@ -144,13 +145,12 @@ def build_summary(by_task: dict, rollouts: int):
         total_passed += c
         total_errored += errored
 
-        task_passk = {}
-        for k in ks:
-            if k <= n:
-                value = round(pass_at_k(n, c, k), 6)
-                task_passk[str(k)] = value
-                passk_sum[k] += value
-                passk_count[k] += 1
+        # Cap k to the trials available so a task with fewer than K trials still
+        # scores; normally n == rollouts so this is just pass@K.
+        task_passk = round(pass_at_k(n, c, min(rollouts, n)), 6) if n else None
+        if task_passk is not None:
+            passk_sum += task_passk
+            passk_count += 1
         per_task.append(
             {
                 "task": task,
@@ -161,11 +161,8 @@ def build_summary(by_task: dict, rollouts: int):
             }
         )
 
-    dataset_passk = {
-        str(k): (round(passk_sum[k] / passk_count[k], 6) if passk_count[k] else None)
-        for k in ks
-    }
-    # avg@k: passing rollouts / total rollouts run (== passing / (tasks * rollouts)).
+    dataset_passk = round(passk_sum / passk_count, 6) if passk_count else None
+    # avg@K: passing rollouts / total rollouts run (== passing / (tasks * rollouts)).
     avg_at_k = round(total_passed / total_trials, 6) if total_trials else 0.0
     totals = {
         "tasks": len(by_task),
@@ -191,10 +188,11 @@ def render_step_summary(summary: dict) -> str:
         f"- Tasks: {totals['tasks']} | Trials: {totals['trials']} | "
         f"Passed: {totals['passed']} | Errored: {totals['errored']}"
     )
+    k = summary.get("rollouts_per_task")
+    passk = summary["pass_at_k"]
     lines.extend(["", "| metric | value |", "|---|---|"])
-    for k, value in summary["pass_at_k"].items():
-        lines.append(f"| pass@{k} | {value:.3f} |" if value is not None else f"| pass@{k} | n/a |")
-    lines.append(f"| avg@k | {summary['avg_at_k']:.3f} |")
+    lines.append(f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |")
+    lines.append(f"| avg@{k} | {summary['avg_at_k']:.3f} |")
     return "\n".join(lines) + "\n"
 
 
@@ -245,7 +243,7 @@ def main(argv=None) -> int:
             "rollouts_per_task": args.rollouts,
             "shards_found": len(job_ids),
             "totals": {"tasks": 0, "trials": 0, "passed": 0, "errored": 0},
-            "pass_at_k": {},
+            "pass_at_k": None,
             "avg_at_k": 0.0,
         }
         write_outputs(summary, [], out_dir)

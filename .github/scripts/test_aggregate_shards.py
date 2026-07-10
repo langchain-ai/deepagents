@@ -70,14 +70,16 @@ def test_aggregate_and_summary(tmp_path: Path):
     assert job_ids == {"job1"}
 
     dataset_passk, avg_at_k, totals, per_task = agg.build_summary(by_task, 3)
-    # pass@k: mean over tasks of each task's pass@k (headline is pass@K=pass@3).
-    assert abs(dataset_passk["1"] - (1 / 3 + 0 + 1) / 3) < 1e-6
-    assert abs(dataset_passk["2"] - (2 / 3 + 0 + 1) / 3) < 1e-6
-    assert abs(dataset_passk["3"] - (1 + 0 + 1) / 3) < 1e-6
+    # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
+    assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
     assert totals == {"tasks": 3, "trials": 9, "passed": 4, "errored": 0}
-    # avg@k: passing rollouts / total rollouts = 4 / 9.
+    # avg@K: passing rollouts / total rollouts = 4 / 9.
     assert abs(avg_at_k - 4 / 9) < 1e-6
     assert len(per_task) == 3
+    # per-task pass@K is a scalar, not a k-sweep dict.
+    assert {r["task"]: r["pass_at_k"] for r in per_task} == {
+        "taskA": 1.0, "taskB": 0.0, "taskC": 1.0,
+    }
 
 
 def test_errored_and_missing_count_as_fail(tmp_path: Path):
@@ -104,13 +106,11 @@ def test_end_to_end_writes_files(tmp_path: Path):
     assert summary["dataset"] == "ds/x"
     assert summary["model"] == "m1"
     assert summary["totals"] == {"tasks": 1, "trials": 2, "passed": 1, "errored": 0}
-    assert summary["pass_at_k"]["1"] == 0.5
-    assert summary["pass_at_k"]["2"] == 1.0
+    assert summary["pass_at_k"] == 1.0  # pass@2: taskA passed at least once
     assert summary["avg_at_k"] == 0.5  # 1 passing rollout of 2
     rows = [json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()]
     assert rows == [
-        {"task": "taskA", "trials": 2, "passed": 1, "errored": 0,
-         "pass_at_k": {"1": 0.5, "2": 1.0}}
+        {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass_at_k": 1.0}
     ]
 
 
@@ -130,7 +130,7 @@ def test_empty_tree_is_no_op(tmp_path: Path):
     assert rc == 0
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["totals"]["tasks"] == 0
-    assert summary["pass_at_k"] == {}
+    assert summary["pass_at_k"] is None
     assert summary["avg_at_k"] == 0.0
 
 

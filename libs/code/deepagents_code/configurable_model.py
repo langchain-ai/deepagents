@@ -278,6 +278,10 @@ def _build_overrides(
     # because the middleware runs in the server subprocess where settings
     # are never updated by /model.
     if model_result is not None and request.system_prompt:
+        from deepagents.profiles.harness.harness_profiles import (
+            _transition_harness_profile_for_model,  # noqa: PLC2701
+        )
+
         from deepagents_code.agent import (
             MODEL_IDENTITY_RE,
             build_model_identity_section,
@@ -291,9 +295,7 @@ def _build_overrides(
             unsupported_modalities=model_result.unsupported_modalities,
         )
         patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
-        if patched != prompt:
-            overrides["system_prompt"] = patched
-        elif "### Model Identity" in prompt:
+        if patched == prompt and "### Model Identity" in prompt:
             logger.warning(
                 "System prompt contains '### Model Identity' but regex "
                 "did not match; identity section was NOT updated for "
@@ -301,6 +303,23 @@ def _build_overrides(
                 "prompt template.",
                 model_result.model_name,
             )
+        patched, rebuild_fields = _transition_harness_profile_for_model(
+            patched,
+            request.model,
+            effective_model,
+            current_spec=_model_spec_from_model(request.model),
+            target_spec=_model_spec_from_result(model_result, effective_model),
+        )
+        if rebuild_fields:
+            logger.warning(
+                "Runtime model switch to '%s' cannot apply graph-compiled "
+                "HarnessProfile field(s) %s; restart with this model to apply "
+                "them",
+                model_result.model_name,
+                ", ".join(rebuild_fields),
+            )
+        if patched != prompt:
+            overrides["system_prompt"] = patched
 
     return request.override(**overrides)
 

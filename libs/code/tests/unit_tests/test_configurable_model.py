@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from deepagents import HarnessProfile
 from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
@@ -17,6 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._glm_5p2_profile import _SYSTEM_PROMPT_SUFFIX
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
@@ -89,6 +91,9 @@ def _make_model_result(
 
 
 _PATCH_CREATE = "deepagents_code.config.create_model"
+_PATCH_HARNESS_PROFILE = (
+    "deepagents.profiles.harness.harness_profiles._harness_profile_for_model"
+)
 
 _mw = ConfigurableModelMiddleware()
 
@@ -872,6 +877,204 @@ class TestModelIdentityPatch:
         assert "Some preamble." in prompt
         assert "### Skills Directory" in prompt
         assert "`/tmp/skills`" in prompt
+
+    def test_baseten_glm_5p2_suffix_added_on_swap(self) -> None:
+        override = _make_model("zai-org/GLM-5.2")
+        result = _make_model_result(
+            override,
+            model_name="zai-org/GLM-5.2",
+            provider="baseten",
+        )
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="baseten:zai-org/GLM-5.2"),
+            system_prompt=self._OLD_PROMPT,
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(
+                _PATCH_HARNESS_PROFILE,
+                side_effect=[
+                    HarnessProfile(),
+                    HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
+                ],
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert prompt.endswith(_SYSTEM_PROMPT_SUFFIX)
+        assert prompt.count(_SYSTEM_PROMPT_SUFFIX) == 1
+
+    def test_glm_5p2_suffix_removed_on_swap_away(self) -> None:
+        override = _make_model("gpt-5.5")
+        result = _make_model_result(
+            override,
+            model_name="gpt-5.5",
+            provider="openai",
+        )
+        request = _make_request(
+            _make_model("zai-org/GLM-5.2"),
+            context=CLIContext(model="openai:gpt-5.5"),
+            system_prompt=f"{self._OLD_PROMPT}\n\n{_SYSTEM_PROMPT_SUFFIX}",
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(
+                _PATCH_HARNESS_PROFILE,
+                side_effect=[
+                    HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
+                    HarnessProfile(),
+                ],
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert _SYSTEM_PROMPT_SUFFIX not in prompt
+
+    def test_glm_5p2_suffix_not_duplicated_on_provider_swap(self) -> None:
+        override = _make_model("zai-org/GLM-5.2")
+        result = _make_model_result(
+            override,
+            model_name="zai-org/GLM-5.2",
+            provider="baseten",
+        )
+        request = _make_request(
+            _make_model("accounts/fireworks/models/glm-5p2"),
+            context=CLIContext(model="baseten:zai-org/GLM-5.2"),
+            system_prompt=f"{self._OLD_PROMPT}\n\n{_SYSTEM_PROMPT_SUFFIX}",
+        )
+        captured: list[ModelRequest] = []
+        profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(_PATCH_HARNESS_PROFILE, side_effect=[profile, profile]),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert prompt.count(_SYSTEM_PROMPT_SUFFIX) == 1
+
+    def test_structural_profile_change_warns_restart_required(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        override = _make_model("target-model")
+        result = _make_model_result(
+            override,
+            model_name="target-model",
+            provider="test-provider",
+        )
+        request = _make_request(
+            _make_model("source-model"),
+            context=CLIContext(model="test-provider:target-model"),
+            system_prompt=self._OLD_PROMPT,
+        )
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(
+                _PATCH_HARNESS_PROFILE,
+                side_effect=[
+                    HarnessProfile(),
+                    HarnessProfile(excluded_tools=frozenset({"execute"})),
+                ],
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="deepagents_code.configurable_model"
+            ),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert "restart with this model" in caplog.text
+        # The warning names the specific field that cannot be applied so the
+        # user knows what steering is missing until they restart.
+        assert "excluded_tools" in caplog.text
+
+    def test_suffix_only_swap_does_not_warn_restart(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A runtime-safe suffix swap must not emit the restart warning."""
+        override = _make_model("zai-org/GLM-5.2")
+        result = _make_model_result(
+            override,
+            model_name="zai-org/GLM-5.2",
+            provider="baseten",
+        )
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="baseten:zai-org/GLM-5.2"),
+            system_prompt=self._OLD_PROMPT,
+        )
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(
+                _PATCH_HARNESS_PROFILE,
+                side_effect=[
+                    HarnessProfile(),
+                    HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
+                ],
+            ),
+            caplog.at_level(
+                logging.WARNING, logger="deepagents_code.configurable_model"
+            ),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert "restart with this model" not in caplog.text
+
+    def test_suffix_swap_sets_override_when_identity_unchanged(self) -> None:
+        """The override gate keys off the suffix swap, not just identity.
+
+        Both the model name/provider are unchanged here, so the identity
+        substitution is a no-op; only the profile suffix changes. The override
+        must still be applied, proving the final gate accounts for the suffix
+        transition rather than relying on the identity patch.
+        """
+        override = _make_model("zai-org/GLM-5.2")
+        result = _make_model_result(
+            override,
+            model_name="zai-org/GLM-5.2",
+            provider="baseten",
+        )
+        # `identity` already ends with a blank-line separator, so append the
+        # next heading directly; this keeps the identity substitution a true
+        # no-op (matched region == replacement) and isolates the suffix swap.
+        identity = build_model_identity_section("zai-org/GLM-5.2", provider="baseten")
+        stable_prompt = f"{identity}### Skills Directory\n`/tmp/skills`"
+        request = _make_request(
+            override,
+            context=CLIContext(model="baseten:zai-org/GLM-5.2"),
+            system_prompt=stable_prompt,
+        )
+        captured: list[ModelRequest] = []
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(
+                _PATCH_HARNESS_PROFILE,
+                side_effect=[
+                    HarnessProfile(),
+                    HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
+                ],
+            ),
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert prompt.endswith(_SYSTEM_PROMPT_SUFFIX)
 
     def test_no_identity_section_left_unchanged(self) -> None:
         """Prompt without identity section is not modified."""

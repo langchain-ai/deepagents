@@ -62,20 +62,8 @@ def setup_plugin_parser(
 
     install_parser = plugin_sub.add_parser("install", help="Install a plugin")
     install_parser.add_argument("plugin_id")
-    install_parser.add_argument(
-        "--scope",
-        choices=("user", "project", "local"),
-        default="user",
-        help="Install scope (default: user)",
-    )
     uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
     uninstall_parser.add_argument("plugin_id")
-    uninstall_parser.add_argument(
-        "--scope",
-        choices=("user", "project", "local"),
-        default=None,
-        help="Scope to uninstall (default: all scopes)",
-    )
 
     enable_parser = plugin_sub.add_parser("enable", help="Enable a plugin")
     enable_parser.add_argument("plugin_id")
@@ -93,7 +81,6 @@ def setup_plugin_parser(
         add_output_args(marketplace_list)
     marketplace_add = marketplace_sub.add_parser("add", help="Add a marketplace")
     marketplace_add.add_argument("source")
-    marketplace_add.add_argument("--enable-all", action="store_true")
     marketplace_remove = marketplace_sub.add_parser(
         "remove", help="Remove a marketplace and uninstall its plugins"
     )
@@ -143,22 +130,22 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         return text
     if command == "install":
         try:
-            instance = install_plugin(args.plugin_id, scope=args.scope)
+            instance = install_plugin(args.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             text = f"Failed to install {args.plugin_id}: {exc}"
             print(text)  # noqa: T201
             return text
-        details = f"scope: {args.scope}"
+        details = ""
         if instance.version is not None:
-            details += f", version: {instance.version}"
+            details = f" (version: {instance.version})"
         text = (
-            f"Installed plugin {instance.plugin_id} ({details}). "
+            f"Installed plugin {instance.plugin_id}{details}. "
             "Run /reload-plugins to activate."
         )
         print(text)  # noqa: T201
         return text
     if command == "uninstall":
-        uninstall_plugin(args.plugin_id, scope=args.scope)
+        uninstall_plugin(args.plugin_id)
         text = f"Uninstalled plugin {args.plugin_id}."
         print(text)  # noqa: T201
         return text
@@ -199,30 +186,10 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             return text
         if marketplace_command == "add":
             marketplace = add_marketplace_source(args.source)
-            installed: list[str] = []
-            failed: list[str] = []
-            if args.enable_all:
-                for plugin in marketplace.plugins:
-                    plugin_id = f"{plugin.name}@{marketplace.name}"
-                    try:
-                        install_plugin(plugin_id, scope="user")
-                    except (
-                        MarketplaceError,
-                        FileNotFoundError,
-                        OSError,
-                        ValueError,
-                    ) as exc:
-                        failed.append(f"{plugin_id}: {exc}")
-                    else:
-                        installed.append(plugin_id)
             text = (
                 f"Added marketplace {marketplace.name} "
                 f"({len(marketplace.plugins)} plugin(s))."
             )
-            if installed:
-                text += f" Installed: {', '.join(installed)}."
-            if failed:
-                text += f" Failed to install: {'; '.join(failed)}."
             print(text)  # noqa: T201
             return text
         if marketplace_command == "remove":

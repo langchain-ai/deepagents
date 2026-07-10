@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 
 def plugin_environment(
@@ -59,11 +56,6 @@ def substitute_string(
     result = value
     for key, replacement in env.items():
         result = result.replace(f"${{{key}}}", replacement)
-    if "${user_config." in result:
-        logger.warning(
-            "Plugin userConfig substitution is not supported yet; "
-            "leaving ${user_config.*} literal"
-        )
     return result
 
 

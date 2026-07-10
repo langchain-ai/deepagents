@@ -21,8 +21,6 @@ from deepagents_code.plugins.marketplace import (
     resolve_plugin_source,
 )
 from deepagents_code.plugins.models import (
-    InstalledPluginEntry,
-    InstallScope,
     MarketplacePluginEntry,
     MarketplaceRecord,
     PluginDiscoveryResult,
@@ -34,10 +32,8 @@ from deepagents_code.plugins.store import (
     cache_and_register_plugin,
     get_primary_install_entry,
     load_enabled_plugins,
-    load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
-    load_plugin_scopes,
     marketplace_cache_dir,
     plugin_data_dir,
     remove_marketplace_record,
@@ -47,37 +43,6 @@ from deepagents_code.plugins.store import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _current_project_path() -> str:
-    return str(Path.cwd().resolve())
-
-
-def _project_path_for_scope(scope: InstallScope) -> str | None:
-    if scope in {"project", "local"}:
-        return _current_project_path()
-    return None
-
-
-def _install_entry_active(
-    entry: InstalledPluginEntry, *, cwd: str | None = None
-) -> bool:
-    """Return whether a scoped install entry applies to the current project.
-
-    User-scoped installs always apply. Project/local installs apply only when
-    their recorded `project_path` matches the current working directory.
-    """
-    if entry.scope == "user":
-        return True
-    if entry.project_path is None:
-        # Legacy records without a project path stay global to avoid stranding
-        # installs created before scope filtering existed.
-        return True
-    current = cwd if cwd is not None else _current_project_path()
-    try:
-        return Path(entry.project_path).resolve() == Path(current).resolve()
-    except OSError:
-        return False
 
 
 def add_local_marketplace(path: str | Path) -> PluginMarketplace:
@@ -140,12 +105,7 @@ def remove_marketplace(name: str) -> bool:
     if record is None:
         return False
 
-    plugin_ids = (
-        set(load_installed_plugins())
-        | set(load_enabled_plugins())
-        | set(load_plugin_scopes())
-        | load_favorite_plugins()
-    )
+    plugin_ids = set(load_installed_plugins()) | set(load_enabled_plugins())
     for plugin_id in plugin_ids:
         if plugin_id.endswith(f"@{name}"):
             uninstall_plugin(plugin_id)
@@ -173,17 +133,7 @@ def enable_plugin(plugin_id: str) -> None:
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
     """
-    set_plugin_enabled(plugin_id, True, scope="user")
-
-
-def enable_plugin_with_scope(plugin_id: str, scope: InstallScope) -> None:
-    """Enable a plugin id with an install scope (settings-only).
-
-    Args:
-        plugin_id: Plugin id in `{name}@{marketplace}` form.
-        scope: Install scope: `user`, `project`, or `local`.
-    """
-    set_plugin_enabled(plugin_id, True, scope=scope)
+    set_plugin_enabled(plugin_id, True)
 
 
 def disable_plugin(plugin_id: str) -> None:
@@ -195,18 +145,13 @@ def disable_plugin(plugin_id: str) -> None:
     set_plugin_enabled(plugin_id, False)
 
 
-def uninstall_plugin(plugin_id: str, *, scope: InstallScope | None = None) -> None:
+def uninstall_plugin(plugin_id: str) -> None:
     """Uninstall a plugin (disable, clear records, delete orphaned cache).
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
-        scope: Optional scope to uninstall; when omitted, remove all scopes.
     """
-    uninstall_plugin_record(
-        plugin_id,
-        scope=scope,
-        project_path=_project_path_for_scope(scope) if scope is not None else None,
-    )
+    uninstall_plugin_record(plugin_id)
 
 
 def _resolve_marketplace_and_entry(
@@ -232,7 +177,7 @@ def _resolve_marketplace_and_entry(
     return marketplace, entry
 
 
-def install_plugin(plugin_id: str, *, scope: InstallScope = "user") -> PluginInstance:
+def install_plugin(plugin_id: str) -> PluginInstance:
     """Install a marketplace plugin into the versioned cache and enable it.
 
     Copies the plugin source into `plugins/cache/{marketplace}/{plugin}/{version}/`,
@@ -241,7 +186,6 @@ def install_plugin(plugin_id: str, *, scope: InstallScope = "user") -> PluginIns
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
-        scope: Install scope: `user`, `project`, or `local`.
 
     Returns:
         Discovered plugin instance loaded from the cache path.
@@ -274,15 +218,13 @@ def install_plugin(plugin_id: str, *, scope: InstallScope = "user") -> PluginIns
     cache_path = cache_and_register_plugin(
         plugin_id,
         source_root,
-        scope=scope,
         version=version,
-        project_path=_project_path_for_scope(scope),
     )
 
     should_enable = True
     if manifest is not None and not manifest.default_enabled:
         should_enable = False
-    set_plugin_enabled(plugin_id, should_enable, scope=scope)
+    set_plugin_enabled(plugin_id, should_enable)
 
     instance, warnings = _plugin_from_install_path(
         plugin_id=plugin_id,
@@ -303,7 +245,6 @@ def _plugin_from_install_path(
     root: Path,
     marketplace_name: str,
     fallback_name: str,
-    trusted: bool = True,
 ) -> tuple[PluginInstance | None, tuple[str, ...]]:
     warnings: list[str] = []
     try:
@@ -324,8 +265,6 @@ def _plugin_from_install_path(
         data_dir=plugin_data_dir(plugin_id),
         manifest=manifest,
         inventory=inventory,
-        in_place=False,
-        trusted=trusted,
     )
     return instance, inventory.warnings
 
@@ -333,17 +272,12 @@ def _plugin_from_install_path(
 def discover_plugins() -> PluginDiscoveryResult:
     """Discover enabled marketplace plugins from their install cache paths.
 
-    Project- and local-scoped installs are only loaded when the current working
-    directory matches the install's recorded project path. User-scoped installs
-    always load.
-
     Returns:
         Discovery result. Broken marketplaces/plugins are returned as warnings and
         never abort sibling plugin loading.
     """
     enabled = load_enabled_plugins()
     installed = load_installed_plugins()
-    cwd = _current_project_path()
     plugins: list[PluginInstance] = []
     warnings: list[str] = []
 
@@ -354,19 +288,11 @@ def discover_plugins() -> PluginDiscoveryResult:
             warnings.append(f"Ignoring invalid plugin id {plugin_id!r}")
             continue
         plugin_name, marketplace_name = plugin_id.rsplit("@", 1)
-        entry = get_primary_install_entry(plugin_id, project_path=cwd)
+        entry = get_primary_install_entry(plugin_id)
         if entry is None:
             warnings.append(
                 f"Plugin {plugin_id} is enabled but not installed "
                 "(missing installed_plugins.json entry); run install to materialize"
-            )
-            continue
-        if not _install_entry_active(entry, cwd=cwd):
-            logger.debug(
-                "Skipping %s-scoped plugin %s outside its project (%s)",
-                entry.scope,
-                plugin_id,
-                entry.project_path,
             )
             continue
         root = Path(entry.install_path)

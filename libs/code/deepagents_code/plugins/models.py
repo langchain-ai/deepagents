@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
-InstallScope = Literal["user", "project", "local"]
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
 
@@ -55,8 +54,6 @@ class PluginManifest:
     Attributes:
         name: Plugin name from the manifest, or `None` for manifest-less plugins.
         version: Version string from the plugin manifest.
-        description: Optional user-facing description.
-        author: Optional author metadata.
         default_enabled: Whether install should enable the plugin by default.
         component_paths: Validated skill and MCP paths keyed by component name.
         inline_mcp: Inline MCP servers declared in the manifest.
@@ -64,8 +61,6 @@ class PluginManifest:
 
     name: str | None
     version: str | None
-    description: str | None
-    author: str | JsonObject | None
     default_enabled: bool
     component_paths: dict[str, tuple[Path, ...]]
     inline_mcp: JsonObject
@@ -93,8 +88,6 @@ class PluginInstance:
         data_dir: Writable data directory for this plugin.
         manifest: Parsed manifest, if any.
         inventory: Component inventory.
-        in_place: Whether the plugin is loaded directly from its source directory.
-        trusted: Whether executable surfaces are trusted.
     """
 
     plugin_id: str
@@ -105,8 +98,6 @@ class PluginInstance:
     data_dir: Path
     manifest: PluginManifest | None
     inventory: ComponentInventory
-    in_place: bool
-    trusted: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -116,7 +107,7 @@ class MarketplacePluginEntry:
     name: str
     source: str | JsonObject
     description: str | None = None
-    manifest_fields: JsonObject = field(default_factory=dict)
+    author: str | JsonObject | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -126,7 +117,6 @@ class PluginMarketplace:
     name: str
     root: Path
     manifest_path: Path
-    owner: JsonObject | None
     metadata: JsonObject
     plugins: tuple[MarketplacePluginEntry, ...]
 
@@ -144,17 +134,13 @@ class MarketplaceRecord:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InstalledPluginEntry:
-    """One scope's install record for a plugin.
+    """Install record for a plugin.
 
     `version` is the value declared by the plugin manifest, if any.
     """
 
-    scope: InstallScope
     install_path: str
     version: str | None
-    installed_at: str
-    last_updated: str
-    project_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

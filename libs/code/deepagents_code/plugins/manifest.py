@@ -229,10 +229,6 @@ def load_manifest(
 
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
-    description_value = raw.get("description")
-    description = description_value if isinstance(description_value, str) else None
-    author_value = raw.get("author")
-    author = author_value if isinstance(author_value, (str, dict)) else None
     default_enabled_value = raw.get("defaultEnabled")
     default_enabled = (
         default_enabled_value if isinstance(default_enabled_value, bool) else True
@@ -240,8 +236,6 @@ def load_manifest(
     manifest = PluginManifest(
         name=name,
         version=version,
-        description=description,
-        author=author,
         default_enabled=default_enabled,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),

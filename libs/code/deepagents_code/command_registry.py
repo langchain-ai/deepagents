@@ -139,10 +139,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         ),
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
-        argument_hint=(
-            "[list|install <id>|uninstall <id>|marketplace add <path>|"
-            "marketplace remove <name>|enable <id>|disable <id>]"
-        ),
     ),
     SlashCommand(
         name="/reload-plugins",

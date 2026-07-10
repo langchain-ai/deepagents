@@ -120,11 +120,6 @@ def plugin_mcp_configs(
     """
     configs: list[JsonObject] = []
     for plugin in plugins:
-        if not plugin.trusted:
-            logger.warning(
-                "Skipping MCP servers for untrusted plugin %s", plugin.plugin_id
-            )
-            continue
         servers: JsonObject = {}
         for path in plugin.inventory.mcp_files:
             if path.suffix in {".mcpb", ".dxt"}:

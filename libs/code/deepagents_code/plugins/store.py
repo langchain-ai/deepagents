@@ -8,14 +8,12 @@ import os
 import shutil
 import tempfile
 from contextlib import suppress
-from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
-    InstallScope,
     MarketplaceRecord,
     MarketplaceSourceType,
 )
@@ -26,7 +24,6 @@ _INSTALLED_STORAGE_VERSION = 2
 _UNVERSIONED_CACHE_KEY = "unversioned"
 _CACHE_SLUG_LENGTH = 48
 _CACHE_DIGEST_LENGTH = 32
-_INSTALL_SCOPES: frozenset[str] = frozenset({"user", "project", "local"})
 
 
 def plugin_root_dir() -> Path:
@@ -157,10 +154,6 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
-def _utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def load_marketplace_records() -> dict[str, MarketplaceRecord]:
     """Load persisted marketplace records.
 
@@ -258,197 +251,85 @@ def load_enabled_plugins() -> dict[str, bool]:
     }
 
 
-def load_plugin_scopes() -> dict[str, str]:
-    """Load plugin install scopes.
-
-    Returns:
-        Scope map keyed by plugin id.
-    """
-    data = _load_json(_plugin_state_path())
-    scopes = data.get("pluginScopes", {})
-    if not isinstance(scopes, dict):
-        return {}
-    return {
-        key: value
-        for key, value in scopes.items()
-        if isinstance(key, str) and value in {"user", "project", "local"}
-    }
-
-
-def load_favorite_plugins() -> set[str]:
-    """Load favorited plugin ids and MCP server names.
-
-    Returns:
-        Set of favorited ids (plugin ids or MCP server names).
-    """
-    data = _load_json(_plugin_state_path())
-    favorites = data.get("favoritePlugins", [])
-    if not isinstance(favorites, list):
-        return set()
-    return {item for item in favorites if isinstance(item, str) and item}
-
-
-def _write_plugin_state(
-    *,
-    enabled_plugins: dict[str, Any],
-    scopes: dict[str, Any],
-    favorites: set[str],
-) -> None:
+def _write_plugin_state(*, enabled_plugins: dict[str, Any]) -> None:
     _atomic_write_json(
         _plugin_state_path(),
         {
             "version": _STORAGE_VERSION,
             "enabledPlugins": enabled_plugins,
-            "pluginScopes": scopes,
-            "favoritePlugins": sorted(favorites),
         },
     )
 
 
-def set_plugin_enabled(
-    plugin_id: str, enabled: bool, *, scope: InstallScope | None = None
-) -> None:
-    """Persist a plugin enablement value.
-
-    Favorites are preserved across enable/disable so a favorited plugin can
-    return to the Favorites group after re-enable.
-
-    Raises:
-        ValueError: If `scope` is invalid.
-    """
-    if scope is not None and scope not in _INSTALL_SCOPES:
-        msg = f"Invalid plugin install scope: {scope!r}"
-        raise ValueError(msg)
+def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
+    """Persist a plugin enablement value."""
     data = _load_json(_plugin_state_path())
     enabled_plugins = data.get("enabledPlugins")
     if not isinstance(enabled_plugins, dict):
         enabled_plugins = {}
     enabled_plugins[plugin_id] = enabled
-    scopes = data.get("pluginScopes")
-    if not isinstance(scopes, dict):
-        scopes = {}
-    if scope is not None:
-        scopes[plugin_id] = scope
-    favorites_raw = data.get("favoritePlugins", [])
-    favorites = (
-        {item for item in favorites_raw if isinstance(item, str) and item}
-        if isinstance(favorites_raw, list)
-        else set()
-    )
-    _write_plugin_state(
-        enabled_plugins=enabled_plugins,
-        scopes=scopes,
-        favorites=favorites,
-    )
-
-
-def set_plugin_favorite(item_id: str, favorite: bool) -> None:
-    """Add or remove a plugin id or MCP server name from favorites.
-
-    Args:
-        item_id: Plugin id (`name@marketplace`) or MCP server name.
-        favorite: Whether the item should be favorited.
-    """
-    data = _load_json(_plugin_state_path())
-    enabled_plugins = data.get("enabledPlugins")
-    if not isinstance(enabled_plugins, dict):
-        enabled_plugins = {}
-    scopes = data.get("pluginScopes")
-    if not isinstance(scopes, dict):
-        scopes = {}
-    favorites_raw = data.get("favoritePlugins", [])
-    favorites = (
-        {item for item in favorites_raw if isinstance(item, str) and item}
-        if isinstance(favorites_raw, list)
-        else set()
-    )
-    if favorite:
-        favorites.add(item_id)
-    else:
-        favorites.discard(item_id)
-    _write_plugin_state(
-        enabled_plugins=enabled_plugins,
-        scopes=scopes,
-        favorites=favorites,
-    )
+    _write_plugin_state(enabled_plugins=enabled_plugins)
 
 
 def _parse_install_entry(raw: object) -> InstalledPluginEntry | None:
     if not isinstance(raw, dict):
         return None
-    scope = raw.get("scope")
     install_path = raw.get("installPath") or raw.get("install_path")
     version = raw.get("version")
-    installed_at = raw.get("installedAt") or raw.get("installed_at")
-    last_updated = raw.get("lastUpdated") or raw.get("last_updated")
     if (
-        scope not in {"user", "project", "local"}
-        or not isinstance(install_path, str)
+        not isinstance(install_path, str)
         or not install_path
         or (version is not None and (not isinstance(version, str) or not version))
-        or not isinstance(installed_at, str)
-        or not isinstance(last_updated, str)
     ):
         return None
-    project_path = raw.get("projectPath") or raw.get("project_path")
     return InstalledPluginEntry(
-        scope=cast("InstallScope", scope),
         install_path=install_path,
         version=version if isinstance(version, str) else None,
-        installed_at=installed_at,
-        last_updated=last_updated,
-        project_path=project_path if isinstance(project_path, str) else None,
     )
 
 
-def load_installed_plugins() -> dict[str, tuple[InstalledPluginEntry, ...]]:
+def load_installed_plugins() -> dict[str, InstalledPluginEntry]:
     """Load installed plugin records.
 
     Returns:
-        Map of plugin id to one or more scoped install entries.
+        Map of plugin id to its install entry.
     """
     data = _load_json(_installed_plugins_path(), max_version=_INSTALLED_STORAGE_VERSION)
     raw_plugins = data.get("plugins", {})
     if not isinstance(raw_plugins, dict):
         return {}
-    result: dict[str, tuple[InstalledPluginEntry, ...]] = {}
+    result: dict[str, InstalledPluginEntry] = {}
     for plugin_id, entries in raw_plugins.items():
         if not isinstance(plugin_id, str) or not isinstance(entries, list):
             continue
-        parsed = tuple(
-            entry
-            for entry in (_parse_install_entry(item) for item in entries)
-            if entry is not None
+        parsed = next(
+            (entry for item in entries if (entry := _parse_install_entry(item))),
+            None,
         )
-        if parsed:
+        if parsed is not None:
             result[plugin_id] = parsed
     return result
 
 
 def _entry_to_json(entry: InstalledPluginEntry) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "scope": entry.scope,
         "installPath": entry.install_path,
-        "installedAt": entry.installed_at,
-        "lastUpdated": entry.last_updated,
     }
     if entry.version is not None:
         payload["version"] = entry.version
-    if entry.project_path:
-        payload["projectPath"] = entry.project_path
     return payload
 
 
 def _write_installed_plugins(
-    plugins: dict[str, tuple[InstalledPluginEntry, ...]],
+    plugins: dict[str, InstalledPluginEntry],
 ) -> None:
     _atomic_write_json(
         _installed_plugins_path(),
         {
             "version": _INSTALLED_STORAGE_VERSION,
             "plugins": {
-                plugin_id: [_entry_to_json(entry) for entry in entries]
-                for plugin_id, entries in sorted(plugins.items())
+                plugin_id: [_entry_to_json(entry)]
+                for plugin_id, entry in sorted(plugins.items())
             },
         },
     )
@@ -457,143 +338,64 @@ def _write_installed_plugins(
 def add_installed_plugin(
     plugin_id: str,
     *,
-    scope: InstallScope,
     install_path: str,
     version: str | None,
-    project_path: str | None = None,
 ) -> InstalledPluginEntry:
-    """Add or replace a scoped install record for a plugin.
+    """Add or replace an install record for a plugin.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
-        scope: Install scope.
         install_path: Absolute path to the cached plugin root.
         version: Version declared by the plugin manifest, if any.
-        project_path: Optional project path for project/local scopes.
 
     Returns:
         The written install entry.
 
-    Raises:
-        ValueError: If a project/local install has no project path.
     """
-    now = _utc_now()
     plugins = dict(load_installed_plugins())
-    existing = list(plugins.get(plugin_id, ()))
-    if scope != "user" and project_path is None:
-        msg = f"{scope} installs require a project path"
-        raise ValueError(msg)
-
-    def same_target(candidate: InstalledPluginEntry) -> bool:
-        if candidate.scope != scope:
-            return False
-        return scope == "user" or candidate.project_path == project_path
-
-    kept = [entry for entry in existing if not same_target(entry)]
-    prior = next((entry for entry in existing if same_target(entry)), None)
     entry = InstalledPluginEntry(
-        scope=scope,
         install_path=install_path,
         version=version,
-        installed_at=prior.installed_at if prior else now,
-        last_updated=now,
-        project_path=project_path,
     )
-    kept.append(entry)
-    plugins[plugin_id] = tuple(kept)
+    plugins[plugin_id] = entry
     _write_installed_plugins(plugins)
     return entry
 
 
-def get_primary_install_entry(
-    plugin_id: str, *, project_path: str | None = None
-) -> InstalledPluginEntry | None:
-    """Return the preferred install entry for a plugin id.
-
-    Prefers `user`, then `project`, then `local`, then first entry.
-
-    Args:
-        plugin_id: Plugin id.
-        project_path: When provided, only return project/local entries for this path.
-
-    Returns:
-        Install entry or `None`.
-    """
-    entries = load_installed_plugins().get(plugin_id)
-    if not entries:
-        return None
-    for scope in ("user", "project", "local"):
-        for entry in entries:
-            if entry.scope != scope:
-                continue
-            if (
-                entry.scope != "user"
-                and project_path is not None
-                and entry.project_path is not None
-                and entry.project_path != project_path
-            ):
-                continue
-            return entry
-    return None if project_path is not None else entries[0]
+def get_primary_install_entry(plugin_id: str) -> InstalledPluginEntry | None:
+    """Return the install entry for a plugin id."""
+    return load_installed_plugins().get(plugin_id)
 
 
 def remove_installed_plugin(
     plugin_id: str,
-    *,
-    scope: InstallScope | None = None,
-    project_path: str | None = None,
-) -> tuple[InstalledPluginEntry, ...]:
-    """Remove install record(s) for a plugin.
+) -> InstalledPluginEntry | None:
+    """Remove the install record for a plugin.
 
     Args:
         plugin_id: Plugin id.
-        scope: When set, remove only that scope; otherwise remove all scopes.
-        project_path: For project/local scope, remove only this project entry.
 
     Returns:
-        Remaining install entries after removal (empty when fully uninstalled).
+        Removed install entry, if present.
     """
     plugins = dict(load_installed_plugins())
-    existing = list(plugins.get(plugin_id, ()))
-    if not existing:
-        return ()
-    if scope is None:
-        remaining: list[InstalledPluginEntry] = []
-    else:
-        remaining = [
-            entry
-            for entry in existing
-            if entry.scope != scope
-            or (
-                scope != "user"
-                and project_path is not None
-                and entry.project_path != project_path
-            )
-        ]
-    if remaining:
-        plugins[plugin_id] = tuple(remaining)
-    else:
-        plugins.pop(plugin_id, None)
+    removed = plugins.pop(plugin_id, None)
     _write_installed_plugins(plugins)
-    return tuple(remaining)
+    return removed
 
 
 def cache_and_register_plugin(
     plugin_id: str,
     source_dir: Path,
     *,
-    scope: InstallScope = "user",
     version: str | None,
-    project_path: str | None = None,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         source_dir: Source plugin root to copy from.
-        scope: Install scope.
         version: Version declared by the plugin manifest, if any.
-        project_path: Optional project path for project/local scopes.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -613,10 +415,8 @@ def cache_and_register_plugin(
             if any(cache_path.iterdir()):
                 add_installed_plugin(
                     plugin_id,
-                    scope=scope,
                     install_path=str(cache_path),
                     version=version,
-                    project_path=project_path,
                 )
                 return cache_path
         except OSError:
@@ -649,78 +449,30 @@ def cache_and_register_plugin(
 
     add_installed_plugin(
         plugin_id,
-        scope=scope,
         install_path=str(cache_path.resolve()),
         version=version,
-        project_path=project_path,
     )
     return cache_path.resolve()
 
 
 def uninstall_plugin(
     plugin_id: str,
-    *,
-    scope: InstallScope | None = None,
-    project_path: str | None = None,
 ) -> None:
     """Disable a plugin, remove install records, and delete orphaned cache dirs.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
-        scope: Optional scope to uninstall; when omitted, remove all scopes.
-        project_path: For project/local scope, remove only this project entry.
     """
-    existing = list(load_installed_plugins().get(plugin_id, ()))
-    removed_paths = {
-        entry.install_path
-        for entry in existing
-        if scope is None
-        or (
-            entry.scope == scope
-            and (
-                scope == "user"
-                or project_path is None
-                or entry.project_path == project_path
-            )
-        )
-    }
-    remaining = remove_installed_plugin(
-        plugin_id, scope=scope, project_path=project_path
-    )
-    remaining_paths = {entry.install_path for entry in remaining}
+    removed = remove_installed_plugin(plugin_id)
 
     data = _load_json(_plugin_state_path())
     enabled_plugins = data.get("enabledPlugins")
     if not isinstance(enabled_plugins, dict):
         enabled_plugins = {}
-    scopes = data.get("pluginScopes")
-    if not isinstance(scopes, dict):
-        scopes = {}
-    favorites_raw = data.get("favoritePlugins", [])
-    favorites = (
-        {item for item in favorites_raw if isinstance(item, str) and item}
-        if isinstance(favorites_raw, list)
-        else set()
-    )
+    enabled_plugins.pop(plugin_id, None)
+    _write_plugin_state(enabled_plugins=enabled_plugins)
 
-    if remaining:
-        # Still installed in another scope — keep enabled state unless this
-        # was the only enabled mention; mirror Claude last-scope cleanup only
-        # when fully removed.
-        if scope is not None and scopes.get(plugin_id) == scope:
-            scopes[plugin_id] = remaining[0].scope
-    else:
-        enabled_plugins.pop(plugin_id, None)
-        scopes.pop(plugin_id, None)
-        favorites.discard(plugin_id)
-
-    _write_plugin_state(
-        enabled_plugins=enabled_plugins,
-        scopes=scopes,
-        favorites=favorites,
-    )
-
-    for path_str in removed_paths - remaining_paths:
-        path = Path(path_str)
+    if removed is not None:
+        path = Path(removed.install_path)
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)

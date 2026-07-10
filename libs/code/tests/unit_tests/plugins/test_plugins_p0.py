@@ -7,15 +7,12 @@ import json
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import _list_skills as list_sdk_skills
 from textual.widgets import Input, OptionList
-
-if TYPE_CHECKING:
-    from deepagents_code.plugins.models import InstallScope
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.app import DeepAgentsApp
@@ -27,7 +24,6 @@ from deepagents_code.plugins import (
     disable_plugin,
     discover_plugins,
     enable_plugin,
-    enable_plugin_with_scope,
     install_plugin,
     list_available_plugins,
     remove_marketplace,
@@ -52,13 +48,10 @@ from deepagents_code.plugins.models import (
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
     load_enabled_plugins,
-    load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
-    load_plugin_scopes,
     marketplace_cache_dir,
     sanitize_plugin_id,
-    set_plugin_favorite,
     versioned_cache_path,
 )
 from deepagents_code.tui.widgets.plugin_manager import (
@@ -140,67 +133,6 @@ def _add_docs_helper_plugin(root: Path) -> None:
     _write_skill(plugin / "skills" / "lookup" / "SKILL.md", name="lookup")
 
 
-async def test_plugin_manager_installed_tab_groups_by_scope_with_metadata(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    _add_docs_helper_plugin(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools", scope="project")
-    install_plugin("docs-helper@company-tools", scope="user")
-
-    live_mcp_info = (
-        MCPServerInfo(
-            name=scoped_mcp_server_name("quality-review-plugin@company-tools", "docs"),
-            transport="stdio",
-        ),
-        MCPServerInfo(name="docs-langchain", transport="stdio"),
-    )
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = PluginManagerScreen(mcp_server_info=live_mcp_info)
-        app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("right")
-        await pilot.pause()
-
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        prompts = [
-            str(options.get_option_at_index(index).prompt)
-            for index in range(options.option_count)
-        ]
-
-        assert prompts[0] == "Project"
-        assert "quality-review-plugin" in prompts[1]
-        assert "1 skill" in prompts[1]
-        assert f"{get_glyphs().checkmark} connected" in prompts[1]
-        scoped_docs = scoped_mcp_server_name(
-            "quality-review-plugin@company-tools", "docs"
-        )
-        assert scoped_docs in "\n".join(prompts)
-        assert "docs-langchain" in "\n".join(prompts)
-
-        assert "User" in prompts
-        docs_helper_prompt = next(p for p in prompts if "docs-helper" in p)
-        assert "1 skill" in docs_helper_prompt
-        assert "connected" not in docs_helper_prompt
-
-        # The first selectable row (skipping the disabled "Project" header)
-        # should be highlighted, not the header itself.
-        assert options.highlighted == 1
-
-
 async def test_plugin_manager_installed_selection_opens_details_not_disable(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -236,121 +168,6 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert load_enabled_plugins().get("quality-review-plugin@company-tools")
 
 
-async def test_plugin_manager_installed_details_favorite_and_disable(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools", scope="user")
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = PluginManagerScreen()
-        app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("right")
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-
-        # Favorite (second action)
-        await pilot.press("down")
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert "quality-review-plugin@company-tools" in load_favorite_plugins()
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        prompts = [
-            str(options.get_option_at_index(index).prompt)
-            for index in range(options.option_count)
-        ]
-        assert prompts[0] == "Favorites"
-        assert "quality-review-plugin" in prompts[1]
-        assert "User" not in prompts
-
-        await pilot.press("enter")
-        await pilot.pause()
-        # Disable (first action)
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert (
-            load_enabled_plugins().get("quality-review-plugin@company-tools") is False
-        )
-        # Favorite pin persists across disable.
-        assert "quality-review-plugin@company-tools" in load_favorite_plugins()
-
-
-async def test_plugin_manager_mcp_row_opens_details(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-
-    toggled: list[str] = []
-
-    async def _toggle(name: str) -> None:
-        toggled.append(name)
-        await asyncio.sleep(0)
-
-    live_mcp_info = (
-        MCPServerInfo(
-            name="docs-langchain",
-            transport="stdio",
-            tools=(),
-        ),
-    )
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = PluginManagerScreen(
-            mcp_server_info=live_mcp_info,
-            on_toggle_mcp_disable=_toggle,
-        )
-        app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("right")
-        await pilot.pause()
-
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        assert "docs-langchain" in str(options.get_option_at_index(1).prompt)
-        assert "MCP" in str(options.get_option_at_index(1).prompt)
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        detail = str(screen.query_one("#plugin-manager-status").render())
-        assert "docs-langchain" in detail
-        assert "MCP server" in detail
-        assert "Disable server" in str(
-            screen.query_one("#plugin-manager-options", OptionList)
-            .get_option_at_index(0)
-            .prompt
-        )
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert toggled == ["docs-langchain"]
-
-
 async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -377,7 +194,7 @@ async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
         await pilot.pause()
 
         options = screen.query_one("#plugin-manager-options", OptionList)
-        prompt = str(options.get_option_at_index(1).prompt)
+        prompt = str(options.get_option_at_index(0).prompt)
         assert "restart to connect" in prompt
         assert "connected" not in prompt.replace("restart to connect", "")
 
@@ -399,11 +216,10 @@ def test_local_marketplace_install_caches_and_discovers(
     )
 
     plugin_id = "quality-review-plugin@company-tools"
-    instance = install_plugin(plugin_id, scope="user")
+    instance = install_plugin(plugin_id)
     cache_root = versioned_cache_path(plugin_id, "1.0.0")
 
     assert instance.root == cache_root.resolve()
-    assert instance.in_place is False
     assert cache_root.is_dir()
     assert plugin_id in load_installed_plugins()
     assert load_enabled_plugins().get(plugin_id) is True
@@ -414,7 +230,6 @@ def test_local_marketplace_install_caches_and_discovers(
     plugin = result.plugins[0]
     assert plugin.plugin_id == plugin_id
     assert plugin.root == cache_root.resolve()
-    assert plugin.in_place is False
     assert plugin.inventory.skills == ((cache_root / "skills").resolve(),)
     assert plugin.inventory.mcp_files == ((cache_root / ".mcp.json").resolve(),)
 
@@ -679,14 +494,11 @@ def test_remove_marketplace_cleans_enabled_only_plugin_state(
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
     plugin_id = "quality-review-plugin@company-tools"
-    enable_plugin_with_scope(plugin_id, "project")
-    set_plugin_favorite(plugin_id, True)
+    enable_plugin(plugin_id)
 
     assert remove_marketplace("company-tools") is True
 
     assert plugin_id not in load_enabled_plugins()
-    assert plugin_id not in load_plugin_scopes()
-    assert plugin_id not in load_favorite_plugins()
     assert not discover_plugins().warnings
 
 
@@ -853,95 +665,9 @@ async def test_plugin_manager_tabs_label_plugins_not_discover(
         assert "Discover" not in tabs
 
 
-async def test_plugin_manager_discover_selection_opens_scope_details(
+def test_plugin_mcp_config_namespaces_and_substitutes(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = PluginManagerScreen()
-        app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        detail = str(screen.query_one("#plugin-manager-status").render())
-        options = screen.query_one("#plugin-manager-options", OptionList)
-
-        assert "Plugin details" in detail
-        assert "quality-review-plugin" in detail
-        assert "Quality review" in detail
-        assert "Install for you (user scope)" in str(
-            options.get_option_at_index(0).prompt
-        )
-        assert "project scope" in str(options.get_option_at_index(1).prompt)
-        assert "local scope" in str(options.get_option_at_index(2).prompt)
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert list_available_plugins() == (
-            ("quality-review-plugin@company-tools", "Quality review", True),
-        )
-        assert "quality-review-plugin@company-tools" in load_installed_plugins()
-        assert "> Installed <" in str(screen.query_one("#plugin-manager-tabs").render())
-        status = str(screen.query_one("#plugin-manager-status").render())
-        assert "/reload-plugins" in status
-
-
-async def test_plugin_manager_details_arrow_keys_navigate_scopes(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-
-        screen = PluginManagerScreen()
-        app.push_screen(screen)
-        await pilot.pause()
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        assert options.highlighted == 0
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert options.highlighted == 1
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert options.highlighted == 2
-
-        await pilot.press("up")
-        await pilot.pause()
-        assert options.highlighted == 1
-
-
-def test_plugin_mcp_config_scopes_and_substitutes(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
     )
@@ -965,7 +691,6 @@ def test_plugin_mcp_config_scopes_and_substitutes(tmp_path: Path, monkeypatch) -
     assert str(plugin.data_dir) in server["args"]
     assert server["cwd"].endswith("/server")
     assert server["env"]["CLAUDE_PLUGIN_ROOT"] == str(plugin.root)
-    assert plugin.in_place is False
 
 
 def test_scoped_mcp_server_name_is_valid_and_collision_resistant() -> None:
@@ -986,32 +711,6 @@ def test_marketplace_source_parser_accepts_bare_relative_directory(
     source = parse_marketplace_source("marketplace")
     assert source.source_type == "directory"
     assert Path(source.value) == marketplace_root.resolve()
-
-
-def test_project_scoped_plugin_is_inactive_outside_its_project(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-
-    project_a = tmp_path / "project-a"
-    project_b = tmp_path / "project-b"
-    project_a.mkdir()
-    project_b.mkdir()
-
-    monkeypatch.chdir(project_a)
-    install_plugin("quality-review-plugin@company-tools", scope="project")
-    assert len(discover_plugins().plugins) == 1
-
-    monkeypatch.chdir(project_b)
-    assert discover_plugins().plugins == ()
 
 
 def test_plugin_skill_source_prefixes_sdk_skill_name(
@@ -1065,74 +764,6 @@ def test_cache_keys_do_not_collide(
     assert versioned_cache_path("foo@market", "1.0") != versioned_cache_path(
         "foo@market", "1-0"
     )
-
-
-def test_project_scoped_installs_coexist_across_projects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    project_a = tmp_path / "project-a"
-    project_b = tmp_path / "project-b"
-    project_a.mkdir()
-    project_b.mkdir()
-    plugin_id = "quality-review-plugin@company-tools"
-
-    monkeypatch.chdir(project_a)
-    install_plugin(plugin_id, scope="project")
-    monkeypatch.chdir(project_b)
-    install_plugin(plugin_id, scope="project")
-
-    entries = load_installed_plugins()[plugin_id]
-    assert {entry.project_path for entry in entries} == {
-        str(project_a),
-        str(project_b),
-    }
-    monkeypatch.chdir(project_a)
-    assert len(discover_plugins().plugins) == 1
-    monkeypatch.chdir(project_b)
-    assert len(discover_plugins().plugins) == 1
-
-
-def test_discovery_selects_active_local_entry_after_inactive_project_entry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    add_local_marketplace(marketplace_root)
-    project_a = tmp_path / "project-a"
-    project_b = tmp_path / "project-b"
-    project_a.mkdir()
-    project_b.mkdir()
-    plugin_id = "quality-review-plugin@company-tools"
-
-    monkeypatch.chdir(project_a)
-    install_plugin(plugin_id, scope="project")
-    monkeypatch.chdir(project_b)
-    install_plugin(plugin_id, scope="local")
-
-    entry = get_primary_install_entry(plugin_id, project_path=str(project_b))
-    assert entry is not None
-    assert entry.scope == "local"
-    assert len(discover_plugins().plugins) == 1
-
-
-def test_invalid_enable_scope_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Invalid plugin install scope"):
-        enable_plugin_with_scope("plugin@marketplace", cast("Any", "invalid"))
 
 
 def test_namespaces_distinguish_same_named_plugins_across_marketplaces(
@@ -1203,45 +834,6 @@ def test_marketplace_credentials_are_rejected_or_redacted(
     stored = load_marketplace_records()["company-tools"].source
     assert "path-credential" not in stored
     assert "/token/***/marketplace.json" in stored
-
-
-def test_enable_all_reports_failed_installs_without_enabling_them(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    _add_docs_helper_plugin(marketplace_root)
-    marketplace = load_marketplace(marketplace_root)
-    monkeypatch.setattr(
-        "deepagents_code.plugins.commands_cli.add_marketplace_source",
-        lambda _source: marketplace,
-    )
-
-    def install(plugin_id: str, *, scope: InstallScope) -> None:
-        assert scope == "user"
-        if plugin_id.startswith("docs-helper@"):
-            msg = "unsupported source"
-            raise MarketplaceError(msg)
-
-    monkeypatch.setattr("deepagents_code.plugins.commands_cli.install_plugin", install)
-    args = argparse.Namespace(
-        plugin_command="marketplace",
-        marketplace_command="add",
-        source="marketplace",
-        enable_all=True,
-        output_format="text",
-    )
-
-    output = execute_plugin_command(args)
-
-    assert output is not None
-    assert "Installed: quality-review-plugin@company-tools" in output
-    assert "Failed to install: docs-helper@company-tools" in output
-    assert "docs-helper@company-tools" not in load_enabled_plugins()
 
 
 def test_failed_marketplace_refresh_preserves_existing_clone(
@@ -1320,13 +912,6 @@ def test_url_marketplace_remote_github_plugin_installs(
     assert instance.inventory.skills
 
 
-def test_plugins_queue_only_bare_manager_command() -> None:
-    app = DeepAgentsApp()
-
-    assert app._can_bypass_queue("/plugins") is True
-    assert app._can_bypass_queue("/plugins install plugin@marketplace") is False
-
-
 async def test_plugin_manager_renders_bracketed_errors_as_plain_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1335,7 +920,6 @@ async def test_plugin_manager_renders_bracketed_errors_as_plain_text(
         lambda *_args, **_kwargs: _ManagerState(
             available_plugins=(),
             installed_plugins=(),
-            mcp_servers=(),
             marketplaces=(),
             errors=("failure [plugin]",),
         ),

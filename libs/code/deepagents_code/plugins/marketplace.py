@@ -34,7 +34,6 @@ _MARKETPLACE_RELATIVE_PATHS = (
     Path(".agents") / "plugins" / "marketplace.json",
     Path(".agents") / "plugins" / "api_marketplace.json",
 )
-_MARKETPLACE_ENTRY_METADATA_FIELDS = {"author"}
 _SSH_GIT_RE = re.compile(r"^([A-Za-z0-9._-]+@[^:]+:.+?(?:\.git)?)(?:#(.+))?$")
 _GITHUB_REPO_RE = re.compile(r"^[^/\s]+/[^/\s]+$")
 _GIT_TIMEOUT_SECONDS = 120
@@ -560,16 +559,19 @@ def _parse_entry(entry: object) -> MarketplacePluginEntry | None:
         logger.warning("Skipping marketplace plugin with invalid name: %s", exc)
         return None
     description_value = entry.get("description")
-    manifest_fields = {
-        key: value
-        for key, value in _json_object(entry).items()
-        if key in _MARKETPLACE_ENTRY_METADATA_FIELDS
-    }
+    author_value = entry.get("author")
+    author = (
+        _json_object(author_value)
+        if isinstance(author_value, dict)
+        else author_value
+        if isinstance(author_value, str)
+        else None
+    )
     return MarketplacePluginEntry(
         name=name,
         source=source,
         description=description_value if isinstance(description_value, str) else None,
-        manifest_fields=manifest_fields,
+        author=author,
     )
 
 
@@ -596,13 +598,11 @@ def _load_marketplace_from_path(root: Path, manifest_path: Path) -> PluginMarket
     plugins = tuple(
         plugin for entry in plugins_raw if (plugin := _parse_entry(entry)) is not None
     )
-    owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else None
     metadata = _json_object(raw.get("metadata"))
     return PluginMarketplace(
         name=name,
         root=root,
         manifest_path=manifest_path,
-        owner=_json_object(owner) if owner is not None else None,
         metadata=metadata,
         plugins=plugins,
     )

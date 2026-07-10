@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Literal
 
@@ -17,12 +17,12 @@ from textual.widgets.option_list import Option
 from typing_extensions import override
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Sequence
 
     from textual.app import ComposeResult
 
     from deepagents_code.mcp_tools import MCPServerInfo
-    from deepagents_code.plugins.models import InstallScope, PluginInstance
+    from deepagents_code.plugins.models import PluginInstance
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
@@ -30,7 +30,7 @@ from deepagents_code.plugins import (
     add_marketplace_source,
     disable_plugin,
     discover_plugins,
-    enable_plugin_with_scope,
+    enable_plugin,
     install_plugin,
     remove_marketplace,
     uninstall_plugin,
@@ -42,10 +42,8 @@ from deepagents_code.plugins.marketplace import (
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
     load_enabled_plugins,
-    load_favorite_plugins,
     load_installed_plugins,
     load_marketplace_records,
-    set_plugin_favorite,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,11 +54,9 @@ ViewMode = Literal[
     "add_marketplace",
     "plugin_details",
     "installed_details",
-    "mcp_details",
     "marketplace_details",
     "confirm_remove_marketplace",
 ]
-InstalledGroup = Literal["favorites", "project", "local", "user"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,26 +66,12 @@ class _PluginRow:
     enabled: bool
     version: str | None
     author: str | None
-    scope: InstallScope | None
-    favorite: bool = False
     skill_count: int | None = None
     """Discovered skill count, or `None` when not computed (e.g. not enabled)."""
     skill_names: tuple[str, ...] = ()
     mcp_connected: bool | None = None
     """MCP connection state, or `None` when the plugin declares no MCP servers."""
     mcp_server_names: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _McpRow:
-    name: str
-    transport: str
-    status: str
-    tool_count: int
-    tool_names: tuple[str, ...]
-    scope: InstallScope
-    favorite: bool
-    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,10 +87,8 @@ class _MarketplaceRow:
 class _ManagerState:
     available_plugins: tuple[_PluginRow, ...]
     installed_plugins: tuple[_PluginRow, ...]
-    mcp_servers: tuple[_McpRow, ...]
     marketplaces: tuple[_MarketplaceRow, ...]
     errors: tuple[str, ...]
-    favorites: frozenset[str] = field(default_factory=frozenset)
 
 
 def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
@@ -169,32 +149,6 @@ def _plugin_mcp_connected(
     return expected <= connected
 
 
-def _mcp_scope_for_server(
-    server_name: str, plugin_mcp_scopes: dict[str, InstallScope]
-) -> InstallScope:
-    """Infer an Installed-tab scope for an MCP server name.
-
-    Returns:
-        Scope used for grouping: owning plugin scope when known, otherwise `user`.
-    """
-    return plugin_mcp_scopes.get(server_name, "user")
-
-
-def _status_label(status: str, glyphs: object) -> str:
-    checkmark = getattr(glyphs, "checkmark", "✓")
-    if status == "ok":
-        return f"{checkmark} connected"
-    if status == "disabled":
-        return "disabled"
-    if status == "unauthenticated":
-        return "needs login"
-    if status == "awaiting_reconnect":
-        return "restart to connect"
-    if status == "error":
-        return "error"
-    return status
-
-
 def _instance_for_manager_row(
     plugin_id: str,
     *,
@@ -212,7 +166,7 @@ def _instance_for_manager_row(
         return instance
     if not is_installed:
         return None
-    entry = get_primary_install_entry(plugin_id, project_path=str(Path.cwd().resolve()))
+    entry = get_primary_install_entry(plugin_id)
     if entry is None:
         return None
     root = Path(entry.install_path)
@@ -237,7 +191,6 @@ def _load_manager_state(
     records = load_marketplace_records()
     enabled = load_enabled_plugins()
     installed = load_installed_plugins()
-    favorites = load_favorite_plugins()
     discovered = {
         instance.plugin_id: instance for instance in discover_plugins().plugins
     }
@@ -245,7 +198,6 @@ def _load_manager_state(
     installed_plugins: list[_PluginRow] = []
     marketplaces: list[_MarketplaceRow] = []
     errors: list[str] = []
-    plugin_mcp_scopes: dict[str, InstallScope] = {}
 
     for name, record in sorted(records.items()):
         try:
@@ -284,24 +236,14 @@ def _load_manager_state(
             instance = _instance_for_manager_row(
                 plugin_id, discovered=discovered, is_installed=is_installed
             )
-            scope: InstallScope | None = None
-            if is_installed:
-                primary = get_primary_install_entry(
-                    plugin_id, project_path=str(Path.cwd().resolve())
-                )
-                scope = _scope_value(primary.scope if primary else None)
             skill_names = _list_plugin_skill_names(instance) if instance else ()
             mcp_names = _plugin_mcp_server_names(instance) if instance else ()
-            if scope is not None:
-                plugin_mcp_scopes.update(dict.fromkeys(mcp_names, scope))
             row = _PluginRow(
                 plugin_id=plugin_id,
                 description=plugin.description or "",
                 enabled=is_enabled,
                 version=instance.version if instance is not None else None,
-                author=_author_display(plugin.manifest_fields.get("author")),
-                scope=scope,
-                favorite=plugin_id in favorites,
+                author=_author_display(plugin.author),
                 skill_count=len(skill_names) if instance else None,
                 skill_names=skill_names,
                 mcp_connected=(
@@ -316,31 +258,11 @@ def _load_manager_state(
             else:
                 available_plugins.append(row)
 
-    mcp_servers: list[_McpRow] = []
-    for info in mcp_server_info:
-        if info.name.startswith("<config:"):
-            continue
-        tool_names = tuple(tool.name for tool in info.tools)
-        mcp_servers.append(
-            _McpRow(
-                name=info.name,
-                transport=info.transport,
-                status=info.status,
-                tool_count=len(info.tools),
-                tool_names=tool_names,
-                scope=_mcp_scope_for_server(info.name, plugin_mcp_scopes),
-                favorite=info.name in favorites,
-                error=info.error,
-            )
-        )
-
     return _ManagerState(
         available_plugins=tuple(available_plugins),
         installed_plugins=tuple(installed_plugins),
-        mcp_servers=tuple(mcp_servers),
         marketplaces=tuple(marketplaces),
         errors=tuple(errors),
-        favorites=frozenset(favorites),
     )
 
 
@@ -351,16 +273,6 @@ def _author_display(value: object) -> str | None:
         name = value.get("name")
         if isinstance(name, str):
             return name
-    return None
-
-
-def _scope_value(value: str | None) -> InstallScope | None:
-    if value == "user":
-        return "user"
-    if value == "project":
-        return "project"
-    if value == "local":
-        return "local"
     return None
 
 
@@ -455,45 +367,26 @@ class PluginManagerScreen(ModalScreen[None]):
         "errors",
     )
 
-    _SCOPE_ORDER: ClassVar[tuple[InstallScope, ...]] = ("project", "local", "user")
-    _GROUP_ORDER: ClassVar[tuple[InstalledGroup, ...]] = (
-        "favorites",
-        "project",
-        "local",
-        "user",
-    )
-    _GROUP_LABELS: ClassVar[dict[InstalledGroup, str]] = {
-        "favorites": "Favorites",
-        "project": "Project",
-        "local": "Local",
-        "user": "User",
-    }
-
     def __init__(
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
-        on_toggle_mcp_disable: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 
         Args:
             mcp_server_info: Live MCP server metadata from the running session,
                 used to show connection status for plugins that declare MCP
-                servers and to list MCP rows in Installed.
-            on_toggle_mcp_disable: Async callback to flip an MCP server's
-                persistent disabled state (same path as `/mcp` F2).
+                servers.
         """
         super().__init__()
         self._tab: PluginTab = "discover"
         self._mode: ViewMode = "list"
         self._mcp_server_info = mcp_server_info
-        self._on_toggle_mcp_disable = on_toggle_mcp_disable
         self._state = _load_manager_state(mcp_server_info)
         self._status: str | None = None
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
-        self._selected_mcp: _McpRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
 
     @override
@@ -579,9 +472,13 @@ class PluginManagerScreen(ModalScreen[None]):
                 status=None,
             )
         if self._tab == "installed":
-            if not self._state.installed_plugins and not self._state.mcp_servers:
+            if not self._state.installed_plugins:
                 return [Option("No plugins installed.", id="empty")]
-            return self._grouped_installed_options()
+            return self._plugin_options(
+                self._state.installed_plugins,
+                action="installed",
+                status=None,
+            )
         if self._tab == "marketplaces":
             options = [Option("+ Add Marketplace", id="add-marketplace")]
             options.extend(
@@ -615,57 +512,6 @@ class PluginManagerScreen(ModalScreen[None]):
             )
         return options
 
-    def _grouped_installed_options(self) -> list[Option]:
-        """Group installed plugins and MCP servers by Favorites then scope.
-
-        Returns:
-            Options with disabled section headers and selectable plugin/MCP rows.
-        """
-        groups: dict[InstalledGroup, list[_PluginRow | _McpRow]] = {
-            group: [] for group in self._GROUP_ORDER
-        }
-        for row in self._state.installed_plugins:
-            if row.favorite:
-                groups["favorites"].append(row)
-            else:
-                groups[row.scope or "user"].append(row)
-        for row in self._state.mcp_servers:
-            if row.favorite:
-                groups["favorites"].append(row)
-            else:
-                groups[row.scope].append(row)
-
-        options: list[Option] = []
-        for group in self._GROUP_ORDER:
-            rows = groups[group]
-            if not rows:
-                continue
-            if options:
-                options.append(Option(" ", id=f"spacer:{group}", disabled=True))
-            options.append(
-                Option(
-                    Content.styled(self._GROUP_LABELS[group], "bold"),
-                    id=f"header:{group}",
-                    disabled=True,
-                )
-            )
-            for row in rows:
-                if isinstance(row, _PluginRow):
-                    options.append(
-                        Option(
-                            self._plugin_prompt(row, status=None),
-                            id=f"installed:{row.plugin_id}",
-                        )
-                    )
-                else:
-                    options.append(
-                        Option(
-                            self._mcp_prompt(row),
-                            id=f"mcp:{row.name}",
-                        )
-                    )
-        return options
-
     @staticmethod
     def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
         glyphs = get_glyphs()
@@ -692,56 +538,23 @@ class PluginManagerScreen(ModalScreen[None]):
         )
 
     @staticmethod
-    def _mcp_prompt(row: _McpRow) -> Content:
-        glyphs = get_glyphs()
-        meta_parts = ["MCP", row.transport, _status_label(row.status, glyphs)]
-        if row.tool_count:
-            unit = "tool" if row.tool_count == 1 else "tools"
-            meta_parts.append(f"{row.tool_count} {unit}")
-        meta = " · ".join(meta_parts)
-        return Content.assemble(
-            row.name,
-            Content.styled(f" · {meta}", "dim"),
-        )
-
-    @staticmethod
     def _install_details_options() -> list[Option]:
         return [
-            Option("Install for you (user scope)", id="install:user"),
-            Option(
-                "Install for you in this project (project scope)",
-                id="install:project",
-            ),
-            Option(
-                "Install for you, in this repo only (local scope)",
-                id="install:local",
-            ),
+            Option("Install", id="action:install"),
             Option("Back to plugin list", id="details-back"),
         ]
 
     @staticmethod
     def _installed_details_options(row: _PluginRow) -> list[Option]:
-        favorite_label = "Remove from favorites" if row.favorite else "Add to favorites"
         return [
             Option(
                 "Disable plugin" if row.enabled else "Enable plugin",
                 id="action:toggle-enabled",
             ),
-            Option(favorite_label, id="action:toggle-favorite"),
             Option(
                 Content.styled("Uninstall", "bold"),
                 id="action:uninstall",
             ),
-            Option("Back to plugin list", id="details-back"),
-        ]
-
-    @staticmethod
-    def _mcp_details_options(row: _McpRow) -> list[Option]:
-        toggle_label = "Enable server" if row.status == "disabled" else "Disable server"
-        favorite_label = "Remove from favorites" if row.favorite else "Add to favorites"
-        return [
-            Option(toggle_label, id="action:toggle-mcp"),
-            Option(favorite_label, id="action:toggle-favorite"),
             Option("Back to plugin list", id="details-back"),
         ]
 
@@ -784,8 +597,6 @@ class PluginManagerScreen(ModalScreen[None]):
         parts: list[Content | str] = [
             Content.styled(f"{plugin_name} @ {marketplace}", "bold"),
         ]
-        if row.scope:
-            parts.extend(["\n", Content.styled(f"Scope: {row.scope}", "dim")])
         if row.version:
             parts.extend(["\n", Content.styled(f"Version: {row.version}", "dim")])
         if row.description:
@@ -806,35 +617,6 @@ class PluginManagerScreen(ModalScreen[None]):
             component_lines.append("No components discovered.")
         for line in component_lines:
             parts.extend(["\n  ", Content.styled(line, "dim")])
-        return Content.assemble(*parts)
-
-    @staticmethod
-    def _mcp_details_content(row: _McpRow) -> Content:
-        glyphs = get_glyphs()
-        parts: list[Content | str] = [
-            Content.styled(row.name, "bold"),
-            "\n",
-            Content.styled("MCP server", "dim"),
-            "\n",
-            Content.styled(f"Transport: {row.transport}", "dim"),
-            "\n",
-            Content.styled(
-                f"Status: {_status_label(row.status, glyphs)}",
-                "dim",
-            ),
-            "\n",
-            Content.styled(f"Scope: {row.scope}", "dim"),
-        ]
-        if row.error and row.status != "ok":
-            parts.extend(["\n\n", Content.styled(row.error, "dim")])
-        if row.tool_names:
-            parts.extend(["\n\n", Content.styled("Tools:", "bold")])
-            for name in row.tool_names:
-                parts.extend(["\n  ", Content.styled(name, "dim")])
-        elif row.status == "ok":
-            parts.extend(
-                ["\n\n", Content.styled("No tools exposed by this server.", "dim")]
-            )
         return Content.assemble(*parts)
 
     @staticmethod
@@ -940,7 +722,6 @@ class PluginManagerScreen(ModalScreen[None]):
         return self._mode in {
             "plugin_details",
             "installed_details",
-            "mcp_details",
             "marketplace_details",
             "confirm_remove_marketplace",
         }
@@ -954,8 +735,6 @@ class PluginManagerScreen(ModalScreen[None]):
             status_widget.update(
                 self._installed_plugin_details_content(self._selected_plugin)
             )
-        elif self._mode == "mcp_details" and self._selected_mcp is not None:
-            status_widget.update(self._mcp_details_content(self._selected_mcp))
         elif (
             self._mode == "marketplace_details"
             and self._selected_marketplace is not None
@@ -1040,8 +819,6 @@ class PluginManagerScreen(ModalScreen[None]):
             return self._install_details_options()
         if self._mode == "installed_details" and self._selected_plugin is not None:
             return self._installed_details_options(self._selected_plugin)
-        if self._mode == "mcp_details" and self._selected_mcp is not None:
-            return self._mcp_details_options(self._selected_mcp)
         if (
             self._mode == "marketplace_details"
             and self._selected_marketplace is not None
@@ -1061,8 +838,6 @@ class PluginManagerScreen(ModalScreen[None]):
             if refreshed is None:
                 refreshed = self._find_available_plugin(self._selected_plugin.plugin_id)
             self._selected_plugin = refreshed
-        if self._selected_mcp is not None:
-            self._selected_mcp = self._find_mcp(self._selected_mcp.name)
         if self._selected_marketplace is not None:
             self._selected_marketplace = self._find_marketplace(
                 self._selected_marketplace.name
@@ -1084,7 +859,6 @@ class PluginManagerScreen(ModalScreen[None]):
                 return
             self._mode = "list"
             self._selected_plugin = None
-            self._selected_mcp = None
             self._selected_marketplace = None
             self._error = None
             self._refresh_view()
@@ -1115,7 +889,6 @@ class PluginManagerScreen(ModalScreen[None]):
             "list",
             "plugin_details",
             "installed_details",
-            "mcp_details",
             "marketplace_details",
             "confirm_remove_marketplace",
         }:
@@ -1127,7 +900,6 @@ class PluginManagerScreen(ModalScreen[None]):
             "list",
             "plugin_details",
             "installed_details",
-            "mcp_details",
             "marketplace_details",
             "confirm_remove_marketplace",
         }:
@@ -1154,7 +926,6 @@ class PluginManagerScreen(ModalScreen[None]):
                 return
             self._selected_marketplace = row
             self._selected_plugin = None
-            self._selected_mcp = None
             self._mode = "marketplace_details"
             self._status = None
             self._error = None
@@ -1166,7 +937,6 @@ class PluginManagerScreen(ModalScreen[None]):
             if row is None:
                 return
             self._selected_plugin = row
-            self._selected_mcp = None
             self._mode = "plugin_details"
             self._error = None
             self._refresh_view()
@@ -1177,44 +947,19 @@ class PluginManagerScreen(ModalScreen[None]):
             if row is None:
                 return
             self._selected_plugin = row
-            self._selected_mcp = None
             self._mode = "installed_details"
             self._error = None
             self._status = None
             self._refresh_view()
             return
-        if option_id.startswith("mcp:"):
-            name = option_id.removeprefix("mcp:")
-            row = self._find_mcp(name)
-            if row is None:
-                return
-            self._selected_mcp = row
-            self._selected_plugin = None
-            self._mode = "mcp_details"
-            self._error = None
-            self._status = None
-            self._refresh_view()
-            return
-        if option_id.startswith("install:"):
-            scope = option_id.removeprefix("install:")
-            if scope == "user":
-                await self._install_selected_plugin("user")
-            elif scope == "project":
-                await self._install_selected_plugin("project")
-            elif scope == "local":
-                await self._install_selected_plugin("local")
+        if option_id == "action:install":
+            await self._install_selected_plugin()
             return
         if option_id == "action:toggle-enabled":
             self._toggle_selected_plugin_enabled()
             return
-        if option_id == "action:toggle-favorite":
-            self._toggle_selected_favorite()
-            return
         if option_id == "action:uninstall":
             await self._uninstall_selected_plugin()
-            return
-        if option_id == "action:toggle-mcp":
-            await self._toggle_selected_mcp()
             return
         if option_id == "action:remove-marketplace":
             self._mode = "confirm_remove_marketplace"
@@ -1231,7 +976,6 @@ class PluginManagerScreen(ModalScreen[None]):
                 else "list"
             )
             self._selected_plugin = None
-            self._selected_mcp = None
             if self._mode == "list":
                 self._selected_marketplace = None
             self._refresh_view()
@@ -1256,41 +1000,27 @@ class PluginManagerScreen(ModalScreen[None]):
             None,
         )
 
-    def _find_mcp(self, name: str) -> _McpRow | None:
-        return next(
-            (row for row in self._state.mcp_servers if row.name == name),
-            None,
-        )
-
     def _find_marketplace(self, name: str) -> _MarketplaceRow | None:
         return next(
             (row for row in self._state.marketplaces if row.name == name),
             None,
         )
 
-    async def _install_selected_plugin(self, scope: InstallScope) -> None:
+    async def _install_selected_plugin(self) -> None:
         row = self._selected_plugin
         if row is None:
             return
         try:
-            await asyncio.to_thread(install_plugin, row.plugin_id, scope=scope)
+            await asyncio.to_thread(install_plugin, row.plugin_id)
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             self._error = str(exc)
             self._status = None
             self._refresh_view()
             return
-        scope_label = {
-            "user": "user scope",
-            "project": "project scope",
-            "local": "local scope",
-        }[scope]
         self._mode = "list"
         self._tab = "installed"
         self._selected_plugin = None
-        self._status = (
-            f"Installed {row.plugin_id} ({scope_label}). "
-            "Run /reload-plugins to activate."
-        )
+        self._status = f"Installed {row.plugin_id}. Run /reload-plugins to activate."
         self._error = None
         self._refresh_state()
 
@@ -1304,33 +1034,11 @@ class PluginManagerScreen(ModalScreen[None]):
             self._mode = "list"
             self._selected_plugin = None
         else:
-            enable_plugin_with_scope(row.plugin_id, row.scope or "user")
+            enable_plugin(row.plugin_id)
             self._status = f"Enabled {row.plugin_id}. Run /reload-plugins to activate."
             self._mode = "list"
             self._tab = "installed"
             self._selected_plugin = None
-        self._error = None
-        self._refresh_state()
-
-    def _toggle_selected_favorite(self) -> None:
-        if self._selected_plugin is not None:
-            item_id = self._selected_plugin.plugin_id
-            new_state = not self._selected_plugin.favorite
-        elif self._selected_mcp is not None:
-            item_id = self._selected_mcp.name
-            new_state = not self._selected_mcp.favorite
-        else:
-            return
-        set_plugin_favorite(item_id, new_state)
-        self._status = (
-            f"Added {item_id} to favorites."
-            if new_state
-            else f"Removed {item_id} from favorites."
-        )
-        self._mode = "list"
-        self._tab = "installed"
-        self._selected_plugin = None
-        self._selected_mcp = None
         self._error = None
         self._refresh_state()
 
@@ -1372,38 +1080,6 @@ class PluginManagerScreen(ModalScreen[None]):
             f"Removed marketplace {row.name} and uninstalled "
             f"{row.installed_count} {plugin_label}."
         )
-        self._error = None
-        self._refresh_state()
-
-    async def _toggle_selected_mcp(self) -> None:
-        row = self._selected_mcp
-        if row is None:
-            return
-        if self._on_toggle_mcp_disable is None:
-            from deepagents_code.mcp_disabled import (
-                is_server_disabled,
-                set_server_disabled,
-            )
-
-            currently_disabled = await asyncio.to_thread(is_server_disabled, row.name)
-            ok, detail = await asyncio.to_thread(
-                set_server_disabled, row.name, not currently_disabled
-            )
-            if not ok:
-                self._error = detail or f"Could not update {row.name}."
-                self._refresh_view()
-                return
-            verb = "enabled" if currently_disabled else "disabled"
-            self._status = f"{verb.capitalize()} MCP server {row.name}. Run /restart."
-        else:
-            await self._on_toggle_mcp_disable(row.name)
-            self._status = f"Toggled MCP server {row.name}. Run /restart to apply."
-            # Refresh live info from the app if available.
-            mcp_info = getattr(self.app, "_mcp_server_info", None)
-            if mcp_info is not None:
-                self._mcp_server_info = mcp_info
-        self._mode = "list"
-        self._selected_mcp = None
         self._error = None
         self._refresh_state()
 

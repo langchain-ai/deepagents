@@ -41,3 +41,33 @@ def test_build_provider_matrices_cross_products_models_and_categories():
     assert entry["agent_impl"] == "dcode"
     assert entry["langsmith_dataset"] == "context-retrieval-evals__anthropic-opus"
     assert entry["n_shards"] == 3
+
+
+def test_main_emits_per_provider_outputs(tmp_path, monkeypatch):
+    out = tmp_path / "gh_out"
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus, openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_CONCURRENCY", "4")
+    monkeypatch.setenv("UNIFIED_SHARD_PARALLEL", "10")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    rc = up.main([])
+    assert rc == 0
+    text = out.read_text()
+    lines = dict(line.split("=", 1) for line in text.splitlines())
+    assert lines["anthropic_has_models"] == "true"
+    assert lines["openai_has_models"] == "true"
+    assert lines["fireworks_has_models"] == "false"
+    assert lines["effective_shard_parallel"] == "10"
+    import json as _j
+    anth = _j.loads(lines["anthropic_matrix"])
+    assert len(anth["include"]) == 2  # 1 model x 2 categories
+    assert _j.loads(lines["providers"]) == ["anthropic", "openai"]
+
+
+def test_main_rejects_bad_spec(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "no-colon-here")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    import pytest
+    with pytest.raises(SystemExit):
+        up.main([])

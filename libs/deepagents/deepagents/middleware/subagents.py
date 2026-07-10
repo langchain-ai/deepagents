@@ -877,7 +877,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 def default_subagent_middleware(
     model: BaseChatModel | str | None,
     backend: BackendProtocol | BackendFactory,
-) -> list[AgentMiddleware]:
+) -> list[AgentMiddleware[Any, Any, Any]]:
     """Build the default per-subagent middleware stack.
 
     Mirrors the stack `create_deep_agent` gives its own subagents
@@ -885,7 +885,7 @@ def default_subagent_middleware(
     `PatchToolCallsMiddleware`). Use this alongside `override_subagent_middleware`
     when assembling a `SubAgent` by hand so it behaves like a default one.
     """
-    stack: list[AgentMiddleware] = [
+    stack: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend),
     ]
@@ -924,7 +924,7 @@ def override_subagent_middleware(
         merged_spec.setdefault("model", gp_subagent.get("model"))
         merged_spec.setdefault(
             "middleware",
-            default_subagent_middleware(merged_spec.get("model"), backend),
+            default_subagent_middleware(cast("BaseChatModel | str | None", merged_spec.get("model")), backend),
         )
         return cast("SubAgent", merged_spec)
 
@@ -932,7 +932,7 @@ def override_subagent_middleware(
     for spec in subagents:
         if "graph_id" in spec:
             continue
-        merged.append(_fill_defaults(cast("SubAgent", spec)))
+        merged.append(_fill_defaults(spec))
 
     return SubAgentMiddleware(
         backend=backend,

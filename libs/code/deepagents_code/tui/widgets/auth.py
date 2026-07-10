@@ -209,6 +209,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "ibm": "https://cloud.ibm.com/iam/apikeys",
     "langsmith": "https://smith.langchain.com/settings",
     "litellm": "https://docs.litellm.ai/docs/proxy/virtual_keys",
+    "meta": "https://dev.meta.ai/api-keys/",
     "mistralai": "https://console.mistral.ai/api-keys",
     "nvidia": "https://build.nvidia.com/settings/api-keys",
     "openai": "https://platform.openai.com/api-keys",

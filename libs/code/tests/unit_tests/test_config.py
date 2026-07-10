@@ -5,6 +5,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any, ClassVar
 from unittest.mock import Mock, patch
 
@@ -4520,13 +4521,17 @@ class TestCreateMetaModel:
     """Tests for Meta's dedicated model initializer."""
 
     @patch("langchain.chat_models.init_chat_model")
-    @patch("langchain_meta.ChatMetaModel")
-    def test_uses_langchain_meta(self, mock_meta: Mock, mock_init: Mock) -> None:
+    def test_uses_langchain_meta(self, mock_init: Mock) -> None:
         """Meta models use the installed integration until LangChain registers it."""
         expected = Mock()
-        mock_meta.return_value = expected
+        mock_meta = Mock(return_value=expected)
+        module = ModuleType("langchain_meta")
+        module.__dict__["ChatMetaModel"] = mock_meta
 
-        result = _create_model_via_init("muse-spark-1.1", "meta", {"max_retries": 3})
+        with patch.dict("sys.modules", {"langchain_meta": module}):
+            result = _create_model_via_init(
+                "muse-spark-1.1", "meta", {"max_retries": 3}
+            )
 
         assert result is expected
         mock_meta.assert_called_once_with(model="muse-spark-1.1", max_retries=3)

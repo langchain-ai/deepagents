@@ -321,6 +321,11 @@ jobs:
           # No `-e`: the poll loop handles transient `gh` failures itself rather
           # than aborting the job, which would skip the wait entirely.
           set -uo pipefail
+          HEAD_SUBJECT=$(git log -1 --format=%s HEAD)
+          IS_HOTFIX=false
+          case "$HEAD_SUBJECT" in
+            hotfix\(*|hotfix:*|hotfix!*) IS_HOTFIX=true ;;
+          esac
 
           # `autorelease: pending` is release-please-action's built-in label,
           # applied to release PRs and cleared to `autorelease: tagged` by
@@ -392,6 +397,25 @@ jobs:
           }
 
           fail_failed_releases() {
+            if [ "$IS_HOTFIX" = true ]; then
+              echo "::notice::Hotfix push detected; release-please is deferred while the failed package release is recovered:"
+              printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
+                [ -n "$line" ] && echo "::notice::$line"
+              done
+              echo "::notice::Fix the failed package release, then manually re-dispatch it before running release-please again."
+              {
+                echo "## release-please deferred for hotfix recovery"
+                echo ""
+                echo "The push that triggered this run is a hotfix commit (\`$HEAD_SUBJECT\`). The following merged release PR(s) are still labeled \`autorelease: pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
+                echo ""
+                printf '%s\n' "$FAILED_RELEASES"
+                echo ""
+                echo "release-please was skipped for this push so the operator can fix the failed package release and manually re-dispatch it without recomputing releases against inconsistent state."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             echo "::error::Merged release PR(s) are still labeled 'autorelease: pending', but their matching package release run did not finish successfully:"
             printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
               [ -n "$line" ] && echo "::error::$line"

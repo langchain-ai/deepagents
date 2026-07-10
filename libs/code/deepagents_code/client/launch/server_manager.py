@@ -405,7 +405,16 @@ async def start_server_and_get_agent(
         await server.start()
         await server.wait_for_graph_ready("agent")
     except BaseException:
-        server.stop()
+        # A cancelled/interrupted startup must still reap the subprocess that
+        # `server.start()` already spawned. Guard the cleanup so an error from
+        # `stop()` cannot replace the in-flight `BaseException` (e.g. downgrade a
+        # `CancelledError` to a plain error and break cancellation semantics).
+        try:
+            server.stop()
+        except Exception:
+            logger.warning(
+                "Error stopping server during startup cleanup", exc_info=True
+            )
         raise
 
     agent = RemoteAgent(

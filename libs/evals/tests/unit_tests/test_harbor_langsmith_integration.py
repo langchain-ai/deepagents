@@ -262,9 +262,9 @@ def test_tau3_subset_constant_is_well_formed() -> None:
     tiers = [t.tier for t in TASKS]
     assert len(TASKS) == 30
     assert (tiers.count("easy"), tiers.count("medium"), tiers.count("hard")) == (
-        6,
-        15,
-        9,
+        2,
+        7,
+        21,
     )
     entries = INCLUDE_TASKS.split()
     assert len(entries) == 30

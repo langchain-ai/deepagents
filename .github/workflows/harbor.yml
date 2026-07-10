@@ -589,6 +589,8 @@ jobs:
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
           )
           model_provider="${HARBOR_MODEL%%:*}"
+          python "$GITHUB_WORKSPACE/.github/scripts/langgraph_dependencies.py" "$model_provider" \
+            deepagents_harbor/langgraph_project/langgraph.json
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
             openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;

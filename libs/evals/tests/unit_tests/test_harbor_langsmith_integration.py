@@ -119,6 +119,10 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"' in workflow
     assert '../deepagents/ "$local_deps_dir/deepagents/"' in workflow
     assert '../code/ "$local_deps_dir/deepagents-code/"' in workflow
+    assert (
+        'python "$GITHUB_WORKSPACE/.github/scripts/langgraph_dependencies.py" "$model_provider" \\'
+    ) in workflow
+    assert "deepagents_harbor/langgraph_project/langgraph.json" in workflow
     assert "agent_env_args=(" in workflow
     assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
     assert (

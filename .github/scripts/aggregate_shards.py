@@ -157,7 +157,7 @@ def build_summary(by_task: dict, rollouts: int):
                 "trials": n,
                 "passed": c,
                 "errored": errored,
-                "pass_at_k": task_passk,
+                f"pass@{rollouts}": task_passk,
             }
         )
 
@@ -189,10 +189,11 @@ def render_step_summary(summary: dict) -> str:
         f"Passed: {totals['passed']} | Errored: {totals['errored']}"
     )
     k = summary.get("rollouts_per_task")
-    passk = summary["pass_at_k"]
+    passk = summary.get(f"pass@{k}")
+    avgk = summary.get(f"avg@{k}")
     lines.extend(["", "| metric | value |", "|---|---|"])
     lines.append(f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |")
-    lines.append(f"| avg@{k} | {summary['avg_at_k']:.3f} |")
+    lines.append(f"| avg@{k} | {avgk:.3f} |")
     return "\n".join(lines) + "\n"
 
 
@@ -243,8 +244,8 @@ def main(argv=None) -> int:
             "rollouts_per_task": args.rollouts,
             "shards_found": len(job_ids),
             "totals": {"tasks": 0, "trials": 0, "passed": 0, "errored": 0},
-            "pass_at_k": None,
-            "avg_at_k": 0.0,
+            f"pass@{args.rollouts}": None,
+            f"avg@{args.rollouts}": 0.0,
         }
         write_outputs(summary, [], out_dir)
         print("No trial results found; wrote empty summary.", file=sys.stderr)
@@ -264,8 +265,8 @@ def main(argv=None) -> int:
         "rollouts_per_task": args.rollouts,
         "shards_found": len(job_ids),
         "totals": totals,
-        "pass_at_k": dataset_passk,
-        "avg_at_k": avg_at_k,
+        f"pass@{args.rollouts}": dataset_passk,
+        f"avg@{args.rollouts}": avg_at_k,
     }
     write_outputs(summary, per_task, out_dir)
     return 0

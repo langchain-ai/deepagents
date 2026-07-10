@@ -76,8 +76,8 @@ def test_aggregate_and_summary(tmp_path: Path):
     # avg@K: passing rollouts / total rollouts = 4 / 9.
     assert abs(avg_at_k - 4 / 9) < 1e-6
     assert len(per_task) == 3
-    # per-task pass@K is a scalar, not a k-sweep dict.
-    assert {r["task"]: r["pass_at_k"] for r in per_task} == {
+    # per-task pass@K is a scalar under a dynamic "pass@{K}" key.
+    assert {r["task"]: r["pass@3"] for r in per_task} == {
         "taskA": 1.0, "taskB": 0.0, "taskC": 1.0,
     }
 
@@ -106,11 +106,11 @@ def test_end_to_end_writes_files(tmp_path: Path):
     assert summary["dataset"] == "ds/x"
     assert summary["model"] == "m1"
     assert summary["totals"] == {"tasks": 1, "trials": 2, "passed": 1, "errored": 0}
-    assert summary["pass_at_k"] == 1.0  # pass@2: taskA passed at least once
-    assert summary["avg_at_k"] == 0.5  # 1 passing rollout of 2
+    assert summary["pass@2"] == 1.0  # pass@2: taskA passed at least once
+    assert summary["avg@2"] == 0.5  # 1 passing rollout of 2
     rows = [json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()]
     assert rows == [
-        {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass_at_k": 1.0}
+        {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass@2": 1.0}
     ]
 
 
@@ -130,8 +130,8 @@ def test_empty_tree_is_no_op(tmp_path: Path):
     assert rc == 0
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["totals"]["tasks"] == 0
-    assert summary["pass_at_k"] is None
-    assert summary["avg_at_k"] == 0.0
+    assert summary["pass@3"] is None
+    assert summary["avg@3"] == 0.0
 
 
 if __name__ == "__main__":

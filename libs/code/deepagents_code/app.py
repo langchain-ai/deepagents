@@ -347,7 +347,6 @@ if TYPE_CHECKING:
     from textual.events import MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
-    from textual.scrollbar import ScrollDown, ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
@@ -1819,6 +1818,17 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    class Scrolled(Message, namespace="chat"):
+        """Posted whenever the chat's vertical scroll offset changes.
+
+        Transcript hydration keys off the actual scroll offset instead of the
+        scrollbar `ScrollUp`/`ScrollDown` messages: those never fire for
+        wheel/trackpad/keyboard scrolling (which scroll via `MouseScroll*`
+        events) and, for scrollbar-track clicks, are `bubble=False` and consumed
+        by this container's own handler before they can reach the app. Watching
+        `scroll_y` covers every input device uniformly.
+        """
+
     # The deferred-anchor logic below drives the base class through its private
     # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
     # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
@@ -1890,6 +1900,17 @@ class _ChatScroll(VerticalScroll):
             self.set_reactive(VerticalScroll.scroll_y, 0.0)
             self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
         return result
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Announce vertical scroll changes so the app can hydrate history.
+
+        Args:
+            old_value: Previous vertical scroll offset.
+            new_value: New vertical scroll offset.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        if old_value != new_value:
+            self.post_message(self.Scrolled())
 
     def _is_scrollable(self) -> bool:
         """Return whether current chat content overflows the viewport."""
@@ -5609,12 +5630,14 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
-    def on_scroll_up(self, _event: ScrollUp) -> None:
-        """Handle scroll up to check if we need to hydrate older messages."""
-        self._check_hydration_needed()
+    def on_chat_scrolled(self, _event: _ChatScroll.Scrolled) -> None:
+        """Hydrate history in both directions whenever the chat scrolls.
 
-    def on_scroll_down(self, _event: ScrollDown) -> None:
-        """Handle scroll down to hydrate newer messages below the window."""
+        Driven by `_ChatScroll.watch_scroll_y` so hydration fires for every
+        input device (wheel, trackpad, keyboard, scrollbar), not just the
+        scrollbar-track messages that never reached the app.
+        """
+        self._check_hydration_needed()
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:

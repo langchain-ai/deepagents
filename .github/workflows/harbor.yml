@@ -156,14 +156,14 @@ on:
         default: ""
         type: string
       rollouts_per_task:
-        description: "Rollouts per task."
+        description: "Rollouts (attempts) per task. Overridable, no cap."
         required: true
-        default: "1"
+        default: "3"
         type: string
       concurrency:
-        description: "Concurrent trials (sandbox slots)."
+        description: "Concurrent trials (sandbox slots) per shard job. Capped at 4."
         required: true
-        default: "1"
+        default: "4"
         type: string
       agent_timeout_multiplier:
         description: "Multiplier for the agent EXECUTION timeout (e.g. 0.1 caps each rollout's wall-clock to bound model cost). Setup + env-build timeouts are unaffected, so the agent-setup phase is still tested at full budget — useful for cheap concurrency stress tests."
@@ -176,9 +176,9 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation. Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped so models x shards <= 256 (GitHub's matrix limit)."
+        description: "Parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10; also models x shards x concurrency must be <= 40 concurrent sandboxes."
         required: false
-        default: "1"
+        default: "10"
         type: string
       harbor_package_override:
         description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
@@ -253,6 +253,53 @@ jobs:
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
+      - name: "🔒 Validate resource limits"
+        # Fail fast (before the matrix fans out) if a dispatch exceeds the caps:
+        # n_shards <= 10, concurrency <= 4, and models x shards x concurrency <= 40
+        # concurrent sandboxes. Inputs are read via env and int-parsed (no shell
+        # interpolation), then only compared and echoed back.
+        env:
+          N_SHARDS: ${{ inputs.n_shards || '10' }}
+          CONCURRENCY: ${{ inputs.concurrency || '4' }}
+          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+
+          MAX_SHARDS, MAX_CONCURRENCY, MAX_SANDBOXES = 10, 4, 40
+
+          def parse_positive(name, raw):
+              raw = (raw or "").strip()
+              if not raw.isdigit() or int(raw) < 1:
+                  sys.exit(f"::error::Invalid {name} (must be a positive integer): {raw!r}")
+              return int(raw)
+
+          n_shards = parse_positive("n_shards", os.environ.get("N_SHARDS"))
+          concurrency = parse_positive("concurrency", os.environ.get("CONCURRENCY"))
+          n_models = len(json.loads(os.environ["MODEL_MATRIX"]).get("include", []))
+
+          errors = []
+          if n_shards > MAX_SHARDS:
+              errors.append(f"n_shards={n_shards} exceeds the cap of {MAX_SHARDS}")
+          if concurrency > MAX_CONCURRENCY:
+              errors.append(f"concurrency={concurrency} exceeds the cap of {MAX_CONCURRENCY}")
+          sandboxes = n_models * n_shards * concurrency
+          if sandboxes > MAX_SANDBOXES:
+              errors.append(
+                  f"too many concurrent sandboxes: {n_models} model(s) x {n_shards} shard(s) "
+                  f"x {concurrency} concurrency = {sandboxes} (max {MAX_SANDBOXES}); "
+                  "reduce models, n_shards, or concurrency"
+              )
+          for err in errors:
+              print(f"::error::{err}")
+          if errors:
+              sys.exit(1)
+          print(
+              f"Limits OK: {n_models} model(s) x {n_shards} shard(s) x {concurrency} "
+              f"concurrency = {sandboxes} concurrent sandboxes (<= {MAX_SANDBOXES})"
+          )
+          PY
+
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
         # Cross-products the model matrix with the shard axis, caps the shard
@@ -261,7 +308,7 @@ jobs:
         # See shard_matrix.py (unit-tested in test_shard_matrix.py).
         env:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-          N_SHARDS: ${{ inputs.n_shards || '1' }}
+          N_SHARDS: ${{ inputs.n_shards || '10' }}
           N_TASKS: ${{ inputs.n_tasks }}
         run: python .github/scripts/shard_matrix.py
 

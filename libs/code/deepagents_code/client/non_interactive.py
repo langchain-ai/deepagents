@@ -1342,6 +1342,7 @@ async def run_non_interactive(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: str | list[str] | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
     rubric_model: str | None = None,
@@ -1407,6 +1408,8 @@ async def run_non_interactive(
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
         rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
@@ -1607,6 +1610,7 @@ async def run_non_interactive(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,

@@ -255,6 +255,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             auto_approve=config.auto_approve,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
+            fs_tools=config.allow_fs_tools,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
             enable_skills=config.enable_skills,

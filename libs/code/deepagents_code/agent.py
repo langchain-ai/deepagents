@@ -11,9 +11,9 @@ import tempfile
 import tomllib
 import warnings
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from deepagents import create_deep_agent
+from deepagents import FsToolName, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import (
@@ -1316,6 +1316,7 @@ def create_cli_agent(
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
+    fs_tools: list[FsToolName] | Literal["all"] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -1371,6 +1372,14 @@ def create_cli_agent(
             the CLI process. When provided (and `interrupt_shell_only` is
             `True`), used directly instead of reading `settings.shell_allow_list`
             (which may not be set in the server subprocess environment).
+        fs_tools: Allowlist of filesystem tools to expose to the agent, from
+            `--allow-fs-tools`. `None` (default) leaves `FilesystemMiddleware`
+            at its SDK default (all tools). `"all"` or an explicit list
+            (which must include `"read_file"`) installs a `FilesystemMiddleware`
+            restricted to those tool names, replacing the SDK's default
+            instance for the main agent and every synchronous subagent
+            (including `general-purpose`), so delegating via `task` cannot
+            bypass the restriction. Async subagents are unaffected.
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -1796,6 +1805,23 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    if fs_tools is not None:
+        # Overrides the SDK's default `FilesystemMiddleware` (matched by
+        # `.name` in `create_deep_agent`'s custom-middleware merge) for the
+        # main agent.
+        agent_middleware.append(
+            FilesystemMiddleware(backend=composite_backend, tools=fs_tools)
+        )
+    # Sync subagents don't inherit the main agent's `middleware=` (the SDK's
+    # inheritance path is bypassed when an explicit `general-purpose` subagent is
+    # provided). Inject the restriction into each subagent so `task` can't bypass
+    # `--allow-fs-tools`.
+        for subagent in cast("list[SubAgent]", custom_subagents):
+            subagent["middleware"] = [
+                *subagent.get("middleware", []),
+                FilesystemMiddleware(backend=composite_backend, tools=fs_tools),
+            ]
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 

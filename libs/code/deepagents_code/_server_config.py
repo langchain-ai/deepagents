@@ -258,6 +258,15 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
+    allow_fs_tools: str | list[str] | None = None
+    """Allowlist for `FilesystemMiddleware`'s `tools` param, from
+    `--allow-fs-tools`.
+
+    `None` leaves the SDK default (all filesystem tools). A string is
+    `"all"`; a list is an explicit allowlist of filesystem tool names and
+    must include `"read_file"`.
+    """
+
     rubric_model: str | None = None
     """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
 
@@ -362,6 +371,11 @@ class ServerConfig:
             "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
                 self.interpreter_ptc_acknowledge_unsafe
             ).lower(),
+            "ALLOW_FS_TOOLS": (
+                json.dumps(self.allow_fs_tools)
+                if self.allow_fs_tools is not None
+                else None
+            ),
             "RUBRIC_MODEL": self.rubric_model,
             "RUBRIC_MAX_ITERATIONS": (
                 str(self.rubric_max_iterations)
@@ -416,6 +430,7 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
+            allow_fs_tools=_read_env_json("ALLOW_FS_TOOLS"),
             rubric_model=_read_env_str("RUBRIC_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
@@ -453,6 +468,7 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
+        allow_fs_tools: str | list[str] | None = None,
         rubric_model: str | None = None,
         rubric_max_iterations: int | None = None,
         mcp_config_path: str | None,
@@ -488,6 +504,9 @@ class ServerConfig:
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
+            allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools`
+                param to forward to the server subprocess. `None` leaves the
+                SDK default (all tools).
             rubric_model: Grader model spec; `None` reuses the main model.
             rubric_max_iterations: Explicit grader iterations per rubric attempt;
                 `None` uses the SDK default.
@@ -518,6 +537,7 @@ class ServerConfig:
             enable_interpreter=resolved_enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             sandbox_type=sandbox_type,

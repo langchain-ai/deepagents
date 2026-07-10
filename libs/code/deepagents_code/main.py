@@ -578,6 +578,64 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+_FS_TOOL_NAMES = frozenset(
+    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+)
+
+
+def _parse_allow_fs_tools_flag(
+    raw: str | None,
+) -> str | list[str] | None:
+    """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"all"`, or a
+            comma-separated list of filesystem tool names.
+
+    Returns:
+        `None` when the flag is absent, the literal string `"all"`, or a
+        list of trimmed tool names.
+
+        Calls `sys.exit(2)` when the value is empty, contains only blank
+        tokens, includes an unknown tool name, or is an explicit list that
+        omits `"read_file"` — `FilesystemMiddleware` requires it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --allow-fs-tools requires a value: 'all', or a "
+            "comma-separated list of filesystem tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized == "all":
+        return "all"
+    names = [token.strip() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    unknown = [name for name in names if name not in _FS_TOOL_NAMES]
+    if unknown:
+        sys.stderr.write(
+            f"Error: --allow-fs-tools has unknown tool name(s): "
+            f"{', '.join(unknown)}. Valid names: "
+            f"{', '.join(sorted(_FS_TOOL_NAMES))}.\n"
+        )
+        sys.exit(2)
+    if "read_file" not in names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must include 'read_file'; it is "
+            "required by FilesystemMiddleware.\n"
+        )
+        sys.exit(2)
+    return names
+
+
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     """Return whether the JS interpreter should run for these CLI args.
 
@@ -1687,6 +1745,15 @@ def parse_args() -> argparse.Namespace:
         "list of tool names (which may include the 'safe' preset, e.g. "
         "'safe,task'). Default is 'safe' (read-only file tools).",
     )
+    parser.add_argument(
+        "--allow-fs-tools",
+        dest="allow_fs_tools",
+        metavar="LIST",
+        help="Allowlist of filesystem tools to expose to the agent: 'all', or "
+        "a comma-separated list of tool names (ls, read_file, write_file, "
+        "edit_file, delete, glob, grep, execute). 'read_file' must be "
+        "included in an explicit list. Default is 'all'.",
+    )
 
     parser.add_argument(
         "--update",
@@ -1861,6 +1928,7 @@ async def run_textual_cli_async(
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: str | list[str] | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -1919,6 +1987,8 @@ async def run_textual_cli_async(
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -1993,6 +2063,7 @@ async def run_textual_cli_async(
         "enable_interpreter": enable_interpreter,
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
+        "allow_fs_tools": allow_fs_tools,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -2053,6 +2124,7 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    allow_fs_tools: str | list[str] | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2067,6 +2139,8 @@ async def _run_acp_cli_async(
         no_mcp: Disable all MCP tool loading.
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`. `None` leaves the SDK default (all tools).
 
     Returns:
         Exit code for ACP mode.
@@ -2139,6 +2213,7 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            fs_tools=allow_fs_tools,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")
@@ -2727,6 +2802,9 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    allow_fs_tools=_parse_allow_fs_tools_flag(
+                        getattr(args, "allow_fs_tools", None)
+                    ),
                 )
             )
             sys.exit(exit_code)
@@ -3518,6 +3596,9 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
+            allow_fs_tools = _parse_allow_fs_tools_flag(
+                getattr(args, "allow_fs_tools", None)
+            )
             _warn_if_interpreter_tools_without_interpreter(
                 args, enable_interpreter=enable_interpreter
             )
@@ -3554,6 +3635,7 @@ def cli_main() -> None:
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
+                            allow_fs_tools=allow_fs_tools,
                             max_turns=getattr(args, "max_turns", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
@@ -3629,6 +3711,9 @@ def cli_main() -> None:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
                 )
+                allow_fs_tools = _parse_allow_fs_tools_flag(
+                    getattr(args, "allow_fs_tools", None)
+                )
                 # A stderr warning here would be clobbered by the alternate
                 # screen the moment the TUI launches; the app surfaces the
                 # advisory as a startup notification instead (see
@@ -3657,6 +3742,7 @@ def cli_main() -> None:
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
+                        allow_fs_tools=allow_fs_tools,
                     )
                 )
                 return_code = result.return_code

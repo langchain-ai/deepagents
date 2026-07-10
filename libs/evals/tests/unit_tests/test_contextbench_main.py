@@ -105,6 +105,12 @@ def test_populate_restores_corpus_from_vendor(
     main(["--populate", str(output_dir)])
 
     restored = sorted(p.name for p in files_dir.iterdir())
-    assert restored == ["addresses.txt", "bank_accounts.txt", "people.txt", "pets.txt", "vehicles.txt"]
+    assert restored == [
+        "addresses.txt",
+        "bank_accounts.txt",
+        "people.txt",
+        "pets.txt",
+        "vehicles.txt",
+    ]
     assert (files_dir / "people.txt").read_text() == "people.txt source data\n"
     assert not (other / "environment").exists()

@@ -153,6 +153,15 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
+# Long-running tools that keep their status row on success and report how long
+# they ran ("Took <duration>") instead of hiding it. `execute` shells and `task`
+# subagent dispatches can both run for a while, so the elapsed time is useful.
+_TIMED_SUCCESS_TOOLS: set[str] = {
+    "execute",
+    "task",
+}
+
+
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
@@ -1371,9 +1380,10 @@ class ToolCallMessage(Vertical):
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
-        For `execute` calls that actually ran (a start time was recorded via
-        `set_running`), the elapsed run time is shown in place of the usual
-        success marker; every other tool routes through `_show_success_status`.
+        For long-running tools (`execute`, `task`) that actually ran (a start
+        time was recorded via `set_running`), the elapsed run time is shown in
+        place of the usual success marker; every other tool routes through
+        `_show_success_status`.
 
         Args:
             result: Tool output/result to display
@@ -1390,10 +1400,14 @@ class ToolCallMessage(Vertical):
         self._status = "success"
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._tool_name == "execute" and elapsed is not None and self._status_widget:
+        if (
+            self._tool_name in _TIMED_SUCCESS_TOOLS
+            and elapsed is not None
+            and self._status_widget
+        ):
             self._status_widget.remove_class("pending")
-            # `execute` calls can run for a while, so keep the row and report
-            # how long the command took once the spinner stops.
+            # These calls can run for a while, so keep the row and report how
+            # long the tool took once the spinner stops.
             self._status_widget.update(
                 Content.styled(f"Took {format_duration(elapsed)}", "dim")
             )

@@ -681,7 +681,7 @@ class TestToolCallMessageMarkupSafety:
 
 
 class TestToolCallMessageDuration:
-    """Tests for the post-run duration shown on `execute` tool calls."""
+    """Tests for the post-run duration shown on long-running tool calls."""
 
     async def test_execute_shows_took_after_success(self) -> None:
         """`execute` keeps its status row and reports how long it ran."""
@@ -720,6 +720,23 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 0.3s"
+
+    async def test_task_shows_took_after_success(self) -> None:
+        """`task` subagent calls keep their status row and report how long they ran."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 5  # ty: ignore
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            assert status.display is True
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 5s"
 
     async def test_execute_without_run_falls_back_to_success_status(self) -> None:
         """`execute` success with no recorded start time hides the row.

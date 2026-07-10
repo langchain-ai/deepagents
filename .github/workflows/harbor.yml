@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       dataset:
-        description: "Terminal-bench dataset to run through Harbor."
+        description: "Dataset to run through Harbor."
         required: true
         default: "terminal-bench/terminal-bench-2"
         type: choice
@@ -35,6 +35,7 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "harbor-index/harbor-index-1.0"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false

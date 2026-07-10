@@ -706,6 +706,13 @@ jobs:
   # pushes do not emit pull_request_target events. Explicitly dispatch the curated-notes
   # check on the release PR head so new generated Code entries cannot bypass the
   # required merge gate or its stale-warning comment.
+  #
+  # `update-lockfiles` is in `needs` for SEQUENCING, not as a success precondition:
+  # it pushes lockfile commits to the release branch (moving the PR head), so we must
+  # wait for it before dispatching or the check would validate a stale head. The `if`
+  # deliberately does NOT gate on `needs.update-lockfiles.result` — combined with
+  # `always()`, a lockfile-update failure (which is loud on its own: that job goes red)
+  # still lets the gate fire against the current head rather than silently skipping it.
   dispatch-code-release-notes-check:
     needs: [release-please, update-lockfiles]
     if: |

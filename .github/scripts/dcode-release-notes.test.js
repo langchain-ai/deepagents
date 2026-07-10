@@ -1073,3 +1073,74 @@ test('prepareApply fails when no valid override is present', async t => {
     /missing its GitHub revision/,
   );
 });
+
+test('createApplyCommit rejects a prepared changelog altered before commit creation', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, login: BOT.login, id: BOT.id,
+  });
+  // Tamper with the prepared changelog on disk between prepare and commit. The
+  // byte-exact changelogHash guard must reject it before any commit/ref mutation, so
+  // the blob committed to the release branch can only be the one prepareApply produced.
+  fs.appendFileSync(workspace.file, '\n<!-- tampered -->\n');
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, login: BOT.login, id: BOT.id,
+    }),
+    /Prepared changelog changed before commit creation/,
+  );
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('latest override and applied bind to the newest comment by id, not array order', () => {
+  // Two comments that BOTH parse as valid; the higher comment id must win regardless
+  // of array order. A regression from descending to ascending sort would bind the
+  // gate/apply to a stale draft while every single-survivor test still passed.
+  const olderOverride = overrideComment({ id: 10 });
+  const newerOverride = overrideComment({ id: 30, updatedAt: '2026-07-09T13:00:00Z' });
+  assert.equal(releaseNotes.latestOverride([olderOverride, newerOverride], BOT.login, BOT.id, VERSION).comment.id, 30);
+  assert.equal(releaseNotes.latestOverride([newerOverride, olderOverride], BOT.login, BOT.id, VERSION).comment.id, 30);
+
+  const olderApplied = appliedComment({ id: 20 });
+  const newerApplied = appliedComment({ id: 40, updatedAt: '2026-07-09T13:05:00Z' });
+  assert.equal(releaseNotes.latestApplied([olderApplied, newerApplied], BOT.login, BOT.id, VERSION).comment.id, 40);
+  assert.equal(releaseNotes.latestApplied([newerApplied, olderApplied], BOT.login, BOT.id, VERSION).comment.id, 40);
+});
+
+test('required check fails when the PR body preview terminator is unparseable', async () => {
+  // Everything matches the passing case EXCEPT the PR body is missing its preview
+  // terminator, so extractPreviewSection throws; checkCuratedState must route that
+  // throw into a gate failure rather than letting it escape or pass.
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()] });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, login: BOT.login, id: BOT.id });
+  assert.match(core.failed, /exactly one release-notes preview terminator/);
+});
+
+test('a comment on a plain issue (not a PR) never triggers the bot', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      // No `pull_request` field: the comment is on a plain issue, not a PR, so the
+      // bot must not act on it (and must not read the PR or post any feedback).
+      issue: { number: 123 },
+      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub();
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
+});

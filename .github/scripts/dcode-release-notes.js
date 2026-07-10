@@ -69,8 +69,9 @@ function sha256(value) {
   return crypto.createHash('sha256').update(canonical(value), 'utf8').digest('hex');
 }
 
-// Hash bytes verbatim (no canonicalization). Used only to detect any drift in the
-// PR body between apply's prepare and publish steps — not for content identity.
+// Hash bytes verbatim (no canonicalization). Used to detect byte-level drift across
+// apply's steps — of the prepared changelog (prepare -> commit) and of the PR body
+// (prepare -> publish) — not for content identity (see `sha256`).
 function exactSha256(value) {
   return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
@@ -653,6 +654,11 @@ async function createApplyCommit({ github, owner, repo, stateFile, changelogFile
     author: identity,
     committer: identity,
   });
+  // Deliberate second snapshot re-check: re-validate immediately before the branch
+  // mutation below to minimize the TOCTOU window, so a concurrent PR/override/head
+  // change between building the commit and moving the ref cannot be published. This
+  // is NOT redundant with the pre-commit check at the top of the function — do not
+  // remove it.
   await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: state.sourceHead });
   await github.rest.git.updateRef({
     owner,

@@ -202,21 +202,36 @@ jobs:
         with:
           github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
           script: |
-            const { postDraftFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            const number = Number(process.env.PR_NUMBER);
             const details = process.env.PREPARE_ERROR
               || process.env.POST_ERROR
               || (process.env.CHECKOUT_TRUSTED_OUTCOME !== 'success'
                 ? 'Checking out the trusted automation failed; see the workflow logs.'
                 : `The drafting agent step did not succeed (outcome: ${process.env.AGENT_OUTCOME || 'skipped'}); see the workflow logs.`);
-            await postDraftFailure({
-              github,
-              ...context.repo,
-              number: Number(process.env.PR_NUMBER),
-              head: process.env.PR_HEAD,
-              login: process.env.BOT_LOGIN,
-              id: process.env.BOT_ID,
-              message: details,
-            });
+            try {
+              const { postDraftFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+              await postDraftFailure({
+                github,
+                ...context.repo,
+                number,
+                head: process.env.PR_HEAD,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+                message: details,
+              });
+            } catch (error) {
+              // The trusted checkout can itself fail, leaving trusted-source/ (and the
+              // helper module) absent so the require above throws — exactly the case
+              // the CHECKOUT_TRUSTED_OUTCOME branch above is written to report. Fall
+              // back to a direct comment (no bot-identity check or per-head dedup) so
+              // the maintainer still gets PR feedback instead of only a red run.
+              core.warning(`Falling back to a direct drafting-failure comment: ${error instanceof Error ? error.message : String(error)}`);
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: number,
+                body: `Automatic release-note drafting failed.\n\n${details}`,
+              });
+            }
 
       - name: Fail when drafting or comment publication failed
         if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.agent.outcome != 'success' || steps.post.outcome != 'success') }}
@@ -285,15 +300,22 @@ jobs:
           github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
           script: |
             const { createApplyCommit } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
-            const result = await createApplyCommit({
-              github,
-              ...context.repo,
-              stateFile: process.env.APPLY_STATE,
-              changelogFile: process.env.CHANGELOG_FILE,
-              login: process.env.BOT_LOGIN,
-              id: process.env.BOT_ID,
-            });
-            core.setOutput('applied-head', result.appliedHead);
+            try {
+              const result = await createApplyCommit({
+                github,
+                ...context.repo,
+                stateFile: process.env.APPLY_STATE,
+                changelogFile: process.env.CHANGELOG_FILE,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+              });
+              core.setOutput('applied-head', result.appliedHead);
+            } catch (error) {
+              // Record the reason so the failure-comment step can surface it on the
+              // PR instead of the maintainer having to open the Actions logs.
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
 
       - name: Update PR preview and publish applied metadata
         id: publish
@@ -333,21 +355,39 @@ jobs:
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
+          COMMIT_ERROR: ${{ steps.commit.outputs.error }}
           PUBLISH_ERROR: ${{ steps.publish.outputs.error }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
         with:
           github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
           script: |
-            const { postApplyFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            const number = Number(process.env.PR_NUMBER);
+            // Steps run prepare-apply -> commit -> publish, each skipping the rest on
+            // failure, so this precedence surfaces the first (root-cause) failure.
             const details = process.env.PREPARE_ERROR
+              || process.env.COMMIT_ERROR
               || process.env.PUBLISH_ERROR
               || `commit=${process.env.COMMIT_OUTCOME || 'skipped'}; see the workflow logs.`;
-            await postApplyFailure({
-              github,
-              ...context.repo,
-              number: Number(process.env.PR_NUMBER),
-              head: process.env.PR_HEAD,
-              login: process.env.BOT_LOGIN,
-              id: process.env.BOT_ID,
-              message: details,
-            });
+            try {
+              const { postApplyFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+              await postApplyFailure({
+                github,
+                ...context.repo,
+                number,
+                head: process.env.PR_HEAD,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+                message: details,
+              });
+            } catch (error) {
+              // The trusted checkout can itself fail, leaving the helper module absent
+              // so the require above throws. Fall back to a direct comment (no
+              // bot-identity check or per-head dedup) so the maintainer still gets PR
+              // feedback instead of only a red run.
+              core.warning(`Falling back to a direct apply-failure comment: ${error instanceof Error ? error.message : String(error)}`);
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: number,
+                body: `Applying curated release notes failed.\n\n${details}`,
+              });
+            }

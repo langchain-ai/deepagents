@@ -8,7 +8,7 @@
 #   LANGSMITH_API_KEY          — experiment tracking (always required)
 #   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
-#   OPENAI_API_KEY             — needed for OpenAI models
+#   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
 #   XAI_API_KEY                — needed for xAI/Grok models
 #   GROQ_API_KEY               — needed for Groq-hosted models
@@ -35,6 +35,7 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "tau3-subset"
           - "harbor-index/harbor-index-1.0"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
@@ -286,6 +287,7 @@ jobs:
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
       LANGSMITH_TRACING: "true"
+      OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -300,7 +302,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -340,6 +342,10 @@ jobs:
               ;;
           esac
 
+          if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
+            missing+=("OPENAI_API_KEY")
+          fi
+
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
             exit 1
@@ -373,6 +379,37 @@ jobs:
           mkdir -p ~/.cache/harbor
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
+      - name: "🎯 Resolve tau3-subset dataset"
+        # "tau3-subset" is a curated 30-task view of sierra-research/tau3-bench
+        # (2 easy / 7 medium / 21 hard, across banking_knowledge + telecom) for
+        # probing agent conversation behavior. Pull the task filter from the
+        # committed constant so the selection lives in one place
+        # (deepagents_evals.tau3_subset — the authoritative per-tier split), run
+        # those tasks against the real registry dataset, and track results under a
+        # dedicated "tau3-subset" LangSmith dataset name.
+        if: env.HARBOR_DATASET == 'tau3-subset'
+        run: |
+          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+          # Fail loudly if the filter resolved to the wrong size. An import error
+          # already aborts via `set -e` (a bare assignment propagates the command
+          # substitution's exit code — do not switch to `local`/`export`, which
+          # swallow it), but a successful-but-empty/partial result would be
+          # written verbatim and silently run a different set than the promised
+          # "30-task subset" — an empty value means NO filter, i.e. the FULL
+          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
+          # invariant the unit tests pin; change both together.
+          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
+          if [ "$task_count" -ne 30 ]; then
+            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
+            exit 1
+          fi
+          {
+            echo "HARBOR_DATASET=sierra-research/tau3-bench"
+            echo "HARBOR_INCLUDE_TASKS=$include_tasks"
+            echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
+          } >> "$GITHUB_ENV"
+          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
+
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
@@ -397,7 +434,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -575,7 +612,7 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_DATASET}"
           # Include the run id + attempt so all shards of this dispatch share one
           # experiment name (Harbor's LangSmith plugin uses an explicit name
           # verbatim and create-or-reuses it, converging the shards) while a
@@ -590,6 +627,10 @@ jobs:
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
+            --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
+          )
+          verifier_env_args=(
+            --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -615,6 +656,7 @@ jobs:
           echo ""
 
           uv run harbor run \
+            --yes \
             --agent langgraph \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
@@ -627,6 +669,7 @@ jobs:
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
+            "${verifier_env_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \

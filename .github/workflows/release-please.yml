@@ -678,6 +678,56 @@ jobs:
           echo "::error::Push still rejected after 3 attempts on '${RELEASE_BRANCH}'."
           exit 1
 
+  # release-please and the lockfile updater use GITHUB_TOKEN, so their branch
+  # pushes do not emit pull_request_target events. Explicitly dispatch the curated-notes
+  # check on the release PR head so new generated Code entries cannot bypass the
+  # required merge gate or its stale-warning comment.
+  dispatch-code-release-notes-check:
+    needs: [release-please, update-lockfiles]
+    if: |
+      always() &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.prs != '[]' &&
+      needs.release-please.outputs.prs != ''
+    name: Dispatch dcode release-notes check
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_PRS: ${{ needs.release-please.outputs.prs }}
+    steps:
+      - name: Dispatch checks for updated deepagents-code release PRs
+        run: |
+          set -euo pipefail
+          # Capture jq output separately: a jq failure inside `mapfile < <(...)`
+          # process substitution does not trip `set -e` (mapfile itself returns 0),
+          # so an unparseable prs payload would otherwise silently dispatch nothing.
+          if ! numbers=$(jq -r '.[] | select(
+              .title | test("^release\\(deepagents-code\\): [0-9A-Za-z][0-9A-Za-z.+-]*$")
+            ) | select(
+              .headBranchName == "release-please--branches--main--components--deepagents-code"
+            ) | .number' <<< "$RELEASE_PRS"); then
+            echo "::error::Failed to parse release-please prs output for curated-notes dispatch."
+            exit 1
+          fi
+          mapfile -t RELEASES <<< "$numbers"
+
+          # Attempt every matched PR even if one dispatch fails, then fail the step
+          # if any did, so a single error cannot silently skip the rest.
+          failed=0
+          for number in "${RELEASES[@]}"; do
+            [ -n "$number" ] || continue
+            if ! gh workflow run dcode_release_notes_check.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f "pr_number=$number"; then
+              echo "::error::Failed to dispatch curated release-notes check for PR #${number}."
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   # Dispatch release.yml for each merged release PR.
   #
   # We use `gh workflow run` (workflow_dispatch) rather than `uses:` (workflow_call)

@@ -1958,9 +1958,9 @@ async def resolve_and_load_mcp_tools(
     project_trusted: bool | None = None
     trust_lists: McpServerTrustLists | None = None
     try:
-        from deepagents_code._env_vars import experimental_enabled
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-        if experimental_enabled():
+        if is_env_truthy(EXPERIMENTAL):
             from deepagents_code.plugins import discover_plugins
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 

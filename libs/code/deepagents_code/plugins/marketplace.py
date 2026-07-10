@@ -12,14 +12,18 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from deepagents_code.plugins.manifest import _resolve_component_path, _validate_name
 from deepagents_code.plugins.models import (
-    MarketplacePlugin,
+    JsonObject,
+    JsonValue,
+    LocalMarketplaceSource,
+    MarketplacePluginEntry,
     MarketplaceSource,
     PluginMarketplace,
+    RepositoryMarketplaceSource,
+    UrlMarketplaceSource,
 )
 from deepagents_code.plugins.store import marketplace_cache_dir, sanitize_plugin_id
 
@@ -30,29 +34,7 @@ _MARKETPLACE_RELATIVE_PATHS = (
     Path(".agents") / "plugins" / "marketplace.json",
     Path(".agents") / "plugins" / "api_marketplace.json",
 )
-_PLUGIN_MANIFEST_FIELD_NAMES = {
-    "version",
-    "description",
-    "author",
-    "homepage",
-    "repository",
-    "license",
-    "keywords",
-    "dependencies",
-    "commands",
-    "agents",
-    "skills",
-    "hooks",
-    "mcpServers",
-    "lspServers",
-    "outputStyles",
-    "settings",
-    "userConfig",
-    "channels",
-    "displayName",
-    "defaultEnabled",
-    "experimental",
-}
+_MARKETPLACE_ENTRY_METADATA_FIELDS = {"author"}
 _SSH_GIT_RE = re.compile(r"^([A-Za-z0-9._-]+@[^:]+:.+?(?:\.git)?)(?:#(.+))?$")
 _GITHUB_REPO_RE = re.compile(r"^[^/\s]+/[^/\s]+$")
 _GIT_TIMEOUT_SECONDS = 120
@@ -138,7 +120,7 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
 
     ssh_match = _SSH_GIT_RE.match(value)
     if ssh_match:
-        return MarketplaceSource(
+        return RepositoryMarketplaceSource(
             source_type="git", value=ssh_match.group(1), ref=ssh_match.group(2)
         )
 
@@ -150,16 +132,18 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
             raise MarketplaceError(msg)
         path = parsed.path
         if path.endswith(".git") or "/_git/" in path:
-            return MarketplaceSource(source_type="git", value=url, ref=ref or None)
+            return RepositoryMarketplaceSource(
+                source_type="git", value=url, ref=ref or None
+            )
         if parsed.hostname in {"github.com", "www.github.com"}:
             parts = [part for part in path.split("/") if part]
             if len(parts) >= _GITHUB_REPO_PART_COUNT:
                 repo_path = "/".join(parts[:_GITHUB_REPO_PART_COUNT])
                 git_url = f"https://github.com/{repo_path}.git"
-                return MarketplaceSource(
+                return RepositoryMarketplaceSource(
                     source_type="git", value=git_url, ref=ref or None
                 )
-        return MarketplaceSource(source_type="url", value=url)
+        return UrlMarketplaceSource(source_type="url", value=url)
 
     if value.startswith(("./", "../", "/", "~")):
         return _marketplace_source_from_path(value)
@@ -177,7 +161,7 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
         and not value.startswith("@")
         and _GITHUB_REPO_RE.match(repo)
     ):
-        return MarketplaceSource(
+        return RepositoryMarketplaceSource(
             source_type="github", value=repo, ref=ref if sep else None
         )
 
@@ -194,9 +178,9 @@ def _marketplace_source_from_path(value: str) -> MarketplaceSource:
         if path.suffix != ".json":
             msg = f"File path must point to a .json marketplace file: {path}"
             raise MarketplaceError(msg)
-        return MarketplaceSource(source_type="file", value=str(path))
+        return LocalMarketplaceSource(source_type="file", value=str(path))
     if path.is_dir():
-        return MarketplaceSource(source_type="directory", value=str(path))
+        return LocalMarketplaceSource(source_type="directory", value=str(path))
     msg = f"Path is neither a file nor a directory: {path}"
     raise MarketplaceError(msg)
 
@@ -241,7 +225,7 @@ def _run_git(args: list[str]) -> None:
 
 
 def _clone_repository(
-    source: MarketplaceSource,
+    source: RepositoryMarketplaceSource,
     git_url: str,
     *,
     cache_key: str,
@@ -278,7 +262,7 @@ def _clone_repository(
     return cache_path
 
 
-def _clone_marketplace(source: MarketplaceSource, git_url: str) -> Path:
+def _clone_marketplace(source: RepositoryMarketplaceSource, git_url: str) -> Path:
     return _clone_repository(
         source,
         git_url,
@@ -344,9 +328,15 @@ def materialize_marketplace_source(
         _reject_url_marketplace_with_local_plugins(marketplace, source.value)
         return marketplace, path
     if source.source_type == "github":
+        if not isinstance(source, RepositoryMarketplaceSource):
+            msg = "GitHub marketplace source is missing repository metadata"
+            raise MarketplaceError(msg)
         root = _clone_marketplace(source, f"https://github.com/{source.value}.git")
         return load_marketplace(root), root
     if source.source_type == "git":
+        if not isinstance(source, RepositoryMarketplaceSource):
+            msg = "Git marketplace source is missing repository metadata"
+            raise MarketplaceError(msg)
         root = _clone_marketplace(source, source.value)
         return load_marketplace(root), root
     msg = f"Unsupported marketplace source type: {source.source_type}"
@@ -419,24 +409,46 @@ def find_marketplace_manifest(root: Path) -> Path | None:
     return None
 
 
-def _string_key_map(raw: object) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    return {key: value for key, value in raw.items() if isinstance(key, str)}
+def _json_value(value: object) -> JsonValue | None:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        result: list[JsonValue] = []
+        for item in value:
+            converted = _json_value(item)
+            if converted is not None or item is None:
+                result.append(converted)
+        return result
+    if isinstance(value, dict):
+        result_object: JsonObject = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            converted = _json_value(item)
+            if converted is not None or item is None:
+                result_object[key] = converted
+        return result_object
+    return None
 
 
-def _source_path(source: str | dict[str, Any]) -> str | None:
+def _json_object(value: object) -> JsonObject:
+    converted = _json_value(value)
+    return converted if isinstance(converted, dict) else {}
+
+
+def _source_path(source: str | JsonObject) -> str | None:
     if isinstance(source, str):
         return source
     kind = source.get("source") if isinstance(source, dict) else None
-    if kind == "local" and isinstance(source.get("path"), str):
-        return source["path"]
+    path = source.get("path")
+    if kind == "local" and isinstance(path, str):
+        return path
     return None
 
 
 def _plugin_repository_source(
-    plugin: MarketplacePlugin,
-) -> tuple[MarketplaceSource, str, str | None] | None:
+    plugin: MarketplacePluginEntry,
+) -> tuple[RepositoryMarketplaceSource, str, str | None] | None:
     if not isinstance(plugin.source, dict):
         return None
     kind = plugin.source.get("source")
@@ -449,6 +461,8 @@ def _plugin_repository_source(
         if not isinstance(repo, str):
             return None
         parsed = parse_marketplace_source(f"{repo}#{ref_value}" if ref_value else repo)
+        if not isinstance(parsed, RepositoryMarketplaceSource):
+            return None
         return parsed, f"https://github.com/{parsed.value}.git", subpath_value
     if kind not in {"git-subdir", "url"}:
         return None
@@ -464,11 +478,13 @@ def _plugin_repository_source(
         git_url = parsed.value
     else:
         return None
+    if not isinstance(parsed, RepositoryMarketplaceSource):
+        return None
     return parsed, git_url, subpath_value
 
 
 def resolve_plugin_source(
-    marketplace: PluginMarketplace, plugin: MarketplacePlugin
+    marketplace: PluginMarketplace, plugin: MarketplacePluginEntry
 ) -> Path | None:
     """Resolve or materialize a marketplace plugin entry to a plugin root.
 
@@ -521,7 +537,7 @@ def resolve_plugin_source(
     return resolved
 
 
-def _parse_entry(entry: object) -> MarketplacePlugin | None:
+def _parse_entry(entry: object) -> MarketplacePluginEntry | None:
     if not isinstance(entry, dict):
         logger.warning(
             "Skipping marketplace plugin entry: expected object, got %s",
@@ -530,9 +546,9 @@ def _parse_entry(entry: object) -> MarketplacePlugin | None:
         return None
     source_value = entry.get("source")
     if isinstance(source_value, str):
-        source: str | dict[str, Any] = source_value
+        source: str | JsonObject = source_value
     elif isinstance(source_value, dict):
-        source = _string_key_map(source_value)
+        source = _json_object(source_value)
     else:
         logger.warning(
             "Skipping marketplace plugin %r: missing source", entry.get("name")
@@ -543,29 +559,16 @@ def _parse_entry(entry: object) -> MarketplacePlugin | None:
     except ValueError as exc:
         logger.warning("Skipping marketplace plugin with invalid name: %s", exc)
         return None
-    tags_raw = entry.get("tags")
-    tags = (
-        tuple(item for item in tags_raw if isinstance(item, str))
-        if isinstance(tags_raw, list)
-        else ()
-    )
     description_value = entry.get("description")
-    version_value = entry.get("version")
-    category_value = entry.get("category")
-    strict_value = entry.get("strict")
     manifest_fields = {
         key: value
-        for key, value in _string_key_map(entry).items()
-        if key in _PLUGIN_MANIFEST_FIELD_NAMES
+        for key, value in _json_object(entry).items()
+        if key in _MARKETPLACE_ENTRY_METADATA_FIELDS
     }
-    return MarketplacePlugin(
+    return MarketplacePluginEntry(
         name=name,
         source=source,
         description=description_value if isinstance(description_value, str) else None,
-        version=version_value if isinstance(version_value, str) else None,
-        category=category_value if isinstance(category_value, str) else None,
-        tags=tags,
-        strict=strict_value if isinstance(strict_value, bool) else True,
         manifest_fields=manifest_fields,
     )
 
@@ -594,13 +597,13 @@ def _load_marketplace_from_path(root: Path, manifest_path: Path) -> PluginMarket
         plugin for entry in plugins_raw if (plugin := _parse_entry(entry)) is not None
     )
     owner = raw.get("owner") if isinstance(raw.get("owner"), dict) else None
-    metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    metadata = _json_object(raw.get("metadata"))
     return PluginMarketplace(
         name=name,
         root=root,
         manifest_path=manifest_path,
-        owner=owner,
-        metadata=dict(metadata),
+        owner=_json_object(owner) if owner is not None else None,
+        metadata=metadata,
         plugins=plugins,
     )
 

@@ -1020,7 +1020,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="experimental.enabled",
         group="Tools",
-        summary="Enable experimental dcode features (e.g. plugin marketplace).",
+        summary="Enable experimental dcode features",
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.EXPERIMENTAL,
@@ -1301,8 +1301,7 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         # resolver, so they intentionally have no scalar `env_var` ConfigOption.
         _env_vars.ENABLED_PROJECT_MCP_SERVERS,
         _env_vars.DISABLED_PROJECT_MCP_SERVERS,
-        # Plugin cache root override; read directly by plugins.store, not via
-        # the scalar config resolver.
+        # Plugin cache root override; read directly by plugins.store
         _env_vars.PLUGIN_CACHE_DIR,
     }
 )

@@ -134,7 +134,9 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/plugins",
-        description="Manage experimental plugins",
+        description=(
+            "Manage plugins (experimental; requires DEEPAGENTS_CODE_EXPERIMENTAL=1)"
+        ),
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
         argument_hint=(
@@ -389,9 +391,9 @@ _EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset(
 
 def _public_commands() -> tuple[SlashCommand, ...]:
     """Return commands visible in autocomplete/help for the current process."""
-    from deepagents_code._env_vars import experimental_enabled
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    if experimental_enabled():
+    if is_env_truthy(EXPERIMENTAL):
         return COMMANDS
     return tuple(
         cmd for cmd in COMMANDS if cmd.name not in _EXPERIMENTAL_PLUGIN_COMMANDS

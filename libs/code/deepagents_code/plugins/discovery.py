@@ -23,11 +23,12 @@ from deepagents_code.plugins.marketplace import (
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
     InstallScope,
-    MarketplacePlugin,
+    MarketplacePluginEntry,
     MarketplaceRecord,
     PluginDiscoveryResult,
     PluginInstance,
     PluginMarketplace,
+    RepositoryMarketplaceSource,
 )
 from deepagents_code.plugins.store import (
     cache_and_register_plugin,
@@ -117,7 +118,7 @@ def add_marketplace_source(raw: str) -> PluginMarketplace:
             source_type=source.source_type,
             source=redact_marketplace_source(source.value),
             install_location=str(location),
-            ref=source.ref,
+            ref=source.ref if isinstance(source, RepositoryMarketplaceSource) else None,
         )
     )
     return marketplace
@@ -210,7 +211,7 @@ def uninstall_plugin(plugin_id: str, *, scope: InstallScope | None = None) -> No
 
 def _resolve_marketplace_and_entry(
     plugin_id: str,
-) -> tuple[PluginMarketplace, MarketplacePlugin]:
+) -> tuple[PluginMarketplace, MarketplacePluginEntry]:
     if "@" not in plugin_id:
         msg = f"Invalid plugin id {plugin_id!r}; expected name@marketplace"
         raise MarketplaceError(msg)
@@ -269,9 +270,7 @@ def install_plugin(plugin_id: str, *, scope: InstallScope = "user") -> PluginIns
     for warning in manifest_warnings:
         logger.debug("Plugin install warning for %s: %s", plugin_id, warning)
 
-    version = (
-        manifest.version if manifest and manifest.version else entry.version
-    ) or "dev"
+    version = manifest.version if manifest is not None else None
     cache_path = cache_and_register_plugin(
         plugin_id,
         source_root,
@@ -290,7 +289,6 @@ def install_plugin(plugin_id: str, *, scope: InstallScope = "user") -> PluginIns
         root=cache_path,
         marketplace_name=marketplace.name,
         fallback_name=entry.name,
-        version=version,
     )
     if instance is None:
         detail = "; ".join(warnings)
@@ -305,7 +303,6 @@ def _plugin_from_install_path(
     root: Path,
     marketplace_name: str,
     fallback_name: str,
-    version: str,
     trusted: bool = True,
 ) -> tuple[PluginInstance | None, tuple[str, ...]]:
     warnings: list[str] = []
@@ -317,20 +314,16 @@ def _plugin_from_install_path(
         return None, (f"Skipping plugin {plugin_id}: {exc}",)
     warnings.extend(manifest_warnings)
     name = manifest.name if manifest and manifest.name else fallback_name
-    resolved_version = (
-        manifest.version if manifest and manifest.version else version
-    ) or "dev"
     inventory = build_inventory(root, manifest, tuple(warnings))
     instance = PluginInstance(
         plugin_id=plugin_id,
         name=name,
         marketplace=marketplace_name,
-        version=resolved_version,
+        version=manifest.version if manifest is not None else None,
         root=root,
         data_dir=plugin_data_dir(plugin_id),
         manifest=manifest,
         inventory=inventory,
-        origin="marketplace",
         in_place=False,
         trusted=trusted,
     )
@@ -388,7 +381,6 @@ def discover_plugins() -> PluginDiscoveryResult:
             root=root,
             marketplace_name=marketplace_name,
             fallback_name=plugin_name,
-            version=entry.version,
         )
         warnings.extend(plugin_warnings)
         if plugin is not None:

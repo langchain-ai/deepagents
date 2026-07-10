@@ -1633,9 +1633,9 @@ def create_cli_agent(
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
         try:
-            from deepagents_code._env_vars import experimental_enabled
+            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-            if experimental_enabled():
+            if is_env_truthy(EXPERIMENTAL):
                 from deepagents_code.plugins import discover_plugins
                 from deepagents_code.plugins.adapters.skills import plugin_skill_sources
 

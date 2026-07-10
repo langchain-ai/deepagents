@@ -23,6 +23,7 @@ from deepagents_code.plugins.models import (
 logger = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
 _INSTALLED_STORAGE_VERSION = 2
+_UNVERSIONED_CACHE_KEY = "unversioned"
 _CACHE_SLUG_LENGTH = 48
 _CACHE_DIGEST_LENGTH = 32
 _INSTALL_SCOPES: frozenset[str] = frozenset({"user", "project", "local"})
@@ -78,12 +79,12 @@ def plugin_install_cache_dir() -> Path:
     return path
 
 
-def versioned_cache_path(plugin_id: str, version: str) -> Path:
+def versioned_cache_path(plugin_id: str, version: str | None) -> Path:
     """Return the versioned cache path for a plugin id.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
-        version: Plugin version string.
+        version: Plugin version string, or `None` when unversioned.
 
     Returns:
         Cache directory `cache/{marketplace}/{plugin}/{version}/`.
@@ -95,7 +96,7 @@ def versioned_cache_path(plugin_id: str, version: str) -> Path:
         msg = f"Invalid plugin id {plugin_id!r}"
         raise ValueError(msg)
     plugin_name, marketplace = plugin_id.rsplit("@", 1)
-    safe_version = sanitize_plugin_id(version) or "dev"
+    safe_version = sanitize_plugin_id(version or _UNVERSIONED_CACHE_KEY)
     return (
         plugin_install_cache_dir()
         / sanitize_plugin_id(marketplace)
@@ -384,21 +385,18 @@ def _parse_install_entry(raw: object) -> InstalledPluginEntry | None:
         scope not in {"user", "project", "local"}
         or not isinstance(install_path, str)
         or not install_path
-        or not isinstance(version, str)
-        or not version
+        or (version is not None and (not isinstance(version, str) or not version))
         or not isinstance(installed_at, str)
         or not isinstance(last_updated, str)
     ):
         return None
-    git_sha = raw.get("gitCommitSha") or raw.get("git_commit_sha")
     project_path = raw.get("projectPath") or raw.get("project_path")
     return InstalledPluginEntry(
         scope=cast("InstallScope", scope),
         install_path=install_path,
-        version=version,
+        version=version if isinstance(version, str) else None,
         installed_at=installed_at,
         last_updated=last_updated,
-        git_commit_sha=git_sha if isinstance(git_sha, str) else None,
         project_path=project_path if isinstance(project_path, str) else None,
     )
 
@@ -431,12 +429,11 @@ def _entry_to_json(entry: InstalledPluginEntry) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "scope": entry.scope,
         "installPath": entry.install_path,
-        "version": entry.version,
         "installedAt": entry.installed_at,
         "lastUpdated": entry.last_updated,
     }
-    if entry.git_commit_sha:
-        payload["gitCommitSha"] = entry.git_commit_sha
+    if entry.version is not None:
+        payload["version"] = entry.version
     if entry.project_path:
         payload["projectPath"] = entry.project_path
     return payload
@@ -462,8 +459,7 @@ def add_installed_plugin(
     *,
     scope: InstallScope,
     install_path: str,
-    version: str,
-    git_commit_sha: str | None = None,
+    version: str | None,
     project_path: str | None = None,
 ) -> InstalledPluginEntry:
     """Add or replace a scoped install record for a plugin.
@@ -472,8 +468,7 @@ def add_installed_plugin(
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         scope: Install scope.
         install_path: Absolute path to the cached plugin root.
-        version: Installed version string.
-        git_commit_sha: Optional git SHA for the install.
+        version: Version declared by the plugin manifest, if any.
         project_path: Optional project path for project/local scopes.
 
     Returns:
@@ -502,7 +497,6 @@ def add_installed_plugin(
         version=version,
         installed_at=prior.installed_at if prior else now,
         last_updated=now,
-        git_commit_sha=git_commit_sha,
         project_path=project_path,
     )
     kept.append(entry)
@@ -589,8 +583,7 @@ def cache_and_register_plugin(
     source_dir: Path,
     *,
     scope: InstallScope = "user",
-    version: str,
-    git_commit_sha: str | None = None,
+    version: str | None,
     project_path: str | None = None,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
@@ -599,8 +592,7 @@ def cache_and_register_plugin(
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         source_dir: Source plugin root to copy from.
         scope: Install scope.
-        version: Version string used for the cache path.
-        git_commit_sha: Optional git SHA.
+        version: Version declared by the plugin manifest, if any.
         project_path: Optional project path for project/local scopes.
 
     Returns:
@@ -616,7 +608,7 @@ def cache_and_register_plugin(
         raise FileNotFoundError(msg)
 
     cache_path = versioned_cache_path(plugin_id, version)
-    if cache_path.exists() and version != "dev":
+    if cache_path.exists() and version is not None:
         try:
             if any(cache_path.iterdir()):
                 add_installed_plugin(
@@ -624,7 +616,6 @@ def cache_and_register_plugin(
                     scope=scope,
                     install_path=str(cache_path),
                     version=version,
-                    git_commit_sha=git_commit_sha,
                     project_path=project_path,
                 )
                 return cache_path
@@ -661,7 +652,6 @@ def cache_and_register_plugin(
         scope=scope,
         install_path=str(cache_path.resolve()),
         version=version,
-        git_commit_sha=git_commit_sha,
         project_path=project_path,
     )
     return cache_path.resolve()

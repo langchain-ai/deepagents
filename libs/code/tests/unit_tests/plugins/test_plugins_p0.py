@@ -44,6 +44,11 @@ from deepagents_code.plugins.marketplace import (
     load_marketplace,
     parse_marketplace_source,
 )
+from deepagents_code.plugins.models import (
+    LocalMarketplaceSource,
+    RepositoryMarketplaceSource,
+    UrlMarketplaceSource,
+)
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
     load_enabled_plugins,
@@ -229,58 +234,6 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert "Installed components:" in detail
         assert "Disable plugin" in str(options.get_option_at_index(0).prompt)
         assert load_enabled_plugins().get("quality-review-plugin@company-tools")
-
-
-def test_plugin_manager_marks_commands_agents_hooks_unsupported(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """Commands/agents/hooks are inventoried but labeled unsupported in the UI."""
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    plugin = marketplace_root / "plugins" / "quality-review-plugin"
-    (plugin / "commands").mkdir()
-    (plugin / "commands" / "review.md").write_text(
-        "---\ndescription: Review\n---\n\nReview.", encoding="utf-8"
-    )
-    (plugin / "agents").mkdir()
-    (plugin / "agents" / "reviewer.md").write_text(
-        "---\nname: reviewer\ndescription: Reviewer\n---\n\nReview.",
-        encoding="utf-8",
-    )
-    (plugin / "hooks").mkdir()
-    (plugin / "hooks" / "hooks.json").write_text("{}", encoding="utf-8")
-    add_local_marketplace(marketplace_root)
-    install_plugin("quality-review-plugin@company-tools")
-
-    from deepagents_code.tui.widgets.plugin_manager import _load_manager_state
-
-    state = _load_manager_state()
-    row = next(
-        r
-        for r in state.installed_plugins
-        if r.plugin_id == "quality-review-plugin@company-tools"
-    )
-    assert row.command_count == 1
-    assert row.agent_count == 1
-    assert row.hook_count == 1
-
-    detail = str(PluginManagerScreen._installed_plugin_details_content(row))
-    assert "Commands: 1 command (unsupported)" in detail
-    assert "Agents: 1 agent (unsupported)" in detail
-    assert "Hooks: 1 hook (unsupported)" in detail
-    assert "not loaded in this release" in detail
-
-    prompt = str(PluginManagerScreen._plugin_prompt(row, status=None))
-    assert "Plugin ·" in prompt or " · Plugin · " in prompt
-    assert "1 command (unsupported)" in prompt
-    assert "1 agent (unsupported)" in prompt
-    assert "1 hook (unsupported)" in prompt
 
 
 async def test_plugin_manager_installed_details_favorite_and_disable(
@@ -472,7 +425,33 @@ def test_local_marketplace_install_caches_and_discovers(
     assert plugin.inventory.skills != (marketplace_skills,)
 
 
-def test_dev_version_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> None:
+def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+
+    plugin_id = "quality-review-plugin@company-tools"
+    assert install_plugin(plugin_id).version == "1.0.0"
+    uninstall_plugin(plugin_id)
+
+    manifest_path = (
+        marketplace_root
+        / "plugins"
+        / "quality-review-plugin"
+        / ".claude-plugin"
+        / "plugin.json"
+    )
+    _write_json(manifest_path, {"name": "quality-review-plugin"})
+    assert install_plugin(plugin_id).version is None
+
+
+def test_unversioned_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
     )
@@ -494,7 +473,7 @@ def test_dev_version_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> N
     plugin_id = "quality-review-plugin@company-tools"
     install_plugin(plugin_id)
     cached_skill = (
-        versioned_cache_path(plugin_id, "dev") / "skills" / "review" / "SKILL.md"
+        versioned_cache_path(plugin_id, None) / "skills" / "review" / "SKILL.md"
     )
     source_skill = (
         marketplace_root
@@ -511,7 +490,7 @@ def test_dev_version_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> N
     assert cached_skill.read_text(encoding="utf-8").endswith("Updated.")
 
 
-def test_failed_dev_reinstall_preserves_previous_cache(
+def test_failed_unversioned_reinstall_preserves_previous_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -534,7 +513,7 @@ def test_failed_dev_reinstall_preserves_previous_cache(
     plugin_id = "quality-review-plugin@company-tools"
     install_plugin(plugin_id)
     cached_skill = (
-        versioned_cache_path(plugin_id, "dev") / "skills" / "review" / "SKILL.md"
+        versioned_cache_path(plugin_id, None) / "skills" / "review" / "SKILL.md"
     )
     original = cached_skill.read_text(encoding="utf-8")
 
@@ -621,17 +600,28 @@ def test_marketplace_source_parser_accepts_common_inputs(tmp_path: Path) -> None
     _make_marketplace(marketplace_root)
     marketplace_file = marketplace_root / ".claude-plugin" / "marketplace.json"
 
-    assert parse_marketplace_source("example/plugins").source_type == "github"
+    shorthand = parse_marketplace_source("example/plugins")
+    assert isinstance(shorthand, RepositoryMarketplaceSource)
+    assert shorthand.source_type == "github"
     ssh = parse_marketplace_source("git@github.com:example/plugins.git#main")
+    assert isinstance(ssh, RepositoryMarketplaceSource)
     assert ssh.source_type == "git"
     assert ssh.ref == "main"
     github_url = parse_marketplace_source("https://github.com/owner/repo")
+    assert isinstance(github_url, RepositoryMarketplaceSource)
     assert github_url.source_type == "git"
     assert github_url.value == "https://github.com/owner/repo.git"
     json_url = parse_marketplace_source("https://example.com/marketplace.json")
+    assert isinstance(json_url, UrlMarketplaceSource)
     assert json_url.source_type == "url"
-    assert parse_marketplace_source(str(marketplace_root)).source_type == "directory"
-    assert parse_marketplace_source(str(marketplace_file)).source_type == "file"
+    directory = parse_marketplace_source(str(marketplace_root))
+    marketplace_json = parse_marketplace_source(str(marketplace_file))
+    assert isinstance(directory, LocalMarketplaceSource)
+    assert isinstance(marketplace_json, LocalMarketplaceSource)
+    assert directory.source_type == "directory"
+    assert marketplace_json.source_type == "file"
+    assert not hasattr(directory, "ref")
+    assert not hasattr(json_url, "ref")
 
 
 def test_marketplace_add_accepts_json_file_source(tmp_path: Path, monkeypatch) -> None:
@@ -1372,14 +1362,3 @@ async def test_plugin_manager_renders_bracketed_errors_as_plain_text(
 
         options = screen.query_one("#plugin-manager-options", OptionList)
         assert "failure [plugin]" in str(options.get_option_at_index(0).prompt)
-
-
-def test_experimental_flag_defaults_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from deepagents_code._env_vars import experimental_enabled
-
-    monkeypatch.delenv(EXPERIMENTAL, raising=False)
-    assert experimental_enabled() is False
-    monkeypatch.setenv(EXPERIMENTAL, "1")
-    assert experimental_enabled() is True

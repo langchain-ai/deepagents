@@ -42,9 +42,9 @@ def discover_skills_and_roots(
     plugin_sources: list[tuple[Path, str]] = []
     plugin_roots: list[Path] = []
     try:
-        from deepagents_code._env_vars import experimental_enabled
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-        if experimental_enabled():
+        if is_env_truthy(EXPERIMENTAL):
             from deepagents_code.plugins import discover_plugins
             from deepagents_code.plugins.adapters.skills import (
                 plugin_skill_roots,

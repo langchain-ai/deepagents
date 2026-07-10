@@ -1312,9 +1312,9 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
-    from deepagents_code._env_vars import experimental_enabled
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    if experimental_enabled():
+    if is_env_truthy(EXPERIMENTAL):
         from deepagents_code.plugins.commands_cli import setup_plugin_parser
 
         setup_plugin_parser(
@@ -3440,11 +3440,12 @@ def cli_main() -> None:
             execute_skills_command(args)
         elif args.command in {"plugin", "plugins"}:
             from deepagents_code._env_vars import (
+                EXPERIMENTAL,
                 EXPERIMENTAL_HINT,
-                experimental_enabled,
+                is_env_truthy,
             )
 
-            if not experimental_enabled():
+            if not is_env_truthy(EXPERIMENTAL):
                 print(EXPERIMENTAL_HINT)  # noqa: T201
                 sys.exit(2)
             from deepagents_code.plugins.commands_cli import execute_plugin_command

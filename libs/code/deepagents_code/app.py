@@ -9863,11 +9863,12 @@ class DeepAgentsApp(App):
         elif cmd == "/plugins" or cmd.startswith("/plugins "):
             await self._mount_message(UserMessage(command))
             from deepagents_code._env_vars import (
+                EXPERIMENTAL,
                 EXPERIMENTAL_HINT,
-                experimental_enabled,
+                is_env_truthy,
             )
 
-            if not experimental_enabled():
+            if not is_env_truthy(EXPERIMENTAL):
                 await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
                 return
             if cmd == "/plugins":
@@ -9877,11 +9878,12 @@ class DeepAgentsApp(App):
                 await self._handle_plugins_subcommand(args)
         elif cmd == "/reload-plugins":
             from deepagents_code._env_vars import (
+                EXPERIMENTAL,
                 EXPERIMENTAL_HINT,
-                experimental_enabled,
+                is_env_truthy,
             )
 
-            if not experimental_enabled():
+            if not is_env_truthy(EXPERIMENTAL):
                 await self._mount_message(UserMessage(command))
                 await self._mount_message(AppMessage(EXPERIMENTAL_HINT))
                 return
@@ -15099,44 +15101,12 @@ class DeepAgentsApp(App):
                 restarted = await self._restart_server_manual()
 
         skill_count = len(plugin_skill_names)
-        unsupported_commands = sum(
-            len(plugin.inventory.commands)
-            + (len(plugin.manifest.inline_commands) if plugin.manifest else 0)
-            for plugin in plugin_result.plugins
-        )
-        unsupported_agents = sum(
-            len(plugin.inventory.agents) for plugin in plugin_result.plugins
-        )
-        unsupported_hooks = sum(
-            len(plugin.inventory.hooks_files)
-            + (len(plugin.manifest.inline_hooks) if plugin.manifest else 0)
-            for plugin in plugin_result.plugins
-        )
         parts = [
             f"{plugin_count} plugin{'s' if plugin_count != 1 else ''}",
             f"{skill_count} skill{'s' if skill_count != 1 else ''}",
             f"{mcp_count} plugin MCP server{'s' if mcp_count != 1 else ''}",
         ]
         report = f"Reloaded: {' · '.join(parts)}"
-        unsupported_parts: list[str] = []
-        if unsupported_commands:
-            unsupported_parts.append(
-                f"{unsupported_commands} command"
-                f"{'s' if unsupported_commands != 1 else ''}"
-            )
-        if unsupported_agents:
-            unsupported_parts.append(
-                f"{unsupported_agents} agent{'s' if unsupported_agents != 1 else ''}"
-            )
-        if unsupported_hooks:
-            unsupported_parts.append(
-                f"{unsupported_hooks} hook{'s' if unsupported_hooks != 1 else ''}"
-            )
-        if unsupported_parts:
-            report += (
-                f"\nSkipped unsupported: {', '.join(unsupported_parts)} "
-                "(not loaded in this release)."
-            )
         if not discovery_ok:
             report += "\nSkill re-discovery failed; existing /skill: list left as-is."
         elif added_skills or removed_skills:

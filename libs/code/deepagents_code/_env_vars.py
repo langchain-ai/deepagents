@@ -132,10 +132,8 @@ is never silently emptied.)
 EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Enable experimental `dcode` features.
 
-Parsed by `is_env_truthy`; off by default. Gates unfinished surfaces such as
-plugin marketplace support (`/plugins`, `/reload-plugins`, `dcode plugin …`,
-and plugin skill/MCP loading). Additional experimental features should use
-this same flag rather than introducing per-feature env vars.
+Gates unfinished surfaces and features. Additional experimental features should
+use this same flag rather than introducing per-feature env vars.
 """
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
@@ -368,15 +366,6 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
         return default
     classified = classify_env_bool(raw)
     return default if classified is None else classified
-
-
-def experimental_enabled() -> bool:
-    """Return whether experimental `dcode` features are enabled.
-
-    Returns:
-        `True` when `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy.
-    """
-    return is_env_truthy(EXPERIMENTAL)
 
 
 EXPERIMENTAL_HINT = f"This feature is experimental. Set {EXPERIMENTAL}=1 to enable."

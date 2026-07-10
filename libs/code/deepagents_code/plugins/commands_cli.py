@@ -148,9 +148,11 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             text = f"Failed to install {args.plugin_id}: {exc}"
             print(text)  # noqa: T201
             return text
+        details = f"scope: {args.scope}"
+        if instance.version is not None:
+            details += f", version: {instance.version}"
         text = (
-            f"Installed plugin {instance.plugin_id} "
-            f"(scope: {args.scope}, version: {instance.version}). "
+            f"Installed plugin {instance.plugin_id} ({details}). "
             "Run /reload-plugins to activate."
         )
         print(text)  # noqa: T201

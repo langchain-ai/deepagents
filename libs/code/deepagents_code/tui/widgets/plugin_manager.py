@@ -78,9 +78,6 @@ class _PluginRow:
     mcp_connected: bool | None = None
     """MCP connection state, or `None` when the plugin declares no MCP servers."""
     mcp_server_names: tuple[str, ...] = ()
-    command_count: int = 0
-    agent_count: int = 0
-    hook_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,7 +227,6 @@ def _instance_for_manager_row(
         root=root,
         marketplace_name=marketplace_name,
         fallback_name=plugin_name,
-        version=entry.version,
     )
     return loaded
 
@@ -302,7 +298,7 @@ def _load_manager_state(
                 plugin_id=plugin_id,
                 description=plugin.description or "",
                 enabled=is_enabled,
-                version=(instance.version if instance is not None else plugin.version),
+                version=instance.version if instance is not None else None,
                 author=_author_display(plugin.manifest_fields.get("author")),
                 scope=scope,
                 favorite=plugin_id in favorites,
@@ -314,29 +310,6 @@ def _load_manager_state(
                     else None
                 ),
                 mcp_server_names=mcp_names,
-                command_count=(
-                    len(instance.inventory.commands)
-                    + (
-                        len(instance.manifest.inline_commands)
-                        if instance and instance.manifest
-                        else 0
-                    )
-                    if instance
-                    else 0
-                ),
-                agent_count=len(instance.inventory.agents) if instance else 0,
-                hook_count=(
-                    (
-                        len(instance.inventory.hooks_files)
-                        + (
-                            len(instance.manifest.inline_hooks)
-                            if instance.manifest
-                            else 0
-                        )
-                    )
-                    if instance
-                    else 0
-                ),
             )
             if is_installed:
                 installed_plugins.append(row)
@@ -703,15 +676,6 @@ class PluginManagerScreen(ModalScreen[None]):
         if row.skill_count:
             unit = "skill" if row.skill_count == 1 else "skills"
             meta_parts.append(f"{row.skill_count} {unit}")
-        if row.command_count:
-            unit = "command" if row.command_count == 1 else "commands"
-            meta_parts.append(f"{row.command_count} {unit} (unsupported)")
-        if row.agent_count:
-            unit = "agent" if row.agent_count == 1 else "agents"
-            meta_parts.append(f"{row.agent_count} {unit} (unsupported)")
-        if row.hook_count:
-            unit = "hook" if row.hook_count == 1 else "hooks"
-            meta_parts.append(f"{row.hook_count} {unit} (unsupported)")
         if row.mcp_connected is True:
             meta_parts.append(f"{glyphs.checkmark} connected")
         elif row.mcp_connected is False:
@@ -836,34 +800,12 @@ class PluginManagerScreen(ModalScreen[None]):
             component_lines.append(f"Skills: {', '.join(row.skill_names)}")
         elif row.skill_count:
             component_lines.append(f"Skills: {row.skill_count}")
-        if row.command_count:
-            unit = "command" if row.command_count == 1 else "commands"
-            component_lines.append(
-                f"Commands: {row.command_count} {unit} (unsupported)"
-            )
-        if row.agent_count:
-            unit = "agent" if row.agent_count == 1 else "agents"
-            component_lines.append(f"Agents: {row.agent_count} {unit} (unsupported)")
-        if row.hook_count:
-            unit = "hook" if row.hook_count == 1 else "hooks"
-            component_lines.append(f"Hooks: {row.hook_count} {unit} (unsupported)")
         if row.mcp_server_names:
             component_lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
         if not component_lines:
             component_lines.append("No components discovered.")
         for line in component_lines:
             parts.extend(["\n  ", Content.styled(line, "dim")])
-        if row.command_count or row.agent_count or row.hook_count:
-            parts.extend(
-                [
-                    "\n\n",
-                    Content.styled(
-                        "Commands, agents, and hooks are detected but not loaded "
-                        "in this release.",
-                        "dim",
-                    ),
-                ]
-            )
         return Content.assemble(*parts)
 
     @staticmethod

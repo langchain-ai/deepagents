@@ -719,6 +719,119 @@ class TestFireworksSessionSettings:
         assert captured[0].model_settings["extra_headers"] is not original_headers
 
 
+class TestFireworksUnsupportedSettingsStripped:
+    """Fireworks-unsupported model_settings stripped before the model call."""
+
+    def _fireworks_model(self) -> MagicMock:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        return model
+
+    def test_model_kwargs_stripped_before_call(self) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(),
+            model_settings={
+                "model_kwargs": {"reasoning_effort": "high"},
+                "max_tokens": 2048,
+            },
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert "model_kwargs" not in captured[0].model_settings
+        assert captured[0].model_settings == {"max_tokens": 2048}
+
+    def test_model_kwargs_from_model_params_stripped(self) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(
+                model_params={"model_kwargs": {"reasoning_effort": "high"}}
+            ),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert "model_kwargs" not in captured[0].model_settings
+
+    def test_non_fireworks_model_keeps_model_kwargs(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContext(),
+            model_settings={"model_kwargs": {"reasoning_effort": "high"}},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "model_kwargs": {"reasoning_effort": "high"}
+        }
+
+
+class TestProviderErrorHandling:
+    """Provider model-call failures degrade into user-facing messages."""
+
+    def _fireworks_model(self) -> MagicMock:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        return model
+
+    def test_unsupported_kwarg_typeerror_becomes_message(self) -> None:
+        request = _make_request(self._fireworks_model(), context=CLIContext())
+
+        error = TypeError(
+            "AsyncCompletionsResource.create() got an unexpected "
+            "keyword argument 'model_kwargs'"
+        )
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            raise error
+
+        result = _mw.wrap_model_call(request, handler)
+
+        message = result.model_response.result[0]
+        assert isinstance(message, AIMessage)
+        assert "model_kwargs" in message.content
+        assert "Fireworks" in message.content
+
+    async def test_async_unsupported_kwarg_typeerror_becomes_message(self) -> None:
+        request = _make_request(self._fireworks_model(), context=CLIContext())
+
+        error = TypeError(
+            "AsyncCompletionsResource.create() got an unexpected "
+            "keyword argument 'model_kwargs'"
+        )
+
+        async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            raise error
+
+        result = await _mw.awrap_model_call(request, handler)
+
+        message = result.model_response.result[0]
+        assert isinstance(message, AIMessage)
+        assert "model_kwargs" in message.content
+
+    def test_unrelated_typeerror_reraised(self) -> None:
+        request = _make_request(self._fireworks_model(), context=CLIContext())
+
+        error = TypeError("something else entirely")
+
+        def handler(_r: ModelRequest) -> ModelResponse[Any]:
+            raise error
+
+        with pytest.raises(TypeError, match="something else entirely"):
+            _mw.wrap_model_call(request, handler)
+
+
 class TestIsFireworksModel:
     """Direct tests for the `_is_fireworks_model` helper."""
 

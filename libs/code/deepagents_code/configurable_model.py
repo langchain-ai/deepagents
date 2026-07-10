@@ -107,6 +107,10 @@ _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 `AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
 must be stripped on cross-provider swap."""
 
+_FIREWORKS_UNSUPPORTED_SETTINGS: set[str] = {"model_kwargs"}
+"""Keys the Fireworks SDK client rejects with a TypeError when forwarded through
+langchain_fireworks (e.g. `model_kwargs`); stripped before the model call."""
+
 _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
@@ -254,6 +258,21 @@ def _build_overrides(
             # identifier. The line's presence alone confirms injection ran.
             logger.debug("Injected Fireworks session settings")
 
+    # Fireworks forwards `model_kwargs` straight to its SDK client, which
+    # rejects the unknown kwarg with a TypeError. Strip such keys after the
+    # param merge so they never reach the request.
+    if _is_fireworks_model(effective_model):
+        settings = overrides.get("model_settings", request.model_settings) or {}
+        dropped = settings.keys() & _FIREWORKS_UNSUPPORTED_SETTINGS
+        if dropped:
+            logger.debug(
+                "Stripped Fireworks-unsupported settings %s before model call",
+                dropped,
+            )
+            overrides["model_settings"] = {
+                k: v for k, v in settings.items() if k not in dropped
+            }
+
     if not overrides:
         return request
 
@@ -398,6 +417,44 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
     )
 
 
+def _unsupported_kwarg_message(model: object, error: TypeError) -> str | None:
+    """Return a user-facing message when a model rejected an unsupported kwarg.
+
+    Returns:
+        A concise message when `error` looks like an unexpected-keyword TypeError
+            from the provider SDK, otherwise `None` so the caller re-raises.
+    """
+    text = str(error)
+    if "unexpected keyword argument" not in text:
+        return None
+    provider = _get_ls_provider(model)
+    label = provider.capitalize() if provider else "The"
+    kwarg = ""
+    if "'" in text:
+        kwarg = text.rsplit("'", 2)[-2]
+    option = f" ({kwarg})" if kwarg else ""
+    return (
+        f"{label} model rejected an unsupported option{option}. "
+        "This has been reported; please try again."
+    )
+
+
+def _unsupported_kwarg_response(model: object, error: TypeError) -> ModelResponse[Any]:
+    """Build a graceful model response for an unsupported-kwarg TypeError.
+
+    Returns:
+        A response carrying a concise user-facing message when `error` is an
+            unexpected-keyword failure; otherwise `error` is re-raised.
+    """
+    from langchain_core.messages import AIMessage
+
+    message = _unsupported_kwarg_message(model, error)
+    if message is None:
+        raise error
+    logger.warning("Model call rejected an unsupported kwarg: %s", error)
+    return ModelResponse(result=[AIMessage(content=message)])
+
+
 def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
     """Build the private resume-state update for a completed model call.
 
@@ -453,7 +510,10 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(request)
-        response = handler(resolved.request)
+        try:
+            response = handler(resolved.request)
+        except TypeError as error:
+            response = _unsupported_kwarg_response(resolved.request.model, error)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response
@@ -471,7 +531,10 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(request)
-        response = await handler(resolved.request)
+        try:
+            response = await handler(resolved.request)
+        except TypeError as error:
+            response = _unsupported_kwarg_response(resolved.request.model, error)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
             return response

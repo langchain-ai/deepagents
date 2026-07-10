@@ -177,7 +177,7 @@ on:
         default: "10"
         type: string
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Multiple specs may be given, one per line, installed together in a single resolution (e.g. line 1 'harbor @ git+…@main', line 2 'harbor-langsmith @ git+…@main#subdirectory=packages/harbor-langsmith' to pin both core and plugin from a branch). Leave empty to use the pinned Harbor."
         required: false
         default: ""
         type: string
@@ -390,7 +390,25 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
+        #
+        # The override may list MULTIPLE specs, one per line, installed together
+        # in a single resolution. This lets a run pin both harbor core and the
+        # harbor-langsmith plugin from the same git branch: with both in one
+        # `uv pip install`, the plugin's `harbor` dependency binds to the core
+        # spec given here (a direct git reference) instead of resolving from
+        # PyPI. Specs use the PEP 508 `name @ url` form (which contains spaces),
+        # so we split on newlines — never on whitespace — and pass each as its
+        # own argument (no shell interpolation of the value).
+        run: |
+          specs=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+            line="${line%"${line##*[![:space:]]}"}"  # rtrim
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          printf 'Installing %d Harbor override spec(s):\n' "${#specs[@]}"
+          printf '  - %s\n' "${specs[@]}"
+          uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

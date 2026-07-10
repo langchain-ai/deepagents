@@ -388,20 +388,34 @@ jobs:
 
       - name: "🎯 Resolve tau3-subset dataset"
         # "tau3-subset" is a curated 30-task view of sierra-research/tau3-bench
-        # (6 easy telecom / 15 medium + 9 hard banking) for probing agent
-        # conversation behavior. Pull the task filter from the committed constant
-        # so the selection lives in one place (deepagents_evals.tau3_subset), run
+        # (2 easy / 7 medium / 21 hard, across banking_knowledge + telecom) for
+        # probing agent conversation behavior. Pull the task filter from the
+        # committed constant so the selection lives in one place
+        # (deepagents_evals.tau3_subset — the authoritative per-tier split), run
         # those tasks against the real registry dataset, and track results under a
         # dedicated "tau3-subset" LangSmith dataset name.
         if: env.HARBOR_DATASET == 'tau3-subset'
         run: |
           include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+          # Fail loudly if the filter resolved to the wrong size. An import error
+          # already aborts via `set -e` (a bare assignment propagates the command
+          # substitution's exit code — do not switch to `local`/`export`, which
+          # swallow it), but a successful-but-empty/partial result would be
+          # written verbatim and silently run a different set than the promised
+          # "30-task subset" — an empty value means NO filter, i.e. the FULL
+          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
+          # invariant the unit tests pin; change both together.
+          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
+          if [ "$task_count" -ne 30 ]; then
+            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
+            exit 1
+          fi
           {
             echo "HARBOR_DATASET=sierra-research/tau3-bench"
             echo "HARBOR_INCLUDE_TASKS=$include_tasks"
             echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
           } >> "$GITHUB_ENV"
-          echo "tau3-subset -> sierra-research/tau3-bench, $(printf '%s' "$include_tasks" | wc -w) tasks"
+          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
 
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports

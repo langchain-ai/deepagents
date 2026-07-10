@@ -256,6 +256,14 @@ def test_harbor_workflow_wires_tau3_subset() -> None:
     assert "from deepagents_evals.tau3_subset import INCLUDE_TASKS" in workflow
     assert "HARBOR_DATASET=sierra-research/tau3-bench" in workflow
     assert "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset" in workflow
+    # Injecting the task filter is the whole point of the step: it must be
+    # written and it must land in $GITHUB_ENV, or the run silently uses the full
+    # dataset. Guard both the payload line and the redirect.
+    assert "HARBOR_INCLUDE_TASKS=$include_tasks" in workflow
+    assert '} >> "$GITHUB_ENV"' in workflow
+    # The resolve step must fail loudly on a wrong-sized filter (empty => full
+    # dataset), so the count tripwire must stay wired.
+    assert 'if [ "$task_count" -ne 30 ]; then' in workflow
     # tau3's verifier/user simulator needs OpenAI even when the agent model is
     # hosted by another provider, so missing credentials should fail preflight.
     assert "contains(inputs.dataset, 'tau3')" in workflow
@@ -276,3 +284,7 @@ def test_tau3_subset_constant_is_well_formed() -> None:
     assert len(entries) == 30
     assert all(e.startswith(f"{DATASET}__tau3-") for e in entries)
     assert all(t.justification for t in TASKS)
+    # A swap-duplicate task_id keeps len(entries)==30 and the tier tuple intact,
+    # so pin uniqueness and the exact {DATASET}__{task_id} round-trip explicitly.
+    assert len(set(entries)) == len(TASKS)
+    assert set(entries) == {f"{DATASET}__{t.task_id}" for t in TASKS}

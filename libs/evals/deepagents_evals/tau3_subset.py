@@ -12,7 +12,7 @@ behavior spread, not leaderboard parity. Tiers are the **measured** pass rate of
 Opus finds most of this set hard, which is expected/acceptable headroom for a
 difficulty probe. Living selection: re-run and re-tier here (updating each
 `justification` with the new pass rate) as the reference model or task set
-changes. ``INCLUDE_TASKS`` is derived from ``TASKS`` — CI reads it with::
+changes. `INCLUDE_TASKS` is derived from `TASKS` — CI reads it with::
 
     python -c "from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)"
 """
@@ -20,8 +20,11 @@ changes. ``INCLUDE_TASKS`` is derived from ``TASKS`` — CI reads it with::
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 DATASET = "sierra-research/tau3-bench"
+
+Tier = Literal["easy", "medium", "hard"]
 
 
 @dataclass(frozen=True)
@@ -29,8 +32,22 @@ class SubsetTask:
     """One curated task: its local id, difficulty tier, and why it sits there."""
 
     task_id: str
-    tier: str  # "easy" | "medium" | "hard"
+    tier: Tier
     justification: str
+
+    def __post_init__(self) -> None:
+        """Reject malformed rows at construction time.
+
+        The module is built entirely of module-level `SubsetTask(...)`
+        literals, so import doubles as a self-test. `tier` is additionally
+        constrained statically by the `Tier` literal.
+        """
+        if not self.task_id.startswith("tau3-"):
+            msg = f"task_id must start with 'tau3-': {self.task_id!r}"
+            raise ValueError(msg)
+        if not self.justification.strip():
+            msg = f"justification must be non-empty for {self.task_id!r}"
+            raise ValueError(msg)
 
 
 TASKS: tuple[SubsetTask, ...] = (
@@ -189,5 +206,12 @@ TASKS: tuple[SubsetTask, ...] = (
     ),
 )
 
+# A duplicate task_id would double-weight a task and skew the difficulty
+# distribution while silently passing every len()==30 check; reject it at import
+# (a copy-paste slip during re-tiering is the likely cause).
+if len({t.task_id for t in TASKS}) != len(TASKS):
+    _msg = "duplicate task_id in TASKS"
+    raise ValueError(_msg)
+
 INCLUDE_TASKS = " ".join(f"{DATASET}__{t.task_id}" for t in TASKS)
-"""Space-separated Harbor ``include_tasks`` value for the workflow's dataset."""
+"""Space-separated Harbor `include_tasks` value for the workflow's dataset."""

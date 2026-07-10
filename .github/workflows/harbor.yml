@@ -195,10 +195,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      matrix: ${{ steps.shard-matrix.outputs.matrix }}
-      # Effective shard count after capping to the selectable work (<= n_shards).
-      # The harbor job reads this so its partition matches the emitted matrix.
-      n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
+      # The single resolved model spec (this workflow accepts exactly one model).
+      model: ${{ steps.extract-model.outputs.model }}
+      # Eval category derived from the dataset inputs, consumed by the leaf
+      # workflow's unified reporting (autonomous | conversation | context).
+      category: ${{ steps.category.outputs.category }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -263,673 +264,63 @@ jobs:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
         run: python .github/scripts/validate_harbor_limits.py
 
-      - name: "🔀 Expand matrix by shard"
-        id: shard-matrix
-        # Cross-products the model matrix with the shard axis, caps the shard
-        # count to the selectable work (min(n_shards, n_tasks)) so empty shard
-        # jobs aren't spawned, and guards against GitHub's 256-job matrix cap.
-        # See shard_matrix.py (unit-tested in test_shard_matrix.py).
+      - name: "🎯 Extract single model"
+        id: extract-model
+        # The leaf workflow (_harbor_run.yml) now owns its own shard matrix, so
+        # this job only needs to hand it the single resolved model spec. The
+        # "🔒 Validate single model" step above already guarantees the matrix
+        # has exactly one entry; pull it out via env (no shell interpolation
+        # of untrusted input).
         env:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-          N_SHARDS: ${{ inputs.n_shards || '1' }}
-          N_TASKS: ${{ inputs.n_tasks }}
-        run: python .github/scripts/shard_matrix.py
+        run: |
+          echo "model=$(python3 -c 'import json, os; print(json.loads(os.environ["MODEL_MATRIX"])["include"][0]["model"])')" >> "$GITHUB_OUTPUT"
 
-  harbor:
-    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
+      - name: "🏷️ Derive category"
+        id: category
+        # Mirrors the leaf's own category convention: an explicit local
+        # dataset path is always "context"; a tau3 dataset ref is
+        # "conversation"; everything else (terminal-bench, harbor-index, ...)
+        # is "autonomous".
+        env:
+          DATASET_PATH: ${{ inputs.dataset_path }}
+          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
+        run: |
+          if [ -n "${DATASET_PATH}" ]; then
+            echo "category=context" >> "$GITHUB_OUTPUT"
+          elif [[ "${DATASET}" == *tau3* ]]; then
+            echo "category=conversation" >> "$GITHUB_OUTPUT"
+          else
+            echo "category=autonomous" >> "$GITHUB_OUTPUT"
+          fi
+
+  run:
+    name: "📊 Evals - Harbor (${{ needs.prep.outputs.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
-    runs-on: ubuntu-latest
-    environment: evals
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
-
-    defaults:
-      run:
-        working-directory: libs/evals
-    env:
-      HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
-      HARBOR_N_TASKS: ${{ inputs.n_tasks }}
-      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
-      HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
-      HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
-      HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
-      HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
-      HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
-      HARBOR_SHARD_INDEX: ${{ matrix.shard }}
-      # Effective shard count from prep (capped to selectable work), not the raw
-      # input — the partition must match the matrix or tasks would be dropped.
-      HARBOR_N_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
-      HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
-      HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
-      HARBOR_MODEL: ${{ matrix.model }}
-      LANGSMITH_TRACING: "true"
-      OPENAI_BASE_URL: "https://api.openai.com/v1"
-      OLLAMA_HOST: "https://ollama.com"
-    steps:
-      - name: "🔑 Verify sandbox credentials"
-        working-directory: .
-        env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
-        run: |
-          missing=()
-
-          # LangSmith is always required (experiment tracking)
-          [ -z "$LANGSMITH_API_KEY" ] && missing+=("LANGSMITH_API_KEY")
-
-          # Sandbox provider credentials
-          case "$HARBOR_SANDBOX_ENV" in
-            docker)
-              ;; # No additional credentials needed
-            langsmith)
-              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
-              ;;
-            *)
-              echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
-              exit 1
-              ;;
-          esac
-
-          # Model provider key (infer from model prefix)
-          model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
-            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
-            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
-            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
-            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
-            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
-            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
-            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
-            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
-            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
-            *)
-              echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
-              ;;
-          esac
-
-          if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
-            missing+=("OPENAI_API_KEY")
-          fi
-
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
-            exit 1
-          fi
-          echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
-
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: "🐍 Set up Python + UV"
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: "3.12"
-          cache-suffix: harbor
-          working-directory: libs/evals
-
-      - name: "📦 Install Dependencies"
-        run: uv sync --group test --locked
-
-      - name: "⚓ Install Harbor override"
-        if: ${{ inputs.harbor_package_override != '' }}
-        env:
-          # Passed via env (not interpolated into the shell) to avoid injection.
-          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
-        # --reinstall --refresh defeats any stale cached wheel for this git ref,
-        # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
-
-      - name: "🔇 Suppress Harbor first-run tips"
-        run: |
-          mkdir -p ~/.cache/harbor
-          echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
-
-      - name: "🎯 Resolve tau3-subset dataset"
-        # "tau3-subset" is a curated 30-task view of sierra-research/tau3-bench
-        # (2 easy / 7 medium / 21 hard, across banking_knowledge + telecom) for
-        # probing agent conversation behavior. Pull the task filter from the
-        # committed constant so the selection lives in one place
-        # (deepagents_evals.tau3_subset — the authoritative per-tier split), run
-        # those tasks against the real registry dataset, and track results under a
-        # dedicated "tau3-subset" LangSmith dataset name.
-        if: env.HARBOR_DATASET == 'tau3-subset'
-        run: |
-          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
-          # Fail loudly if the filter resolved to the wrong size. An import error
-          # already aborts via `set -e` (a bare assignment propagates the command
-          # substitution's exit code — do not switch to `local`/`export`, which
-          # swallow it), but a successful-but-empty/partial result would be
-          # written verbatim and silently run a different set than the promised
-          # "30-task subset" — an empty value means NO filter, i.e. the FULL
-          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
-          # invariant the unit tests pin; change both together.
-          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
-          if [ "$task_count" -ne 30 ]; then
-            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
-            exit 1
-          fi
-          {
-            echo "HARBOR_DATASET=sierra-research/tau3-bench"
-            echo "HARBOR_INCLUDE_TASKS=$include_tasks"
-            echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
-          } >> "$GITHUB_ENV"
-          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
-
-      - name: "✂️ Prune agent provider deps to selected model"
-        # The agent loads its model via init_chat_model, which lazily imports
-        # only the provider matching HARBOR_MODEL. langgraph.json ships every
-        # provider (for local `langgraph dev`); a single job needs just one, so
-        # drop the rest before Harbor builds the agent env. In-place edit of the
-        # ephemeral checkout only — the committed file is untouched. Pure stdlib,
-        # unit-tested in .github/scripts/test_prune_agent_deps.py. Both paths are
-        # absolute ($GITHUB_WORKSPACE) so this step doesn't depend on the job's
-        # `working-directory: libs/evals` default.
-        run: |
-          python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
-            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
-
-      - name: "🗂️ Populate local dataset corpus"
-        if: ${{ inputs.dataset_path != '' }}
-        working-directory: libs/evals
-        env:
-          HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
-        # The per-task corpus is single-sourced (git-ignored) and regenerated from
-        # the vendored copy so each task's build context has its files/ before
-        # Harbor builds the task images.
-        run: |
-          if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
-            echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
-          fi
-          uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
-
-      - name: "⚓ Run Harbor"
-        env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
-        run: |
-          # Stage current checkout packages for LangGraph's sandbox install.
-          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          # partners/ must pre-exist: rsync only creates the final path component.
-          mkdir -p "$local_deps_dir/partners"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
-
-          n_tasks_flag=""
-          if [ "$HARBOR_N_TASKS" != "0" ]; then
-            n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
-          fi
-          if ! [[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
-            exit 1
-          fi
-          if ! [[ "$HARBOR_N_RETRIES" =~ ^[0-9]+$ ]]; then
-            echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
-            exit 1
-          fi
-          # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
-          if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
-            echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
-            exit 1
-          fi
-          # Allowlist the boolean; only literal true/false accepted.
-          verification_flag=()
-          case "$HARBOR_DISABLE_VERIFICATION" in
-            true)  verification_flag=(--disable-verification) ;;
-            false) ;;
-            *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
-          esac
-
-          # Allowlist the boolean; only literal true/false accepted.
-          force_build_flag=()
-          case "$HARBOR_FORCE_BUILD" in
-            true)  force_build_flag=(--force-build) ;;
-            false) ;;
-            *) echo "::error::Invalid force_build (true|false): $HARBOR_FORCE_BUILD"; exit 1 ;;
-          esac
-
-          dataset_args=(--dataset "$HARBOR_DATASET")
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
-          if [ -n "$HARBOR_DATASET_PATH" ]; then
-            if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
-              echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"
-              exit 1
-            fi
-            if ! dataset_path=$(realpath "$HARBOR_DATASET_PATH"); then
-              echo "::error::Local Harbor dataset path does not exist: $HARBOR_DATASET_PATH"
-              exit 1
-            fi
-            datasets_root=$(realpath datasets)
-            if [[ "$dataset_path" != "$datasets_root"/* ]] || [ ! -f "$dataset_path/dataset.toml" ]; then
-              echo "::error::Local Harbor dataset path must identify a dataset under datasets/: $HARBOR_DATASET_PATH"
-              exit 1
-            fi
-            dataset_args=(--path "$dataset_path")
-            # Local sharding: a local dataset has no registry manifest, so expose
-            # the shell-validated dataset dir to the shard-matrix step below, which
-            # enumerates task names from disk instead of querying the registry.
-            export HARBOR_LOCAL_DATASET_DIR="$dataset_path"
-            HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
-          elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-            echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
-            exit 1
-          fi
-
-          include_args=()
-          if [[ "$HARBOR_N_SHARDS" =~ ^[1-9][0-9]*$ ]] && [ "$HARBOR_N_SHARDS" -gt 1 ]; then
-            # Sharding: run this shard's disjoint slice of the dataset. Resolve the
-            # live task list from Harbor's own manifest (no drift), compose it with
-            # include_tasks/n_tasks exactly as an unsharded run would, then partition
-            # by i % n_shards. select_shard_tasks reproduces the include-glob +
-            # n_tasks subset of Harbor's _filter_task_ids; task_display_name mirrors
-            # each task id's get_name() (see .github/scripts/shard_matrix.py + tests).
-            if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
-              echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
-            fi
-            uv run python - <<'PY' > shard_tasks.txt
-          import asyncio
-          import os
-          import sys
-          from fnmatch import fnmatch
-          from harbor.registry.client.package import PackageDatasetClient
-
-          # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
-          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
-          from shard_matrix import select_shard_tasks, task_display_name
-
-          ds = os.environ["HARBOR_DATASET"]
-          n = int(os.environ["HARBOR_N_SHARDS"])
-          i = int(os.environ["HARBOR_SHARD_INDEX"])
-          include_globs = os.environ.get("HARBOR_INCLUDE_TASKS", "").split()
-          raw_n_tasks = os.environ.get("HARBOR_N_TASKS", "0").strip() or "0"
-          if not raw_n_tasks.isdigit():
-              sys.exit(f"::error::Invalid n_tasks (must be an integer): {raw_n_tasks!r}")
-          n_tasks = int(raw_n_tasks)
-
-          local_dir = os.environ.get("HARBOR_LOCAL_DATASET_DIR", "").strip()
-          if local_dir:
-              # Local --path dataset: no registry manifest, so enumerate task names
-              # from disk -- immediate subdirs of the dataset dir (shell-validated:
-              # realpath, under datasets/, has dataset.toml) that contain a
-              # task.toml. Raw tasks carry no [task] name, so the dir basename IS the
-              # task name Harbor filters on via --include-task-name. Sorted for a
-              # stable partition that every shard computes identically.
-              names = sorted(
-                  entry.name
-                  for entry in os.scandir(local_dir)
-                  if entry.is_dir()
-                  and os.path.isfile(os.path.join(entry.path, "task.toml"))
-              )
-              if not names:
-                  sys.exit(
-                      f"::error::No local Harbor tasks (dirs with task.toml) under {local_dir}"
-                  )
-          else:
-              md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
-              # Native manifest order (do NOT sort): the n_tasks cap must pick the
-              # same first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks]).
-              names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
-              if not names:
-                  # Resolved zero usable names from a non-empty manifest -> the id
-                  # shape changed and get_name() stopped yielding a name. Fail loudly
-                  # instead of letting every shard collapse into the legitimate-empty
-                  # no-op below, which would run the whole sharded job on nothing and
-                  # report green. (A genuinely empty selection is handled per-shard.)
-                  sys.exit(
-                      f"::error::Resolved 0 usable task names from {ds}@latest "
-                      f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
-                      "shape (get_name() returned nothing)."
-                  )
-          selected = names
-          if include_globs:
-              selected = [
-                  name for name in selected if any(fnmatch(name, glob) for glob in include_globs)
-              ]
-              if not selected:
-                  sys.exit(
-                      "::error::No Harbor tasks matched include_tasks filters: "
-                      + " ".join(include_globs)
-                  )
-          tasks = select_shard_tasks(selected, [], n_tasks, n, i)
-          if tasks:
-              print("\n".join(tasks))
-          PY
-            mapfile -t shard_tasks < shard_tasks.txt
-            if [ "${#shard_tasks[@]}" -eq 0 ]; then
-              # Fewer selected tasks than shards (e.g. n_tasks < n_shards): this
-              # shard's slice is legitimately empty. No-op successfully — the other
-              # shards cover the full selection — instead of failing the workflow.
-              echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
-              echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
-              exit 0
-            fi
-            for t in "${shard_tasks[@]}"; do
-              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
-                echo "::error::Invalid resolved shard task name: $t"; exit 1
-              fi
-              include_args+=(--include-task-name "$t")
-            done
-            # The n_tasks cap is already applied during selection above; clear the
-            # flag so Harbor doesn't re-cap each shard to n_tasks (which would run up
-            # to n_tasks * n_shards instead of n_tasks total).
-            n_tasks_flag=""
-            echo "Shard $HARBOR_SHARD_INDEX of $HARBOR_N_SHARDS -> ${#shard_tasks[@]} tasks: ${shard_tasks[*]}"
-          elif [ -n "$HARBOR_INCLUDE_TASKS" ]; then
-            read -r -a include_tasks <<< "$HARBOR_INCLUDE_TASKS"
-            for t in "${include_tasks[@]}"; do
-              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
-                echo "::error::Invalid Harbor include task filter: $t"
-                exit 1
-              fi
-              include_args+=(--include-task-name "$t")
-            done
-          fi
-
-          env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
-          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          # A dataset-name override (e.g. tau3-subset) wins; otherwise keep the
-          # value already resolved above (local-path-aware `local/...`, or the
-          # registry ref) rather than falling back to $HARBOR_DATASET, which would
-          # clobber the local-dataset name.
-          HARBOR_LANGSMITH_DATASET="${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}"
-          # Include the run id + attempt so all shards of this dispatch share one
-          # experiment name (Harbor's LangSmith plugin uses an explicit name
-          # verbatim and create-or-reuses it, converging the shards) while a
-          # later dispatch or re-run gets its own experiment. HARBOR_LANGSMITH_DATASET
-          # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
-          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
-          echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
-          echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
-
-          agent_env_args=(
-            --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
-            --agent-env 'LANGSMITH_TRACING=true'
-            --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
-            --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
-          )
-          verifier_env_args=(
-            --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
-          )
-          model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;
-            google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
-            openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
-            baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
-            ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
-            groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
-            xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
-            nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
-          esac
-
-          echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
-          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
-          echo ""
-
-          uv run harbor run \
-            --yes \
-            --agent langgraph \
-            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
-            --agent-kwarg config=langgraph.json \
-            --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            "${dataset_args[@]}" \
-            -n "$HARBOR_CONCURRENCY" \
-            --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
-            --max-retries "$HARBOR_N_RETRIES" \
-            --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
-            "${verification_flag[@]}" \
-            "${force_build_flag[@]}" \
-            $n_tasks_flag \
-            "${include_args[@]}" \
-            "${agent_env_args[@]}" \
-            "${verifier_env_args[@]}" \
-            --jobs-dir harbor-jobs/terminal-bench \
-            $env_flag \
-            --model "$HARBOR_MODEL" \
-            --plugin langsmith \
-            --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
-
-      - name: "🔍 Find latest Harbor job"
-        id: latest-job
-        # An empty shard skipped the Harbor run, so there is no job dir to find.
-        if: ${{ env.SHARD_EMPTY != 'true' }}
-        run: |
-          latest_job=$(python - <<'PY'
-          from pathlib import Path
-
-          jobs_dir = Path("harbor-jobs/terminal-bench")
-          job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
-          if not job_dirs:
-              raise SystemExit("No Harbor job directory found")
-          print(job_dirs[-1])
-          PY
-          )
-          echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
-
-      - name: "📝 Write workflow summary"
-        if: always()
-        env:
-          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
-          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
-          HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
-          HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
-          LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
-          SHARD_EMPTY: ${{ env.SHARD_EMPTY }}
-        run: |
-          {
-            echo "## Harbor run"
-            echo
-            echo "- Model: $HARBOR_MODEL"
-            if [ "$SHARD_EMPTY" = "true" ]; then
-              echo "- Shard: $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS — empty (no tasks assigned), skipped"
-            fi
-            echo "- Dataset: ${HARBOR_DATASET}"
-            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
-            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
-            if [ "$HARBOR_N_TASKS" = "0" ]; then
-              echo "- Max tasks: all"
-            else
-              echo "- Max tasks: ${HARBOR_N_TASKS}"
-            fi
-            if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
-              echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"
-            else
-              echo "- Included tasks: all"
-            fi
-            echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
-            echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
-            echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
-            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
-              echo "- Harbor job dir: $HARBOR_JOB_DIR"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "📤 Upload Harbor artifacts"
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          # shard-* so the aggregate job can glob every per-shard upload (this
-          # workflow is single-model, so job-index == shard index).
-          name: shard-${{ strategy.job-index }}
-          path: |
-            libs/evals/harbor-jobs/terminal-bench
-          if-no-files-found: warn
-
-  aggregate:
-    name: "📊 Aggregate shards (pass@k / avg@k)"
-    needs: harbor
-    # Runs after all shards. Skipped only when the matrix never ran (prep failed
-    # the validation -> harbor skipped) or the run was cancelled; otherwise it
-    # aggregates whatever shards uploaded, even if some shards failed.
-    if: ${{ always() && needs.harbor.result != 'skipped' && needs.harbor.result != 'cancelled' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write        # download shard artifacts, then delete them after merging
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPO: ${{ github.repository }}
-      RUN_ID: ${{ github.run_id }}
-      # Matrix job result: aggregation flags the run incomplete if a shard job
-      # failed. Empty shards (task-filtered slices) no-op successfully, so a
-      # filtered run is not falsely reported as incomplete.
-      HARBOR_RESULT: ${{ needs.harbor.result }}
-    steps:
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: "🔖 Compute dataset slug"
-        id: slug
-        # Sanitized dataset ref -> artifact-name suffix, so a future orchestrator
-        # calling this workflow per category yields one distinctly-named zip each.
-        env:
-          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
-        run: |
-          slug=$(printf '%s' "$DATASET" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          echo "slug=$slug" >> "$GITHUB_OUTPUT"
-
-      - name: "⬇️ Download shard results"
-        # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
-        # download failure (auth / network / rate-limit). Only the former aggregates
-        # an empty set; anything else fails the step, so a transient failure is never
-        # mistaken for a complete, zero-result run. Transient errors are retried.
-        run: |
-          mkdir -p _shards
-          attempt=1
-          while :; do
-            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'shard-*' --dir _shards >dl.log 2>&1; then
-              break
-            fi
-            if grep -qi 'no artifact' dl.log; then
-              echo "::warning::No shard-* artifacts matched; aggregating an empty set."
-              break
-            fi
-            echo "Shard download attempt ${attempt} failed:"; cat dl.log
-            if [ "$attempt" -ge 3 ]; then
-              echo "::error::Shard download failed after ${attempt} attempts (not an empty-artifact case)."
-              exit 1
-            fi
-            attempt=$((attempt + 1)); sleep $((attempt * 5))
-          done
-          echo "Contents of _shards:"
-          ls -1 _shards || true
-
-      - name: "📊 Compute pass@k / avg@k"
-        # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
-        # avoid workflow-input injection; argparse int-parses --rollouts.
-        env:
-          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
-          ROLLOUTS: ${{ inputs.rollouts_per_task }}
-        run: |
-          if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
-            exit 1
-          fi
-          python3 .github/scripts/aggregate_shards.py _shards \
-            --rollouts "$ROLLOUTS" \
-            --dataset "$DATASET" \
-            --harbor-result "$HARBOR_RESULT" \
-            --out-dir _shards
-
-      - name: "📤 Upload combined results"
-        # One zip per category: the merged shard harbor data plus summary.json
-        # and per_task.jsonl.
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: harbor-combined-${{ steps.slug.outputs.slug }}
-          path: _shards
-          if-no-files-found: warn
-
-      - name: "🧹 Delete per-shard artifacts"
-        # The combined zip supersedes the intermediates, leaving one artifact per
-        # category. Best-effort: a delete failure must not fail the run.
-        continue-on-error: true
-        run: |
-          ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
-            --jq '.artifacts[] | select(.name | startswith("shard-")) | .id')
-          for id in $ids; do
-            gh api -X DELETE "repos/$REPO/actions/artifacts/$id" \
-              && echo "deleted shard artifact $id" || echo "could not delete $id"
-          done
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ needs.prep.outputs.model }}
+      category: ${{ needs.prep.outputs.category }}
+      dataset: ${{ inputs.dataset_override || inputs.dataset }}
+      dataset_path: ${{ inputs.dataset_path }}
+      agent_impl: ${{ inputs.agent_impl }}
+      # Empty => leaf falls back to its own legacy in-run dataset naming
+      # (matches harbor.yml's pre-refactor behavior; the unified orchestrator
+      # is the only caller that sets this explicitly).
+      langsmith_dataset: ""
+      rollouts: ${{ inputs.rollouts_per_task }}
+      n_shards: ${{ inputs.n_shards }}
+      # Preserve the old harbor.yml behavior: all shards ran in parallel with
+      # no throttling (fail-fast: false, no max-parallel), so cap parallelism
+      # at n_shards (i.e. effectively unthrottled).
+      shard_parallel: ${{ inputs.n_shards }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      n_retries: ${{ inputs.n_retries }}
+      n_tasks: ${{ inputs.n_tasks }}
+      include_tasks: ${{ inputs.include_tasks }}
+      agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      disable_verification: ${{ inputs.disable_verification }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}

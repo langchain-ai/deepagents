@@ -43,6 +43,21 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--stamp-tiers",
+        type=Path,
+        metavar="DATASET_DIR",
+        help=(
+            "Overwrite each task's `difficulty` in DATASET_DIR with its calibrated "
+            "tier from --calibration. Mutually exclusive with --task-ids/--limit/--populate."
+        ),
+    )
+    parser.add_argument(
+        "--calibration",
+        type=Path,
+        metavar="CALIBRATION_JSON",
+        help="Calibration record (JSON) read by --stamp-tiers.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help=(
@@ -74,6 +89,17 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.stamp_tiers is not None:
+        if args.task_ids or args.limit is not None or args.populate is not None:
+            msg = "`--stamp-tiers` is mutually exclusive with --task-ids/--limit/--populate"
+            raise ValueError(msg)
+        if args.calibration is None:
+            msg = "`--stamp-tiers` requires `--calibration`"
+            raise ValueError(msg)
+        count = adapter.stamp_calibrated_tiers(args.stamp_tiers, args.calibration)
+        print(f"Stamped calibrated tiers for {count} task(s) in {args.stamp_tiers}")
+        return
 
     if args.populate is not None:
         if args.task_ids or args.limit is not None:

@@ -96,6 +96,11 @@ def generate_task(
 
     record = _read_record(source_jsonl, line_index)
     task_dir = output_dir / task_id
+    if task_dir.exists():
+        # Regenerate cleanly: replace any existing task dir so a rerun overwrites
+        # instead of failing on already-created subdirectories. Safe because the
+        # guard above proved `task_id` is a single path component under output_dir.
+        shutil.rmtree(task_dir)
     files_dir = task_dir / "environment" / "files"
     files_dir.mkdir(parents=True)
     _copy_corpus(source_files_dir, files_dir)
@@ -153,6 +158,57 @@ def populate_corpus(dataset_dir: Path) -> int:
         _copy_corpus(source_files_dir, files_dir)
         populated += 1
     return populated
+
+
+_VALID_TIERS = frozenset({"easy", "medium", "hard"})
+_DIFFICULTY_LINE_RE = re.compile(r'^difficulty = ".*"$', re.MULTILINE)
+
+
+def stamp_calibrated_tiers(dataset_dir: Path, calibration_path: Path) -> int:
+    """Overwrite each frozen task's `difficulty` with its calibrated tier.
+
+    The adapter writes `difficulty = source_difficulty` (the Context-Bench label)
+    at generation time. After calibration this stamps the authoritative, measured
+    tier from `calibration_path` into each task's `task.toml`, so the runnable
+    dataset's metadata matches the calibrated composition. `source_difficulty` is
+    left intact for provenance.
+
+    Args:
+        dataset_dir: Dataset directory containing generated task directories.
+        calibration_path: JSON record with a `tasks` map of
+            `{task_id: {"tier": "easy"|"medium"|"hard", ...}}`.
+
+    Returns:
+        The number of task directories whose difficulty was stamped.
+
+    Raises:
+        FileNotFoundError: If `calibration_path` is not a file.
+        ValueError: If a task id is not a single path component or a tier is
+            not one of `easy`/`medium`/`hard`.
+    """
+    if not calibration_path.is_file():
+        msg = f"No calibration record at {calibration_path}"
+        raise FileNotFoundError(msg)
+    dataset_root = dataset_dir.resolve()
+    tasks = json.loads(calibration_path.read_text()).get("tasks", {})
+    stamped = 0
+    for task_id, entry in tasks.items():
+        if Path(task_id).name != task_id:
+            msg = f"calibration task id {task_id!r} must be a single path component"
+            raise ValueError(msg)
+        tier = entry.get("tier") if isinstance(entry, dict) else None
+        if tier not in _VALID_TIERS:
+            msg = f"calibrated tier {tier!r} for {task_id!r} must be one of {sorted(_VALID_TIERS)}"
+            raise ValueError(msg)
+        task_toml = dataset_root / task_id / "task.toml"
+        # Containment: only a direct child of the dataset dir with a task.toml.
+        if task_toml.parent.resolve().parent != dataset_root or not task_toml.is_file():
+            continue
+        updated, count = _DIFFICULTY_LINE_RE.subn(f'difficulty = "{tier}"', task_toml.read_text(), count=1)
+        if count:
+            task_toml.write_text(updated)
+            stamped += 1
+    return stamped
 
 
 def _read_record(source_jsonl: Path, line_index: int) -> dict[str, object]:
@@ -225,17 +281,27 @@ def _write_task_files(
         "[metadata]\n"
         'source = "contextbench"\n'
         'suite = "cloud"\n'
+        # `difficulty` is the authoritative bucket; it starts as the source
+        # Context-Bench label and is overwritten by the measured tier via
+        # `stamp_calibrated_tiers` once calibrated. `source_difficulty` preserves
+        # the original label for provenance.
         f'difficulty = "{difficulty}"\n'
+        f'source_difficulty = "{difficulty}"\n'
         f'question_type = "{question_type}"\n\n'
         "[environment]\n"
         # Allowlist (not no-network): the langgraph/dcode agent runs in-sandbox
-        # and must reach its own infra (model API + package mirrors) to bootstrap
-        # and call the model. Arbitrary web stays blocked, so answer-lookup is
-        # still prevented. LangSmith enforces this statically via its egress proxy.
+        # and must reach its own infra (package mirrors + the selected model's
+        # API) to bootstrap and answer. Arbitrary web stays blocked, so
+        # answer-lookup is still prevented; LangSmith enforces this via its egress
+        # proxy. The model-provider hosts cover every provider the scorecard
+        # workflow can select (API endpoints only, never answer sources).
         'network_mode = "allowlist"\n'
         'allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", '
         '"*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", '
-        '"api.anthropic.com", "api.smith.langchain.com"]\n'
+        '"api.smith.langchain.com", "api.anthropic.com", "api.openai.com", '
+        '"generativelanguage.googleapis.com", "openrouter.ai", "*.baseten.co", '
+        '"api.fireworks.ai", "ollama.com", "api.groq.com", '
+        '"integrate.api.nvidia.com", "api.x.ai"]\n'
     )
 
 

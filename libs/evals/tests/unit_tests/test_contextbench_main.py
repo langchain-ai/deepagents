@@ -114,3 +114,53 @@ def test_populate_restores_corpus_from_vendor(
     ]
     assert (files_dir / "people.txt").read_text() == "people.txt source data\n"
     assert not (other / "environment").exists()
+
+
+def test_generate_task_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vendor_dir = tmp_path / "vendor"
+    _write_vendor_fixture(vendor_dir)
+    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+    output_dir = tmp_path / "dataset"
+
+    main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
+    # A second run over the same output dir must overwrite cleanly, not raise.
+    main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
+
+    assert (output_dir / "cb-cloud-1" / "task.toml").is_file()
+
+
+def test_task_toml_records_source_difficulty_and_provider_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_dir = tmp_path / "vendor"
+    _write_vendor_fixture(vendor_dir)
+    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+    output_dir = tmp_path / "dataset"
+
+    main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
+    task_toml = (output_dir / "cb-cloud-1" / "task.toml").read_text()
+
+    # cb-cloud-1 fixture record is `easy`; both fields start at the source label.
+    assert 'difficulty = "easy"' in task_toml
+    assert 'source_difficulty = "easy"' in task_toml
+    # Allowlist must admit non-Anthropic providers so any selectable model runs.
+    for host in ("api.anthropic.com", "api.openai.com", "api.x.ai", "openrouter.ai"):
+        assert host in task_toml
+
+
+def test_stamp_calibrated_tiers_overwrites_difficulty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_dir = tmp_path / "vendor"
+    _write_vendor_fixture(vendor_dir)
+    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+    output_dir = tmp_path / "dataset"
+    main(["--output-dir", str(output_dir), "--task-ids", "cb-cloud-1"])
+
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(json.dumps({"tasks": {"cb-cloud-1": {"tier": "hard"}}}))
+    main(["--stamp-tiers", str(output_dir), "--calibration", str(calibration)])
+
+    task_toml = (output_dir / "cb-cloud-1" / "task.toml").read_text()
+    assert 'difficulty = "hard"' in task_toml  # calibrated tier stamped
+    assert 'source_difficulty = "easy"' in task_toml  # provenance preserved

@@ -4,8 +4,9 @@ version = "1.3"
 source = "contextbench"
 suite = "cloud"
 difficulty = "easy"
+source_difficulty = "easy"
 question_type = "temporal_reasoning"
 
 [environment]
 network_mode = "allowlist"
-allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", "*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", "api.anthropic.com", "api.smith.langchain.com"]
+allowed_hosts = ["astral.sh", "*.astral.sh", "github.com", "*.githubusercontent.com", "pypi.org", "*.pythonhosted.org", "api.smith.langchain.com", "api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "openrouter.ai", "*.baseten.co", "api.fireworks.ai", "ollama.com", "api.groq.com", "integrate.api.nvidia.com", "api.x.ai"]

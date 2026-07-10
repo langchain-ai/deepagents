@@ -38,6 +38,11 @@ Exhausting the entire medium record pool yielded only ~9 intermittent tasks tota
 Composition: **5 easy · 9 medium · 16 hard**. Each task's `pass@bare` below is the justification for
 its tier; `question` states what it exercises.
 
+Each task's `[metadata]` carries the authoritative calibrated tier as `difficulty` (stamped from
+`calibration.json` via `contextbench --stamp-tiers`) and the original Context-Bench label as
+`source_difficulty`. `calibration.json` is the machine-readable record (model, harness, rollouts,
+and per-task `pass_at_bare` + `tier`).
+
 > Note: `pass@bare` is the **floor** (weakest harness). The `dcode` harness (the scorecard target)
 > is expected to solve some of the hard tier — re-calibrate on `dcode` before reporting scorecard
 > numbers.

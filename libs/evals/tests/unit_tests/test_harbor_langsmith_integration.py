@@ -141,13 +141,14 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'Path("harbor-jobs/terminal-bench")' in workflow
     assert "libs/evals/harbor-jobs/terminal-bench" in workflow
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in workflow
-    assert "python .github/scripts/langsmith_experiment_matrix.py" in workflow
-    assert "MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}" in workflow
-    assert "MODEL_MATRIX: ${{ steps.langsmith-experiments.outputs.matrix }}" in workflow
-    assert "HARBOR_LANGSMITH_EXPERIMENT_ID: ${{ matrix.langsmith_experiment_id }}" in workflow
-    assert "HARBOR_LANGSMITH_EXPERIMENT: ${{ matrix.langsmith_experiment_name }}" in workflow
+    assert "Create LangSmith experiments" not in workflow
+    assert "langsmith_experiment_matrix.py" not in workflow
+    assert "langsmith_experiment_id" not in workflow
+    assert "HARBOR_LANGSMITH_EXPERIMENT_ID" not in workflow
+    assert 'HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-' in workflow
+    assert "${HARBOR_MODEL//:/-}" in workflow
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
-    assert '--plugin-kwarg experiment_id="$HARBOR_LANGSMITH_EXPERIMENT_ID"' in workflow
+    assert "--plugin-kwarg experiment_id=" not in workflow
 
 
 def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:

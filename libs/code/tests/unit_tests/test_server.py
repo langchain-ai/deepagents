@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import signal
 import socket
 import threading
 from types import SimpleNamespace
@@ -416,9 +419,14 @@ class TestServerProcess:
             await server.wait_for_graph_ready("agent")
 
     async def test_start_cleans_up_partial_state_on_health_failure(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Failed startup should stop the process and remove owned resources."""
+        # `_stop_process` preserves the log file when debug mode is on, which
+        # would defeat the `not log_path.exists()` assertion below; pin it off
+        # so an ambient `DEEPAGENTS_CODE_DEBUG` in the environment can't flake.
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+
         config_dir = tmp_path / "runtime"
         config_dir.mkdir()
         (config_dir / "langgraph.json").write_text("{}")
@@ -456,13 +464,127 @@ class TestServerProcess:
         ):
             await server.start()
 
-        process.send_signal.assert_called_once()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
         process.wait.assert_called_once()
         log_file.close.assert_called_once()
         assert server._process is None
         assert server._log_file is None
         assert not config_dir.exists()
         assert not log_path.exists()
+
+    async def test_start_cleans_up_partial_state_on_cancellation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cancelled startup must reap the subprocess it already spawned.
+
+        `asyncio.CancelledError` is a `BaseException`, not an `Exception`, so
+        `start()` must clean up in a `finally` — otherwise the `langgraph dev`
+        subprocess spawned before the health check is orphaned when the caller
+        is cancelled mid-startup (e.g. Ctrl+D). Regression: PR #4629.
+        """
+        # See sibling health-failure test: pin debug off so the log file is
+        # unlinked and the `not log_path.exists()` assertion can't flake.
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        log_path = tmp_path / "server.log"
+        log_path.write_text("booting")
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await server.start()
+
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.wait.assert_called_once()
+        log_file.close.assert_called_once()
+        assert server._process is None
+        assert server._log_file is None
+        assert not config_dir.exists()
+        assert not log_path.exists()
+
+    async def test_start_cleanup_error_does_not_mask_startup_error(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing `stop()` during cleanup must not mask the startup error.
+
+        `start()`'s `finally` guards `stop()` so that if reaping the subprocess
+        itself raises, the in-flight startup exception still propagates
+        unchanged (rather than being replaced by the cleanup error) and the
+        failure is logged at `error` level.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        log_path = tmp_path / "server.log"
+        log_path.write_text("booting")
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=RuntimeError("startup boom")),
+            ),
+            patch.object(
+                server, "stop", side_effect=RuntimeError("cleanup boom")
+            ) as mock_stop,
+            caplog.at_level(logging.ERROR),
+            # The original startup error propagates, not the cleanup error.
+            pytest.raises(RuntimeError, match="startup boom"),
+        ):
+            await server.start()
+
+        mock_stop.assert_called_once()
+        assert "Error stopping server during startup cleanup" in caplog.text
 
     async def test_start_rescaffolds_when_config_missing(self, tmp_path: Path) -> None:
         """A missing langgraph.json should be rebuilt via the scaffold hook."""

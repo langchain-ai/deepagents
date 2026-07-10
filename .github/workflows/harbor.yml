@@ -380,6 +380,15 @@ jobs:
           mkdir -p ~/.cache/harbor
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
+      - name: "✂️ Prune agent provider deps to selected model"
+        # The agent loads its model via init_chat_model, which lazily imports
+        # only the provider matching HARBOR_MODEL. langgraph.json ships every
+        # provider (for local `langgraph dev`); a single job needs just one, so
+        # drop the rest before Harbor builds the agent env. In-place edit of the
+        # ephemeral checkout only — the committed file is untouched. Pure stdlib,
+        # unit-tested in .github/scripts/test_prune_agent_deps.py.
+        run: python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" deepagents_harbor/langgraph_project/langgraph.json
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}

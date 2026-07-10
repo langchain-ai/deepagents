@@ -183,6 +183,10 @@ on:
         type: string
 permissions:
   contents: read
+  # actions: write is required by the reusable _harbor_run.yml leaf's aggregate
+  # job (gh run download + artifact delete). A reusable workflow's permissions
+  # are capped by the caller's token, so the caller must grant it here.
+  actions: write
 
 env:
   UV_NO_SYNC: "true"

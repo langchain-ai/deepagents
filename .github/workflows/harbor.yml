@@ -309,7 +309,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -423,7 +423,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset_override, 'tau3')) && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |

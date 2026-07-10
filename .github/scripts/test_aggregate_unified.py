@@ -40,3 +40,34 @@ def test_combine_computes_macro_and_micro():
     # micro pass fraction pooled by tasks passed-any: not derivable from pass_at_k alone,
     # micro uses avg@k weighted by tasks: (1.0*10 + 0.0*30)/40 = 0.25
     assert abs(m["micro"]["avg_at_k"] - 0.25) < 1e-9
+
+
+def test_render_markdown_sorts_by_macro_desc():
+    combined = {
+        "categories": ["autonomous", "context"],
+        "models": {
+            "lo": {"categories": {"autonomous": {"pass_at_k": 0.1, "avg_at_k": 0.1},
+                                   "context": {"pass_at_k": 0.1, "avg_at_k": 0.1}},
+                    "macro": {"pass_at_k": 0.1, "avg_at_k": 0.1},
+                    "micro": {"pass_at_k": 0.1, "avg_at_k": 0.1}, "incomplete": False},
+            "hi": {"categories": {"autonomous": {"pass_at_k": 0.9, "avg_at_k": 0.9},
+                                   "context": {"pass_at_k": 0.9, "avg_at_k": 0.9}},
+                    "macro": {"pass_at_k": 0.9, "avg_at_k": 0.9},
+                    "micro": {"pass_at_k": 0.9, "avg_at_k": 0.9}, "incomplete": False},
+        },
+    }
+    md = au.render_markdown(combined, k=3)
+    assert md.index("hi") < md.index("lo")  # higher macro ranked first
+    assert "pass@3" in md
+
+
+def test_radar_results_shape():
+    combined = {
+        "categories": ["autonomous", "context"],
+        "models": {"m": {"categories": {"autonomous": {"pass_at_k": 0.5},
+                                         "context": {"pass_at_k": 0.7}},
+                          "macro": {"pass_at_k": 0.6}, "micro": {"pass_at_k": 0.6},
+                          "incomplete": False}},
+    }
+    rr = au.radar_results(combined)
+    assert rr == [{"model": "m", "scores": {"autonomous": 0.5, "context": 0.7}}]

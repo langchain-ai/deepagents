@@ -64,3 +64,49 @@ def combine(leaves: list[dict]) -> dict:
             "incomplete": any(leaf["incomplete"] for leaf in model_leaves),
         }
     return {"models": models_out, "categories": categories}
+
+
+def _fmt(v: float | None) -> str:
+    return "—" if v is None else f"{v:.3f}"
+
+
+def render_markdown(combined: dict, k: int) -> str:
+    cats = combined["categories"]
+    header = ["Model"] + [f"{c} pass@{k}/avg@{k}" for c in cats] + [
+        f"Overall macro pass@{k}", f"macro avg@{k}", f"micro pass@{k}", f"micro avg@{k}"]
+    rows = []
+    ranked = sorted(
+        combined["models"].items(),
+        key=lambda kv: (kv[1]["macro"]["pass_at_k"] is None, -(kv[1]["macro"]["pass_at_k"] or 0.0)),
+    )
+    for model, m in ranked:
+        cells = [model + (" ⚠️" if m["incomplete"] else "")]
+        for c in cats:
+            cat = m["categories"].get(c)
+            cells.append(f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—")
+        cells += [_fmt(m["macro"]["pass_at_k"]), _fmt(m["macro"]["avg_at_k"]),
+                  _fmt(m["micro"]["pass_at_k"]), _fmt(m["micro"]["avg_at_k"])]
+        rows.append(cells)
+    lines = ["| " + " | ".join(header) + " |",
+             "|" + "|".join(["---"] * len(header)) + "|"]
+    lines += ["| " + " | ".join(r) + " |" for r in rows]
+    return "\n".join(lines) + "\n"
+
+
+def radar_results(combined: dict) -> list[dict]:
+    out = []
+    for model, m in combined["models"].items():
+        scores = {c: v["pass_at_k"] for c, v in m["categories"].items() if v.get("pass_at_k") is not None}
+        out.append({"model": model, "scores": scores})
+    return out
+
+
+def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str | None) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "unified_summary.json").write_text(json.dumps(combined, indent=2) + "\n")
+    (out_dir / "radar_results.json").write_text(json.dumps(radar_results(combined), indent=2) + "\n")
+    md = render_markdown(combined, k)
+    if step_summary_path:
+        with open(step_summary_path, "a") as f:
+            f.write("## Unified evals — cross-model comparison\n\n")
+            f.write(md)

@@ -3775,7 +3775,7 @@ class DeepAgentsApp(App):
                 cwd_choice = await self._offer_thread_cwd_switch(
                     candidate,
                     restart_server=False,
-                    allow_abort=True,
+                    abort="resume",
                 )
             except Exception:
                 logger.exception(
@@ -16643,8 +16643,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
-        allow_abort: bool = False,
-        abort_mode: CwdSwitchAbortMode = "resume",
+        abort: CwdSwitchAbortMode | None = None,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -16654,18 +16653,17 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
-            allow_abort: When True, the prompt offers a third "abort" option that
-                declines the resume/switch entirely. Set for both the launch-time
-                `-r` resume and the in-session `/threads` switcher.
-            abort_mode: Selects the abort wording — "resume" (launch-time, abort
-                starts a new session) or "switch" (in-session `/threads`, abort
-                cancels and keeps the current thread).
+            abort: When set, the prompt offers a third "abort" option that
+                declines the resume/switch entirely, with wording chosen by the
+                mode — "resume" (launch-time `-r`, abort starts a new session) or
+                "switch" (in-session `/threads`, abort cancels and keeps the
+                current thread). `None` hides the option.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
                 declined the resume/switch or a requested switch was accepted but
                 failed (the caller should stop the resume). The user-declined
-                abort fires only when `allow_abort` is True, and the switch-failed
+                abort fires only when `abort` is set, and the switch-failed
                 abort only when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
@@ -16682,8 +16680,7 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
-                allow_abort=allow_abort,
-                abort_mode=abort_mode,
+                abort=abort,
             )
         )
         if choice == "abort":
@@ -16787,8 +16784,7 @@ class DeepAgentsApp(App):
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
                 restart_server=True,
-                allow_abort=True,
-                abort_mode="switch",
+                abort="switch",
             )
             if cwd_choice == "abort":
                 return
@@ -16812,8 +16808,7 @@ class DeepAgentsApp(App):
         cwd_choice = await self._offer_thread_cwd_switch(
             thread_id,
             restart_server=True,
-            allow_abort=True,
-            abort_mode="switch",
+            abort="switch",
         )
         if cwd_choice == "abort":
             return

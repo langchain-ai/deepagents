@@ -15093,7 +15093,7 @@ class TestResolveResumeThread:
             assert app._status_bar.connection_state == "connecting"
 
     async def test_resume_offers_abort_option_at_launch(self) -> None:
-        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        """The launch-time cwd prompt is invoked with the `resume` abort mode."""
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
@@ -15114,7 +15114,7 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert offer.await_args is not None
-            assert offer.await_args.kwargs["allow_abort"] is True
+            assert offer.await_args.kwargs["abort"] == "resume"
             assert app._lc_thread_id == "some-thread"
 
     async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
@@ -21642,8 +21642,7 @@ class TestResumeThreadCwdSwitch:
         await app._resume_thread("new-thread")
 
         assert offer.await_args is not None
-        assert offer.await_args.kwargs["allow_abort"] is True
-        assert offer.await_args.kwargs["abort_mode"] == "switch"
+        assert offer.await_args.kwargs["abort"] == "switch"
         # Aborting must not switch threads or load history.
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
@@ -21668,8 +21667,7 @@ class TestResumeThreadCwdSwitch:
         await app._resume_thread("thread-1")
 
         assert offer.await_args is not None
-        assert offer.await_args.kwargs["allow_abort"] is True
-        assert offer.await_args.kwargs["abort_mode"] == "switch"
+        assert offer.await_args.kwargs["abort"] == "switch"
         mount.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---

@@ -20,17 +20,19 @@ if TYPE_CHECKING:
 CwdSwitchChoice = Literal["switch", "stay", "abort"]
 """Outcome of the cwd switch prompt.
 
-`"abort"` is only offered when the prompt is opened with `allow_abort=True`.
-Its meaning depends on `abort_mode`: at launch-time `-r` resume (`"resume"`) it
+`"abort"` is only offered when the prompt is opened with an `abort` mode set.
+Its meaning depends on that mode: at launch-time `-r` resume (`"resume"`) it
 means "don't resume; start a new session", and in the in-session `/threads`
 switcher (`"switch"`) it means "cancel; keep the current thread".
 """
 
 CwdSwitchAbortMode = Literal["resume", "switch"]
-"""Which flow opened the abort-capable prompt, selecting the abort wording.
+"""Which flow opened an abort-capable prompt, selecting the abort wording.
 
-`"resume"` is the launch-time `-r` resume (abort starts a new session);
-`"switch"` is the in-session `/threads` switcher (abort cancels the switch).
+Passed as the prompt's `abort` argument; `None` there means abort is not
+offered. `"resume"` is the launch-time `-r` resume (abort starts a new
+session); `"switch"` is the in-session `/threads` switcher (abort cancels
+the switch).
 """
 
 
@@ -95,16 +97,14 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         current_cwd: str,
         thread_cwd: str,
         project_settings_change_detected: bool = False,
-        allow_abort: bool = False,
-        abort_mode: CwdSwitchAbortMode = "resume",
+        abort: CwdSwitchAbortMode | None = None,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
         self._current_cwd = current_cwd
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
-        self._allow_abort = allow_abort
-        self._abort_mode: CwdSwitchAbortMode = abort_mode
+        self._abort: CwdSwitchAbortMode | None = abort
 
     def _body_text(self) -> str:
         """Return the prompt body text."""
@@ -117,10 +117,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             else ""
         )
         abort_note = ""
-        if self._allow_abort:
+        if self._abort is not None:
             abort_note = (
                 "\n\nOr abort to start a new session instead of resuming."
-                if self._abort_mode == "resume"
+                if self._abort == "resume"
                 else "\n\nOr abort to cancel and keep your current thread."
             )
         return (
@@ -133,6 +133,14 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             "here if you intentionally want to continue this thread against "
             f"the current directory.{settings_note}{abort_note}"
         )
+
+    def _help_text(self) -> str:
+        """Return the help line text, naming the mode's abort action if offered."""
+        help_text = "Enter: switch · Esc: stay here"
+        if self._abort is not None:
+            abort_help = "A: don't resume" if self._abort == "resume" else "A: cancel"
+            help_text = f"{help_text} · {abort_help}"
+        return help_text
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -151,14 +159,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 classes="cwd-switch-body",
                 markup=False,
             )
-            help_text = "Enter: switch · Esc: stay here"
-            if self._allow_abort:
-                abort_help = (
-                    "A: don't resume" if self._abort_mode == "resume" else "A: cancel"
-                )
-                help_text = f"{help_text} · {abort_help}"
             yield Static(
-                help_text,
+                self._help_text(),
                 classes="cwd-switch-help",
                 markup=False,
             )
@@ -174,16 +176,16 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     ) -> bool | None:
         """Disable the `abort` binding unless the prompt was opened for it.
 
-        Makes the disabled state first-class: when `allow_abort` is False the
-        `a` key is not bound to anything (it passes through) rather than firing
-        a no-op action.
+        Makes the disabled state first-class: when `abort` is None the `a` key
+        is not bound to anything (it passes through) rather than firing a no-op
+        action.
 
         Returns:
-            `self._allow_abort` for the `abort` action so the binding is only
-                active when abort was offered; `True` for every other action.
+            Whether abort was offered, for the `abort` action, so the binding is
+                only active when abort was offered; `True` for every other action.
         """
         if action == "abort":
-            return self._allow_abort
+            return self._abort is not None
         return True
 
     def action_switch(self) -> None:
@@ -196,7 +198,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
     def action_abort(self) -> None:
         """Dismiss with `abort` to skip the resume/switch, when the prompt allows it."""
-        if not self._allow_abort:
+        if self._abort is None:
             return
         self.dismiss("abort")
 

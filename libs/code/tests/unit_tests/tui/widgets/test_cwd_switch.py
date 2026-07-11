@@ -9,6 +9,7 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.cwd_switch import (
+    CwdSwitchAbortMode,
     CwdSwitchChoice,
     CwdSwitchPromptScreen,
 )
@@ -105,11 +106,11 @@ class TestCwdSwitchAbortOption:
 
         assert bindings_by_key["a"].action == "abort"
 
-    def test_help_and_body_mention_abort_only_when_allowed(self) -> None:
-        """The abort affordance is described only when `allow_abort` is set."""
+    def test_body_mentions_abort_only_when_allowed(self) -> None:
+        """The abort affordance is described only when an abort mode is set."""
         without = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
         with_abort = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+            current_cwd="/a", thread_cwd="/b", abort="resume"
         )
 
         assert "new session" not in without._body_text()
@@ -120,8 +121,7 @@ class TestCwdSwitchAbortOption:
         switch = CwdSwitchPromptScreen(
             current_cwd="/a",
             thread_cwd="/b",
-            allow_abort=True,
-            abort_mode="switch",
+            abort="switch",
         )
 
         body = switch._body_text()
@@ -129,10 +129,24 @@ class TestCwdSwitchAbortOption:
         assert "cancel" in body
         assert "keep your current thread" in body
 
+    def test_help_text_names_mode_specific_abort_action(self) -> None:
+        """The help line shows the mode's abort wording, or omits it entirely."""
+
+        def help_line(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._help_text()
+
+        assert help_line("resume") == (
+            "Enter: switch · Esc: stay here · A: don't resume"
+        )
+        assert help_line("switch") == "Enter: switch · Esc: stay here · A: cancel"
+        assert help_line(None) == "Enter: switch · Esc: stay here"
+
     def test_action_abort_dismisses_abort_when_allowed(self) -> None:
         """Abort resolves the prompt to `abort` when offered."""
         screen = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+            current_cwd="/a", thread_cwd="/b", abort="resume"
         )
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
@@ -142,7 +156,7 @@ class TestCwdSwitchAbortOption:
         dismiss.assert_called_once_with("abort")
 
     def test_action_abort_is_noop_when_not_allowed(self) -> None:
-        """Abort does nothing when the prompt was not opened with `allow_abort`."""
+        """Abort does nothing when the prompt was not opened with an abort mode."""
         screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
@@ -158,7 +172,7 @@ class TestCwdSwitchAbortOption:
             outcomes: list[CwdSwitchChoice | None] = []
             app.push_screen(
                 CwdSwitchPromptScreen(
-                    current_cwd="/a", thread_cwd="/b", allow_abort=True
+                    current_cwd="/a", thread_cwd="/b", abort="resume"
                 ),
                 outcomes.append,
             )

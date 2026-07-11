@@ -1035,11 +1035,6 @@ class TestCreateCliAgentInteractiveForwarding:
 
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
-        call_order: list[str] = []
-
-        def create_agent(**_kwargs: Any) -> Mock:
-            call_order.append("create_agent")
-            return mock_agent
 
         fake_model = _make_fake_chat_model()
         with (
@@ -1047,12 +1042,7 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents_code.agent._ensure_glm_5p2_profile_registered",
-                side_effect=lambda: call_order.append("register_profile"),
-                create=True,
-            ),
-            patch(
-                "deepagents_code.agent.create_deep_agent", side_effect=create_agent
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
             ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
@@ -1078,7 +1068,6 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
-        assert call_order == ["register_profile", "create_agent"]
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""
@@ -2797,13 +2786,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
     def test_subagent_middleware_combines_shell_and_configurable_model(
         self, tmp_path: Path
     ) -> None:
-        """Every dcode stack gets one fresh GLM guard in the correct order.
+        """Restrictive shell + implicit model should yield both middlewares.
 
         Explicitly pinned subagents keep shell restriction but must not gain
         `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
         clobber the pinned model.
         """
-        from deepagents_code._glm_5p2_profile import _GlmReadFileMediaGuard
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
@@ -2858,51 +2846,30 @@ class TestCreateCliAgentShellMiddlewareWiring:
             subagent["name"]: subagent for subagent in kwargs["subagents"]
         }
 
-        main_middleware = kwargs["middleware"]
-        assert [type(mw) for mw in main_middleware[:2]] == [
-            ConfigurableModelMiddleware,
-            _GlmReadFileMediaGuard,
-        ]
-        main_guards = [
-            mw for mw in main_middleware if isinstance(mw, _GlmReadFileMediaGuard)
-        ]
-        assert len(main_guards) == 1
-
         # Implicit-model subagents (and the general-purpose fallback) get
-        # configurable-model, GLM guard, and shell middlewares. The guard is
-        # immediately downstream of the model swap so it sees the resolved model.
-        stack_guards = list(main_guards)
+        # configurable-model and shell middlewares, with the configurable-model
+        # swap ordered before the shell gate so a runtime `/model` switch applies
+        # before tools are filtered.
         for name in ("researcher", "general-purpose"):
-            middleware = subagents_by_name[name]["middleware"]
-            middleware_types = [type(mw) for mw in middleware]
+            middleware_types = [
+                type(mw) for mw in subagents_by_name[name]["middleware"]
+            ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
-                _GlmReadFileMediaGuard,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
-            guards = [mw for mw in middleware if isinstance(mw, _GlmReadFileMediaGuard)]
-            assert len(guards) == 1
-            stack_guards.extend(guards)
 
         # The pinned subagent keeps shell restriction but is NOT given the
-        # configurable-model middleware, so its guard uses the pinned model.
+        # configurable-model middleware, so its model stays fixed.
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
         pinned_middleware = pinned["middleware"]
-        assert [type(mw) for mw in pinned_middleware] == [
-            _GlmReadFileMediaGuard,
-            ShellAllowListMiddleware,
-        ]
+        assert any(
+            isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent should retain shell middleware"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
-        pinned_guards = [
-            mw for mw in pinned_middleware if isinstance(mw, _GlmReadFileMediaGuard)
-        ]
-        assert len(pinned_guards) == 1
-        stack_guards.extend(pinned_guards)
-
-        assert len({id(guard) for guard in stack_guards}) == 4
 
     def test_subagents_get_managed_memory_guard_when_memory_enabled(
         self, tmp_path: Path

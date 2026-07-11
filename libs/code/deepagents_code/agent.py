@@ -66,6 +66,7 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._glm_5p2_profile import _ensure_glm_5p2_profile_registered
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -1374,7 +1375,8 @@ def create_cli_agent(
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
-            Disabled in non-interactive mode.
+            Non-interactive callers without a resume loop must explicitly pass
+            `enable_ask_user=False`.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
@@ -1825,6 +1827,7 @@ def create_cli_agent(
         *custom_subagents,
         *(async_subagents or []),
     ]
+    _ensure_glm_5p2_profile_registered()
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,

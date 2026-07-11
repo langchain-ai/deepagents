@@ -1035,6 +1035,11 @@ class TestCreateCliAgentInteractiveForwarding:
 
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
+        call_order: list[str] = []
+
+        def create_agent(**_kwargs: Any) -> Mock:
+            call_order.append("create_agent")
+            return mock_agent
 
         fake_model = _make_fake_chat_model()
         with (
@@ -1042,7 +1047,12 @@ class TestCreateCliAgentInteractiveForwarding:
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
-                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+                "deepagents_code.agent._ensure_glm_5p2_profile_registered",
+                side_effect=lambda: call_order.append("register_profile"),
+                create=True,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent", side_effect=create_agent
             ) as mock_create_deep_agent,
             patch(
                 "deepagents._models.init_chat_model",
@@ -1068,6 +1078,7 @@ class TestCreateCliAgentInteractiveForwarding:
             mock_create_deep_agent.call_args.kwargs["context_schema"]
             is CLIContextSchema
         )
+        assert call_order == ["register_profile", "create_agent"]
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

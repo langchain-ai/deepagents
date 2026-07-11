@@ -233,6 +233,25 @@ class TestGlobSearchFiles:
         result = _glob_search_files(sample_files, "*.py", "../etc/")
         assert result == "No files found"
 
+    def test_glob_tolerates_missing_modified_at(self) -> None:
+        """A file without ``modified_at`` must not crash glob.
+
+        ``modified_at`` is ``NotRequired`` on ``FileData`` and is accessed
+        defensively everywhere else (ls/glob use ``fd.get(...)``). A
+        caller-supplied file (e.g. via the files state channel, which stores
+        the dict verbatim) can legitimately omit it, so glob must not raise.
+        """
+        files = {
+            "/a.py": {"content": "a"},  # no modified_at
+            "/b.py": {"modified_at": "2024-01-01T10:00:00"},
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert "/a.py" in result
+        assert "/b.py" in result
+        # The file with a timestamp sorts first (reverse=True); the one
+        # missing a timestamp sorts last rather than crashing.
+        assert result.strip().split("\n")[0] == "/b.py"
+
     def test_leading_slash_in_pattern(self, sample_files: dict[str, Any]) -> None:
         """Patterns with a leading slash should still match (models often produce them)."""
         result = _glob_search_files(sample_files, "/src/**/*.py", "/")

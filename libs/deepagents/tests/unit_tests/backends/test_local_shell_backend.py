@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
-from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.local_shell import LocalShellBackend, _mask_credentials
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
@@ -273,6 +273,47 @@ def test_local_shell_backend_stderr_formatting() -> None:
         assert result.exit_code == 0
         assert "[stderr]" in result.output
         assert "error message" in result.output
+
+
+def test_local_shell_backend_masks_key_identifier_in_grep_output() -> None:
+    """A `key_...` identifier in a grep/shell result is masked in the tool output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        secret_file = Path(tmpdir) / "keys.csv"
+        secret_file.write_text("name,value\nprod,key_ABCD1234EFGH\n")
+
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("grep key_ keys.csv")
+
+        assert result.exit_code == 0
+        assert "key_ABCD1234EFGH" not in result.output
+        assert "[REDACTED_CREDENTIAL]" in result.output
+
+
+def test_local_shell_backend_masks_sk_secret_in_output() -> None:
+    """An `sk-...` secret in a shell result is masked in the tool output."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("echo sk-ABCD1234EFGH5678IJKL")
+
+        assert result.exit_code == 0
+        assert "sk-ABCD1234EFGH5678IJKL" not in result.output
+        assert "[REDACTED_CREDENTIAL]" in result.output
+
+
+def test_mask_credentials_does_not_over_mask_short_key_prefix() -> None:
+    """Ordinary text with `key_` followed by fewer than 8 alnum chars is not masked."""
+    text = "the key_id column"
+    assert _mask_credentials(text) == text
+
+
+def test_mask_credentials_masks_key_and_sk_patterns() -> None:
+    """`_mask_credentials` redacts both `key_` identifiers and `sk-` secrets."""
+    masked = _mask_credentials("key_ABCD1234EFGH and sk-ABCD1234EFGH5678IJKL")
+    assert "key_ABCD1234EFGH" not in masked
+    assert "sk-ABCD1234EFGH5678IJKL" not in masked
+    assert masked.count("[REDACTED_CREDENTIAL]") == 2
 
 
 async def test_local_shell_backend_async_execute() -> None:

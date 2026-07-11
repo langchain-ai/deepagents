@@ -8,6 +8,7 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import uuid
 from typing import TYPE_CHECKING
@@ -22,6 +23,23 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+# Credential identifier patterns the reverse-proxy redaction does not catch.
+# `key_XXXX` OpenAI key identifiers and full `sk-` secrets are masked at the
+# tool-result boundary so they never enter the model's user-facing context.
+_CREDENTIAL_PATTERNS = (
+    re.compile(r"key_[A-Za-z0-9]{8,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+)
+
+_REDACTED_CREDENTIAL = "[REDACTED_CREDENTIAL]"
+
+
+def _mask_credentials(text: str) -> str:
+    """Replace credential/key identifiers in `text` with a redaction placeholder."""
+    for pattern in _CREDENTIAL_PATTERNS:
+        text = pattern.sub(_REDACTED_CREDENTIAL, text)
+    return text
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -347,6 +365,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
 
+            # Mask credential identifiers before the result enters the model context.
+            output = _mask_credentials(output)
+
             # Check for truncation
             truncated = False
             if len(output) > self._max_output_bytes:
@@ -384,4 +405,4 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
 
-__all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]
+__all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend", "_mask_credentials"]

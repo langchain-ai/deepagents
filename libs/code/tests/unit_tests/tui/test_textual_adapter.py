@@ -2246,6 +2246,51 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
 
         user_visible_output_started.assert_called_once_with()
 
+    async def test_fires_on_synthesized_ask_user_tool_call(self) -> None:
+        """An updates-only `ask_user` row reports visible output after mounting."""
+        user_visible_output_started = MagicMock()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
     async def test_not_fired_when_no_output_is_produced(self) -> None:
         """A turn that streams no text or tool call never reports output."""
         user_visible_output_started = MagicMock()

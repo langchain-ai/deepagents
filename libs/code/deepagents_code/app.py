@@ -12460,8 +12460,8 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it (restoring the interrupted prompt
-           to the chat input when it is empty and the model has not yet started
-           generating output for the turn)
+           to the chat input when it is empty and no user-visible model output
+           — text or a tool call — has appeared yet for the turn)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen

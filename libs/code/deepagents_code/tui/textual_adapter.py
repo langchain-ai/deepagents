@@ -663,16 +663,31 @@ async def execute_task_textual(
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     # Fires at most once per turn, after the first main-agent text or tool-call
-    # widget becomes visible, so hidden model activity cannot gate prompt restore.
+    # widget becomes visible, so hidden model activity cannot block prompt restore.
     user_visible_output_started = False
 
     def _notify_user_visible_output_started() -> None:
+        """Fire the output-started callback once, on the first visible output.
+
+        Call only from main-agent, post-filter paths: the "hidden output does
+        not count" guarantee lives in the placement of the call sites (all sit
+        after the subagent and summarization `continue`s), not in any check
+        here — this helper only dedupes.
+        """
         nonlocal user_visible_output_started
         if user_visible_output_started:
             return
         user_visible_output_started = True
         if adapter._on_user_visible_output_started:
-            adapter._on_user_visible_output_started()
+            try:
+                adapter._on_user_visible_output_started()
+            except Exception:
+                # A prompt-restore gate update must never abort agent
+                # streaming — log and keep going (mirrors `_on_tool_complete`).
+                logger.warning(
+                    "on_user_visible_output_started callback failed",
+                    exc_info=True,
+                )
 
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
@@ -873,6 +888,7 @@ async def execute_task_textual(
                                                     tool_id,
                                                 )
                                             else:
+                                                _notify_user_visible_output_started()
                                                 # Fire tool.use and latch the id
                                                 # together, only once the widget
                                                 # is mounted, so the "every

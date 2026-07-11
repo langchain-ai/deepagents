@@ -3512,6 +3512,8 @@ class TestMessageQueue:
             chat = app._chat_input
             assert chat is not None
             chat.value = ""
+            # No visible output yet, so the gate must not suppress restore.
+            assert app._active_turn_visible_output_started is False
 
             with patch.object(app, "notify") as mock_notify:
                 app.action_interrupt()
@@ -3646,6 +3648,51 @@ class TestMessageQueue:
             worker.cancel.assert_called_once()
             assert active.has_class("-cancelled")
             mock_notify.assert_not_called()
+
+    async def test_ui_adapter_wires_visible_output_started_callback(self) -> None:
+        """The constructed adapter forwards output-started to the app handler.
+
+        Both halves of the gate are unit-tested in isolation; this pins the
+        seam at `_post_paint_init` so a dropped `on_user_visible_output_started`
+        kwarg cannot silently disable the feature while every other test stays
+        green.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            adapter = app._ui_adapter
+            assert adapter is not None
+            assert (
+                adapter._on_user_visible_output_started
+                == app._on_user_visible_output_started
+            )
+
+    async def test_interrupt_restores_before_cancelling_worker(self) -> None:
+        """Restore reads the gate before the worker's cleanup can reset it.
+
+        `_cleanup_agent_task` resets `_active_turn_visible_output_started` on the
+        worker's teardown, so `_restore_interrupted_message_to_input` must run
+        before `_cancel_worker`. Pin that order in `action_interrupt` rather than
+        leave it holding only by construction (a mock worker never triggers
+        cleanup, so an ordering regression would otherwise pass unnoticed).
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+            app._active_user_message = UserMessage("do the thing")
+
+            calls = MagicMock()
+            with (
+                patch.object(
+                    app, "_restore_interrupted_message_to_input", calls.restore
+                ),
+                patch.object(app, "_cancel_worker", calls.cancel),
+            ):
+                app.action_interrupt()
+
+            assert [call[0] for call in calls.mock_calls] == ["restore", "cancel"]
 
     async def test_send_to_agent_resets_visible_output_started_flag(self) -> None:
         """A fresh turn clears the output-started flag so Esc can restore again.

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
+from deepagents._models import get_model_identifier  # noqa: PLC2701
 from deepagents.profiles import HarnessProfile, register_harness_profile
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+    PrivateStateAttr,
+)
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain_core.language_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
-    from langgraph.types import Command
 
 
 _GLM_5P2_MODEL_SPECS: tuple[str, ...] = (
@@ -21,6 +31,11 @@ _GLM_5P2_MODEL_SPECS: tuple[str, ...] = (
     "baseten:zai-org/GLM-5.2",
 )
 """Exact provider/model specs that receive the GLM-5.2 profile."""
+
+_GLM_5P2_MODEL_IDENTIFIERS: frozenset[str] = frozenset(
+    spec.partition(":")[2] for spec in _GLM_5P2_MODEL_SPECS
+)
+"""Provider-native identifiers recognized as GLM-5.2."""
 
 _SYSTEM_PROMPT_SUFFIX = """\
 <glm_5p2_execution>
@@ -76,8 +91,144 @@ def _has_only_text_content(message: ToolMessage) -> bool:
     )
 
 
-class _GlmReadFileMediaGuard(AgentMiddleware):
+def _is_glm_5p2_model(model: str | BaseChatModel) -> bool:
+    """Return whether a model or spec has an exact GLM-5.2 identifier."""
+    if isinstance(model, str):
+        _, separator, identifier = model.partition(":")
+        model_identifier = identifier if separator else model
+    else:
+        model_identifier = get_model_identifier(model)
+    return model_identifier in _GLM_5P2_MODEL_IDENTIFIERS
+
+
+def _without_trusted_suffix(prompt: str) -> str:
+    """Remove exact, delimited GLM suffixes without changing surrounding text.
+
+    Returns:
+        Prompt without trusted GLM suffixes.
+    """
+    start = prompt.find(_SYSTEM_PROMPT_SUFFIX)
+    while start >= 0:
+        end = start + len(_SYSTEM_PROMPT_SUFFIX)
+        has_left_boundary = start == 0 or prompt[start - 2 : start] == "\n\n"
+        has_right_boundary = end == len(prompt) or prompt[end : end + 2] == "\n\n"
+        if not (has_left_boundary and has_right_boundary):
+            start = prompt.find(_SYSTEM_PROMPT_SUFFIX, end)
+            continue
+
+        if start == 0 and end < len(prompt):
+            end += 2
+        elif start > 0:
+            start -= 2
+        prompt = prompt[:start] + prompt[end:]
+        start = prompt.find(_SYSTEM_PROMPT_SUFFIX, max(0, start - 2))
+    return prompt
+
+
+def _transition_system_prompt(prompt: str | None, *, active: bool) -> str | None:
+    """Add, remove, or deduplicate the trusted GLM suffix at the prompt tail.
+
+    Returns:
+        Transitioned prompt, or `None` when no prompt was supplied.
+    """
+    if prompt is None:
+        return None
+    base = _without_trusted_suffix(prompt)
+    if not active:
+        return base
+    if not base:
+        return _SYSTEM_PROMPT_SUFFIX
+    return f"{base}\n\n{_SYSTEM_PROMPT_SUFFIX}"
+
+
+class _GlmReadFileMediaState(AgentState):
+    """Private state shared between the GLM model and tool wrappers."""
+
+    _glm_5p2_active: Annotated[NotRequired[bool], PrivateStateAttr]
+
+
+class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
     """Keep unsupported `read_file` media out of GLM-5.2 requests."""
+
+    state_schema = _GlmReadFileMediaState
+
+    def __init__(self, model: str | BaseChatModel) -> None:
+        """Capture the construction model as a safe tool-state fallback.
+
+        Args:
+            model: Model instance or spec used to construct this agent stack.
+        """
+        super().__init__()
+        self._construction_active = _is_glm_5p2_model(model)
+
+    @staticmethod
+    def _prepare_model_request(
+        request: ModelRequest,
+    ) -> tuple[ModelRequest, bool]:
+        """Classify the resolved model and transition its trusted prompt suffix.
+
+        Returns:
+            The request to send downstream and whether its model is GLM-5.2.
+        """
+        active = _is_glm_5p2_model(request.model)
+        prompt = request.system_prompt
+        transitioned = _transition_system_prompt(prompt, active=active)
+        if transitioned != prompt:
+            request = request.override(system_prompt=transitioned)
+        return request, active
+
+    @staticmethod
+    def _model_result(
+        response: ModelResponse, *, active: bool
+    ) -> ExtendedModelResponse:
+        """Attach the resolved GLM classification as private state.
+
+        Returns:
+            Extended response that updates the private tool-gating state.
+        """
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(update={"_glm_5p2_active": active}),
+        )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ExtendedModelResponse:
+        """Classify the resolved model before calling it.
+
+        Returns:
+            Model response with the effective GLM state update.
+        """
+        request, active = self._prepare_model_request(request)
+        return self._model_result(handler(request), active=active)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ExtendedModelResponse:
+        """Classify and call the resolved model asynchronously.
+
+        Returns:
+            Model response with the effective GLM state update.
+        """
+        request, active = self._prepare_model_request(request)
+        return self._model_result(await handler(request), active=active)
+
+    def _active_for_tool(self, request: ToolCallRequest) -> bool:
+        """Read validated private state or use the construction fallback.
+
+        Returns:
+            Whether media reads should be blocked for this tool call.
+        """
+        state = request.state
+        if isinstance(state, Mapping):
+            active = state.get("_glm_5p2_active")
+            if isinstance(active, bool):
+                return active
+        return self._construction_active
 
     @staticmethod
     def _normalize(
@@ -110,7 +261,10 @@ class _GlmReadFileMediaGuard(AgentMiddleware):
         Returns:
             The original safe result or a generic text-only error.
         """
-        return self._normalize(request, handler(request))
+        result = handler(request)
+        if not self._active_for_tool(request):
+            return result
+        return self._normalize(request, result)
 
     async def awrap_tool_call(
         self,
@@ -122,12 +276,14 @@ class _GlmReadFileMediaGuard(AgentMiddleware):
         Returns:
             The original safe result or a generic text-only error.
         """
-        return self._normalize(request, await handler(request))
+        result = await handler(request)
+        if not self._active_for_tool(request):
+            return result
+        return self._normalize(request, result)
 
 
 _GLM_5P2_PROFILE = HarnessProfile(
     system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-    extra_middleware=lambda: (_GlmReadFileMediaGuard(),),
 )
 """Harness profile shared by the exact GLM-5.2 registrations."""
 

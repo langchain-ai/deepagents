@@ -66,7 +66,10 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
-from deepagents_code._glm_5p2_profile import _ensure_glm_5p2_profile_registered
+from deepagents_code._glm_5p2_profile import (
+    _ensure_glm_5p2_profile_registered,
+    _GlmReadFileMediaGuard,
+)
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -1496,10 +1499,15 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
-    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
-        middleware: list[AgentMiddleware] = []
+    def _subagent_cli_middleware(
+        *,
+        construction_model: str | BaseChatModel,
+        has_explicit_model: bool,
+    ) -> list[AgentMiddleware[Any, Any]]:
+        middleware: list[AgentMiddleware[Any, Any]] = []
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        middleware.append(_GlmReadFileMediaGuard(construction_model))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1533,7 +1541,8 @@ def create_cli_agent(
         if model_spec:
             subagent["model"] = model_spec
         subagent_middleware = _subagent_cli_middleware(
-            has_explicit_model=has_explicit_model
+            construction_model=model_spec or model,
+            has_explicit_model=has_explicit_model,
         )
         if subagent_middleware:
             subagent["middleware"] = subagent_middleware
@@ -1552,13 +1561,17 @@ def create_cli_agent(
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
             "description": GENERAL_PURPOSE_SUBAGENT["description"],
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-            "middleware": _subagent_cli_middleware(has_explicit_model=False),
+            "middleware": _subagent_cli_middleware(
+                construction_model=model,
+                has_explicit_model=False,
+            ),
         }
         custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
+        _GlmReadFileMediaGuard(model),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

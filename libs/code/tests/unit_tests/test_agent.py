@@ -2797,12 +2797,13 @@ class TestCreateCliAgentShellMiddlewareWiring:
     def test_subagent_middleware_combines_shell_and_configurable_model(
         self, tmp_path: Path
     ) -> None:
-        """Restrictive shell + implicit model should yield both middlewares.
+        """Every dcode stack gets one fresh GLM guard in the correct order.
 
         Explicitly pinned subagents keep shell restriction but must not gain
         `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
         clobber the pinned model.
         """
+        from deepagents_code._glm_5p2_profile import _GlmReadFileMediaGuard
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
@@ -2857,30 +2858,51 @@ class TestCreateCliAgentShellMiddlewareWiring:
             subagent["name"]: subagent for subagent in kwargs["subagents"]
         }
 
+        main_middleware = kwargs["middleware"]
+        assert [type(mw) for mw in main_middleware[:2]] == [
+            ConfigurableModelMiddleware,
+            _GlmReadFileMediaGuard,
+        ]
+        main_guards = [
+            mw for mw in main_middleware if isinstance(mw, _GlmReadFileMediaGuard)
+        ]
+        assert len(main_guards) == 1
+
         # Implicit-model subagents (and the general-purpose fallback) get
-        # configurable-model and shell middlewares, with the configurable-model
-        # swap ordered before the shell gate so a runtime `/model` switch applies
-        # before tools are filtered.
+        # configurable-model, GLM guard, and shell middlewares. The guard is
+        # immediately downstream of the model swap so it sees the resolved model.
+        stack_guards = list(main_guards)
         for name in ("researcher", "general-purpose"):
-            middleware_types = [
-                type(mw) for mw in subagents_by_name[name]["middleware"]
-            ]
+            middleware = subagents_by_name[name]["middleware"]
+            middleware_types = [type(mw) for mw in middleware]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                _GlmReadFileMediaGuard,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+            guards = [mw for mw in middleware if isinstance(mw, _GlmReadFileMediaGuard)]
+            assert len(guards) == 1
+            stack_guards.extend(guards)
 
         # The pinned subagent keeps shell restriction but is NOT given the
-        # configurable-model middleware, so its model stays fixed.
+        # configurable-model middleware, so its guard uses the pinned model.
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
         pinned_middleware = pinned["middleware"]
-        assert any(
-            isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
-        ), "Pinned subagent should retain shell middleware"
+        assert [type(mw) for mw in pinned_middleware] == [
+            _GlmReadFileMediaGuard,
+            ShellAllowListMiddleware,
+        ]
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
+        pinned_guards = [
+            mw for mw in pinned_middleware if isinstance(mw, _GlmReadFileMediaGuard)
+        ]
+        assert len(pinned_guards) == 1
+        stack_guards.extend(pinned_guards)
+
+        assert len({id(guard) for guard in stack_guards}) == 4
 
     def test_subagents_get_managed_memory_guard_when_memory_enabled(
         self, tmp_path: Path

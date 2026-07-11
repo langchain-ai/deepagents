@@ -1203,6 +1203,9 @@ class TestSectionGhCli:
             in result.stdout
         )
         assert "does not expose `mergedAt`" in result.stdout
+        assert "gh pr view <number|url|branch> --json mergedAt" in result.stdout
+        assert "require a" in result.stdout
+        assert "`<number|url|branch>` positional even when" in result.stdout
 
 
 class TestSectionTestCommand:

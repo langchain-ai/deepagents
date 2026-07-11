@@ -431,8 +431,15 @@ if command -v gh >/dev/null 2>&1; then
     case ",$GH_PRS_FIELDS," in
       *mergedAt*) ;;
       *) echo "- \`gh search prs --json\` does not expose \`mergedAt\`;"
-         echo "  use \`gh pr view --json mergedAt\` per PR for merge timestamps." ;;
+         echo "  use \`gh pr view <number|url|branch> --json mergedAt\` per PR"
+         echo "  for merge timestamps." ;;
     esac
+    echo "- \`gh pr view\` (and \`gh pr diff\`/\`gh pr checks\`) require a"
+    echo "  \`<number|url|branch>\` positional even when \`--repo <owner/repo>\`"
+    echo "  is passed — e.g. \`gh pr view <branch> --repo <owner/repo> --json ...\`."
+    echo "  Without it, gh fails: \"argument required when using the --repo flag\"."
+    echo "  If you don't yet know the branch/PR, resolve it first (current branch"
+    echo "  or existing git/gh metadata) before calling \`gh pr view\`."
     echo ""
   fi
 fi"""

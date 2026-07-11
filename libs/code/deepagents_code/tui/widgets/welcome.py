@@ -142,14 +142,15 @@ def _home_prefixed(cwd: str) -> str:
 class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
-    Renders a bordered box with the product title and version (annotated with
-    `(debug enabled)` when `DEEPAGENTS_CODE_DEBUG` is set and `(local)` for
-    editable installs), followed by rows
-    that appear only when their data (and any env gate) is present. In render
-    order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
-    (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
-    clickable once its URL resolves), thread ID (debug mode only), and the MCP
-    tool count. MCP server warnings and the editable-install path follow.
+    Renders a bordered box with the product title and version. The version
+    carries a `(debug enabled)` tag when `DEEPAGENTS_CODE_DEBUG` is set and a
+    `(local)` tag for editable installs; both appear only when the version is
+    shown. Rows follow that appear only when their data (and any env gate) is
+    present. In render order: the active model (`SPLASH_SHOW_MODEL`, opt-in),
+    working directory (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and
+    its replica (each clickable once its URL resolves), thread ID (debug mode
+    only), and the MCP tool count. MCP server warnings and the editable-install
+    path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from textual.content import Content
+from textual.style import Style as TStyle
 
 from deepagents_code._env_vars import (
     DEBUG,
@@ -30,6 +31,25 @@ _EDITABLE_PATH = "deepagents_code.tui.widgets.welcome._get_editable_install_path
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"
 _REPLICA_PROJECT = "deepagents_code.tui.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.tui.widgets.welcome.fetch_langsmith_project_url"
+_DEBUG_STYLE = "deepagents_code.tui.widgets.welcome._debug_tag_style"
+_LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
+
+
+def _style_covering(content: Content, needle: str) -> TStyle:
+    """Return the style of the single span whose text contains `needle`.
+
+    Args:
+        content: Assembled banner content to inspect.
+        needle: Substring identifying the span whose style to return.
+
+    Returns:
+        The `TStyle` of the one span covering `needle`.
+    """
+    spans = [s for s in content.spans if needle in content._text[s.start : s.end]]
+    assert len(spans) == 1, f"expected exactly one span covering {needle!r}"
+    style = spans[0].style
+    assert isinstance(style, TStyle)
+    return style
 
 
 def _make_banner(
@@ -248,6 +268,7 @@ class TestTitle:
         assert f"v{__version__}" in plain
         assert "(debug enabled)" in plain
         assert "(local)" not in plain
+        assert plain.index(f"v{__version__}") < plain.index("(debug enabled)")
 
     def test_debug_tag_precedes_local_tag(self) -> None:
         """`(debug enabled)` renders before `(local)` when both apply."""
@@ -265,6 +286,28 @@ class TestTitle:
             .plain
         )
         assert "(debug enabled)" not in plain
+
+    def test_title_tags_carry_their_own_styles(self) -> None:
+        """Each title tag's span carries its own style helper's output.
+
+        Guards against wiring regressions where a tag renders with the wrong
+        helper's style or the style lands on the wrong segment; the plain-text
+        assertions above cannot catch either.
+        """
+        from textual.color import Color as TColor
+
+        debug_style = TStyle(foreground=TColor.parse("#010203"), bold=True)
+        local_style = TStyle(foreground=TColor.parse("#040506"), bold=True)
+        with (
+            patch(_EDITABLE, return_value=True),
+            patch(_DEBUG_STYLE, return_value=debug_style),
+            patch(_LOCAL_STYLE, return_value=local_style),
+        ):
+            content = _make_banner(env={DEBUG: "1"})._build_banner()
+        assert _style_covering(content, "(debug enabled)").foreground == TColor.parse(
+            "#010203"
+        )
+        assert _style_covering(content, "(local)").foreground == TColor.parse("#040506")
 
 
 class TestModelLine:

@@ -14254,6 +14254,24 @@ class DeepAgentsApp(App):
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
 
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Let the model selector handle its own `ctrl+n` binding.
+
+        Returns:
+            `False` when the active model selector should handle Ctrl+N;
+                `True` otherwise.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        return True
+
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()

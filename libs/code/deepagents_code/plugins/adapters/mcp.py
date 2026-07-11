@@ -9,13 +9,13 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from deepagents_code.plugins._json import json_object, json_value
 from deepagents_code.plugins.substitution import substitute_json
 
 if TYPE_CHECKING:
-    from deepagents_code.plugins.models import PluginInstance
+    from deepagents_code.plugins.models import JsonObject, JsonValue, PluginInstance
 
 logger = logging.getLogger(__name__)
-JsonObject = dict[str, object]
 _MCP_NAME_PART_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_NAME_PART_LENGTH = 48
 
@@ -47,22 +47,16 @@ def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
     return f"plugin__{plugin_part}__{server_part}"
 
 
-def _string_key_map(raw: object) -> JsonObject:
-    if not isinstance(raw, dict):
-        return {}
-    return {key: value for key, value in raw.items() if isinstance(key, str)}
-
-
 def _server_map(raw: object) -> JsonObject:
     if not isinstance(raw, dict):
         return {}
     wrapped = raw.get("mcpServers")
     if isinstance(wrapped, dict):
-        return _string_key_map(wrapped)
+        return json_object(wrapped)
     codex_wrapped = raw.get("mcp_servers")
     if isinstance(codex_wrapped, dict):
-        return _string_key_map(codex_wrapped)
-    return _string_key_map(raw)
+        return json_object(codex_wrapped)
+    return json_object(raw)
 
 
 def _load_mcp_file(path: Path) -> JsonObject:
@@ -76,9 +70,10 @@ def _load_mcp_file(path: Path) -> JsonObject:
 
 def _normalize_server(
     server: object, *, plugin: PluginInstance, project_dir: Path | None
-) -> object:
+) -> JsonValue:
+    normalized_server = json_value(server)
     substituted = substitute_json(
-        server,
+        normalized_server,
         plugin_root=plugin.root,
         plugin_data=plugin.data_dir,
         project_dir=project_dir,
@@ -100,7 +95,7 @@ def _normalize_server(
             substituted = {**substituted, "env": {**plugin_env, **env}}
         else:
             substituted = {**substituted, "env": plugin_env}
-    return substituted
+    return json_value(substituted)
 
 
 def plugin_mcp_configs(

@@ -28,8 +28,6 @@ def plugin_environment(
         "CLAUDE_PLUGIN_DATA": data,
         "PLUGIN_ROOT": root,
         "PLUGIN_DATA": data,
-        "DEEPAGENTS_PLUGIN_ROOT": root,
-        "DEEPAGENTS_PLUGIN_DATA": data,
     }
     if project_dir is not None:
         env["CLAUDE_PROJECT_DIR"] = str(project_dir)

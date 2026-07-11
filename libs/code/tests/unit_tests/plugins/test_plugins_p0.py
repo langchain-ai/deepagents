@@ -46,11 +46,11 @@ from deepagents_code.plugins.models import (
     UrlMarketplaceSource,
 )
 from deepagents_code.plugins.store import (
+    ensure_marketplace_cache_dir,
     get_primary_install_entry,
-    load_enabled_plugins,
+    load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
-    marketplace_cache_dir,
     sanitize_plugin_id,
     versioned_cache_path,
 )
@@ -165,7 +165,7 @@ async def test_plugin_manager_installed_selection_opens_details_not_disable(
         assert "quality-review-plugin @ company-tools" in detail
         assert "Installed components:" in detail
         assert "Disable plugin" in str(options.get_option_at_index(0).prompt)
-        assert load_enabled_plugins().get("quality-review-plugin@company-tools")
+        assert "quality-review-plugin@company-tools" in load_enabled_plugin_ids()
 
 
 async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
@@ -222,7 +222,7 @@ def test_local_marketplace_install_caches_and_discovers(
     assert instance.root == cache_root.resolve()
     assert cache_root.is_dir()
     assert plugin_id in load_installed_plugins()
-    assert load_enabled_plugins().get(plugin_id) is True
+    assert plugin_id in load_enabled_plugin_ids()
 
     result = discover_plugins()
     assert not result.warnings
@@ -266,6 +266,33 @@ def test_plugin_version_comes_from_manifest(tmp_path: Path, monkeypatch) -> None
     assert install_plugin(plugin_id).version is None
 
 
+def test_failed_cached_plugin_load_rolls_back_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    add_local_marketplace(marketplace_root)
+    plugin_id = "quality-review-plugin@company-tools"
+
+    monkeypatch.setattr(
+        "deepagents_code.plugins.discovery._plugin_from_install_path",
+        lambda **_kwargs: (None, ("invalid cached plugin",)),
+    )
+
+    with pytest.raises(MarketplaceError, match="failed to load from cache"):
+        install_plugin(plugin_id)
+
+    assert plugin_id not in load_installed_plugins()
+    assert plugin_id not in load_enabled_plugin_ids()
+    assert not versioned_cache_path(plugin_id, "1.0.0").exists()
+
+
 def test_unversioned_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
@@ -305,7 +332,7 @@ def test_unversioned_reinstall_refreshes_cache(tmp_path: Path, monkeypatch) -> N
     assert cached_skill.read_text(encoding="utf-8").endswith("Updated.")
 
 
-def test_failed_unversioned_reinstall_preserves_previous_cache(
+def test_invalid_unversioned_reinstall_preserves_previous_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -331,16 +358,38 @@ def test_failed_unversioned_reinstall_preserves_previous_cache(
         versioned_cache_path(plugin_id, None) / "skills" / "review" / "SKILL.md"
     )
     original = cached_skill.read_text(encoding="utf-8")
+    installed = load_installed_plugins()
+    enabled = load_enabled_plugin_ids()
+    copytree = shutil.copytree
 
-    def fail_copy(*_args: object, **_kwargs: object) -> None:
-        msg = "copy failed"
-        raise OSError(msg)
+    def copy_invalid(
+        source: Path,
+        destination: Path,
+        *,
+        symlinks: bool,
+        dirs_exist_ok: bool,
+    ) -> Path:
+        monkeypatch.setattr(shutil, "copytree", copytree)
+        try:
+            copied = copytree(
+                source,
+                destination,
+                symlinks=symlinks,
+                dirs_exist_ok=dirs_exist_ok,
+            )
+        finally:
+            monkeypatch.setattr(shutil, "copytree", copy_invalid)
+        manifest = copied / ".claude-plugin" / "plugin.json"
+        manifest.write_text("{", encoding="utf-8")
+        return copied
 
-    monkeypatch.setattr("deepagents_code.plugins.store.shutil.copytree", fail_copy)
-    with pytest.raises(OSError, match="copy failed"):
+    monkeypatch.setattr("deepagents_code.plugins.store.shutil.copytree", copy_invalid)
+    with pytest.raises(MarketplaceError, match="Invalid JSON syntax"):
         install_plugin(plugin_id)
 
     assert cached_skill.read_text(encoding="utf-8") == original
+    assert load_installed_plugins() == installed
+    assert load_enabled_plugin_ids() == enabled
 
 
 def test_install_does_not_follow_component_symlinks_outside_plugin(
@@ -384,7 +433,7 @@ def test_disable_keeps_install_uninstall_removes_cache(
     assert cache_root.is_dir()
 
     disable_plugin(plugin_id)
-    assert load_enabled_plugins().get(plugin_id) is False
+    assert plugin_id not in load_enabled_plugin_ids()
     assert plugin_id in load_installed_plugins()
     assert cache_root.is_dir()
     assert discover_plugins().plugins == ()
@@ -466,7 +515,7 @@ def test_remove_marketplace_uninstalls_plugins_but_keeps_local_source(
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
     )
-    marketplace_root = marketplace_cache_dir() / "team-plugins"
+    marketplace_root = ensure_marketplace_cache_dir() / "team-plugins"
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
     plugin_id = "quality-review-plugin@company-tools"
@@ -478,7 +527,7 @@ def test_remove_marketplace_uninstalls_plugins_but_keeps_local_source(
     assert not instance.root.exists()
     assert "company-tools" not in load_marketplace_records()
     assert plugin_id not in load_installed_plugins()
-    assert plugin_id not in load_enabled_plugins()
+    assert plugin_id not in load_enabled_plugin_ids()
 
 
 def test_remove_marketplace_cleans_enabled_only_plugin_state(
@@ -498,7 +547,7 @@ def test_remove_marketplace_cleans_enabled_only_plugin_state(
 
     assert remove_marketplace("company-tools") is True
 
-    assert plugin_id not in load_enabled_plugins()
+    assert plugin_id not in load_enabled_plugin_ids()
     assert not discover_plugins().warnings
 
 

@@ -10,13 +10,17 @@ import tempfile
 from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
     MarketplaceRecord,
     MarketplaceSourceType,
+    split_plugin_id,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
@@ -24,9 +28,12 @@ _INSTALLED_STORAGE_VERSION = 2
 _UNVERSIONED_CACHE_KEY = "unversioned"
 _CACHE_SLUG_LENGTH = 48
 _CACHE_DIGEST_LENGTH = 32
+SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset(
+    {"directory", "file", "github", "git", "url"}
+)
 
 
-def plugin_root_dir() -> Path:
+def plugin_storage_root() -> Path:
     """Return the plugin storage root directory."""
     from deepagents_code._env_vars import PLUGIN_CACHE_DIR
     from deepagents_code.model_config import DEFAULT_CONFIG_DIR
@@ -37,9 +44,9 @@ def plugin_root_dir() -> Path:
     return DEFAULT_CONFIG_DIR / "plugins"
 
 
-def plugin_data_dir(plugin_id: str) -> Path:
+def ensure_plugin_data_dir(plugin_id: str) -> Path:
     """Return the lazily-created data directory for a plugin id."""
-    data_dir = plugin_root_dir() / "data" / sanitize_plugin_id(plugin_id)
+    data_dir = plugin_storage_root() / "data" / sanitize_plugin_id(plugin_id)
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 
@@ -62,16 +69,16 @@ def sanitize_plugin_id(value: str) -> str:
     return f"{slug}-{digest}"
 
 
-def marketplace_cache_dir() -> Path:
+def ensure_marketplace_cache_dir() -> Path:
     """Return the marketplace cache directory."""
-    path = plugin_root_dir() / "marketplaces"
+    path = plugin_storage_root() / "marketplaces"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def plugin_install_cache_dir() -> Path:
+def ensure_plugin_install_cache_dir() -> Path:
     """Return the versioned plugin install cache root."""
-    path = plugin_root_dir() / "cache"
+    path = plugin_storage_root() / "cache"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -84,18 +91,14 @@ def versioned_cache_path(plugin_id: str, version: str | None) -> Path:
         version: Plugin version string, or `None` when unversioned.
 
     Returns:
-        Cache directory `cache/{marketplace}/{plugin}/{version}/`.
+        Cache directory `cache/{marketplace}/{plugin}/{version}/`, relative to
+        the plugin storage root.
 
-    Raises:
-        ValueError: If `plugin_id` is not in `{name}@{marketplace}` form.
     """
-    if "@" not in plugin_id:
-        msg = f"Invalid plugin id {plugin_id!r}"
-        raise ValueError(msg)
-    plugin_name, marketplace = plugin_id.rsplit("@", 1)
+    plugin_name, marketplace = split_plugin_id(plugin_id)
     safe_version = sanitize_plugin_id(version or _UNVERSIONED_CACHE_KEY)
     return (
-        plugin_install_cache_dir()
+        ensure_plugin_install_cache_dir()
         / sanitize_plugin_id(marketplace)
         / sanitize_plugin_id(plugin_name)
         / safe_version
@@ -165,22 +168,13 @@ def load_marketplace_records() -> dict[str, MarketplaceRecord]:
     if not isinstance(raw_records, dict):
         return {}
     records: dict[str, MarketplaceRecord] = {}
-    supported_types: set[MarketplaceSourceType] = {
-        "directory",
-        "file",
-        "github",
-        "git",
-        "url",
-    }
     for name, record in raw_records.items():
         if not isinstance(name, str) or not isinstance(record, dict):
             continue
         source_type = record.get("source_type")
         source = record.get("source")
-        if source_type == "local":
-            source_type = "directory"
         if (
-            source_type not in supported_types
+            source_type not in SUPPORTED_MARKETPLACE_SOURCE_TYPES
             or not isinstance(source, str)
             or not isinstance(record.get("install_location", source), str)
         ):
@@ -234,48 +228,50 @@ def remove_marketplace_record(name: str) -> bool:
     return True
 
 
-def load_enabled_plugins() -> dict[str, bool]:
-    """Load enabled plugin state.
+def load_enabled_plugin_ids() -> frozenset[str]:
+    """Load enabled plugin ids.
 
     Returns:
-        Enabled-state map keyed by plugin id.
+        Enabled plugin ids.
     """
     data = _load_json(_plugin_state_path())
     enabled = data.get("enabledPlugins", {})
     if not isinstance(enabled, dict):
-        return {}
-    return {
-        key: value
-        for key, value in enabled.items()
-        if isinstance(key, str) and isinstance(value, bool)
-    }
+        return frozenset()
+    return frozenset(
+        key for key, value in enabled.items() if isinstance(key, str) and value is True
+    )
 
 
-def _write_plugin_state(*, enabled_plugins: dict[str, Any]) -> None:
+def _write_plugin_state(*, enabled_plugin_ids: set[str]) -> None:
     _atomic_write_json(
         _plugin_state_path(),
         {
             "version": _STORAGE_VERSION,
-            "enabledPlugins": enabled_plugins,
+            "enabledPlugins": dict.fromkeys(sorted(enabled_plugin_ids), True),
         },
     )
 
 
 def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
     """Persist a plugin enablement value."""
-    data = _load_json(_plugin_state_path())
-    enabled_plugins = data.get("enabledPlugins")
-    if not isinstance(enabled_plugins, dict):
-        enabled_plugins = {}
-    enabled_plugins[plugin_id] = enabled
-    _write_plugin_state(enabled_plugins=enabled_plugins)
+    enabled_plugin_ids = set(load_enabled_plugin_ids())
+    if enabled:
+        enabled_plugin_ids.add(plugin_id)
+    else:
+        enabled_plugin_ids.discard(plugin_id)
+    _write_plugin_state(enabled_plugin_ids=enabled_plugin_ids)
 
 
-def _parse_install_entry(raw: object) -> InstalledPluginEntry | None:
-    if not isinstance(raw, dict):
+def _parse_installed_plugin_json_entry(
+    persisted_entry: object,
+) -> InstalledPluginEntry | None:
+    if not isinstance(persisted_entry, dict):
         return None
-    install_path = raw.get("installPath") or raw.get("install_path")
-    version = raw.get("version")
+    install_path = persisted_entry.get("installPath") or persisted_entry.get(
+        "install_path"
+    )
+    version = persisted_entry.get("version")
     if (
         not isinstance(install_path, str)
         or not install_path
@@ -303,7 +299,11 @@ def load_installed_plugins() -> dict[str, InstalledPluginEntry]:
         if not isinstance(plugin_id, str) or not isinstance(entries, list):
             continue
         parsed = next(
-            (entry for item in entries if (entry := _parse_install_entry(item))),
+            (
+                entry
+                for item in entries
+                if (entry := _parse_installed_plugin_json_entry(item))
+            ),
             None,
         )
         if parsed is not None:
@@ -341,7 +341,7 @@ def add_installed_plugin(
     install_path: str,
     version: str | None,
 ) -> InstalledPluginEntry:
-    """Add or replace an install record for a plugin.
+    """Add or replace the record for `plugin_id` in `installed_plugins.json`.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
@@ -389,6 +389,7 @@ def cache_and_register_plugin(
     source_dir: Path,
     *,
     version: str | None,
+    validate: Callable[[Path], None] | None = None,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
 
@@ -396,6 +397,8 @@ def cache_and_register_plugin(
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         source_dir: Source plugin root to copy from.
         version: Version declared by the plugin manifest, if any.
+        validate: Optional validation to run against the temporary copy before
+            replacing an existing cache.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -434,6 +437,8 @@ def cache_and_register_plugin(
         git_dir = temp_dir / ".git"
         if git_dir.exists():
             shutil.rmtree(git_dir, ignore_errors=True)
+        if validate is not None:
+            validate(temp_dir)
         if cache_path.exists():
             cache_path.replace(backup_dir)
         try:
@@ -465,12 +470,7 @@ def uninstall_plugin(
     """
     removed = remove_installed_plugin(plugin_id)
 
-    data = _load_json(_plugin_state_path())
-    enabled_plugins = data.get("enabledPlugins")
-    if not isinstance(enabled_plugins, dict):
-        enabled_plugins = {}
-    enabled_plugins.pop(plugin_id, None)
-    _write_plugin_state(enabled_plugins=enabled_plugins)
+    set_plugin_enabled(plugin_id, False)
 
     if removed is not None:
         path = Path(removed.install_path)

@@ -39,9 +39,10 @@ from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     load_marketplace_location,
 )
+from deepagents_code.plugins.models import split_plugin_id
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
-    load_enabled_plugins,
+    load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
 )
@@ -174,8 +175,10 @@ def _instance_for_manager_row(
         return None
     from deepagents_code.plugins.discovery import _plugin_from_install_path
 
-    plugin_name = plugin_id.rsplit("@", 1)[0]
-    marketplace_name = plugin_id.rsplit("@", 1)[-1]
+    try:
+        plugin_name, marketplace_name = split_plugin_id(plugin_id)
+    except ValueError:
+        return None
     loaded, _warnings = _plugin_from_install_path(
         plugin_id=plugin_id,
         root=root,
@@ -189,7 +192,7 @@ def _load_manager_state(
     mcp_server_info: Sequence[MCPServerInfo] = (),
 ) -> _ManagerState:
     records = load_marketplace_records()
-    enabled = load_enabled_plugins()
+    enabled = load_enabled_plugin_ids()
     installed = load_installed_plugins()
     discovered = {
         instance.plugin_id: instance for instance in discover_plugins().plugins
@@ -231,7 +234,7 @@ def _load_manager_state(
         )
         for plugin in marketplace.plugins:
             plugin_id = f"{plugin.name}@{marketplace.name}"
-            is_enabled = enabled.get(plugin_id, False)
+            is_enabled = plugin_id in enabled
             is_installed = plugin_id in installed
             instance = _instance_for_manager_row(
                 plugin_id, discovered=discovered, is_installed=is_installed

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
+ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
 
@@ -54,14 +55,12 @@ class PluginManifest:
     Attributes:
         name: Plugin name from the manifest, or `None` for manifest-less plugins.
         version: Version string from the plugin manifest.
-        default_enabled: Whether install should enable the plugin by default.
         component_paths: Validated skill and MCP paths keyed by component name.
         inline_mcp: Inline MCP servers declared in the manifest.
     """
 
     name: str | None
     version: str | None
-    default_enabled: bool
     component_paths: dict[str, tuple[Path, ...]]
     inline_mcp: JsonObject
 
@@ -149,3 +148,22 @@ class PluginDiscoveryResult:
 
     plugins: tuple[PluginInstance, ...]
     warnings: tuple[str, ...] = ()
+
+
+def split_plugin_id(plugin_id: str) -> tuple[str, str]:
+    """Split a plugin id in `{plugin}@{marketplace}` form.
+
+    Returns:
+        Plugin and marketplace names.
+
+    Raises:
+        ValueError: If either part is missing.
+    """
+    if "@" not in plugin_id:
+        msg = f"Invalid plugin id {plugin_id!r}; expected name@marketplace"
+        raise ValueError(msg)
+    plugin, marketplace = plugin_id.rsplit("@", 1)
+    if not plugin or not marketplace:
+        msg = f"Invalid plugin id {plugin_id!r}; expected name@marketplace"
+        raise ValueError(msg)
+    return plugin, marketplace

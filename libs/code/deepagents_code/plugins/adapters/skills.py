@@ -19,7 +19,7 @@ def plugin_skill_sources(plugins: tuple[PluginInstance, ...]) -> list[SkillSourc
     """Return skill source tuples for plugin skills.
 
     Args:
-        plugins: Discovered plugin instances.
+        plugins: Plugin instances.
 
     Returns:
         Source tuples containing path, label, and skill-name prefix.

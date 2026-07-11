@@ -7,10 +7,10 @@ import logging
 import re
 from pathlib import Path, PureWindowsPath
 
+from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
-    JsonValue,
     PluginManifest,
 )
 
@@ -144,41 +144,14 @@ def _resolve_component_paths(
     return tuple(paths)
 
 
-def _json_value(value: object) -> JsonValue | None:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, list):
-        converted: list[JsonValue] = []
-        for item in value:
-            json_item = _json_value(item)
-            if json_item is not None or item is None:
-                converted.append(json_item)
-        return converted
-    if isinstance(value, dict):
-        converted_object: JsonObject = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-            json_item = _json_value(item)
-            if json_item is not None or item is None:
-                converted_object[key] = json_item
-        return converted_object
-    return None
-
-
-def _json_object(value: object) -> JsonObject:
-    converted = _json_value(value)
-    return converted if isinstance(converted, dict) else {}
-
-
 def _inline_mcp(value: object) -> JsonObject:
     if isinstance(value, dict):
-        return _json_object(value)
+        return json_object(value)
     if isinstance(value, list):
         merged: JsonObject = {}
         for item in value:
             if isinstance(item, dict):
-                merged.update(_json_object(item))
+                merged.update(json_object(item))
         return merged
     return {}
 
@@ -212,7 +185,7 @@ def load_manifest(
     if not isinstance(decoded, dict):
         msg = f"Plugin manifest {manifest_path} must be a JSON object"
         raise PluginManifestError(msg)
-    raw = _json_object(decoded)
+    raw = json_object(decoded)
 
     warnings: list[str] = []
     name = _validate_name(raw.get("name"), fallback=fallback_name)
@@ -229,14 +202,9 @@ def load_manifest(
 
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
-    default_enabled_value = raw.get("defaultEnabled")
-    default_enabled = (
-        default_enabled_value if isinstance(default_enabled_value, bool) else True
-    )
     manifest = PluginManifest(
         name=name,
         version=version,
-        default_enabled=default_enabled,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
     )

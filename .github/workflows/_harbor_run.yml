@@ -649,15 +649,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "🏷️ Stamp category"
-        if: always()
-        working-directory: libs/evals
-        env:
-          CATEGORY: ${{ inputs.category }}
-        run: |
-          mkdir -p harbor-jobs/terminal-bench
-          printf '%s\n' "$CATEGORY" > harbor-jobs/terminal-bench/category.txt
-
       - name: "🔖 Compute leaf slug"
         if: always()
         # Sanitized model+category, used to scope this run's artifact names so
@@ -753,27 +744,22 @@ jobs:
         env:
           DATASET: ${{ inputs.dataset }}
           ROLLOUTS: ${{ inputs.rollouts }}
+          MODEL: ${{ inputs.model }}
+          CATEGORY: ${{ inputs.category }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
             exit 1
           fi
+          # --model/--category are recorded authoritatively in summary.json
+          # (model is otherwise null when every trial errored).
           python3 .github/scripts/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
             --dataset "$DATASET" \
+            --model "$MODEL" \
+            --category "$CATEGORY" \
             --harbor-result "$HARBOR_RESULT" \
             --out-dir _shards
-
-      - name: "🏷️ Stamp category + model (combined artifact root)"
-        # Record category and model next to summary.json at the artifact root.
-        # model.txt is authoritative: summary.json's model is null when every
-        # trial errored, which would otherwise break the combiner's grouping.
-        env:
-          CATEGORY: ${{ inputs.category }}
-          MODEL: ${{ inputs.model }}
-        run: |
-          printf '%s\n' "$CATEGORY" > _shards/category.txt
-          printf '%s\n' "$MODEL" > _shards/model.txt
 
       - name: "📤 Upload combined results"
         # One zip per category: the merged shard harbor data plus summary.json

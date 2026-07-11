@@ -1,11 +1,9 @@
 """Combine per-(model x category) Harbor summary.json files into a cross-model
 comparison (macro + micro overalls), a leaderboard, combined JSON, and radar input.
 
-Each leaf directory (one per model x category) contains:
-  summary.json  -- written by aggregate_shards.py (dynamic pass@{K}/avg@{K} keys)
-  category.txt  -- the category name for this leaf
-  model.txt     -- the model spec for this leaf; authoritative, because
-                   summary.json's model is null when every trial errored
+Each leaf directory (one per model x category) has a summary.json written by
+aggregate_shards.py, which records the model and category authoritatively (via
+--model/--category) plus dynamic pass@{K}/avg@{K} keys.
 
 The combiner is given the expected model x category grid (EXPECTED_MODELS /
 EXPECTED_CATEGORIES) so a model whose leaf failed to upload is still shown and
@@ -21,14 +19,11 @@ from pathlib import Path
 
 def read_leaf(leaf_dir: Path) -> dict:
     summary = json.loads((leaf_dir / "summary.json").read_text())
-    category = (leaf_dir / "category.txt").read_text().strip()
-    model_file = leaf_dir / "model.txt"
-    model = model_file.read_text().strip() if model_file.exists() else summary.get("model")
     k = summary["rollouts_per_task"]
     totals = summary.get("totals", {})
     return {
-        "model": model or "unknown",
-        "category": category,
+        "model": summary.get("model") or "unknown",
+        "category": summary.get("category") or "unknown",
         "pass_at_k": summary.get(f"pass@{k}"),
         "avg_at_k": summary.get(f"avg@{k}"),
         "tasks": totals.get("tasks", 0),
@@ -168,7 +163,7 @@ def write_outputs(combined: dict, k: int, out_dir: Path, step_summary_path: str 
 def _discover_leaves(root: Path) -> list[dict]:
     leaves = []
     for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "summary.json").exists() and (child / "category.txt").exists():
+        if child.is_dir() and (child / "summary.json").exists():
             leaves.append(read_leaf(child))
     return leaves
 

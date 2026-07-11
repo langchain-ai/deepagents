@@ -6,9 +6,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import aggregate_unified as au  # noqa: E402
 
 
-def _summary(model, k, pass_k, avg_k, tasks, passed, incomplete=False):
+def _summary(model, k, pass_k, avg_k, tasks, passed, incomplete=False, category="context"):
+    # model + category are recorded authoritatively by aggregate_shards.py.
     return {
-        "model": model, "dataset": "d", "rollouts_per_task": k,
+        "model": model, "category": category, "dataset": "d", "rollouts_per_task": k,
         "incomplete": incomplete,
         "totals": {"tasks": tasks, "trials": tasks * k, "expected_trials": tasks * k,
                    "passed": passed, "errored": 0},
@@ -16,16 +17,24 @@ def _summary(model, k, pass_k, avg_k, tasks, passed, incomplete=False):
     }
 
 
-def test_read_leaf_extracts_dynamic_keys(tmp_path):
+def test_read_leaf_reads_model_and_category_from_summary(tmp_path):
     d = tmp_path / "harbor-anthropic-opus-context"
     d.mkdir()
-    (d / "summary.json").write_text(json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45)))
-    (d / "category.txt").write_text("context")
+    (d / "summary.json").write_text(
+        json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45, category="context")))
     leaf = au.read_leaf(d)
     assert leaf["model"] == "anthropic:opus"
     assert leaf["category"] == "context"
     assert leaf["pass_at_k"] == 0.8
     assert leaf["avg_at_k"] == 0.5
+
+
+def test_read_leaf_coerces_null_model(tmp_path):
+    # summary.json's model is null only if --model wasn't passed; guard anyway.
+    d = tmp_path / "leaf"
+    d.mkdir()
+    (d / "summary.json").write_text(json.dumps(_summary(None, 3, None, None, 0, 0)))
+    assert au.read_leaf(d)["model"] == "unknown"
 
 
 def test_combine_computes_macro_and_micro():
@@ -74,15 +83,11 @@ def test_radar_results_shape():
 
 
 def _leaf_dir(tmp_path, model, category, k=3, pass_k=0.5, avg_k=0.5, tasks=10, passed=15,
-              incomplete=False, model_txt=True, model_in_summary=None):
+              incomplete=False):
     d = tmp_path / f"harbor-{model}-{category}".replace(":", "-").replace("/", "-")
     d.mkdir()
     (d / "summary.json").write_text(json.dumps(
-        _summary(model if model_in_summary is None else model_in_summary,
-                 k, pass_k, avg_k, tasks, passed, incomplete)))
-    (d / "category.txt").write_text(category)
-    if model_txt:
-        (d / "model.txt").write_text(model + "\n")
+        _summary(model, k, pass_k, avg_k, tasks, passed, incomplete, category=category)))
     return d
 
 
@@ -103,17 +108,6 @@ def test_main_emits_radar_input_for_three_categories(tmp_path):
     out = tmp_path / "combined"
     au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
     assert (out / "radar_results.json").exists()
-
-
-def test_read_leaf_prefers_model_txt_over_null_summary_model(tmp_path):
-    # An all-errored leaf writes model: null in summary.json; model.txt is authoritative.
-    d = _leaf_dir(tmp_path, "openai:gpt-5.6-luna", "context", model_in_summary=None)
-    # force summary model to null explicitly
-    s = json.loads((d / "summary.json").read_text())
-    s["model"] = None
-    (d / "summary.json").write_text(json.dumps(s))
-    leaf = au.read_leaf(d)
-    assert leaf["model"] == "openai:gpt-5.6-luna"
 
 
 def test_combine_flags_missing_leaves_against_expected_grid():

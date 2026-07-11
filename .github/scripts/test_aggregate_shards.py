@@ -342,3 +342,15 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(tests) - failures}/{len(tests)} passed")
     sys.exit(1 if failures else 0)
+
+
+def test_model_and_category_recorded_authoritatively(tmp_path: Path):
+    # Empty root (the all-errored / null-model case): --model/--category are still
+    # recorded, so downstream tooling never sees a null model label.
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out),
+                   "--model", "openai:gpt-5.6-luna", "--category", "autonomous"])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["model"] == "openai:gpt-5.6-luna"
+    assert summary["category"] == "autonomous"

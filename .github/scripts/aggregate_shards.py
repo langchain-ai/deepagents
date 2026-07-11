@@ -268,6 +268,7 @@ def make_summary(
     *,
     dataset: str | None,
     model: str | None,
+    category: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -285,6 +286,7 @@ def make_summary(
     return {
         "dataset": dataset,
         "model": model,
+        "category": category,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -393,6 +395,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dataset", default=None, help="Dataset ref, recorded in the summary.")
     parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Model spec, recorded authoritatively in the summary. Overrides the "
+            "value detected from results, which is null when every trial errored."
+        ),
+    )
+    parser.add_argument(
+        "--category",
+        default=None,
+        help="Eval category (autonomous|conversation|context), recorded in the summary.",
+    )
+    parser.add_argument(
         "--harbor-result",
         default=None,
         help=(
@@ -434,7 +449,8 @@ def main(argv: list[str] | None = None) -> int:
         incomplete = shard_failure or shard_shortfall or data_loss
         summary = make_summary(
             dataset=args.dataset,
-            model=None,
+            model=args.model,
+            category=args.category,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
@@ -481,7 +497,8 @@ def main(argv: list[str] | None = None) -> int:
     incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
     summary = make_summary(
         dataset=args.dataset,
-        model=next(iter(agg.models)) if agg.models else None,
+        model=args.model or (next(iter(agg.models)) if agg.models else None),
+        category=args.category,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,

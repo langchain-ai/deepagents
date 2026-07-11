@@ -242,14 +242,15 @@ class TestTitle:
         assert f"v{__version__}" in plain
         assert "(local)" not in plain
 
-    def test_hides_version_when_env_set(self) -> None:
-        """`HIDE_SPLASH_VERSION` removes the version from the title."""
-        plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
+    def test_hides_only_version_when_env_set(self) -> None:
+        """`HIDE_SPLASH_VERSION` leaves the editable-install tag visible."""
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
         assert f"v{__version__}" not in plain
-        assert "(local)" not in plain
+        assert "(local)" in plain
 
     def test_marks_editable_install_as_local(self) -> None:
-        """Editable installs append a `(local)` tag to the version."""
+        """Editable installs show a `(local)` tag."""
         with patch(_EDITABLE, return_value=True):
             plain = _make_banner()._build_banner().plain
         assert f"v{__version__}" in plain
@@ -262,7 +263,7 @@ class TestTitle:
         assert "(debug enabled)" not in plain
 
     def test_marks_debug_enabled_when_env_set(self) -> None:
-        """`DEEPAGENTS_CODE_DEBUG` appends a `(debug enabled)` tag to the version."""
+        """`DEEPAGENTS_CODE_DEBUG` shows a `(debug enabled)` tag."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
         assert f"v{__version__}" in plain
@@ -278,14 +279,15 @@ class TestTitle:
         assert "(local)" in plain
         assert plain.index("(debug enabled)") < plain.index("(local)")
 
-    def test_no_debug_tag_when_version_hidden(self) -> None:
-        """`HIDE_SPLASH_VERSION` also suppresses the `(debug enabled)` tag."""
+    def test_debug_tag_when_version_hidden(self) -> None:
+        """`HIDE_SPLASH_VERSION` leaves the debug tag visible."""
         plain = (
             _make_banner(env={DEBUG: "1", HIDE_SPLASH_VERSION: "1"})
             ._build_banner()
             .plain
         )
-        assert "(debug enabled)" not in plain
+        assert f"v{__version__}" not in plain
+        assert "(debug enabled)" in plain
 
     def test_title_tags_carry_their_own_styles(self) -> None:
         """Each title tag's span carries its own style helper's output.
@@ -692,14 +694,15 @@ class TestEditableInstallPath:
             plain = _make_banner()._build_banner().plain
         assert "installed:" not in plain
 
-    def test_no_install_path_when_version_hidden(self) -> None:
-        """No install path row when the version is hidden."""
+    def test_install_path_when_version_hidden(self) -> None:
+        """Hiding the version does not hide the editable-install path."""
         with (
             patch(_EDITABLE, return_value=True),
             patch(_EDITABLE_PATH, return_value="~/code"),
         ):
             plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
-        assert "installed:" not in plain
+        assert "installed:" in plain
+        assert "~/code" in plain
 
     def test_no_install_path_when_cwd_hidden(self) -> None:
         """No install path row when local path displays are hidden."""

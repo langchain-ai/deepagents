@@ -1945,6 +1945,9 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `ModelSelectorScreen` is active so the selector's own priority
+        # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
         Binding(
             "ctrl+n",
             "open_notifications",
@@ -7396,7 +7399,7 @@ class DeepAgentsApp(App):
         if not os.environ.get("TAVILY_API_KEY"):
             self.notify(
                 "Saved your Tavily key, but couldn't activate it this "
-                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                "session. Restart dcode, or re-add it with /auth.",
                 severity="warning",
                 markup=False,
             )
@@ -12289,7 +12292,8 @@ class DeepAgentsApp(App):
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
         6. If double press (quit_pending), quit
-        7. If a focused input has text, copy the whole draft (no selection)
+        7. If a focused input has non-whitespace text, copy the whole draft
+            (no selection)
         8. Otherwise show quit hint
 
         Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
@@ -12400,13 +12404,14 @@ class DeepAgentsApp(App):
         return copy_text_with_feedback(self, selected_text, failure_noun="selection")
 
     def _copy_focused_input_text(self) -> bool:
-        """Copy the focused input's full text to the clipboard, if non-empty.
+        """Copy the focused input's full text to the clipboard, if meaningful.
 
         Ctrl+C fallback used when there is no active selection, so the whole
-        draft is copied instead of arming quit.
+        draft is copied instead of arming quit. A whitespace-only draft is
+        treated as empty and left to fall through to quit handling.
 
         Returns:
-            `True` when non-empty text was handled by a clipboard attempt.
+            `True` when non-whitespace text was handled by a clipboard attempt.
         """
         from textual.widgets import Input, TextArea
 
@@ -12417,7 +12422,10 @@ class DeepAgentsApp(App):
             return False
 
         text = widget.text if isinstance(widget, TextArea) else widget.value
-        if not text:
+        # Strip before deciding whether there is anything to copy: a
+        # whitespace-only draft carries no meaningful content, so Ctrl+C should
+        # fall through to arming quit rather than copying blank space.
+        if not text.strip():
             return False
 
         from deepagents_code.clipboard import copy_text_with_feedback
@@ -14284,6 +14292,34 @@ class DeepAgentsApp(App):
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
+
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Disable `open_notifications` while the model selector is open.
+
+        Textual resolves `priority=True` bindings App-first, so the App's
+        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
+        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
+        Returning `False` here disables the App's binding for this dispatch, so
+        resolution falls through to the selector, whose binding then runs.
+
+        Branches on the action name, not the key, so it stays correct if
+        `ctrl+n` is ever rebound.
+
+        Returns:
+            `False` to disable `open_notifications` while a `ModelSelectorScreen`
+                is active, letting the selector handle Ctrl+N; `True` otherwise,
+                leaving the binding enabled.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        return True
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""

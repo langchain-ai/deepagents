@@ -602,8 +602,9 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
 
 
 def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether tool calls should be auto-approved for these CLI args.
+    """Return whether the interactive TUI should auto-approve tool calls.
 
+    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
     An explicit `-y`/`--auto-approve` wins; when the flag is omitted
     (`args.auto_approve is None`), the persistent `[startup].mode` config
     default decides — `dangerously-auto` enables auto-approval, anything else
@@ -769,7 +770,7 @@ def check_cli_dependencies() -> None:
 
     if missing:
         print("\nMissing required dependencies!")  # noqa: T201  # App output for missing dependencies
-        print("\nThe following packages are required to use Deep Agents Code:")  # noqa: T201  # App output for missing dependencies
+        print("\nThe following packages are required to use dcode:")  # noqa: T201  # App output for missing dependencies
         for pkg in missing:
             print(f"  - {pkg}")  # noqa: T201  # CLI output for missing dependencies
         print("\nReinstall dcode with the recommended installer:")  # noqa: T201  # CLI output for missing dependencies
@@ -1532,6 +1533,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-s",
         "--skill",
         dest="initial_skill",
         metavar="NAME",
@@ -1639,11 +1641,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=None,
         help=(
-            "Auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell "
-            "execution, file writes/edits, web search, and URL fetch. "
-            "Use with caution — the agent can execute arbitrary commands. "
-            "When omitted, the launch default comes from [startup].mode in "
+            "Interactive mode only: auto-approve all tool calls without prompting "
+            "(disables human-in-the-loop). Affected tools: shell execution, file "
+            "writes/edits, web search, and URL fetch. Headless mode approves "
+            "non-shell tools; shell is disabled unless allowed via "
+            "--shell-allow-list. "
+            "Use with caution — the agent can execute arbitrary commands. When "
+            "omitted, the launch default comes from [startup].mode in "
             "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
         ),
     )
@@ -2774,6 +2778,21 @@ def cli_main() -> None:
 
         apply_stdin_pipe(args)
 
+        # Validated here, before mode dispatch and any heavy session setup:
+        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
+        # predicate that selects the headless branch below), so this reliably
+        # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
+        # leaving interactive launches untouched.
+        if args.auto_approve and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-approve is only supported in "
+                "interactive mode. Headless mode already approves non-shell tools; "
+                "use --shell-allow-list to control shell access."
+            )
+            sys.exit(2)
+
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console
 
@@ -3105,7 +3124,7 @@ def cli_main() -> None:
                 # so confirm before pulling third-party code into the tool env.
                 console.print(
                     f"This will install the package '{escape(package)}' into "
-                    "the Deep Agents Code environment (this runs third-party "
+                    "the dcode environment (this runs third-party "
                     "code).",
                     highlight=False,
                 )

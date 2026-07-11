@@ -12260,7 +12260,8 @@ class DeepAgentsApp(App):
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
         6. If double press (quit_pending), quit
-        7. If a focused input has text, copy the whole draft (no selection)
+        7. If a focused input has non-whitespace text, copy the whole draft
+            (no selection)
         8. Otherwise show quit hint
 
         Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
@@ -12371,13 +12372,14 @@ class DeepAgentsApp(App):
         return copy_text_with_feedback(self, selected_text, failure_noun="selection")
 
     def _copy_focused_input_text(self) -> bool:
-        """Copy the focused input's full text to the clipboard, if non-empty.
+        """Copy the focused input's full text to the clipboard, if meaningful.
 
         Ctrl+C fallback used when there is no active selection, so the whole
-        draft is copied instead of arming quit.
+        draft is copied instead of arming quit. A whitespace-only draft is
+        treated as empty and left to fall through to quit handling.
 
         Returns:
-            `True` when non-empty text was handled by a clipboard attempt.
+            `True` when non-whitespace text was handled by a clipboard attempt.
         """
         from textual.widgets import Input, TextArea
 
@@ -12388,7 +12390,10 @@ class DeepAgentsApp(App):
             return False
 
         text = widget.text if isinstance(widget, TextArea) else widget.value
-        if not text:
+        # Strip before deciding whether there is anything to copy: a
+        # whitespace-only draft carries no meaningful content, so Ctrl+C should
+        # fall through to arming quit rather than copying blank space.
+        if not text.strip():
             return False
 
         from deepagents_code.clipboard import copy_text_with_feedback

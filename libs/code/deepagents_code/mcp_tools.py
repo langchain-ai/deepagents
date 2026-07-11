@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import fnmatch
+import functools
 import json
 import logging
 import re
@@ -1514,9 +1515,16 @@ async def _gather_bounded(
     tasks are cancelled and awaited before the exception propagates, so no
     background work is left running.
 
+    `asyncio.gather` propagates only the *first* task to finish with an
+    exception; when several tasks fail concurrently the rest are cancelled
+    during teardown and their exceptions would otherwise be discarded silently.
+    To keep concurrent failures debuggable, each dropped (non-cancellation)
+    sibling exception is logged at debug level before the first one propagates.
+
     Args:
         factories: Zero-arg callables each returning an awaitable to run.
-        limit: Maximum number of awaitables in flight at once (>= 1).
+        limit: Maximum number of awaitables in flight at once. Values below 1
+            are clamped to 1.
 
     Returns:
         The awaited results in the same order as `factories`.
@@ -1527,13 +1535,23 @@ async def _gather_bounded(
         async with semaphore:
             return await factory()
 
-    tasks = [asyncio.ensure_future(_run(factory)) for factory in factories]
+    tasks = [asyncio.create_task(_run(factory)) for factory in factories]
     try:
         return await asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.debug(
+                    "MCP concurrent load: a sibling task failed while another "
+                    "failure was already propagating; logging the dropped "
+                    "exception for debugging",
+                    exc_info=result,
+                )
         raise
 
 
@@ -1581,6 +1599,10 @@ async def _load_tools_from_config(
     from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
     server_items = list(config["mcpServers"].items())
+    # Resolve each server's transport once, up front. `_resolve_server_type` is
+    # pure, so this is a readability/DRY win over recomputing it in preflight,
+    # discovery, and the final fold-in loop below.
+    transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
 
     async def _preflight_and_connect(
         server_name: str,
@@ -1595,7 +1617,7 @@ async def _load_tools_from_config(
             A `(status, error)` tuple when the server must be skipped, or a
             ready `Connection` otherwise.
         """
-        server_type = _resolve_server_type(server_config)
+        server_type = transports[server_name]
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
@@ -1693,7 +1715,7 @@ async def _load_tools_from_config(
     # server's probe finished first.
     preflight_results = await _gather_bounded(
         [
-            (lambda name=name, cfg=cfg: _preflight_and_connect(name, cfg))
+            functools.partial(_preflight_and_connect, name, cfg)
             for name, cfg in server_items
         ],
         limit=_MCP_LOAD_CONCURRENCY,
@@ -1722,10 +1744,11 @@ async def _load_tools_from_config(
     ) -> tuple[list[BaseTool], MCPServerInfo]:
         """Discover one server's tools and build its `MCPServerInfo`.
 
-        Discovery failures are classified (auth vs. generic error) and captured
-        as a non-`ok` `MCPServerInfo` with no tools, so a single failing server
-        never aborts discovery for the others. Cancellation/shutdown signals are
-        re-raised so the bounded runner can tear the whole load down.
+        Both discovery failures (classified as auth vs. generic error) and
+        post-discovery tool-construction failures are captured as a non-`ok`
+        `MCPServerInfo` with no tools, so a single failing server never aborts
+        the load for the others. Cancellation/shutdown signals are re-raised so
+        the bounded runner can tear the whole load down.
 
         Returns:
             The server's LangChain tools plus its `MCPServerInfo` entry.
@@ -1820,75 +1843,97 @@ async def _load_tools_from_config(
                 error=error,
             )
 
-        if runtime_manager is None:
-            server_tools: list[BaseTool] = [
-                convert_mcp_tool_to_langchain_tool(
-                    None,
-                    mcp_tool,
-                    connection=connections[server_name],
-                    server_name=server_name,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
-        else:
-            server_tools = [
-                _build_cached_mcp_tool(
-                    mcp_tool=mcp_tool,
-                    server_name=server_name,
-                    session_manager=runtime_manager,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
+        # Tool construction and filtering run after the discovery session has
+        # closed and can still fail (schema conversion, custom tool filters).
+        # Isolate them too so a construction error degrades this one server to
+        # an error entry instead of aborting the whole concurrent load — the
+        # same guarantee the discovery `try` above provides. Cancellation and
+        # shutdown signals still propagate so the bounded runner can tear down.
+        try:
+            if runtime_manager is None:
+                server_tools: list[BaseTool] = [
+                    convert_mcp_tool_to_langchain_tool(
+                        None,
+                        mcp_tool,
+                        connection=connections[server_name],
+                        server_name=server_name,
+                        tool_name_prefix=True,
+                    )
+                    for mcp_tool in mcp_tools
+                ]
+            else:
+                server_tools = [
+                    _build_cached_mcp_tool(
+                        mcp_tool=mcp_tool,
+                        server_name=server_name,
+                        session_manager=runtime_manager,
+                        tool_name_prefix=True,
+                    )
+                    for mcp_tool in mcp_tools
+                ]
 
-        server_tools = _apply_tool_filter(server_tools, server_name, server_config)
+            server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
-        # Pair each tool's input_schema by its LangChain (server-prefixed)
-        # name — the same form `server_tools` carries — so the lookup needs
-        # no string surgery and stays correct if `tool_name_prefix` ever
-        # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
-        # but Python's `frozen=True` does not freeze nested mutables; a
-        # shared reference would let one holder mutate every other's view.
-        schemas: dict[str, dict[str, Any] | None] = {}
-        for mcp_tool in mcp_tools:
-            tool_name = getattr(mcp_tool, "name", "")
-            try:
-                raw_schema = getattr(mcp_tool, "inputSchema", None)
-                schema_copy = (
-                    copy.deepcopy(raw_schema) if raw_schema is not None else None
-                )
-            except (AttributeError, TypeError, RecursionError) as exc:
-                logger.warning(
-                    "MCP tool %r on server %r: inputSchema access raised %s: %s; "
-                    "rendering with no parameters",
-                    tool_name,
-                    server_name,
-                    exc.__class__.__name__,
-                    exc,
-                )
-                schema_copy = None
-            lc_name = f"{server_name}_{tool_name}"
-            schemas[lc_name] = schema_copy
+            # Pair each tool's input_schema by its LangChain (server-prefixed)
+            # name — the same form `server_tools` carries — so the lookup needs
+            # no string surgery and stays correct if `tool_name_prefix` ever
+            # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
+            # but Python's `frozen=True` does not freeze nested mutables; a
+            # shared reference would let one holder mutate every other's view.
+            schemas: dict[str, dict[str, Any] | None] = {}
+            for mcp_tool in mcp_tools:
+                tool_name = getattr(mcp_tool, "name", "")
+                try:
+                    raw_schema = getattr(mcp_tool, "inputSchema", None)
+                    schema_copy = (
+                        copy.deepcopy(raw_schema) if raw_schema is not None else None
+                    )
+                except (AttributeError, TypeError, RecursionError) as exc:
+                    logger.warning(
+                        "MCP tool %r on server %r: inputSchema access raised "
+                        "%s: %s; rendering with no parameters",
+                        tool_name,
+                        server_name,
+                        exc.__class__.__name__,
+                        exc,
+                    )
+                    schema_copy = None
+                lc_name = f"{server_name}_{tool_name}"
+                schemas[lc_name] = schema_copy
 
-        tool_infos: list[MCPToolInfo] = []
-        for tool in server_tools:
-            schema = schemas.get(tool.name)
-            if schema is None and schemas:
-                logger.debug(
-                    "MCP tool %r on server %r: no schema matched in lookup "
-                    "(available keys: %s); rendering with no parameters",
-                    tool.name,
-                    server_name,
-                    list(schemas.keys())[:5],
+            tool_infos: list[MCPToolInfo] = []
+            for tool in server_tools:
+                schema = schemas.get(tool.name)
+                if schema is None and schemas:
+                    logger.debug(
+                        "MCP tool %r on server %r: no schema matched in lookup "
+                        "(available keys: %s); rendering with no parameters",
+                        tool.name,
+                        server_name,
+                        list(schemas.keys())[:5],
+                    )
+                tool_infos.append(
+                    MCPToolInfo(
+                        name=tool.name,
+                        description=tool.description or "",
+                        input_schema=schema,
+                    ),
                 )
-            tool_infos.append(
-                MCPToolInfo(
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=schema,
-                ),
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MCP server '%s' skipped: tool construction failed",
+                server_name,
+                exc_info=True,
             )
+            return [], MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                status="error",
+                error=str(exc),
+            )
+
         return server_tools, MCPServerInfo(
             name=server_name,
             transport=transport,
@@ -1896,17 +1941,19 @@ async def _load_tools_from_config(
         )
 
     # Discovery also runs concurrently (bounded) across the servers that
-    # survived preflight. Skipped servers are folded back in below in config
-    # order, so both `server_infos` ordering and the final tool ordering stay
-    # identical to the sequential implementation.
+    # survived preflight. Because `_gather_bounded` returns results in
+    # submission order and skipped servers are folded back in below by
+    # iterating `server_items` in config order, `server_infos` stays in config
+    # order and the returned tools stay sorted by tool name — regardless of
+    # which server's probe finished first.
     discover_items = [
-        (server_name, server_config, _resolve_server_type(server_config))
+        (server_name, server_config, transports[server_name])
         for server_name, server_config in server_items
         if server_name not in skipped
     ]
     discovery_results = await _gather_bounded(
         [
-            (lambda n=name, c=cfg, t=transport: _discover_server(n, c, t))
+            functools.partial(_discover_server, name, cfg, transport)
             for name, cfg, transport in discover_items
         ],
         limit=_MCP_LOAD_CONCURRENCY,
@@ -1920,13 +1967,13 @@ async def _load_tools_from_config(
 
     all_tools: list[BaseTool] = []
     server_infos: list[MCPServerInfo] = []
-    for server_name, server_config in server_items:
+    for server_name, _server_config in server_items:
         if server_name in skipped:
             status, error = skipped[server_name]
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
-                    transport=_resolve_server_type(server_config),
+                    transport=transports[server_name],
                     status=status,
                     error=error,
                 ),

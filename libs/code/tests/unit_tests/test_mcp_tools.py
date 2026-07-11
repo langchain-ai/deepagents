@@ -28,6 +28,7 @@ from deepagents_code.mcp_tools import (
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
+    _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
     _normalize_mcp_arguments,
@@ -2204,8 +2205,12 @@ class TestLoadToolsConcurrency:
     """`_load_tools_from_config` probes independent servers concurrently.
 
     These tests pin the new behavior: bounded-concurrency preflight and
-    discovery, while server/tool ordering, per-server error isolation, and
-    cancellation semantics stay identical to the previous sequential loader.
+    discovery, with per-server error isolation and cancellation semantics
+    matching the previous sequential loader. The load-bearing ordering
+    guarantee is that `server_infos` follows config order regardless of
+    completion order; the returned tool list is always sorted by tool name
+    (via the terminal sort in the loader), so tool-name assertions here are
+    content checks rather than ordering proofs.
     """
 
     @pytest.fixture(autouse=True)
@@ -2391,6 +2396,113 @@ class TestLoadToolsConcurrency:
         assert manager is not None
         await manager.cleanup()
 
+    async def test_preflight_failure_isolated_and_order_preserved(self) -> None:
+        """A mid-config preflight failure is skipped; survivors keep order.
+
+        Exercises the preflight-error path and the fold-in loop that
+        interleaves a skipped server *between* discovered ones in config order,
+        with discovery finishing out of order so the ordering cannot be an
+        accident of completion timing.
+        """
+        names = ["ok_a", "pf_fail", "ok_b"]
+        # `ok_b` discovers faster than `ok_a`, so completion order is reversed.
+        delays = {"ok_a": 0.06, "ok_b": 0.01}
+
+        def _check(name: str, _cfg: dict[str, Any]) -> None:
+            if name == "pf_fail":
+                msg = "preflight boom"
+                raise RuntimeError(msg)
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            await asyncio.sleep(delays[server])
+            yield session
+
+        with (
+            patch("deepagents_code.mcp_tools._check_stdio_server", _check),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+        ):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        # server_infos follows config order, with the skipped server in place.
+        assert [i.name for i in infos] == names
+        assert by_name["ok_a"].status == "ok"
+        assert by_name["ok_b"].status == "ok"
+        assert by_name["pf_fail"].status == "error"
+        assert "preflight boom" in (by_name["pf_fail"].error or "")
+        assert [t.name for t in tools] == ["ok_a_tool_ok_a", "ok_b_tool_ok_b"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_all_servers_fail_preflight_yields_empty(self) -> None:
+        """Every server failing preflight yields no tools, infos in order.
+
+        Drives the empty-discovery `_gather_bounded([], ...)` path and asserts a
+        non-`None` (empty) session manager is still returned.
+        """
+        names = ["x1", "x2", "x3"]
+
+        def _check(_name: str, _cfg: dict[str, Any]) -> None:
+            msg = "nope"
+            raise RuntimeError(msg)
+
+        with patch("deepagents_code.mcp_tools._check_stdio_server", _check):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert tools == []
+        assert [i.name for i in infos] == names
+        assert all(i.status == "error" for i in infos)
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_tool_construction_failure_isolated(self) -> None:
+        """A post-discovery construction failure degrades one server only.
+
+        Discovery succeeds for every server, but tool filtering raises for one.
+        That server must become an `error` info while its siblings load
+        normally — proving isolation now covers the post-discovery construction
+        block, not just the discovery session. Without that guard the failure
+        would abort the entire concurrent load.
+        """
+        names = ["good", "bad_build"]
+        fake, _ = self._tracking_session_factory(
+            tool_by_server={n: f"t_{n}" for n in names}, sleep_s=0.0
+        )
+
+        def _filter(
+            server_tools: list[Any], server_name: str, _server_config: dict[str, Any]
+        ) -> list[Any]:
+            if server_name == "bad_build":
+                msg = "build boom"
+                raise RuntimeError(msg)
+            return server_tools
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", fake),
+            patch("deepagents_code.mcp_tools._apply_tool_filter", _filter),
+        ):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        assert [i.name for i in infos] == names
+        assert by_name["good"].status == "ok"
+        assert by_name["bad_build"].status == "error"
+        assert "build boom" in (by_name["bad_build"].error or "")
+        assert [t.name for t in tools] == ["good_t_good"]
+        assert manager is not None
+        await manager.cleanup()
+
     async def test_cancellation_propagates_and_cancels_siblings(self) -> None:
         """A cancelled worker propagates and tears down its siblings."""
         names = ["cancel", "sibling"]
@@ -2426,20 +2538,27 @@ class TestLoadToolsConcurrency:
         names = ["p1", "p2", "p3"]
         tool_by_server = {n: f"pt_{n}" for n in names}
         stats = {"inflight": 0, "max_inflight": 0}
-        barrier = asyncio.Event()
+        # `_slow_check` runs in `asyncio.to_thread` worker threads, so the shared
+        # counters must be guarded with a real lock (`+=` is not atomic across
+        # threads) and the barrier must be a thread-safe primitive.
+        stats_lock = threading.Lock()
+        barrier = threading.Event()
 
         def _slow_check(_name: str, _cfg: dict[str, Any]) -> None:
             # `_check_stdio_server` is sync and invoked via asyncio.to_thread,
             # so bump the counter and block until every worker is in-flight.
-            stats["inflight"] += 1
-            stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
-            while not barrier.is_set():
-                time.sleep(0.005)
-            stats["inflight"] -= 1
+            with stats_lock:
+                stats["inflight"] += 1
+                stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
+            barrier.wait()
+            with stats_lock:
+                stats["inflight"] -= 1
 
         async def _release() -> None:
             for _ in range(200):
-                if stats["max_inflight"] >= len(names):
+                with stats_lock:
+                    peak = stats["max_inflight"]
+                if peak >= len(names):
                     break
                 await asyncio.sleep(0.005)
             barrier.set()
@@ -2493,6 +2612,115 @@ class TestLoadToolsConcurrency:
         assert any(kind == "discover" for kind, _ in events)
         assert manager is not None
         await manager.cleanup()
+
+
+class TestGatherBounded:
+    """Direct tests for the `_gather_bounded` concurrency helper.
+
+    These pin the helper's contract independently of MCP loading: submission
+    (not completion) ordering, the empty and clamped-limit edge cases, and the
+    failure path that cancels + awaits siblings and never silently drops a
+    concurrent failure.
+    """
+
+    async def test_results_follow_submission_order(self) -> None:
+        """Results zip back to submission order even when completion differs."""
+        completed: list[int] = []
+
+        def _factory(idx: int, delay: float) -> Callable[[], Any]:
+            async def _run() -> int:
+                await asyncio.sleep(delay)
+                completed.append(idx)
+                return idx
+
+            return _run
+
+        # Index 0 finishes last, index 2 finishes first.
+        factories = [_factory(0, 0.03), _factory(1, 0.02), _factory(2, 0.001)]
+        results = await _gather_bounded(factories, limit=8)
+
+        assert results == [0, 1, 2]
+        assert completed == [2, 1, 0]
+
+    async def test_empty_returns_empty(self) -> None:
+        """Zero factories return an empty list without touching the loop."""
+        assert await _gather_bounded([], limit=8) == []
+
+    async def test_limit_below_one_is_clamped_to_serial(self) -> None:
+        """A limit < 1 is clamped to 1, so factories run strictly serially."""
+        active = {"n": 0, "max": 0}
+
+        def _factory() -> Callable[[], Any]:
+            async def _run() -> None:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+                await asyncio.sleep(0.01)
+                active["n"] -= 1
+
+            return _run
+
+        await _gather_bounded([_factory(), _factory(), _factory()], limit=0)
+        assert active["max"] == 1
+
+    async def test_failure_cancels_and_awaits_siblings(self) -> None:
+        """A raising factory cancels the rest and awaits them before raising."""
+        sibling = {"cancelled": False, "completed": False}
+        started = asyncio.Event()
+
+        def _failing() -> Callable[[], Any]:
+            async def _run() -> None:
+                await started.wait()
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            return _run
+
+        def _sibling() -> Callable[[], Any]:
+            async def _run() -> None:
+                started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    sibling["cancelled"] = True
+                    raise
+                sibling["completed"] = True  # pragma: no cover - never reached
+
+            return _run
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await _gather_bounded([_failing(), _sibling()], limit=8)
+
+        assert sibling["cancelled"] is True
+        assert sibling["completed"] is False
+
+    async def test_concurrent_failures_are_logged_not_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When several factories fail, no failure vanishes silently.
+
+        `asyncio.gather` propagates only the first exception; the others are
+        logged at debug so a concurrent failure is never dropped without trace.
+        """
+
+        def _failing(message: str) -> Callable[[], Any]:
+            async def _run() -> None:
+                raise RuntimeError(message)
+
+            return _run
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"),
+            pytest.raises(RuntimeError),
+        ):
+            await _gather_bounded(
+                [_failing("first_failure"), _failing("second_failure")], limit=8
+            )
+
+        assert "sibling task failed" in caplog.text
+        # Both failures are represented in the captured logs (the propagated one
+        # plus the logged sibling), so neither is lost.
+        assert "first_failure" in caplog.text
+        assert "second_failure" in caplog.text
 
 
 class TestCachedSessionProxy:

@@ -3621,12 +3621,10 @@ class TestMessageQueue:
             worker.cancel.assert_called_once()
             mock_notify.assert_not_called()
 
-    async def test_escape_after_output_started_does_not_restore_prompt(self) -> None:
-        """Once the model has produced output, ESC interrupts without restoring.
-
-        The prompt has already produced work, so returning it to the input
-        would invite a confusing re-submission of an already-answered request.
-        """
+    async def test_escape_after_visible_output_started_does_not_restore_prompt(
+        self,
+    ) -> None:
+        """Once output is visible, Esc interrupts without restoring the prompt."""
         app = DeepAgentsApp()
         worker = MagicMock()
         async with app.run_test() as pilot:
@@ -3636,7 +3634,7 @@ class TestMessageQueue:
             active = UserMessage("do the thing")
             app._active_user_message = active
             # Simulate the adapter reporting the first streamed output.
-            app._on_agent_output_started()
+            app._on_user_visible_output_started()
             chat = app._chat_input
             assert chat is not None
             chat.value = ""
@@ -3649,7 +3647,7 @@ class TestMessageQueue:
             assert active.has_class("-cancelled")
             mock_notify.assert_not_called()
 
-    async def test_send_to_agent_resets_output_started_flag(self) -> None:
+    async def test_send_to_agent_resets_visible_output_started_flag(self) -> None:
         """A fresh turn clears the output-started flag so Esc can restore again.
 
         Without this reset the gate would be sticky: once any turn produced
@@ -3665,8 +3663,8 @@ class TestMessageQueue:
         async with app.run_test() as pilot:
             await pilot.pause()
             # A prior turn produced output.
-            app._on_agent_output_started()
-            assert app._active_turn_output_started is True
+            app._on_user_visible_output_started()
+            assert app._active_turn_visible_output_started is True
 
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
@@ -3674,9 +3672,9 @@ class TestMessageQueue:
                 coro = mock_rw.call_args[0][0]
                 coro.close()
 
-            assert app._active_turn_output_started is False
+            assert app._active_turn_visible_output_started is False
 
-    async def test_cleanup_agent_task_resets_output_started_flag(self) -> None:
+    async def test_cleanup_agent_task_resets_visible_output_started_flag(self) -> None:
         """Turn cleanup clears the output-started flag alongside its siblings.
 
         Keeps the "False at turn start" invariant local rather than relying on
@@ -3687,12 +3685,12 @@ class TestMessageQueue:
         app._maybe_drain_deferred = AsyncMock()  # ty: ignore
         app._set_spinner = AsyncMock()  # ty: ignore
         app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
-        app._on_agent_output_started()
-        assert app._active_turn_output_started is True
+        app._on_user_visible_output_started()
+        assert app._active_turn_visible_output_started is True
 
         await app._cleanup_agent_task()
 
-        assert app._active_turn_output_started is False
+        assert app._active_turn_visible_output_started is False
 
     async def test_escape_drains_queue_before_restoring_interrupted_prompt(
         self,

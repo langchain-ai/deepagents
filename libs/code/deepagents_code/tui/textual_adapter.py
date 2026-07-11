@@ -298,7 +298,7 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
-        on_output_started: Callable[[], None] | None = None,
+        on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
         request_ask_user: (
@@ -335,12 +335,11 @@ class TextualUIAdapter:
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
 
-        self._on_output_started = on_output_started
-        """Callback fired at most once per turn, on the model's first output.
+        self._on_user_visible_output_started = on_user_visible_output_started
+        """Callback fired after the first model text or tool-call widget renders.
 
-        Signals the app that streamed text or a tool call has begun, so an Esc
-        interrupt should no longer restore the prompt to the input. A turn
-        interrupted before any output produces zero firings.
+        Hidden model and subagent output does not trigger it. A turn interrupted
+        before any user-visible model output produces zero firings.
         """
 
         self._sync_message_content = sync_message_content
@@ -663,17 +662,17 @@ async def execute_task_textual(
         adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
-    # Fires `on_output_started` at most once per turn, on the first streamed
-    # text or tool call, so the app can gate Esc's prompt-restore.
-    output_started = False
+    # Fires at most once per turn, after the first main-agent text or tool-call
+    # widget becomes visible, so hidden model activity cannot gate prompt restore.
+    user_visible_output_started = False
 
-    def _notify_output_started() -> None:
-        nonlocal output_started
-        if output_started:
+    def _notify_user_visible_output_started() -> None:
+        nonlocal user_visible_output_started
+        if user_visible_output_started:
             return
-        output_started = True
-        if adapter._on_output_started:
-            adapter._on_output_started()
+        user_visible_output_started = True
+        if adapter._on_user_visible_output_started:
+            adapter._on_user_visible_output_started()
 
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
@@ -1176,7 +1175,6 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
-                                _notify_output_started()
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -1214,6 +1212,7 @@ async def execute_task_textual(
                                 # streaming (uses MarkdownStream internally for
                                 # better performance)
                                 await current_msg.append_content(text)
+                                _notify_user_visible_output_started()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
@@ -1271,7 +1270,6 @@ async def execute_task_textual(
                                 buffer_id is not None
                                 and buffer_id not in displayed_tool_ids
                             ):
-                                _notify_output_started()
                                 displayed_tool_ids.add(buffer_id)
                                 file_op_tracker.start_operation(
                                     buffer_name, parsed_args, buffer_id
@@ -1321,6 +1319,7 @@ async def execute_task_textual(
                                         buffer_id,
                                     )
                                 else:
+                                    _notify_user_visible_output_started()
                                     # Mark running so the group row reflects live
                                     # progress; the row itself is hidden inside
                                     # the group, so this drives state, not a

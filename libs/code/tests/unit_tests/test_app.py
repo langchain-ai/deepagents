@@ -3649,6 +3649,51 @@ class TestMessageQueue:
             assert active.has_class("-cancelled")
             mock_notify.assert_not_called()
 
+    async def test_send_to_agent_resets_output_started_flag(self) -> None:
+        """A fresh turn clears the output-started flag so Esc can restore again.
+
+        Without this reset the gate would be sticky: once any turn produced
+        output, every later turn's Esc-interrupt would stop restoring the
+        prompt. Closing the worker coroutine leaves the flag as `_send_to_agent`
+        set it, without running the turn.
+        """
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A prior turn produced output.
+            app._on_agent_output_started()
+            assert app._active_turn_output_started is True
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("next question")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+            assert app._active_turn_output_started is False
+
+    async def test_cleanup_agent_task_resets_output_started_flag(self) -> None:
+        """Turn cleanup clears the output-started flag alongside its siblings.
+
+        Keeps the "False at turn start" invariant local rather than relying on
+        the start-of-turn reset being reached on every entry path.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._on_agent_output_started()
+        assert app._active_turn_output_started is True
+
+        await app._cleanup_agent_task()
+
+        assert app._active_turn_output_started is False
+
     async def test_escape_drains_queue_before_restoring_interrupted_prompt(
         self,
     ) -> None:

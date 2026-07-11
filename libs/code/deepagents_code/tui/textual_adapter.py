@@ -336,10 +336,11 @@ class TextualUIAdapter:
         """Callback to set the active streaming message ID (pass `None` to clear)."""
 
         self._on_output_started = on_output_started
-        """Callback fired once per turn when the model emits its first output.
+        """Callback fired at most once per turn, on the model's first output.
 
         Signals the app that streamed text or a tool call has begun, so an Esc
-        interrupt should no longer restore the prompt to the input.
+        interrupt should no longer restore the prompt to the input. A turn
+        interrupted before any output produces zero firings.
         """
 
         self._sync_message_content = sync_message_content

@@ -2195,6 +2195,35 @@ class TestExecuteTaskTextualOutputStarted:
 
         output_started.assert_called_once_with()
 
+    async def test_fires_once_across_text_then_tool_call(self) -> None:
+        """Text followed by a tool call in one turn still fires exactly once.
+
+        Both trigger sites share one `_notify_output_started` guard, so a
+        heterogeneous turn is the case that would expose a per-path regression.
+        """
+        output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("thinking"), {})),
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_output_started=output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        output_started.assert_called_once_with()
+
     async def test_fires_on_first_tool_call_without_text(self) -> None:
         """A turn that opens with a tool call still reports output started."""
         output_started = MagicMock()

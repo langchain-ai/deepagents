@@ -2523,8 +2523,7 @@ class DeepAgentsApp(App):
         self._active_turn_output_started = False
         """True once the current turn's model has emitted any output (streamed
         text or a tool call). Gates the Esc prompt-restore: once generation has
-        begun the interrupted prompt is left consumed rather than returned to
-        the input."""
+        begun the interrupted prompt is not returned to the input."""
 
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
@@ -11033,6 +11032,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
         self._active_user_message = None
+        # Clear the output-started gate alongside its lifecycle siblings so the
+        # "False at turn start" invariant holds locally, not just via the
+        # start-of-turn reset in `_send_to_agent`.
+        self._active_turn_output_started = False
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -12115,7 +12118,7 @@ class DeepAgentsApp(App):
         Restore is also skipped once the model has begun generating output for
         the turn (`_active_turn_output_started`): at that point the prompt has
         produced work, so returning it to the input would invite a confusing
-        re-submission of an already-answered request.
+        re-submission of a request the model has already begun working on.
         """
         if self._active_turn_output_started:
             return

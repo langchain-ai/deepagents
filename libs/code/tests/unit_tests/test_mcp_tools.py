@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -1628,6 +1629,28 @@ class TestResolveAndLoadMcpTools:
         assert manager is None
         assert infos == []
 
+    @patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports")
+    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    async def test_no_adapter_warmup_when_no_active_servers(
+        self,
+        mock_discover: MagicMock,
+        mock_warm: MagicMock,
+    ) -> None:
+        """With no configured servers, MCP adapters are never imported.
+
+        `_warm_mcp_adapter_imports` (and the adapter imports that follow it)
+        live inside `_load_tools_from_config`, which the resolver never reaches
+        when discovery yields no servers — so the warmup must not run.
+        """
+        mock_discover.return_value = []
+
+        tools, manager, infos = await resolve_and_load_mcp_tools(no_mcp=False)
+
+        assert tools == []
+        assert manager is None
+        assert infos == []
+        mock_warm.assert_not_called()
+
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_configs")
     async def test_explicit_path_merges_with_discovery(
@@ -2173,6 +2196,301 @@ class TestToolOrdering:
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [tool.name for tool in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
+        assert manager is not None
+        await manager.cleanup()
+
+
+class TestLoadToolsConcurrency:
+    """`_load_tools_from_config` probes independent servers concurrently.
+
+    These tests pin the new behavior: bounded-concurrency preflight and
+    discovery, while server/tool ordering, per-server error isolation, and
+    cancellation semantics stay identical to the previous sequential loader.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_stdio_health_check(self) -> Generator[None]:
+        """Bypass stdio pre-flight so tests focus on discovery concurrency."""
+        with patch("deepagents_code.mcp_tools._check_stdio_server"):
+            yield
+
+    @staticmethod
+    def _config(*names: str) -> dict[str, Any]:
+        return {
+            "mcpServers": {
+                name: {"command": "node", "args": [f"{name}.js"]} for name in names
+            }
+        }
+
+    def _tracking_session_factory(
+        self,
+        *,
+        tool_by_server: dict[str, str],
+        hold: asyncio.Event | None = None,
+        sleep_s: float = 0.05,
+    ) -> tuple[Any, dict[str, int]]:
+        """Build a `create_session` fake that records concurrency.
+
+        Returns the async context-manager fake plus a mutable stats dict with
+        `max_inflight` (peak simultaneous open discovery sessions).
+        """
+        stats = {"inflight": 0, "max_inflight": 0}
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            stats["inflight"] += 1
+            stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
+            try:
+                # Derive the server name from the recorded command arg so each
+                # session yields that server's tool.
+                args = connection.get("args") or []
+                server = args[0].removesuffix(".js") if args else "srv"
+                session = AsyncMock()
+                session.initialize = AsyncMock()
+                session.list_tools = AsyncMock(
+                    return_value=_make_tool_page(
+                        [_make_mcp_tool(tool_by_server[server])]
+                    )
+                )
+                if hold is not None:
+                    await hold.wait()
+                else:
+                    await asyncio.sleep(sleep_s)
+                yield session
+            finally:
+                stats["inflight"] -= 1
+
+        return _fake, stats
+
+    async def test_discovery_runs_concurrently(self) -> None:
+        """All servers' discovery sessions are open at the same time."""
+        names = ["a", "b", "c", "d"]
+        tool_by_server = {n: f"tool_{n}" for n in names}
+        hold = asyncio.Event()
+        fake, stats = self._tracking_session_factory(
+            tool_by_server=tool_by_server, hold=hold
+        )
+
+        async def _release_when_all_open() -> None:
+            for _ in range(200):
+                if stats["inflight"] >= len(names):
+                    break
+                await asyncio.sleep(0.005)
+            hold.set()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+            releaser = asyncio.create_task(_release_when_all_open())
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+            await releaser
+
+        assert stats["max_inflight"] == len(names)
+        assert [t.name for t in tools] == [
+            "a_tool_a",
+            "b_tool_b",
+            "c_tool_c",
+            "d_tool_d",
+        ]
+        assert [i.name for i in infos] == names
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_discovery_concurrency_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No more than `_MCP_LOAD_CONCURRENCY` sessions are open at once."""
+        monkeypatch.setattr(
+            "deepagents_code.mcp_tools._MCP_LOAD_CONCURRENCY", 2, raising=True
+        )
+        names = ["s1", "s2", "s3", "s4", "s5"]
+        tool_by_server = {n: f"t_{n}" for n in names}
+        fake, stats = self._tracking_session_factory(
+            tool_by_server=tool_by_server, sleep_s=0.03
+        )
+
+        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert stats["max_inflight"] == 2
+        assert [i.name for i in infos] == names
+        assert len(tools) == len(names)
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_order_preserved_when_later_servers_finish_first(self) -> None:
+        """`server_infos` follows config order regardless of completion order."""
+        names = ["first", "second", "third"]
+        # Later servers sleep less, so they finish discovery before earlier ones.
+        delays = {"first": 0.09, "second": 0.05, "third": 0.01}
+        finish_order: list[str] = []
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            await asyncio.sleep(delays[server])
+            finish_order.append(server)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert finish_order == ["third", "second", "first"]
+        assert [i.name for i in infos] == names
+        assert [t.name for t in tools] == [
+            "first_tool_first",
+            "second_tool_second",
+            "third_tool_third",
+        ]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_one_server_failure_isolated_from_others(self) -> None:
+        """A single discovery failure does not abort the other servers."""
+        names = ["ok1", "boom", "ok2"]
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            await asyncio.sleep(0.01)
+            if server == "boom":
+                msg = "discovery exploded"
+                raise RuntimeError(msg)
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        assert [i.name for i in infos] == names
+        assert by_name["ok1"].status == "ok"
+        assert by_name["ok2"].status == "ok"
+        assert by_name["boom"].status == "error"
+        assert "discovery exploded" in (by_name["boom"].error or "")
+        assert [t.name for t in tools] == ["ok1_tool_ok1", "ok2_tool_ok2"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_cancellation_propagates_and_cancels_siblings(self) -> None:
+        """A cancelled worker propagates and tears down its siblings."""
+        names = ["cancel", "sibling"]
+        sibling_cancelled = asyncio.Event()
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            if server == "cancel":
+                await asyncio.sleep(0.01)
+                raise asyncio.CancelledError
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+            yield AsyncMock()  # pragma: no cover - never reached
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _load_tools_from_config(self._config(*names))
+
+        assert sibling_cancelled.is_set()
+
+    async def test_preflight_runs_concurrently(self) -> None:
+        """Stdio pre-flight checks run concurrently across servers."""
+        names = ["p1", "p2", "p3"]
+        tool_by_server = {n: f"pt_{n}" for n in names}
+        stats = {"inflight": 0, "max_inflight": 0}
+        barrier = asyncio.Event()
+
+        def _slow_check(_name: str, _cfg: dict[str, Any]) -> None:
+            # `_check_stdio_server` is sync and invoked via asyncio.to_thread,
+            # so bump the counter and block until every worker is in-flight.
+            stats["inflight"] += 1
+            stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
+            while not barrier.is_set():
+                time.sleep(0.005)
+            stats["inflight"] -= 1
+
+        async def _release() -> None:
+            for _ in range(200):
+                if stats["max_inflight"] >= len(names):
+                    break
+                await asyncio.sleep(0.005)
+            barrier.set()
+
+        fake, _ = self._tracking_session_factory(
+            tool_by_server=tool_by_server, sleep_s=0.0
+        )
+        with (
+            patch("deepagents_code.mcp_tools._check_stdio_server", _slow_check),
+            patch("langchain_mcp_adapters.sessions.create_session", fake),
+        ):
+            releaser = asyncio.create_task(_release())
+            _tools, manager, infos = await _load_tools_from_config(self._config(*names))
+            await releaser
+
+        assert stats["max_inflight"] == len(names)
+        assert [i.name for i in infos] == names
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_warmup_runs_off_loop_before_discovery(self) -> None:
+        """Adapter warmup runs, off the event loop, before any discovery."""
+        loop_thread_id = threading.get_ident()
+        events: list[tuple[str, int]] = []
+
+        def _warm() -> None:
+            events.append(("warm", threading.get_ident()))
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            events.append(("discover", threading.get_ident()))
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+            yield session
+
+        with (
+            patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+        ):
+            _tools, manager, _infos = await _load_tools_from_config(
+                self._config("only")
+            )
+
+        assert events[0][0] == "warm"
+        assert events[0][1] != loop_thread_id
+        assert any(kind == "discover" for kind, _ in events)
         assert manager is not None
         await manager.cleanup()
 

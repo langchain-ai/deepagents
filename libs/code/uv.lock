@@ -1155,7 +1155,6 @@ agentcore = [
 ]
 all-providers = [
     { name = "aiohttp" },
-    { name = "langchain", extra = ["meta"] },
     { name = "langchain-anthropic" },
     { name = "langchain-aws" },
     { name = "langchain-baseten" },
@@ -1168,6 +1167,7 @@ all-providers = [
     { name = "langchain-huggingface" },
     { name = "langchain-ibm" },
     { name = "langchain-litellm" },
+    { name = "langchain-meta" },
     { name = "langchain-mistralai" },
     { name = "langchain-nvidia-ai-endpoints" },
     { name = "langchain-ollama" },
@@ -1225,7 +1225,7 @@ media = [
     { name = "pillow" },
 ]
 meta = [
-    { name = "langchain", extra = ["meta"] },
+    { name = "langchain-meta" },
 ]
 mistralai = [
     { name = "langchain-mistralai" },
@@ -1298,7 +1298,6 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.12,<4.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.3.13,<2.0.0" },
-    { name = "langchain", extras = ["meta"], marker = "extra == 'meta'", specifier = ">=1.3.13,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.5,<1.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.8,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.4.8,<2.0.0" },
@@ -1316,6 +1315,7 @@ requires-dist = [
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.7.0,<2.0.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.0,<1.0.0" },
+    { name = "langchain-meta", marker = "extra == 'meta'", specifier = ">=0.5.0,<2.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.6,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.4.3,<2.0.0" },
@@ -2699,11 +2699,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/29/33/fd716d0273c8495482953bd63461bf02f71f3a8f4a2fe6c0a70a0e6ff799/langchain-1.3.13.tar.gz", hash = "sha256:bcf874680f31e9970f0db2264509df5bc2115d9680e9d651d537eb49bf1a7d8a", size = 642868, upload-time = "2026-07-10T23:06:08.555Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/c6/dc676c632f3d20c88789b0726c43ad5e039c25338cc3bb7090fc247d1522/langchain-1.3.13-py3-none-any.whl", hash = "sha256:20a8fe4b1dea7db74356f7d2b5455c4970099b9f7f53c2122ea97f115c907fbd", size = 136911, upload-time = "2026-07-10T23:06:07.012Z" },
-]
-
-[package.optional-dependencies]
-meta = [
-    { name = "langchain-meta" },
 ]
 
 [[package]]

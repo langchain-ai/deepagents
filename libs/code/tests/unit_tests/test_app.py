@@ -17352,6 +17352,117 @@ class TestNotificationCenterIntegration:
             assert isinstance(app.screen, NotificationCenterScreen)
 
 
+class TestAsyncTaskCompletionNotifications:
+    """`_poll_async_tasks` toasts and dispatches a hook for finished background tasks.
+
+    The agent is explicitly instructed not to poll `check_async_task` in a
+    loop, so `_poll_async_tasks` (driven by `set_interval` in
+    `_post_paint_init`) is the only thing that notices a tracked async
+    subagent task finished while the user's attention is elsewhere.
+    """
+
+    async def test_notifies_on_terminal_status(self) -> None:
+        """A task already in a terminal state on first poll triggers one toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        task = {
+            "task_id": "task-1",
+            "agent_name": "researcher",
+            "status": "success",
+        }
+        fetch = AsyncMock(return_value={"async_tasks": {"task-1": task}})
+
+        with (
+            patch.object(app, "_get_thread_state_values", fetch),
+            patch.object(app, "notify") as notify_mock,
+        ):
+            await app._poll_async_tasks()
+
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
+        assert "researcher" in message
+        assert "success" in message
+        assert "task-1" in app._async_task_notified
+
+    async def test_no_duplicate_notification_on_repeated_poll(self) -> None:
+        """A second poll after notifying does not toast again for the same task."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        task = {"task_id": "task-1", "agent_name": "researcher", "status": "success"}
+        fetch = AsyncMock(return_value={"async_tasks": {"task-1": task}})
+
+        with (
+            patch.object(app, "_get_thread_state_values", fetch),
+            patch.object(app, "notify") as notify_mock,
+        ):
+            await app._poll_async_tasks()
+            await app._poll_async_tasks()
+
+        notify_mock.assert_called_once()
+
+    async def test_ignores_running_tasks(self) -> None:
+        """A task still `running` produces no toast and is not marked notified."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        task = {"task_id": "task-1", "agent_name": "researcher", "status": "running"}
+        fetch = AsyncMock(return_value={"async_tasks": {"task-1": task}})
+
+        with (
+            patch.object(app, "_get_thread_state_values", fetch),
+            patch.object(app, "notify") as notify_mock,
+        ):
+            await app._poll_async_tasks()
+
+        notify_mock.assert_not_called()
+        assert "task-1" not in app._async_task_notified
+
+    async def test_dispatches_hook_with_expected_payload(self) -> None:
+        """A terminal task fires `async_task.complete` with the expected payload."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        task = {"task_id": "task-1", "agent_name": "researcher", "status": "error"}
+        fetch = AsyncMock(return_value={"async_tasks": {"task-1": task}})
+
+        with (
+            patch.object(app, "_get_thread_state_values", fetch),
+            patch.object(app, "notify"),
+            patch(
+                "deepagents_code.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
+            await app._poll_async_tasks()
+
+        dispatch_hook.assert_called_once_with(
+            "async_task.complete",
+            {"task_id": "task-1", "agent_name": "researcher", "status": "error"},
+        )
+
+    async def test_noop_when_no_async_tasks(self) -> None:
+        """No tracked tasks means no toast and no hook dispatch."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        fetch = AsyncMock(return_value={})
+
+        with (
+            patch.object(app, "_get_thread_state_values", fetch),
+            patch.object(app, "notify") as notify_mock,
+            patch(
+                "deepagents_code.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
+            await app._poll_async_tasks()
+
+        fetch.assert_awaited_once()
+        notify_mock.assert_not_called()
+        dispatch_hook.assert_not_called()
+
+    async def test_noop_without_agent(self) -> None:
+        """No agent means the poll returns before touching thread state at all."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._agent = None
+        fetch = AsyncMock(return_value={"async_tasks": {}})
+
+        with patch.object(app, "_get_thread_state_values", fetch):
+            await app._poll_async_tasks()
+
+        fetch.assert_not_awaited()
+
+
 class TestFatalErrorRedaction:
     """`_fatal_error` must not leak local variables (which carry secrets).
 

@@ -392,6 +392,15 @@ state as the single app-wide progress indicator.
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
 
+_ASYNC_TASK_POLL_INTERVAL_SECONDS = 15
+"""How often to check tracked async subagent tasks for a terminal status.
+
+Purely a TUI-side poll against checkpointed state (`_get_thread_state_values`)
+so a user who starts a background task and looks away finds out when it's
+done — the agent itself is explicitly told not to poll `check_async_task` in
+a loop, so nothing else surfaces this.
+"""
+
 _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 """Upper bound on awaiting a confirmation modal's dismissal.
 
@@ -2270,6 +2279,13 @@ class DeepAgentsApp(App):
         self._pending_mcp_disable_reconnect_servers: set[str] = set()
         """MCP servers with disable-state changes waiting for reconnect."""
 
+        self._async_task_notified: set[str] = set()
+        """Async subagent `task_id`s already surfaced by `_notify_async_task_done`.
+
+        Prevents `_poll_async_tasks` from re-toasting the same completed task
+        on every subsequent poll tick.
+        """
+
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
@@ -3358,6 +3374,19 @@ class DeepAgentsApp(App):
                 exclusive=True,
                 group="startup-whats-new",
             )
+
+        # Watch for background async subagent tasks completing while the
+        # user's attention is elsewhere. Unconditional (not gated behind a
+        # config flag): `_poll_async_tasks` is a no-op whenever the current
+        # thread has no tracked async tasks, which is the common case.
+        self.set_interval(
+            _ASYNC_TASK_POLL_INTERVAL_SECONDS,
+            lambda: self.run_worker(
+                self._poll_async_tasks(),
+                exclusive=True,
+                group="async-task-poll",
+            ),
+        )
 
         # Prewarm model discovery and profile caches unconditionally so
         # /model opens instantly even before the agent/server is ready.
@@ -11201,6 +11230,64 @@ class DeepAgentsApp(App):
         if state and state.values:
             return dict(state.values)
         return {}
+
+    async def _poll_async_tasks(self) -> None:
+        """Check the current thread's tracked async subagent tasks for completion.
+
+        Runs on a `set_interval` tick (`_ASYNC_TASK_POLL_INTERVAL_SECONDS`),
+        entirely out-of-band from the agent loop — the model is explicitly
+        told not to poll `check_async_task` itself (see
+        `AsyncSubAgentMiddleware`'s tool description), so this is the only
+        thing that notices a background task finished while the user's
+        attention is elsewhere.
+
+        A no-op whenever `async_tasks` is empty or absent, so idle sessions
+        (the common case — most sessions never start an async task) pay for
+        nothing beyond the state fetch itself.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return
+
+        state_values = await self._get_thread_state_values(self._lc_thread_id)
+        tasks = state_values.get("async_tasks")
+        if not tasks:
+            return
+
+        for task_id, task in tasks.items():
+            if task_id in self._async_task_notified:
+                continue
+            if task.get("status") in {"success", "error", "cancelled"}:
+                self._notify_async_task_done(task)
+                self._async_task_notified.add(task_id)
+
+    def _notify_async_task_done(self, task: dict[str, Any]) -> None:
+        """Toast and dispatch a hook for an async task reaching a terminal status.
+
+        Args:
+            task: The `AsyncTask` dict (see
+                `deepagents.middleware.async_subagents.AsyncTask`) that just
+                transitioned to `success`, `error`, or `cancelled`.
+        """
+        status = task.get("status", "unknown")
+        agent_name = task.get("agent_name", "unknown")
+        severity = "warning" if status in {"error", "cancelled"} else "information"
+        self.notify(
+            f"Background task '{agent_name}' finished ({status}).",
+            severity=severity,
+            timeout=8,
+            markup=False,
+        )
+
+        from deepagents_code.hooks import dispatch_hook_fire_and_forget
+
+        dispatch_hook_fire_and_forget(
+            "async_task.complete",
+            {
+                "task_id": task.get("task_id"),
+                "agent_name": agent_name,
+                "status": status,
+            },
+        )
 
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.

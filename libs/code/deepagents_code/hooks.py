@@ -65,6 +65,15 @@ in-order, so the program-order guarantee holds. `input.required` and
 `user.name.set` are the exceptions with no program-order guarantee:
 `user.name.set` is always dispatched fire-and-forget, and `input.required` is
 fire-and-forget on the headless surface (awaited only in the interactive TUI).
+
+`async_task.complete` (interactive TUI only) fires fire-and-forget from a
+periodic background poll (`DeepAgentsApp._poll_async_tasks`) whenever a
+tracked async subagent task (started via `start_async_task`) reaches
+`success`, `error`, or `cancelled`. It has no relationship to program order —
+it can fire at any point relative to the main conversation turn, since the
+task it reports on runs on a separate remote thread. Payload:
+`{"task_id": ..., "agent_name": ..., "status": ...}`. Distinct from
+`task.complete`, which reports only the current headless run finishing.
 """
 
 from __future__ import annotations

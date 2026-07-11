@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec
 
 logger = logging.getLogger(__name__)
@@ -111,22 +112,6 @@ See https://docs.fireworks.ai/guides/reasoning.
 
 FIREWORKS_GLM_EFFORTS: tuple[EffortLabel, ...] = ("none", "high", "max")
 """Fireworks `reasoning_effort` labels for GLM 5 models.
-
-See https://docs.fireworks.ai/guides/reasoning.
-"""
-
-_FIREWORKS_MODEL_ID_PREFIXES: tuple[str, ...] = (
-    "accounts/fireworks/models/",
-    "accounts/fireworks/routers/",
-)
-"""Fully-qualified Fireworks model-id prefixes the reasoning gate recognizes.
-
-Fireworks exposes both individual models (`accounts/fireworks/models/...`) and
-routers that dispatch across models (`accounts/fireworks/routers/...`); both
-forms accept the `reasoning_effort` param. Matching a prefix only classifies the
-id as a Fireworks reasoning candidate — the family check then decides the actual
-efforts from the embedded family token (`glm-5`, `deepseek-v4-pro`, `kimi-k2`),
-so a router id must carry one of those to resolve to a non-empty effort set.
 
 See https://docs.fireworks.ai/guides/reasoning.
 """
@@ -472,7 +457,7 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
         return "anthropic"
     if provider == "google_genai" and model_lower.startswith("gemini-3"):
         return "google_genai"
-    if provider == "fireworks" and model_lower.startswith(_FIREWORKS_MODEL_ID_PREFIXES):
+    if provider == "fireworks" and model_lower.startswith(FIREWORKS_MODEL_ID_PREFIXES):
         return "fireworks"
     if provider == "xai" and _is_xai_grok_45(model_lower):
         return "xai"

@@ -14,6 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.loading import Spinner
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
-    "fireworks": ("accounts/fireworks/models/", "accounts/fireworks/routers/"),
+    "fireworks": FIREWORKS_MODEL_ID_PREFIXES,
 }
 """Some providers (e.g. Fireworks) require fully-qualified IDs like
 `accounts/fireworks/models/...` or `accounts/fireworks/routers/...` that crowd

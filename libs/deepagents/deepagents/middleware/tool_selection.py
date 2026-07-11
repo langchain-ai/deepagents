@@ -122,10 +122,7 @@ def _lexical_score(tool: BaseTool | dict[str, Any], query_tokens: set[str]) -> f
     tool_tokens = _tokenize(f"{_tool_name(tool) or ''} {_tool_description(tool)}")
     if not tool_tokens:
         return 0.0
-    union = tool_tokens | query_tokens
-    if not union:
-        return 0.0
-    return len(tool_tokens & query_tokens) / len(union)
+    return len(tool_tokens & query_tokens) / len(tool_tokens | query_tokens)
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.tools import ToolRuntime
 from langchain_core.embeddings import Embeddings
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool as tool_decorator
 
 from deepagents.middleware.tool_selection import DISCOVER_TOOLS_NAME, ToolSelectionMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -223,3 +225,40 @@ def test_discover_tools_name_always_kept_when_present() -> None:
 
     names = {t["name"] for t in filtered.tools}
     assert DISCOVER_TOOLS_NAME in names
+
+
+def test_discover_tools_runs_through_real_tool_node() -> None:
+    """`discover_tools` must work when invoked by the framework's own ToolNode, not just by calling `.func()` directly.
+
+    Regression test: `ToolRuntime` injection is detected by inspecting the tool's raw
+    function signature (`inspect.signature(fn).parameters[...].annotation`). If that
+    annotation isn't a live type at definition time (e.g. `runtime: ToolRuntime` stored as
+    a postponed string because the module used `from __future__ import annotations`), the
+    tool node fails to recognize `runtime` as injectable and raises `TypeError: missing 1
+    required positional argument: 'runtime'` at call time -- a failure calling `.func()`
+    directly never exercises, since that bypasses the framework's injection path entirely.
+    """
+    middleware = ToolSelectionMiddleware(top_k=1, always_include=frozenset())
+
+    @tool_decorator
+    def calculator(expression: str) -> str:
+        """Evaluate a basic arithmetic expression."""
+        return expression
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": DISCOVER_TOOLS_NAME, "args": {"query": "arithmetic expression"}, "id": "call_1"}],
+                ),
+                AIMessage(content="Found it."),
+            ]
+        )
+    )
+    agent = create_agent(model=fake_model, tools=[calculator], middleware=[middleware])
+
+    result = agent.invoke({"messages": [HumanMessage(content="do some math")]})
+
+    tool_message = next(m for m in result["messages"] if getattr(m, "tool_call_id", None) == "call_1")
+    assert "Found tool `calculator`" in tool_message.content

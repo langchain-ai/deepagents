@@ -34,37 +34,34 @@ Scoring defaults to zero-dependency lexical token overlap between the latest
 Embeddings` instance for cosine-similarity scoring instead.
 """
 
-from __future__ import annotations
-
 import re
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
     PrivateStateAttr,
     ResponseT,
 )
-from langchain.tools import (
-    ToolRuntime,  # noqa: TC002  # must stay a real import: the tool node resolves this annotation at runtime to inject `ToolRuntime`
-)
-from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain.tools import ToolRuntime
+from langchain_core.embeddings import Embeddings
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from langchain.agents.middleware.types import (
-        ExtendedModelResponse,
-        ModelRequest,
-        ModelResponse,
-    )
-    from langchain_core.embeddings import Embeddings
-    from langchain_core.messages import AIMessage, AnyMessage
-    from langchain_core.tools import BaseTool
+# NOTE: this module intentionally does NOT use `from __future__ import annotations`.
+# `discover_tools` below relies on the `runtime: ToolRuntime` parameter annotation
+# being a real, live type at function-definition time -- the tool node's injection
+# detection (`StructuredTool._injected_args_keys`) inspects `inspect.signature(fn)`
+# directly and only recognizes injected params when the annotation is an actual
+# class, not a postponed (stringified) one. Same reasoning as `async_subagents.py`
+# and `subagents.py`, which also omit the future import for this reason.
 
 DEFAULT_ALWAYS_INCLUDE: frozenset[str] = frozenset({"read_file", "write_file", "edit_file", "ls", "task"})
 DISCOVER_TOOLS_NAME = "discover_tools"

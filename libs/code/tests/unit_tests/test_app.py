@@ -23070,6 +23070,28 @@ class TestCopyFocusedInputText:
         assert app._copy_focused_input_text() is False
         assert copied == []
 
+    def test_no_copy_when_input_whitespace_only(self, monkeypatch) -> None:
+        """A whitespace-only draft is treated as empty and not copied."""
+        from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        text_area = TextArea()
+        text_area.text = "   \n\t  "
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
+
+        assert app._copy_focused_input_text() is False
+        assert copied == []
+
     def test_no_copy_when_nothing_focused(self, monkeypatch) -> None:
         """When the focused widget is not an input, nothing is copied."""
         app = self._make_app()

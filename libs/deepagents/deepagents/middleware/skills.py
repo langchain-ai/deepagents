@@ -413,8 +413,8 @@ def _parse_skill_metadata(
         logger.warning("Skipping %s: frontmatter is not a mapping", skill_path)
         return None
 
-    name = str(frontmatter_data.get("name", "")).strip()
-    description = str(frontmatter_data.get("description", "")).strip()
+    name = str(frontmatter_data.get("name") or "").strip()
+    description = str(frontmatter_data.get("description") or "").strip()
     if not name or not description:
         logger.warning("Skipping %s: missing required 'name' or 'description'", skill_path)
         return None
@@ -446,7 +446,7 @@ def _parse_skill_metadata(
 
     allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"), skill_path)
 
-    compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
+    compatibility_str = str(frontmatter_data.get("compatibility") or "").strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
         logger.warning(
             "Skill compatibility in %s is %d characters, over the Agent Skills "
@@ -465,7 +465,7 @@ def _parse_skill_metadata(
         description=description_str,
         path=skill_path,
         metadata=_validate_metadata(frontmatter_data.get("metadata", {}), skill_path),
-        license=str(frontmatter_data.get("license", "")).strip() or None,
+        license=str(frontmatter_data.get("license") or "").strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
     )

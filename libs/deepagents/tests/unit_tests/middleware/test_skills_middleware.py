@@ -254,6 +254,50 @@ Content
     assert result is None
 
 
+def test_parse_skill_metadata_null_fields() -> None:
+    """A present-but-null YAML field is treated as missing, not the string 'None'.
+
+    ``yaml.safe_load`` returns ``None`` for a bare ``description:`` line.
+    ``str(None)`` is the truthy string ``"None"``, which would otherwise bypass
+    the required-field guard (loading a bogus skill) and render ``License: None``
+    in the system prompt.
+    """
+    # description present but null -> treated as missing -> skipped
+    content = """---
+name: test-skill
+description:
+---
+
+Content
+"""
+    assert _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill") is None
+
+    # name present but null -> treated as missing -> skipped
+    content = """---
+name:
+description: Test skill
+---
+
+Content
+"""
+    assert _parse_skill_metadata(content, "/skills/test/SKILL.md", "test") is None
+
+    # null license/compatibility become None, not the literal string "None"
+    content = """---
+name: valid-skill
+description: A valid skill
+license:
+compatibility:
+---
+
+Content
+"""
+    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "valid-skill")
+    assert result is not None
+    assert result["license"] is None
+    assert result["compatibility"] is None
+
+
 def test_parse_skill_metadata_description_truncation(caplog: pytest.LogCaptureFixture) -> None:
     """Test _parse_skill_metadata truncates long descriptions with an actionable warning."""
     long_description = "A" * (MAX_SKILL_DESCRIPTION_LENGTH + 100)

@@ -39,8 +39,32 @@ def test_build_provider_matrices_cross_products_models_and_categories():
     entry = next(e for e in mats["anthropic"] if e["model"] == "anthropic:opus" and e["category"] == "context")
     assert entry["dataset_path"] == "datasets/context-retrieval-evals"
     assert entry["agent_impl"] == "dcode"
-    assert entry["langsmith_dataset"] == "context-retrieval-evals__anthropic-opus"
+    # readable slug + short hash suffix for collision resistance
+    assert entry["langsmith_dataset"].startswith("context-retrieval-evals__anthropic-opus-")
     assert entry["n_shards"] == 3
+
+
+def test_langsmith_dataset_is_collision_resistant():
+    # slugify is lossy: these two distinct specs slugify to the same string, so
+    # the hash suffix must keep their langsmith_dataset names distinct.
+    a, b = "openrouter:foo/bar", "openrouter:foo-bar"
+    assert up.slugify(a) == up.slugify(b)
+    mats = up.build_provider_matrices(
+        [a, b], ["context"], shard_parallel=10, n_shards_by_cat={"context": 3}
+    )
+    names = {e["langsmith_dataset"] for e in mats["openrouter"]}
+    assert len(names) == 2  # distinct despite identical slugs
+
+
+def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context,context,context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    assert up.main([]) == 0
+    import json as _j
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    anth = _j.loads(lines["anthropic_matrix"])
+    assert len(anth["include"]) == 1  # one entry, not three
 
 
 def test_main_emits_per_provider_outputs(tmp_path, monkeypatch):

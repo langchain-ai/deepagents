@@ -35,10 +35,8 @@ on:
 
 permissions:
   contents: read
-  # Required by the reusable _harbor_run.yml leaf's aggregate job (gh run
-  # download + artifact delete), which the per-provider caller jobs invoke. A
-  # reusable workflow's permissions are capped by the caller job's token, so the
-  # provider callers (which inherit this top-level block) must grant it.
+  # Lets the called reusable workflow manage run artifacts; a caller caps the
+  # callee's token, so it must be granted here (provider jobs inherit this).
   actions: write
 
 concurrency:

@@ -11,6 +11,7 @@ Invariants (see docs/superpowers/specs/2026-07-10-unified-evals-ci-design.md §6
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -55,6 +56,13 @@ def slugify(spec: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", spec).strip("-").lower()
 
 
+def _short_hash(value: str) -> str:
+    # slugify is lossy (e.g. "foo/bar" and "foo-bar" collapse to the same slug),
+    # so distinct specs can produce identical names. Append a short hash of the
+    # raw value to keep dataset/artifact names unique.
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
@@ -87,7 +95,7 @@ def build_provider_matrices(
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
                 "agent_impl": cm["agent_impl"],
-                "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}",
+                "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
                 "n_shards": n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat]),
                 "shard_parallel": shard_parallel,
             }
@@ -109,7 +117,17 @@ def _emit(github_output: str | None, outputs: dict[str, object]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     selection = os.environ.get("UNIFIED_MODELS", "").strip()
-    categories = [c.strip() for c in os.environ.get("UNIFIED_CATEGORIES", "autonomous,conversation,context").split(",") if c.strip()]
+    # Order-preserving dedupe so a repeated category can't produce duplicate
+    # (model, category) entries with colliding artifact/dataset names.
+    categories = list(
+        dict.fromkeys(
+            c.strip()
+            for c in os.environ.get(
+                "UNIFIED_CATEGORIES", "autonomous,conversation,context"
+            ).split(",")
+            if c.strip()
+        )
+    )
     concurrency = int(os.environ.get("UNIFIED_CONCURRENCY", "4"))
     requested_sp = int(os.environ.get("UNIFIED_SHARD_PARALLEL", "10"))
     n_shards_by_cat = {

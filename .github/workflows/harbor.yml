@@ -183,9 +183,8 @@ on:
         type: string
 permissions:
   contents: read
-  # actions: write is required by the reusable _harbor_run.yml leaf's aggregate
-  # job (gh run download + artifact delete). A reusable workflow's permissions
-  # are capped by the caller's token, so the caller must grant it here.
+  # Lets the called reusable workflow manage run artifacts; a caller caps the
+  # callee's token, so it must be granted here.
   actions: write
 
 env:
@@ -309,15 +308,11 @@ jobs:
       dataset: ${{ inputs.dataset_override || inputs.dataset }}
       dataset_path: ${{ inputs.dataset_path }}
       agent_impl: ${{ inputs.agent_impl }}
-      # Empty => leaf falls back to its own legacy in-run dataset naming
-      # (matches harbor.yml's pre-refactor behavior; the unified orchestrator
-      # is the only caller that sets this explicitly).
+      # Empty: the leaf derives the dataset name itself.
       langsmith_dataset: ""
       rollouts: ${{ inputs.rollouts_per_task }}
       n_shards: ${{ inputs.n_shards }}
-      # Preserve the old harbor.yml behavior: all shards ran in parallel with
-      # no throttling (fail-fast: false, no max-parallel), so cap parallelism
-      # at n_shards (i.e. effectively unthrottled).
+      # Run every shard in parallel (cap = n_shards).
       shard_parallel: ${{ inputs.n_shards }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}

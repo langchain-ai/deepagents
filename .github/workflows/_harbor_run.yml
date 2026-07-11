@@ -19,9 +19,7 @@ on:
         type: string
         default: "dcode"
       langsmith_dataset:
-        # Explicit LangSmith dataset name. Empty = let the leaf derive it in-run
-        # (legacy harbor.yml behavior); non-empty = override, wins over everything
-        # (used by the unified orchestrator for per-(model×category) datasets).
+        # Explicit LangSmith dataset name; empty derives it from the dataset.
         type: string
         default: ""
       rollouts:
@@ -522,12 +520,10 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          # Precedence: an explicit caller override (unified orchestrator's
-          # per-(model×category) name) wins; else the tau3-subset name hook; else
-          # the value already resolved above (local-path-aware `local/...`, or the
-          # registry ref) rather than falling back to $HARBOR_DATASET, which would
-          # clobber the local-dataset name. HARBOR_LS_DATASET_OVERRIDE is a dedicated
-          # job-env var the tau3 step never writes, so it cannot be clobbered.
+          # Precedence: explicit override > tau3-subset name hook > the value
+          # resolved above (local-path-aware `local/...` or the registry ref).
+          # The override uses a dedicated var the tau3 step never writes, so it
+          # can't be clobbered.
           HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
           # Include the run id + attempt so all shards of this dispatch share one
           # experiment name (Harbor's LangSmith plugin uses an explicit name
@@ -664,24 +660,23 @@ jobs:
 
       - name: "🔖 Compute leaf slug"
         if: always()
-        # Sanitized model+category -> artifact-name suffix, unique per leaf, since
-        # the unified orchestrator calls this workflow many times (once per
-        # model x category) within a single caller run and run-global,
-        # model-unqualified names would collide across concurrent leaves.
+        # Sanitized model+category, used to scope this run's artifact names so
+        # concurrent runs don't collide.
         env:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          slug=$(printf '%s-%s' "$MODEL" "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          # Short hash keeps the name unique when two specs sanitize alike.
+          slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "LEAF_SLUG=$slug" >> "$GITHUB_ENV"
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # shard-<leaf-slug>-* so the aggregate job can glob every per-shard
-          # upload belonging to THIS leaf (model x category) without colliding
-          # with, or hoovering up, sibling leaves' shards.
+          # Slug-scoped so the aggregate job globs only this run's shards.
           name: shard-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
@@ -712,16 +707,16 @@ jobs:
 
       - name: "🔖 Compute leaf slug"
         id: slug
-        # Sanitized model+category -> artifact-name suffix, unique per leaf. Must
-        # match the harbor job's "Compute leaf slug" step byte-for-byte, since the
-        # unified orchestrator calls this workflow many times (once per model x
-        # category) within a single caller run and this slug is how the aggregate
-        # job scopes its shard download/delete to only THIS leaf's shards.
+        # Sanitized model+category. Must match the harbor job's slug byte-for-byte;
+        # it scopes the shard download/delete below to this run's own shards.
         env:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
         run: |
-          slug=$(printf '%s-%s' "$MODEL" "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
+          slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          # Short hash keeps the name unique when two specs sanitize alike.
+          slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
       - name: "⬇️ Download shard results"
@@ -770,9 +765,7 @@ jobs:
             --out-dir _shards
 
       - name: "🏷️ Stamp category (combined artifact root)"
-        # Surface category.txt at the artifact root. The per-shard copy is nested
-        # under shard-*/, but aggregate_unified.py's leaf discovery looks for
-        # summary.json + category.txt at the TOP level of each downloaded artifact.
+        # Record the category next to summary.json at the artifact root.
         env:
           CATEGORY: ${{ inputs.category }}
         run: |

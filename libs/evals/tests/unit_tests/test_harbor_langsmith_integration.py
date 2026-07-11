@@ -226,12 +226,11 @@ def test_eval_workflow_scopes_secrets_away_from_dependency_install() -> None:
 
 
 def test_harbor_workflow_wires_tau3_subset() -> None:
-    # The dispatch workflow still exposes "tau3-subset" as a selectable dataset...
+    # "tau3-subset" is a selectable dataset on the dispatch workflow.
     workflow = (ROOT / ".github" / "workflows" / "harbor.yml").read_text()
     assert '- "tau3-subset"' in workflow
 
-    # ...but the resolution + run wiring now lives in the reusable leaf
-    # (_harbor_run.yml), which harbor.yml calls. Assert it there.
+    # Its resolution + run wiring lives in the reusable leaf.
     leaf = (ROOT / ".github" / "workflows" / "_harbor_run.yml").read_text()
     # Its resolution step pulls the committed task filter, runs against the real
     # registry dataset, and names the LangSmith dataset "tau3-subset".
@@ -249,8 +248,6 @@ def test_harbor_workflow_wires_tau3_subset() -> None:
     assert 'if [ "$task_count" -ne 30 ]; then' in leaf
     # tau3's verifier/user simulator needs OpenAI even when the agent model is
     # hosted by another provider, so missing credentials should fail preflight.
-    # (The leaf receives an already-resolved `dataset` input, so the pre-refactor
-    # `contains(inputs.dataset_override, 'tau3')` check no longer applies here.)
     assert "contains(inputs.dataset, 'tau3')" in leaf
     assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in leaf
     assert '[ "$model_provider" != "openai" ]' in leaf

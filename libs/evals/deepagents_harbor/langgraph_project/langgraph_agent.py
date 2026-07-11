@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _DEFAULT_WORKDIR = Path("/app")
-_MAX_ASSISTANT_ID_LENGTH = 255
+_MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -129,10 +129,10 @@ def _harbor_assistant_id(session_id: str | None) -> str:
         assistant_id = assistant_id.removesuffix("-")
     if not assistant_id:
         return f"harbor-{uuid.uuid4()}"
-    if len(assistant_id) <= _MAX_ASSISTANT_ID_LENGTH:
+    if assistant_id == session_id and len(assistant_id) <= _MAX_ASSISTANT_ID_LENGTH:
         return assistant_id
 
-    digest = hashlib.sha256(assistant_id.encode("ascii")).hexdigest()[:_ASSISTANT_ID_HASH_LENGTH]
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:_ASSISTANT_ID_HASH_LENGTH]
     prefix_length = _MAX_ASSISTANT_ID_LENGTH - _ASSISTANT_ID_HASH_LENGTH - 1
     return f"{assistant_id[:prefix_length]}-{digest}"
 

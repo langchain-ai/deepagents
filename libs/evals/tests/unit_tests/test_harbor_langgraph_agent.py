@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -62,13 +63,47 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
 
 
 def test_harbor_assistant_id_preserves_valid_ascii_id() -> None:
-    assert langgraph_agent._harbor_assistant_id("-Harbor_Trial-123-") == "-Harbor_Trial-123-"
+    assistant_id = f"-{'a' * 62}-"
+
+    assert len(assistant_id) == 64
+    assert langgraph_agent._harbor_assistant_id(assistant_id) == assistant_id
+
+
+def test_harbor_assistant_id_hashes_valid_id_over_limit() -> None:
+    session_id = f"-{'a' * 63}-"
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+
+    assistant_id = langgraph_agent._harbor_assistant_id(session_id)
+
+    assert len(session_id) == 65
+    assert len(assistant_id) <= 64
+    assert assistant_id.startswith(session_id[:16])
+    assert assistant_id.endswith(f"-{digest}")
 
 
 def test_harbor_assistant_id_normalizes_path_and_control_characters() -> None:
     session_id = "/install/windows::3.11\x00\ntrial/"
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
 
-    assert langgraph_agent._harbor_assistant_id(session_id) == "install-windows-3-11-trial"
+    assert (
+        langgraph_agent._harbor_assistant_id(session_id) == f"install-windows-3-11-trial-{digest}"
+    )
+
+
+def test_harbor_assistant_id_distinguishes_raw_ids_with_same_normalization() -> None:
+    slash_id = "trial/session"
+    colon_id = "trial:session"
+
+    normalized_slash = langgraph_agent._harbor_assistant_id(slash_id)
+    normalized_colon = langgraph_agent._harbor_assistant_id(colon_id)
+
+    assert normalized_slash == (
+        f"trial-session-{hashlib.sha256(slash_id.encode('utf-8')).hexdigest()[:12]}"
+    )
+    assert normalized_colon == (
+        f"trial-session-{hashlib.sha256(colon_id.encode('utf-8')).hexdigest()[:12]}"
+    )
+    assert normalized_slash != normalized_colon
 
 
 @pytest.mark.parametrize("session_id", [None, "", "/:.\x00\n"])
@@ -87,7 +122,7 @@ def test_harbor_assistant_id_bounds_long_ids_without_truncation_collisions() -> 
     first = langgraph_agent._harbor_assistant_id(f"{shared_prefix}x")
     second = langgraph_agent._harbor_assistant_id(f"{shared_prefix}y")
 
-    assert len(first) <= 255
+    assert len(first) <= 64
     assert first == langgraph_agent._harbor_assistant_id(f"{shared_prefix}x")
     assert first != second
     assert all(
@@ -142,7 +177,8 @@ def test_make_graph_builds_headless_local_deepagent(
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
     monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
-    monkeypatch.setenv("HARBOR_SESSION_ID", "install-windows-3.11__trial__env")
+    session_id = "install-windows-3.11__trial__env"
+    monkeypatch.setenv("HARBOR_SESSION_ID", session_id)
 
     result = langgraph_agent.make_graph(
         {
@@ -163,7 +199,8 @@ def test_make_graph_builds_headless_local_deepagent(
     ]
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
-    assert captured_create[0]["assistant_id"] == "install-windows-3-11__trial__env"
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+    assert captured_create[0]["assistant_id"] == f"install-windows-3-11__trial__env-{digest}"
     assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["sandbox"] is None
     # `make_graph` must NOT pass `sandbox_type`: it runs locally (sandbox=None), and

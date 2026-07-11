@@ -72,6 +72,8 @@ jobs:
       other_matrix: ${{ steps.p.outputs.other_matrix }}
       other_has_models: ${{ steps.p.outputs.other_has_models }}
       effective_shard_parallel: ${{ steps.p.outputs.effective_shard_parallel }}
+      models: ${{ steps.p.outputs.models }}
+      categories: ${{ steps.p.outputs.categories }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -333,6 +335,7 @@ jobs:
   combine:
     name: "📊 Combine cross-model results"
     needs:
+      - prep
       - eval-anthropic
       - eval-baseten
       - eval-fireworks
@@ -358,15 +361,42 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-combine
+          working-directory: libs/evals
+
       - name: "⬇️ Download leaf summaries"
         run: |
           gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir _leaves \
             || echo "::warning::No harbor-* artifacts found for this run."
 
       - name: "📊 Combine"
+        env:
+          # Expected grid, so a model whose leaf never uploaded is shown and
+          # flagged incomplete rather than silently ranking on fewer categories.
+          EXPECTED_MODELS: ${{ needs.prep.outputs.models }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
           mkdir -p _leaves
-          python .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+
+      - name: "📊 Generate radar chart"
+        id: radar-chart
+        # radar_results.json is emitted only for full (>=3 category) runs, so its
+        # presence is the gate. Best-effort: a chart failure must not fail combine.
+        if: hashFiles('_combined/radar_results.json') != ''
+        continue-on-error: true
+        working-directory: libs/evals
+        run: |
+          uv sync --extra charts
+          uv run --extra charts python scripts/generate_radar.py \
+            --results ../../_combined/radar_results.json \
+            -o ../../_combined/radar.png \
+            --individual-dir ../../_combined/individual \
+            --title "Deep Agents Unified Evals"
 
       - name: "📤 Upload combined results"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -73,16 +73,65 @@ def test_radar_results_shape():
     assert rr == [{"model": "m", "scores": {"autonomous": 0.5, "context": 0.7}}]
 
 
-def test_main_writes_outputs_and_skips_radar_for_subset(tmp_path, monkeypatch):
-    for name, cat, pk in [("a", "autonomous", 0.5), ("b", "context", 0.6)]:
-        d = tmp_path / f"harbor-m-{cat}"
-        d.mkdir()
-        (d / "summary.json").write_text(json.dumps(_summary("m", 3, pk, pk, 10, 15)))
-        (d / "category.txt").write_text(cat)
-    calls = []
-    monkeypatch.setattr(au.subprocess, "run", lambda *a, **k: calls.append(a))
+def _leaf_dir(tmp_path, model, category, k=3, pass_k=0.5, avg_k=0.5, tasks=10, passed=15,
+              incomplete=False, model_txt=True, model_in_summary=None):
+    d = tmp_path / f"harbor-{model}-{category}".replace(":", "-").replace("/", "-")
+    d.mkdir()
+    (d / "summary.json").write_text(json.dumps(
+        _summary(model if model_in_summary is None else model_in_summary,
+                 k, pass_k, avg_k, tasks, passed, incomplete)))
+    (d / "category.txt").write_text(category)
+    if model_txt:
+        (d / "model.txt").write_text(model + "\n")
+    return d
+
+
+def test_main_writes_outputs_and_skips_radar_for_subset(tmp_path):
+    for cat, pk in [("autonomous", 0.5), ("context", 0.6)]:
+        _leaf_dir(tmp_path, "m", cat, pass_k=pk, avg_k=pk)
     out = tmp_path / "combined"
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
     assert rc == 0
     assert (out / "unified_summary.json").exists()
-    assert calls == []  # only 2 categories -> radar skipped
+    # only 2 categories -> radar input not emitted (workflow radar step is gated on it)
+    assert not (out / "radar_results.json").exists()
+
+
+def test_main_emits_radar_input_for_three_categories(tmp_path):
+    for cat in ("autonomous", "conversation", "context"):
+        _leaf_dir(tmp_path, "m", cat)
+    out = tmp_path / "combined"
+    au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
+    assert (out / "radar_results.json").exists()
+
+
+def test_read_leaf_prefers_model_txt_over_null_summary_model(tmp_path):
+    # An all-errored leaf writes model: null in summary.json; model.txt is authoritative.
+    d = _leaf_dir(tmp_path, "openai:gpt-5.6-luna", "context", model_in_summary=None)
+    # force summary model to null explicitly
+    s = json.loads((d / "summary.json").read_text())
+    s["model"] = None
+    (d / "summary.json").write_text(json.dumps(s))
+    leaf = au.read_leaf(d)
+    assert leaf["model"] == "openai:gpt-5.6-luna"
+
+
+def test_combine_flags_missing_leaves_against_expected_grid():
+    # "b" ran only autonomous; "context" leaf never uploaded.
+    leaves = [
+        {"model": "a", "category": "autonomous", "pass_at_k": 0.9, "avg_at_k": 0.9, "tasks": 10, "passed": 9, "incomplete": False},
+        {"model": "a", "category": "context", "pass_at_k": 0.8, "avg_at_k": 0.8, "tasks": 10, "passed": 8, "incomplete": False},
+        {"model": "b", "category": "autonomous", "pass_at_k": 1.0, "avg_at_k": 1.0, "tasks": 10, "passed": 10, "incomplete": False},
+    ]
+    out = au.combine(leaves, expected_models=["a", "b"], expected_categories=["autonomous", "context"])
+    assert out["categories"] == ["autonomous", "context"]
+    assert out["models"]["a"]["incomplete"] is False
+    assert out["models"]["b"]["incomplete"] is True
+    assert out["models"]["b"]["missing_categories"] == ["context"]
+
+
+def test_combine_includes_expected_model_with_no_leaves():
+    out = au.combine([], expected_models=["ghost"], expected_categories=["autonomous"])
+    assert "ghost" in out["models"]
+    assert out["models"]["ghost"]["incomplete"] is True
+    assert out["models"]["ghost"]["missing_categories"] == ["autonomous"]

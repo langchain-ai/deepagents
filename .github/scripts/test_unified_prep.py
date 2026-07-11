@@ -95,3 +95,25 @@ def test_main_rejects_bad_spec(tmp_path, monkeypatch):
     import pytest
     with pytest.raises(SystemExit):
         up.main([])
+
+
+def test_main_rejects_empty_categories(tmp_path, monkeypatch):
+    # whitespace/comma-only resolves to an empty category list; must not silently
+    # skip every job and emit a "successful" empty artifact.
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", " , ")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    import pytest
+    with pytest.raises(SystemExit):
+        up.main([])
+
+
+def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus, openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    assert up.main([]) == 0
+    import json as _j
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    assert _j.loads(lines["models"]) == ["anthropic:opus", "openai:gpt"]
+    assert _j.loads(lines["categories"]) == ["autonomous", "context"]

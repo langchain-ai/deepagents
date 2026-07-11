@@ -764,12 +764,16 @@ jobs:
             --harbor-result "$HARBOR_RESULT" \
             --out-dir _shards
 
-      - name: "🏷️ Stamp category (combined artifact root)"
-        # Record the category next to summary.json at the artifact root.
+      - name: "🏷️ Stamp category + model (combined artifact root)"
+        # Record category and model next to summary.json at the artifact root.
+        # model.txt is authoritative: summary.json's model is null when every
+        # trial errored, which would otherwise break the combiner's grouping.
         env:
           CATEGORY: ${{ inputs.category }}
+          MODEL: ${{ inputs.model }}
         run: |
           printf '%s\n' "$CATEGORY" > _shards/category.txt
+          printf '%s\n' "$MODEL" > _shards/model.txt
 
       - name: "📤 Upload combined results"
         # One zip per category: the merged shard harbor data plus summary.json

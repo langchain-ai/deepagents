@@ -136,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
         "context": int(os.environ.get("UNIFIED_N_SHARDS_CONTEXT", DEFAULT_N_SHARDS["context"])),
     }
 
+    if not categories:
+        raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
     if unknown:
         raise SystemExit(f"Unknown categor(y/ies): {unknown}. Valid: {sorted(CATEGORY_MAP)}")
@@ -166,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     outputs: dict[str, object] = {
         "effective_shard_parallel": str(shard_parallel),
         "providers": providers_present,
+        # The expected grid, so the combiner can flag missing/incomplete leaves
+        # instead of silently ranking a model on fewer categories.
+        "models": model_specs,
+        "categories": categories,
     }
     for prov in sorted(KNOWN_PROVIDERS | {"other"}):
         include = matrices.get(prov, [])

@@ -941,6 +941,45 @@ class TestModelIdentityPatch:
         assert prompt is not None
         assert _SYSTEM_PROMPT_SUFFIX not in prompt
 
+    def test_glm_5p2_suffix_removed_using_initial_spec(self) -> None:
+        """Compiled spec removes suffix when current-model introspection is lossy."""
+        override = _make_model("gpt-5.5")
+        result = _make_model_result(
+            override,
+            model_name="gpt-5.5",
+            provider="openai",
+        )
+        current = _make_model("z-ai/glm-5.2")
+        current._get_ls_params.return_value = {"ls_provider": "openai"}
+        request = _make_request(
+            current,
+            context=CLIContext(model="openai:gpt-5.5"),
+            system_prompt=f"{self._OLD_PROMPT}\n\n{_SYSTEM_PROMPT_SUFFIX}",
+        )
+        middleware = ConfigurableModelMiddleware(
+            initial_model_spec="openrouter:z-ai/glm-5.2"
+        )
+
+        def _profile_for_model(
+            _model: BaseChatModel, spec: str | None
+        ) -> HarnessProfile:
+            if spec == "openrouter:z-ai/glm-5.2":
+                return HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
+            return HarnessProfile()
+
+        captured: list[ModelRequest] = []
+        with (
+            patch(_PATCH_CREATE, return_value=result),
+            patch(_PATCH_HARNESS_PROFILE, side_effect=_profile_for_model),
+        ):
+            middleware.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert _SYSTEM_PROMPT_SUFFIX not in prompt
+
     def test_glm_5p2_suffix_not_duplicated_on_provider_swap(self) -> None:
         override = _make_model("zai-org/GLM-5.2")
         result = _make_model_result(

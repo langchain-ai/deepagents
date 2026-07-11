@@ -1434,6 +1434,7 @@ def create_cli_agent(
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
     """
     tools = tools or []
+    initial_model_spec = model if isinstance(model, str) else None
     effective_cwd = (
         Path(cwd)
         if cwd is not None
@@ -1498,7 +1499,12 @@ def create_cli_agent(
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+            middleware.append(
+                ConfigurableModelMiddleware(
+                    persist_model_state=False,
+                    initial_model_spec=initial_model_spec,
+                )
+            )
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1557,7 +1563,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(),
+        ConfigurableModelMiddleware(initial_model_spec=initial_model_spec),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

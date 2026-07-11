@@ -164,6 +164,15 @@ def _ensure_glm_5p2_profile_registered() -> None:
         return
 
     profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
+    from deepagents.profiles.harness.harness_profiles import (
+        _HARNESS_PROFILES,  # noqa: PLC2701
+        _ensure_harness_profiles_loaded,  # noqa: PLC2701
+    )
+
+    _ensure_harness_profiles_loaded()
     for key in _GLM_5P2_MODEL_KEYS:
+        existing = _HARNESS_PROFILES.get(key)
+        if existing is not None and existing.system_prompt_suffix is not None:
+            continue
         register_harness_profile(key, profile)
     _registered = True

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from deepagents import HarnessProfile, register_harness_profile
 from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded
 from deepagents.profiles.harness.harness_profiles import (
     _HARNESS_PROFILES,
@@ -48,6 +49,26 @@ def test_registration_is_idempotent_for_every_declared_key() -> None:
     for key in _GLM_5P2_MODEL_KEYS:
         profile = _get_harness_profile(key)
         assert profile is not None, f"no harness profile resolved for {key!r}"
+        assert profile.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX
+
+
+def test_registration_preserves_existing_exact_suffix() -> None:
+    """App registration must not overwrite an advanced caller's exact suffix."""
+    custom_key = _GLM_5P2_MODEL_KEYS[0]
+    custom_suffix = "Use the locally registered GLM instructions."
+    register_harness_profile(
+        custom_key,
+        HarnessProfile(system_prompt_suffix=custom_suffix),
+    )
+
+    _ensure_glm_5p2_profile_registered()
+
+    custom_profile = _get_harness_profile(custom_key)
+    assert custom_profile is not None
+    assert custom_profile.system_prompt_suffix == custom_suffix
+    for key in _GLM_5P2_MODEL_KEYS[1:]:
+        profile = _get_harness_profile(key)
+        assert profile is not None
         assert profile.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX
 
 

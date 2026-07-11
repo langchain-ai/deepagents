@@ -883,9 +883,10 @@ def _transition_harness_profile_for_model(
     Pass `current_spec`/`target_spec` (the authoritative `provider:model`
     strings) whenever they are known: profile registration keys are exact and
     case-sensitive, and a model instance's introspected provider can diverge
-    from its spec (e.g. an OpenRouter model reporting `openai`), so relying on
-    introspection alone can miss the registered profile. When a spec is `None`,
-    lookup falls back to introspecting the model instance.
+    from its spec (for example, custom proxy models can report the underlying
+    SDK provider), so relying on introspection alone can miss the registered
+    profile. When a spec is `None`, lookup falls back to introspecting the
+    model instance.
 
     Args:
         prompt: Assembled system prompt for `current_model`.

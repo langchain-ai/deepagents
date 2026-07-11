@@ -210,7 +210,11 @@ def _model_spec_from_result(
 
 
 def _build_overrides(
-    request: ModelRequest, ctx: CLIContextSchema, model_result: ModelResult | None
+    request: ModelRequest,
+    ctx: CLIContextSchema,
+    model_result: ModelResult | None,
+    *,
+    initial_model_spec: str | None = None,
 ) -> ModelRequest:
     """Build the overridden request from a (possibly resolved) model result.
 
@@ -226,6 +230,9 @@ def _build_overrides(
         ctx: Runtime CLI context carrying the requested overrides.
         model_result: The resolved model result from `create_model`, or `None`
             when no model swap was requested.
+        initial_model_spec: Original `provider:model` spec used to compile the
+            graph, when known. Used for harness-profile transitions because
+            provider/model introspection can be lossy for custom model classes.
 
     Returns:
         The original request when no overrides apply, otherwise a new request
@@ -307,7 +314,7 @@ def _build_overrides(
             patched,
             request.model,
             effective_model,
-            current_spec=_model_spec_from_model(request.model),
+            current_spec=initial_model_spec or _model_spec_from_model(request.model),
             target_spec=_model_spec_from_result(model_result, effective_model),
         )
         if rebuild_fields:
@@ -324,7 +331,9 @@ def _build_overrides(
     return request.override(**overrides)
 
 
-def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
+def _apply_overrides(
+    request: ModelRequest, *, initial_model_spec: str | None = None
+) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
     Reads `'model'` and `'model_params'` from `runtime.context` and, when
@@ -335,6 +344,8 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
 
     Args:
         request: The incoming model request from the middleware chain.
+        initial_model_spec: Original `provider:model` spec used to compile the
+            graph, when known.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -342,7 +353,9 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
     """
     ctx = _get_context(request)
     if ctx is None:
-        return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+        return _ResolvedModelRequest(
+            request, initial_model_spec or _model_spec_from_model(request.model)
+        )
 
     model_result = None
     model = ctx.model
@@ -361,11 +374,16 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
             )
             return _ResolvedModelRequest(
                 request,
-                _model_spec_from_model(request.model),
+                initial_model_spec or _model_spec_from_model(request.model),
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result)
+    updated = _build_overrides(
+        request,
+        ctx,
+        model_result,
+        initial_model_spec=initial_model_spec,
+    )
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -375,8 +393,15 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
     )
 
 
-async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest:
+async def _apply_overrides_async(
+    request: ModelRequest, *, initial_model_spec: str | None = None
+) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
+
+    Args:
+        request: The incoming model request from the middleware chain.
+        initial_model_spec: Original `provider:model` spec used to compile the
+            graph, when known.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -384,7 +409,9 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
     """
     ctx = _get_context(request)
     if ctx is None:
-        return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+        return _ResolvedModelRequest(
+            request, initial_model_spec or _model_spec_from_model(request.model)
+        )
 
     model_result = None
     model = ctx.model
@@ -403,11 +430,16 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
             )
             return _ResolvedModelRequest(
                 request,
-                _model_spec_from_model(request.model),
+                initial_model_spec or _model_spec_from_model(request.model),
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result)
+    updated = _build_overrides(
+        request,
+        ctx,
+        model_result,
+        initial_model_spec=initial_model_spec,
+    )
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -450,15 +482,23 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     `AnthropicPromptCachingMiddleware`) runs.
     """
 
-    def __init__(self, *, persist_model_state: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        persist_model_state: bool = True,
+        initial_model_spec: str | None = None,
+    ) -> None:
         """Initialize the middleware.
 
         Args:
             persist_model_state: Whether completed calls should write private
                 resume metadata. Subagent instances disable this because they do
                 not own the parent thread's resume state.
+            initial_model_spec: Original `provider:model` spec used to compile
+                the graph, when the caller passed a string model.
         """
         self._persist_model_state = persist_model_state
+        self._initial_model_spec = initial_model_spec
 
     def wrap_model_call(
         self,
@@ -471,7 +511,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = _apply_overrides(request)
+        resolved = _apply_overrides(
+            request, initial_model_spec=self._initial_model_spec
+        )
         response = handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
@@ -489,7 +531,9 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = await _apply_overrides_async(request)
+        resolved = await _apply_overrides_async(
+            request, initial_model_spec=self._initial_model_spec
+        )
         response = await handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:

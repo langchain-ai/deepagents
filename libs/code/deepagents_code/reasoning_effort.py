@@ -119,11 +119,17 @@ _FIREWORKS_MODEL_ID_PREFIXES: tuple[str, ...] = (
     "accounts/fireworks/models/",
     "accounts/fireworks/routers/",
 )
-"""Fully-qualified Fireworks model-id prefixes that carry reasoning support.
+"""Fully-qualified Fireworks model-id prefixes the reasoning gate recognizes.
 
 Fireworks exposes both individual models (`accounts/fireworks/models/...`) and
 routers that dispatch across models (`accounts/fireworks/routers/...`); both
-forms accept the `reasoning_effort` param, so `/effort` gates on either."""
+forms accept the `reasoning_effort` param. Matching a prefix only classifies the
+id as a Fireworks reasoning candidate — the family check then decides the actual
+efforts from the embedded family token (`glm-5`, `deepseek-v4-pro`, `kimi-k2`),
+so a router id must carry one of those to resolve to a non-empty effort set.
+
+See https://docs.fireworks.ai/guides/reasoning.
+"""
 
 XAI_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
 """xAI `reasoning_effort` labels for Grok 4.5.

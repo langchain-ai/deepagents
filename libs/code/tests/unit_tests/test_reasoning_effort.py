@@ -109,6 +109,9 @@ def _restore_settings() -> Iterator[None]:
         ("google_genai:gemini-2.5-flash", ()),
         ("xai:grok-4", ()),
         ("fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct", ()),
+        # Same guard for the router prefix: a recognized router whose id carries
+        # no known family token must also fall through to no efforts.
+        ("fireworks:accounts/fireworks/routers/llama-v3p1-70b-instruct", ()),
     ],
 )
 def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:

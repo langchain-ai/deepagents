@@ -98,6 +98,7 @@ def test_prompt_is_concise_and_execution_focused() -> None:
 
     required_phrases = (
         "Do not call `read_file` on images, PDFs, audio, or video",
+        "Do not reopen generated media for visual inspection",
         "Create the requested artifact first",
         "Treat supplied inputs as immutable",
         "preserve their fidelity",
@@ -122,11 +123,12 @@ def test_prompt_is_concise_and_execution_focused() -> None:
     "content",
     [
         "1\tplain text",
+        ["plain text"],
         [{"type": "text", "text": "plain text"}],
     ],
 )
 def test_media_guard_passes_text_read_unchanged(
-    content: str | list[dict[str, str]],
+    content: str | list[str] | list[dict[str, str]],
 ) -> None:
     middleware = _GlmReadFileMediaGuard()
     # LangChain's mutable-list overload is invariant even though these dicts
@@ -156,6 +158,15 @@ def test_media_guard_passes_error_read_unchanged() -> None:
     result = middleware.wrap_tool_call(_request(), lambda _request: original)
 
     assert result is original
+
+
+def test_media_guard_replaces_error_media_without_payload() -> None:
+    middleware = _GlmReadFileMediaGuard()
+    original = _media_message().model_copy(update={"status": "error"})
+
+    result = middleware.wrap_tool_call(_request(), lambda _request: original)
+
+    _assert_generic_media_error(result)
 
 
 @pytest.mark.parametrize(

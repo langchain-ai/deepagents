@@ -31,7 +31,8 @@ over commentary about what you intend to do.
 This is a text-only model. Do not call `read_file` on images, PDFs, audio, or video. \
 Use a shell utility or a short script to extract relevant text, metadata, or frames \
 into a text representation, then inspect that text. Never place binary or encoded \
-media in model context.
+media in model context. Do not reopen generated media for visual inspection; \
+validate it with task-specific non-visual checks.
 
 Create the requested artifact first when the task asks for a file, patch, report, or \
 other deliverable. Then inspect and refine the artifact itself; do not substitute a \
@@ -65,9 +66,12 @@ def _has_only_text_content(message: ToolMessage) -> bool:
     if not isinstance(content, list) or not content:
         return False
     return all(
-        isinstance(block, dict)
-        and block.get("type") == "text"
-        and isinstance(block.get("text"), str)
+        isinstance(block, str)
+        or (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        )
         for block in content
     )
 
@@ -87,9 +91,7 @@ class _GlmReadFileMediaGuard(AgentMiddleware):
         """
         if request.tool_call.get("name") != "read_file":
             return result
-        if isinstance(result, ToolMessage) and (
-            result.status == "error" or _has_only_text_content(result)
-        ):
+        if isinstance(result, ToolMessage) and _has_only_text_content(result):
             return result
         return ToolMessage(
             content=_MEDIA_READ_ERROR,

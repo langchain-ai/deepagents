@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -20,6 +22,9 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _DEFAULT_WORKDIR = Path("/app")
+_MAX_ASSISTANT_ID_LENGTH = 255
+_ASSISTANT_ID_HASH_LENGTH = 12
+_INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -112,6 +117,26 @@ def _workdir(configurable: dict[str, object]) -> Path:
     return Path(value)
 
 
+def _harbor_assistant_id(session_id: str | None) -> str:
+    """Normalize Harbor's session ID for dcode's filesystem-backed agent ID."""
+    if not session_id:
+        return f"harbor-{uuid.uuid4()}"
+
+    assistant_id = _INVALID_ASSISTANT_ID_RUN.sub("-", session_id)
+    if _INVALID_ASSISTANT_ID_RUN.match(session_id):
+        assistant_id = assistant_id.removeprefix("-")
+    if _INVALID_ASSISTANT_ID_RUN.fullmatch(session_id[-1]):
+        assistant_id = assistant_id.removesuffix("-")
+    if not assistant_id:
+        return f"harbor-{uuid.uuid4()}"
+    if len(assistant_id) <= _MAX_ASSISTANT_ID_LENGTH:
+        return assistant_id
+
+    digest = hashlib.sha256(assistant_id.encode("ascii")).hexdigest()[:_ASSISTANT_ID_HASH_LENGTH]
+    prefix_length = _MAX_ASSISTANT_ID_LENGTH - _ASSISTANT_ID_HASH_LENGTH - 1
+    return f"{assistant_id[:prefix_length]}-{digest}"
+
+
 def _apply_model_identity(model_spec: str, model: object) -> None:
     """Populate dcode `settings` model identity from the selected model.
 
@@ -195,7 +220,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     # Feed the selected model into dcode's system-prompt `### Model Identity`
     # section (create_cli_agent -> get_system_prompt reads it from `settings`).
     _apply_model_identity(model_spec, model)
-    assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
+    assistant_id = _harbor_assistant_id(os.environ.get("HARBOR_SESSION_ID"))
     with _scrub_shell_env():
         # Do not pass `system_prompt`: leaving it unset makes `create_cli_agent`
         # build the real Deep Agents Code (dcode) production system prompt via
@@ -216,6 +241,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             sandbox=None,
             interactive=False,
             auto_approve=True,
+            enable_ask_user=False,
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,

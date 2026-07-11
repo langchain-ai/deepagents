@@ -61,6 +61,40 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
     assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 
+def test_harbor_assistant_id_preserves_valid_ascii_id() -> None:
+    assert langgraph_agent._harbor_assistant_id("-Harbor_Trial-123-") == "-Harbor_Trial-123-"
+
+
+def test_harbor_assistant_id_normalizes_path_and_control_characters() -> None:
+    session_id = "/install/windows::3.11\x00\ntrial/"
+
+    assert langgraph_agent._harbor_assistant_id(session_id) == "install-windows-3-11-trial"
+
+
+@pytest.mark.parametrize("session_id", [None, "", "/:.\x00\n"])
+def test_harbor_assistant_id_falls_back_to_uuid(
+    monkeypatch: pytest.MonkeyPatch, session_id: str | None
+) -> None:
+    fixed_uuid = "00000000-0000-4000-8000-000000000000"
+    monkeypatch.setattr(langgraph_agent.uuid, "uuid4", lambda: fixed_uuid)
+
+    assert langgraph_agent._harbor_assistant_id(session_id) == f"harbor-{fixed_uuid}"
+
+
+def test_harbor_assistant_id_bounds_long_ids_without_truncation_collisions() -> None:
+    shared_prefix = "a" * 300
+
+    first = langgraph_agent._harbor_assistant_id(f"{shared_prefix}x")
+    second = langgraph_agent._harbor_assistant_id(f"{shared_prefix}y")
+
+    assert len(first) <= 255
+    assert first == langgraph_agent._harbor_assistant_id(f"{shared_prefix}x")
+    assert first != second
+    assert all(
+        character.isascii() and (character.isalnum() or character in "_-") for character in first
+    )
+
+
 def test_make_graph_scrubs_credentials_from_shell_backend_env(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -108,7 +142,7 @@ def test_make_graph_builds_headless_local_deepagent(
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
     monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
-    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+    monkeypatch.setenv("HARBOR_SESSION_ID", "install-windows-3.11__trial__env")
 
     result = langgraph_agent.make_graph(
         {
@@ -129,7 +163,7 @@ def test_make_graph_builds_headless_local_deepagent(
     ]
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
-    assert captured_create[0]["assistant_id"] == "trial-session"
+    assert captured_create[0]["assistant_id"] == "install-windows-3-11__trial__env"
     assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["sandbox"] is None
     # `make_graph` must NOT pass `sandbox_type`: it runs locally (sandbox=None), and
@@ -138,6 +172,7 @@ def test_make_graph_builds_headless_local_deepagent(
     # "harbor". Omitting it selects the local-mode prompt rooted at `cwd`.
     assert "sandbox_type" not in captured_create[0]
     assert captured_create[0]["interactive"] is False
+    assert captured_create[0]["enable_ask_user"] is False
     assert captured_create[0]["auto_approve"] is True
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
@@ -202,9 +237,7 @@ def test_make_graph_pins_glm_reasoning_high(
         return "chat-model"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(
-        langgraph_agent, "create_cli_agent", lambda **_k: (object(), object())
-    )
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
     monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
 
     # GLM-5.2: reasoning_effort=high injected via nested model_kwargs.

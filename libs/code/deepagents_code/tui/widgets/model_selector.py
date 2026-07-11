@@ -475,9 +475,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Escape stays bound but is left off the hint line — modal dismissal via
         Escape is conventional, and advertising it would only lengthen an
         already-wrapping line. In standard mode the full line exceeds the modal
-        width, so the
-        help `Static` is sized to grow (auto height) and wraps to two rows
-        rather than clipping the trailing hints.
+        width, so the help `Static` is sized to grow (auto height) and wraps to
+        two rows rather than clipping the trailing hints.
 
         Returns:
             The bullet-separated help line.

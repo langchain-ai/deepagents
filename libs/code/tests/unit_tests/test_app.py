@@ -15460,6 +15460,9 @@ class TestNotificationCenterIntegration:
         """The model selector handles ctrl+n instead of the notification center."""
         from deepagents_code.tui.widgets import model_selector
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
 
         monkeypatch.setattr(
             model_selector,
@@ -15469,6 +15472,11 @@ class TestNotificationCenterIntegration:
         monkeypatch.setattr(model_selector, "load_recent_models", list)
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        # Seed a pending entry so a broken `check_action` would push the
+        # notification center on ctrl+n; the assertions below then genuinely
+        # prove the model selector suppressed it, rather than passing only
+        # because an empty registry never opens the center anyway.
+        app._notice_registry.add(_missing_dep_entry())
         screen = ModelSelectorScreen()
 
         async with app.run_test() as pilot:
@@ -15482,7 +15490,10 @@ class TestNotificationCenterIntegration:
             await pilot.press("ctrl+n")
             await pilot.pause()
 
+            # ctrl+n toggled the selector and did not open the notification
+            # center despite the pending entry.
             assert app.screen is screen
+            assert not isinstance(app.screen, NotificationCenterScreen)
             assert screen._show_specs
             assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
 

@@ -9,6 +9,7 @@ import pytest
 from deepagents_code.plugins._json import json_object, json_value
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
+    _download_marketplace,
     _redact_url_credentials,
     _root_for_marketplace_file,
     _run_git,
@@ -140,6 +141,8 @@ def test_parse_marketplace_source_rejects_non_json_file(
         ("https://user:pass@example.com/marketplace.json", "embedded credentials"),
         ("https://github.com/owner/repo/tree/main", "exactly owner/repo"),
         ("https://[invalid", "Invalid marketplace URL"),
+        ("http://example.com/marketplace.json", "must use https"),
+        ("http://example.com/plugins.git", "must use https"),
         ("./missing", "Path does not exist"),
         ("not a source", "Invalid marketplace source format"),
         ("owner/repo/extra", "Invalid marketplace source format"),
@@ -169,6 +172,11 @@ def test_root_for_marketplace_file(relative: Path, tmp_path: Path) -> None:
 def test_root_for_unconventional_marketplace_file(tmp_path: Path) -> None:
     path = tmp_path / "catalog.json"
     assert _root_for_marketplace_file(path) == tmp_path
+
+
+def test_download_marketplace_rejects_plain_http() -> None:
+    with pytest.raises(MarketplaceError, match="must use https"):
+        _download_marketplace("http://example.com/marketplace.json")
 
 
 def test_run_git_passes_fixed_argv_and_noninteractive_env(

@@ -150,7 +150,10 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
             source_type="git", value=ssh_match.group(1), ref=ssh_match.group(2)
         )
 
-    if value.startswith(("http://", "https://")):
+    if value.startswith("http://"):
+        msg = "Remote marketplace sources must use https"
+        raise MarketplaceError(msg)
+    if value.startswith("https://"):
         url, _, ref = value.partition("#")
         try:
             parsed = urlparse(url)
@@ -327,8 +330,8 @@ def _materialize_plugin_repository(
 
 def _download_marketplace(url: str) -> Path:
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        msg = f"Marketplace URL must use http or https: {_redact_url_credentials(url)}"
+    if parsed.scheme != "https":
+        msg = f"Marketplace URL must use https: {_redact_url_credentials(url)}"
         raise MarketplaceError(msg)
     cache_path = ensure_marketplace_cache_dir() / f"{sanitize_plugin_id(url)}.json"
     request = urllib.request.Request(  # noqa: S310  # Scheme is restricted above.

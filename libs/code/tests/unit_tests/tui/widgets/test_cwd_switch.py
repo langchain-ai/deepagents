@@ -106,6 +106,28 @@ class TestCwdSwitchAbortOption:
 
         assert bindings_by_key["a"].action == "abort"
 
+    def test_check_action_gates_abort_binding_by_mode(self) -> None:
+        """`check_action` enables the `a` binding only when an abort mode is set.
+
+        Guards the binding-disable against regressing to always-enabled — a
+        regression the direct `action_abort` tests would miss because they call
+        the action method directly, bypassing the binding layer.
+        """
+
+        def abort_enabled(abort: CwdSwitchAbortMode | None) -> bool | None:
+            screen = CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )
+            return screen.check_action("abort", ())
+
+        assert abort_enabled("resume") is True
+        assert abort_enabled("switch") is True
+        assert abort_enabled(None) is False
+
+        # Non-abort actions are always allowed, regardless of mode.
+        no_abort = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
+        assert no_abort.check_action("switch", ()) is True
+
     def test_body_mentions_abort_only_when_allowed(self) -> None:
         """The abort affordance is described only when an abort mode is set."""
         without = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")

@@ -21554,6 +21554,41 @@ class TestResumeThreadCwdSwitch:
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
 
+    async def test_offer_switch_failure_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An accepted server-backed switch that fails to restart returns `abort`.
+
+        With `abort="switch"` set, the two abort sources (user-declined and
+        switch-failed) can both occur in one call. This pins the switch-failed
+        source end-to-end through the real method, where the other abort tests
+        either use `restart_server=False` or mock the whole method out.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="abort")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="switch"
+            )
+
+        assert outcome == "abort"
+        replace.assert_awaited_once()
+
     async def test_no_prompt_when_thread_cwd_matches_current(
         self,
         tmp_path: Path,
@@ -21647,6 +21682,9 @@ class TestResumeThreadCwdSwitch:
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
         fetch.assert_not_awaited()
+        # Abort returns before the switch lock is acquired; leaving it set would
+        # permanently block `/threads` for the session.
+        assert app._thread_switching is False
 
     async def test_threads_reselect_offers_abort(
         self,

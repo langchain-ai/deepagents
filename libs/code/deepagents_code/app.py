@@ -16654,10 +16654,8 @@ class DeepAgentsApp(App):
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
             abort: When set, the prompt offers a third "abort" option that
-                declines the resume/switch entirely, with wording chosen by the
-                mode — "resume" (launch-time `-r`, abort starts a new session) or
-                "switch" (in-session `/threads`, abort cancels and keeps the
-                current thread). `None` hides the option.
+                declines the resume/switch entirely; the mode selects its
+                wording (see `CwdSwitchAbortMode`). `None` hides the option.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user

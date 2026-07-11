@@ -19,6 +19,7 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
+from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -3175,7 +3176,7 @@ class TestResumeThread:
             thread_id: str,
             *,
             restart_server: bool,
-            abort: str,
+            abort: CwdSwitchAbortMode | None,
         ) -> str:
             assert thread_id == "thread-123"
             assert restart_server is True

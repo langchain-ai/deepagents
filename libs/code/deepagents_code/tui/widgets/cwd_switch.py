@@ -1,8 +1,8 @@
-"""Prompt for switching cwd when resuming threads."""
+"""Prompt for switching cwd when resuming or switching threads."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, assert_never, cast
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -20,10 +20,8 @@ if TYPE_CHECKING:
 CwdSwitchChoice = Literal["switch", "stay", "abort"]
 """Outcome of the cwd switch prompt.
 
-`"abort"` is only offered when the prompt is opened with an `abort` mode set.
-Its meaning depends on that mode: at launch-time `-r` resume (`"resume"`) it
-means "don't resume; start a new session", and in the in-session `/threads`
-switcher (`"switch"`) it means "cancel; keep the current thread".
+`"abort"` is only offered when the prompt is opened with an `abort` mode set;
+its meaning depends on that mode (see `CwdSwitchAbortMode`).
 """
 
 CwdSwitchAbortMode = Literal["resume", "switch"]
@@ -37,7 +35,7 @@ the switch).
 
 
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
-    """Modal asking whether to switch cwd before resuming a thread."""
+    """Modal asking whether to switch cwd when resuming or switching to a thread."""
 
     can_focus = True
     can_focus_children = False
@@ -116,13 +114,14 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             if self._project_settings_change_detected
             else ""
         )
-        abort_note = ""
-        if self._abort is not None:
-            abort_note = (
-                "\n\nOr abort to start a new session instead of resuming."
-                if self._abort == "resume"
-                else "\n\nOr abort to cancel and keep your current thread."
-            )
+        if self._abort is None:
+            abort_note = ""
+        elif self._abort == "resume":
+            abort_note = "\n\nOr abort to start a new session instead of resuming."
+        elif self._abort == "switch":
+            abort_note = "\n\nOr abort to cancel and keep your current thread."
+        else:
+            assert_never(self._abort)
         return (
             "This thread was last used from:\n"
             f"  {target}\n\n"
@@ -137,10 +136,15 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
         help_text = "Enter: switch · Esc: stay here"
-        if self._abort is not None:
-            abort_help = "A: don't resume" if self._abort == "resume" else "A: cancel"
-            help_text = f"{help_text} · {abort_help}"
-        return help_text
+        if self._abort is None:
+            return help_text
+        if self._abort == "resume":
+            abort_help = "A: don't resume"
+        elif self._abort == "switch":
+            abort_help = "A: cancel"
+        else:
+            assert_never(self._abort)
+        return f"{help_text} · {abort_help}"
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -181,8 +185,8 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         action.
 
         Returns:
-            Whether abort was offered, for the `abort` action, so the binding is
-                only active when abort was offered; `True` for every other action.
+            `self._abort is not None` for the `abort` action, so the binding is
+                enabled only when abort was offered; `True` for every other action.
         """
         if action == "abort":
             return self._abort is not None

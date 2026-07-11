@@ -15454,6 +15454,49 @@ class TestNotificationCenterIntegration:
 
         assert any("Close the current dialog" in m for m in notified)
 
+    async def test_ctrl_n_in_model_selector_toggles_model_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model selector handles ctrl+n instead of the notification center."""
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        # Seed a pending entry so a broken `check_action` would push the
+        # notification center on ctrl+n; the assertions below then genuinely
+        # prove the model selector suppressed it, rather than passing only
+        # because an empty registry never opens the center anyway.
+        app._notice_registry.add(_missing_dep_entry())
+        screen = ModelSelectorScreen()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not screen._show_specs
+            assert "Claude Sonnet 5" in str(screen._option_widgets[0].content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            # ctrl+n toggled the selector and did not open the notification
+            # center despite the pending entry.
+            assert app.screen is screen
+            assert not isinstance(app.screen, NotificationCenterScreen)
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+
     async def test_ctrl_n_with_pending_opens_modal(self) -> None:
         """ctrl+n pushes the NotificationCenterScreen when entries exist."""
         from deepagents_code.tui.widgets.notification_center import (

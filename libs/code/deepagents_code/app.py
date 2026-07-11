@@ -1945,6 +1945,9 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `ModelSelectorScreen` is active so the selector's own priority
+        # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
         Binding(
             "ctrl+n",
             "open_notifications",
@@ -14258,6 +14261,34 @@ class DeepAgentsApp(App):
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
+
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Disable `open_notifications` while the model selector is open.
+
+        Textual resolves `priority=True` bindings App-first, so the App's
+        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
+        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
+        Returning `False` here disables the App's binding for this dispatch, so
+        resolution falls through to the selector, whose binding then runs.
+
+        Branches on the action name, not the key, so it stays correct if
+        `ctrl+n` is ever rebound.
+
+        Returns:
+            `False` to disable `open_notifications` while a `ModelSelectorScreen`
+                is active, letting the selector handle Ctrl+N; `True` otherwise,
+                leaving the binding enabled.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        return True
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""

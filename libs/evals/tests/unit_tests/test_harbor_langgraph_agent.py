@@ -194,7 +194,7 @@ def test_make_graph_populates_model_identity_settings(
 def test_make_graph_pins_glm_reasoning_high(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """make_graph pins GLM-5.2 reasoning to 'high' (nested model_kwargs), and only GLM."""
+    """make_graph pins GLM-5.2 reasoning to 'max' (nested model_kwargs), and only GLM."""
     captured_init: list[dict[str, object]] = []
 
     def fake_init_chat_model(model: str, **kwargs: object) -> object:
@@ -216,7 +216,7 @@ def test_make_graph_pins_glm_reasoning_high(
             }
         }
     )
-    assert captured_init[0]["kwargs"].get("model_kwargs") == {"reasoning_effort": "high"}
+    assert captured_init[0]["kwargs"].get("model_kwargs") == {"reasoning_effort": "max"}
 
     # Non-GLM model: reasoning is NOT injected (shared harness stays untouched).
     captured_init.clear()

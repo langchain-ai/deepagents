@@ -104,7 +104,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_shows_branch_name(self) -> None:
         """Setting branch reactive should update the display widget."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -114,7 +114,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_with_feature_branch(self) -> None:
         """Feature branch names with slashes should display correctly."""
-        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "feat/new-feature"
             await pilot.pause()
@@ -232,7 +232,7 @@ class TestBranchDisplay:
 
     async def test_branch_display_contains_git_icon(self) -> None:
         """Branch display should include the git branch glyph prefix."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "develop"
             await pilot.pause()

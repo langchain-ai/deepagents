@@ -3151,6 +3151,8 @@ class TestResumeThread:
         offer_cwd_switch.assert_awaited_once_with(
             "thread-123",
             restart_server=True,
+            allow_abort=True,
+            abort_mode="switch",
         )
         assert len(mounted) == 1
         assert "Already on thread" in _get_widget_text(mounted[0])
@@ -3174,9 +3176,13 @@ class TestResumeThread:
             thread_id: str,
             *,
             restart_server: bool,
+            allow_abort: bool,
+            abort_mode: str,
         ) -> str:
             assert thread_id == "thread-123"
             assert restart_server is True
+            assert allow_abort is True
+            assert abort_mode == "switch"
             app._cwd = str(target)
             return "continue"
 
@@ -3217,11 +3223,11 @@ class TestResumeThread:
 
         await app._resume_thread("new-thread")
 
-        # In-session switches never offer abort — that is launch-time only.
-        # Exact-args match fails if `allow_abort=True` ever leaks in here.
         offer_cwd_switch.assert_awaited_once_with(
             "new-thread",
             restart_server=True,
+            allow_abort=True,
+            abort_mode="switch",
         )
         assert app._lc_thread_id == "new-thread"
         assert app._session_state.thread_id == "new-thread"

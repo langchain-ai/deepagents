@@ -263,37 +263,90 @@ def test_make_graph_populates_model_identity_settings(
     assert settings.model_unsupported_modalities == frozenset({"audio", "video"})
 
 
-def test_make_graph_pins_glm_reasoning_high(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "model_spec",
+    [
+        "fireworks:accounts/fireworks/models/glm-5p2",
+        "openrouter:z-ai/glm-5.2",
+        "baseten:zai-org/GLM-5.2",
+    ],
+)
+def test_make_graph_defaults_glm_reasoning_to_high(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model_spec: str
 ) -> None:
-    """make_graph pins GLM-5.2 reasoning to 'max' (nested model_kwargs), and only GLM."""
-    captured_init: list[dict[str, object]] = []
+    """`make_graph` defaults GLM-5.2 reasoning to `high` in nested model kwargs."""
+    captured_kwargs: list[dict[str, object]] = []
 
-    def fake_init_chat_model(model: str, **kwargs: object) -> object:
-        captured_init.append({"model": model, "kwargs": kwargs})
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
         return "chat-model"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
     monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
     monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
 
-    # GLM-5.2: reasoning_effort=high injected via nested model_kwargs.
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": model_spec,
+                "cwd": str(tmp_path),
+            }
+        }
+    )
+
+    assert captured_kwargs[0].get("model_kwargs") == {"reasoning_effort": "high"}
+
+
+def test_make_graph_preserves_explicit_glm_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
     langgraph_agent.make_graph(
         {
             "configurable": {
                 "model": "fireworks:accounts/fireworks/models/glm-5p2",
                 "cwd": str(tmp_path),
+                "model_kwargs": {"model_kwargs": {"reasoning_effort": "max"}},
             }
         }
     )
-    assert captured_init[0]["kwargs"].get("model_kwargs") == {"reasoning_effort": "max"}
 
-    # Non-GLM model: reasoning is NOT injected (shared harness stays untouched).
-    captured_init.clear()
+    assert captured_kwargs[0].get("model_kwargs") == {"reasoning_effort": "max"}
+
+
+def test_make_graph_leaves_non_glm_model_kwargs_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
     langgraph_agent.make_graph(
-        {"configurable": {"model": "anthropic:claude-x", "cwd": str(tmp_path)}}
+        {
+            "configurable": {
+                "model": "anthropic:claude-x",
+                "cwd": str(tmp_path),
+                "model_kwargs": {"temperature": 0.0},
+            }
+        }
     )
-    assert "model_kwargs" not in captured_init[0]["kwargs"]
+
+    assert captured_kwargs[0] == {"temperature": 0.0}
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:

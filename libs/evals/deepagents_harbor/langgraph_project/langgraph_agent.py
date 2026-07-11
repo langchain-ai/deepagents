@@ -207,15 +207,16 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model_spec = _model_name(configurable)
     model_kwargs = _model_kwargs(configurable)
-    # Experiment (for now): pin GLM-5.2's reasoning effort to "max" for the eval.
+    # Experiment (for now): default GLM-5.2's reasoning effort to "high" for the eval.
     # Fireworks GLM takes this as a nested `model_kwargs={"reasoning_effort": ...}`
     # on the model constructor (see dcode `reasoning_effort._fireworks_model_params`).
     # Gated to GLM-5.2 so the shared harness is unaffected for other models; an
     # explicit `configurable.model_kwargs` reasoning_effort still wins.
-    if "glm-5p2" in model_spec or "glm-5.2" in model_spec:
+    normalized_model_spec = model_spec.lower()
+    if "glm-5p2" in normalized_model_spec or "glm-5.2" in normalized_model_spec:
         nested = model_kwargs.setdefault("model_kwargs", {})
         if isinstance(nested, dict):
-            nested.setdefault("reasoning_effort", "max")
+            nested.setdefault("reasoning_effort", "high")
     model = init_chat_model(model_spec, **model_kwargs)
     # Feed the selected model into dcode's system-prompt `### Model Identity`
     # section (create_cli_agent -> get_system_prompt reads it from `settings`).

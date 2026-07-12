@@ -1,8 +1,11 @@
 """Unit tests for UI rendering utilities."""
 
 import argparse
+import io
+from unittest.mock import patch
 
 import pytest
+from rich.console import Console
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.tool_display import (
@@ -12,7 +15,28 @@ from deepagents_code.tool_display import (
     format_tool_message_content,
     truncate_value,
 )
-from deepagents_code.ui import non_negative_int, positive_int
+from deepagents_code.ui import non_negative_int, positive_int, show_mcp_login_help
+
+
+class TestMcpLoginHelp:
+    """Tests for the MCP login configuration guidance."""
+
+    def test_documents_configured_gmail_oauth_client(self) -> None:
+        """The help screen shows the supported Gmail OAuth configuration."""
+        buffer = io.StringIO()
+        console = Console(file=buffer, highlight=False, width=200)
+
+        with patch("deepagents_code.ui.console", console):
+            show_mcp_login_help()
+
+        output = buffer.getvalue()
+        assert "https://gmail.mcp.googleapis.com/mcp" in output
+        assert "${GMAIL_MCP_CLIENT_ID}" in output
+        assert "${GMAIL_MCP_CLIENT_SECRET}" in output
+        assert "${GMAIL_MCP_REDIRECT_URI}" in output
+        assert "http://localhost:8765/callback" in output
+        assert "non-loopback callbacks are not supported" in output
+        assert 'auth: "oauth"' in output
 
 
 class TestFormatTimeout:

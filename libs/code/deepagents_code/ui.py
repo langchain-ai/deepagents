@@ -633,10 +633,14 @@ def _print_mcp_discovery_paths() -> None:
 _MCP_CONFIG_FORMAT_EXAMPLE = """\
   {
     "mcpServers": {
-      "notion": {
+      "gmail": {
         "transport": "http",
-        "url": "https://mcp.notion.com/mcp",
-        "auth": "oauth"
+        "url": "https://gmail.mcp.googleapis.com/mcp",
+        "oauth": {
+          "clientId": "${GMAIL_MCP_CLIENT_ID}",
+          "clientSecret": "${GMAIL_MCP_CLIENT_SECRET}",
+          "redirectUri": "${GMAIL_MCP_REDIRECT_URI}"
+        }
       }
     }
   }"""
@@ -683,6 +687,25 @@ def show_mcp_login_help() -> None:
     console.print()
     console.print("[bold]Config format:[/bold]", style=theme.PRIMARY)
     console.print(_MCP_CONFIG_FORMAT_EXAMPLE, style=theme.MUTED)
+    console.print()
+    console.print("[bold]Google Gmail OAuth setup:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  Create a Web application OAuth client in Google Cloud and register the"
+        " exact callback URI http://localhost:8765/callback. Set"
+        " GMAIL_MCP_REDIRECT_URI to that same value.",
+    )
+    console.print(
+        "  dcode supports only http://localhost:<port>/callback redirects;"
+        " non-loopback callbacks are not supported.",
+    )
+    console.print(
+        "  Set GMAIL_MCP_CLIENT_ID and GMAIL_MCP_CLIENT_SECRET in your shell or"
+        " a user-only secret store. Do not commit configured credentials.",
+    )
+    console.print(
+        "  Existing remote servers using auth: \"oauth\" without an oauth block"
+        " remain supported.",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode mcp login notion")

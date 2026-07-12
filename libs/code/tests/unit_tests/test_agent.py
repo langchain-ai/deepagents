@@ -3293,6 +3293,97 @@ class TestCreateCliAgentInterpreterWiring:
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
 
+    @pytest.mark.parametrize(
+        ("model", "interactive", "auto_approve", "expected"),
+        [
+            (
+                "fireworks:accounts/fireworks/models/glm-5p2",
+                False,
+                True,
+                True,
+            ),
+            (
+                "fireworks:accounts/fireworks/models/glm-5p2",
+                True,
+                True,
+                False,
+            ),
+            (
+                "fireworks:accounts/fireworks/models/glm-5p2",
+                False,
+                False,
+                False,
+            ),
+            ("openai:gpt-5.5", False, True, False),
+        ],
+    )
+    def test_glm_completion_audit_requires_headless_auto_approve(
+        self,
+        tmp_path: Path,
+        *,
+        model: str,
+        interactive: bool,
+        auto_approve: bool,
+        expected: bool,
+    ) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        from deepagents_code._glm_5p2_completion import (
+            _GlmCompletionAuditMiddleware,
+        )
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            _, backend = create_cli_agent(
+                model=model,
+                assistant_id="test",
+                interactive=interactive,
+                auto_approve=auto_approve,
+                enable_ask_user=False,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=tmp_path,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware = kwargs["middleware"]
+        audits = [
+            item
+            for item in middleware
+            if isinstance(item, _GlmCompletionAuditMiddleware)
+        ]
+        assert bool(audits) is expected
+        if not expected:
+            return
+
+        assert len(audits) == 1
+        audit = audits[0]
+        assert audit._backend is backend
+        assert audit._working_dir == str(tmp_path)
+        audit_index = middleware.index(audit)
+        rubric_index = next(
+            index
+            for index, item in enumerate(middleware)
+            if isinstance(item, RubricMiddleware)
+        )
+        assert rubric_index == audit_index + 1
+
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()

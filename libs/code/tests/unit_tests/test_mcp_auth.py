@@ -1812,6 +1812,75 @@ class TestBuildOAuthProvider:
         assert str(stored.token_endpoint) == token_endpoint
         await flow.aclose()
 
+    async def test_configured_client_authorizes_before_unauthenticated_request(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Configured clients do not wait for a 401 issued only on tool calls."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("gmail", server_url="https://mcp.example.com/mcp")
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=storage,
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+            interactive=False,
+        )
+
+        async def _perform_authorization() -> httpx.Request:
+            return httpx.Request("POST", "https://auth.example/token")
+
+        monkeypatch.setattr(provider, "_perform_authorization", _perform_authorization)
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.example.com/mcp")
+        )
+
+        resource_metadata_request = await anext(flow)
+        authorization_metadata_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=resource_metadata_request,
+                json={
+                    "resource": "https://mcp.example.com/mcp",
+                    "authorization_servers": ["https://auth.example"],
+                    "scopes_supported": ["gmail.readonly", "gmail.modify"],
+                },
+            )
+        )
+        token_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=authorization_metadata_request,
+                json={
+                    "issuer": "https://auth.example",
+                    "authorization_endpoint": "https://auth.example/authorize",
+                    "token_endpoint": "https://auth.example/token",
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                },
+            )
+        )
+
+        assert str(token_request.url) == "https://auth.example/token"
+        request = await flow.asend(
+            httpx.Response(
+                200,
+                request=token_request,
+                json={"access_token": "new", "token_type": "Bearer"},
+            )
+        )
+
+        assert request.headers["Authorization"] == "Bearer new"
+        assert provider.context.client_metadata.scope == "gmail.readonly gmail.modify"
+        await flow.aclose()
+
     async def test_refresh_falls_back_when_preemptive_metadata_discovery_raises(
         self,
         fake_home: Path,

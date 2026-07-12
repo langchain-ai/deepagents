@@ -32,6 +32,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from filelock import FileLock, Timeout
 from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth.oauth2 import get_client_metadata_scopes
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
     build_protected_resource_metadata_discovery_urls,
@@ -1496,7 +1497,10 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             self.context.protocol_version = request.headers.get(MCP_PROTOCOL_VERSION)
             if (
                 not self.context.is_token_valid()
-                and self.context.can_refresh_token()
+                and (
+                    self.context.can_refresh_token()
+                    or self._configured_client_info is not None
+                )
                 and self.context.oauth_metadata is None
             ):
                 # Pre-empt the SDK's 401-path discovery so its refresh branch
@@ -1551,6 +1555,26 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         self.context.server_url,
                         type(exc).__name__,
                     )
+
+            if (
+                self._configured_client_info is not None
+                and not self.context.is_token_valid()
+                and self.context.protected_resource_metadata is not None
+                and self.context.oauth_metadata is not None
+            ):
+                # Some servers, including Google's Gmail MCP endpoint, allow
+                # unauthenticated initialization and tool discovery but require
+                # a bearer token for tool calls. A configured client has all
+                # credentials needed for authorization, so do not wait for a
+                # 401 challenge that will never occur during `mcp login`.
+                self.context.client_metadata.scope = get_client_metadata_scopes(
+                    None,
+                    self.context.protected_resource_metadata,
+                    self.context.oauth_metadata,
+                )
+                token_request = await self._perform_authorization()
+                token_response = yield token_request  # noqa: ASYNC119  # auth generator protocol
+                await self._handle_token_response(token_response)
 
             if (
                 not self.context.is_token_valid()

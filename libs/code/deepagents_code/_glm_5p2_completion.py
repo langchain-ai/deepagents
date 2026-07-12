@@ -49,12 +49,12 @@ logger = logging.getLogger(__name__)
 _COMPLETION_SOURCE = "glm_completion_editor"
 """Source tag attached to the bounded editor's final message."""
 
-_COMPLETION_RECURSION_LIMIT = 64
+_COMPLETION_RECURSION_LIMIT = 200
 _COMPLETION_PHASE_TIMEOUT_SECONDS = 240
 _REPAIR_MAX_EXECUTE_TIMEOUT = 30
 _EDITOR_MODEL_CALL_LIMIT = 20
 _EDITOR_TOOL_CALL_LIMIT = 24
-_EDITOR_EXECUTE_CALL_LIMIT = 6
+_EDITOR_EXECUTE_CALL_LIMIT = 12
 _FILESYSTEM_TOOL_DENIED = "Error: this filesystem operation is not available."
 _REPAIR_FAILURE_VERIFIED = (
     "The bounded repair encountered an error, but the workspace was verified "

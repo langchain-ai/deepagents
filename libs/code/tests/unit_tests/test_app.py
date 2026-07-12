@@ -3512,6 +3512,8 @@ class TestMessageQueue:
             chat = app._chat_input
             assert chat is not None
             chat.value = ""
+            # No visible output yet, so the gate must not suppress restore.
+            assert app._active_turn_visible_output_started is False
 
             with patch.object(app, "notify") as mock_notify:
                 app.action_interrupt()
@@ -3620,6 +3622,122 @@ class TestMessageQueue:
             assert chat.value == ""
             worker.cancel.assert_called_once()
             mock_notify.assert_not_called()
+
+    async def test_escape_after_visible_output_started_does_not_restore_prompt(
+        self,
+    ) -> None:
+        """Once output is visible, Esc interrupts without restoring the prompt."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            active = UserMessage("do the thing")
+            app._active_user_message = active
+            # Simulate the adapter reporting the first streamed output.
+            app._on_user_visible_output_started()
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == ""
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
+            mock_notify.assert_not_called()
+
+    async def test_ui_adapter_wires_visible_output_started_callback(self) -> None:
+        """The constructed adapter forwards output-started to the app handler.
+
+        Both halves of the gate are unit-tested in isolation; this pins the
+        seam at `_post_paint_init` so a dropped `on_user_visible_output_started`
+        kwarg cannot silently disable the feature while every other test stays
+        green.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            adapter = app._ui_adapter
+            assert adapter is not None
+            assert (
+                adapter._on_user_visible_output_started
+                == app._on_user_visible_output_started
+            )
+
+    async def test_interrupt_restores_before_cancelling_worker(self) -> None:
+        """Restore reads the gate before the worker's cleanup can reset it.
+
+        `_cleanup_agent_task` resets `_active_turn_visible_output_started` on the
+        worker's teardown, so `_restore_interrupted_message_to_input` must run
+        before `_cancel_worker`. Pin that order in `action_interrupt` rather than
+        leave it holding only by construction (a mock worker never triggers
+        cleanup, so an ordering regression would otherwise pass unnoticed).
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+            app._active_user_message = UserMessage("do the thing")
+
+            calls = MagicMock()
+            with (
+                patch.object(
+                    app, "_restore_interrupted_message_to_input", calls.restore
+                ),
+                patch.object(app, "_cancel_worker", calls.cancel),
+            ):
+                app.action_interrupt()
+
+            assert [call[0] for call in calls.mock_calls] == ["restore", "cancel"]
+
+    async def test_send_to_agent_resets_visible_output_started_flag(self) -> None:
+        """A fresh turn clears the output-started flag so Esc can restore again.
+
+        Without this reset the gate would be sticky: once any turn produced
+        output, every later turn's Esc-interrupt would stop restoring the
+        prompt. Closing the worker coroutine leaves the flag as `_send_to_agent`
+        set it, without running the turn.
+        """
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A prior turn produced output.
+            app._on_user_visible_output_started()
+            assert app._active_turn_visible_output_started is True
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("next question")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+            assert app._active_turn_visible_output_started is False
+
+    async def test_cleanup_agent_task_resets_visible_output_started_flag(self) -> None:
+        """Turn cleanup clears the output-started flag alongside its siblings.
+
+        Keeps the "False at turn start" invariant local rather than relying on
+        the start-of-turn reset being reached on every entry path.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._on_user_visible_output_started()
+        assert app._active_turn_visible_output_started is True
+
+        await app._cleanup_agent_task()
+
+        assert app._active_turn_visible_output_started is False
 
     async def test_escape_drains_queue_before_restoring_interrupted_prompt(
         self,

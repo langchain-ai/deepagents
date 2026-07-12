@@ -226,6 +226,81 @@ class TestLoadMCPConfig:
         with pytest.raises(ValueError, match="Authorization"):
             load_mcp_config(path)
 
+    @pytest.mark.parametrize(
+        "oauth",
+        [
+            {"clientId": "id", "clientSecret": "secret"},
+            {"clientId": "id", "clientSecret": "secret", "redirectUri": 1},
+            {"clientId": "id", "clientSecret": "secret", "redirectUri": "https://example.com/callback"},
+        ],
+    )
+    def test_load_config_rejects_invalid_configured_oauth_client(
+        self,
+        write_config: Callable[..., str],
+        oauth: dict[str, object],
+    ) -> None:
+        """Configured OAuth clients must be complete and use a local callback."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "gmail": {
+                        "type": "http",
+                        "url": "https://mcp.example.com/mcp",
+                        "oauth": oauth,
+                    }
+                }
+            }
+        )
+
+        with pytest.raises((TypeError, ValueError), match=r"oauth|redirectUri"):
+            load_mcp_config(path)
+
+    def test_load_config_defers_configured_oauth_interpolation(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Unset configured-client variables do not break unrelated config loading."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "gmail": {
+                        "type": "http",
+                        "url": "https://mcp.example.com/mcp",
+                        "oauth": {
+                            "clientId": "${GMAIL_CLIENT_ID}",
+                            "clientSecret": "${GMAIL_CLIENT_SECRET}",
+                            "redirectUri": "${GMAIL_REDIRECT_URI}",
+                        },
+                    }
+                }
+            }
+        )
+
+        assert "gmail" in load_mcp_config(path)["mcpServers"]
+
+    def test_load_config_rejects_configured_oauth_for_stdio_or_auth_header(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Configured credentials cannot be sent to local or header-auth servers."""
+        client = {
+            "clientId": "id",
+            "clientSecret": "secret",
+            "redirectUri": "http://localhost:8765/callback",
+        }
+        for server in (
+            {"command": "local", "oauth": client},
+            {
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer static"},
+                "oauth": client,
+            },
+        ):
+            path = write_config({"mcpServers": {"gmail": server}})
+            with pytest.raises(ValueError, match=r"OAuth|Authorization|stdio"):
+                load_mcp_config(path)
+
     def test_load_config_unset_header_env_var_defers_to_activation(
         self,
         write_config: Callable[..., str],
@@ -1318,6 +1393,48 @@ class TestLoadToolsFromConfigOAuth:
                         "transport": "http",
                         "url": "https://mcp.notion.com/mcp",
                         "auth": "oauth",
+                    }
+                }
+            }
+            tools, manager, _ = await _load_tools_from_config(config)
+
+        assert tools == []
+        assert isinstance(manager, MCPSessionManager)
+        assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+        await manager.cleanup()
+
+    async def test_configured_client_attaches_provider_without_saved_tokens(
+        self,
+    ) -> None:
+        """Configured OAuth clients load at runtime before the first login."""
+        from mcp.client.auth import OAuthClientProvider
+
+        recorded: list[dict[str, Any]] = []
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            recorded.append(connection)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            config = {
+                "mcpServers": {
+                    "gmail": {
+                        "transport": "http",
+                        "url": "https://mcp.example.com/mcp",
+                        "oauth": {
+                            "clientId": "configured-client",
+                            "clientSecret": "configured-secret",
+                            "redirectUri": "http://localhost:8765/callback",
+                        },
                     }
                 }
             }

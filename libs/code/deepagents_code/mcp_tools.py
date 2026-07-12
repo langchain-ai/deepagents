@@ -20,6 +20,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -556,7 +557,70 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
             )
             raise ValueError(msg)
 
+    oauth_config = server_config.get("oauth")
+    if oauth_config is not None:
+        if server_type == "stdio":
+            msg = (
+                f"Server '{server_name}' uses stdio transport; "
+                "configured OAuth clients are only valid for http/sse transports."
+            )
+            raise ValueError(msg)
+        if not isinstance(oauth_config, dict):
+            msg = f"Server '{server_name}' 'oauth' must be a dictionary"
+            raise TypeError(msg)
+        required_fields = {"clientId", "clientSecret", "redirectUri"}
+        actual_fields = set(oauth_config)
+        if actual_fields != required_fields:
+            missing = sorted(required_fields - actual_fields)
+            unexpected = sorted(actual_fields - required_fields)
+            details = []
+            if missing:
+                details.append(f"missing {', '.join(missing)}")
+            if unexpected:
+                details.append(f"unexpected {', '.join(unexpected)}")
+            msg = (
+                f"Server '{server_name}' 'oauth' must contain exactly "
+                f"clientId, clientSecret, and redirectUri ({'; '.join(details)})."
+            )
+            raise ValueError(msg)
+        for field, value in oauth_config.items():
+            if not isinstance(value, str):
+                msg = (
+                    f"Server '{server_name}' oauth.{field} must be a string, "
+                    f"got {type(value).__name__}"
+                )
+                raise TypeError(msg)
+        redirect_uri = oauth_config["redirectUri"]
+        if "${" not in redirect_uri and not _is_local_callback_uri(redirect_uri):
+            msg = (
+                f"Server '{server_name}' oauth.redirectUri must be an exact "
+                "http://localhost:<port>/callback URI."
+            )
+            raise ValueError(msg)
+        header_names = {name.lower() for name in (server_config.get("headers") or {})}
+        if "authorization" in header_names:
+            msg = (
+                f"Server '{server_name}' cannot combine configured OAuth "
+                "credentials with an 'Authorization' header."
+            )
+            raise ValueError(msg)
+
     _validate_tool_filter_fields(server_name, server_config)
+
+
+def _is_local_callback_uri(uri: str) -> bool:
+    """Return whether `uri` is a canonical configured OAuth callback URI."""
+    try:
+        parsed = urlparse(uri)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname == "localhost"
+        and port is not None
+        and uri == f"http://localhost:{port}/callback"
+    )
 
 
 def _validate_tool_filter_fields(
@@ -1680,7 +1744,7 @@ async def _load_tools_from_config(
                     )
                     return ("unauthenticated", auth_msg)
 
-                if explicit_oauth or (
+                if explicit_oauth or "oauth" in server_config or (
                     stored_tokens is not None and not has_authorization_header
                 ):
                     # Attach the provider when the user opted in, or when a
@@ -1691,6 +1755,7 @@ async def _load_tools_from_config(
                         server_name=server_name,
                         server_url=server_config["url"],
                         storage=storage,
+                        oauth_config=server_config.get("oauth"),
                         interactive=False,
                     )
 

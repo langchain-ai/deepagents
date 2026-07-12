@@ -90,6 +90,108 @@ class TestResolveHeaders:
         assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
 
 
+class TestConfiguredOAuthClient:
+    """Tests for static OAuth client configuration."""
+
+    def test_resolves_values_only_when_server_is_activated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Configured values expand at provider creation, not config loading."""
+        from deepagents_code.mcp_auth import resolve_oauth_client_config
+
+        config = {
+            "clientId": "${CLIENT_ID}",
+            "clientSecret": "${CLIENT_SECRET}",
+            "redirectUri": "${REDIRECT_URI}",
+        }
+        with pytest.raises(RuntimeError, match="unset env var"):
+            resolve_oauth_client_config(config, server_name="gmail")
+
+        monkeypatch.setenv("CLIENT_ID", "configured-client")
+        monkeypatch.setenv("CLIENT_SECRET", "configured-secret")
+        monkeypatch.setenv("REDIRECT_URI", "http://localhost:8765/callback")
+        client_info = resolve_oauth_client_config(config, server_name="gmail")
+
+        assert client_info.client_id == "configured-client"
+        assert client_info.token_endpoint_auth_method == "client_secret_post"
+
+    @pytest.mark.usefixtures("fake_home")
+    async def test_configured_client_overrides_storage_and_is_not_persisted(
+        self,
+    ) -> None:
+        """Static clients override DCR state without being written to disk."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("gmail", server_url="https://mcp.example.com/mcp")
+        await storage.set_client_info(_make_client_info())
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=storage,
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+            interactive=False,
+        )
+
+        await provider._initialize()
+
+        assert provider.context.client_info is not None
+        assert provider.context.client_info.client_id == "configured-client"
+        assert (
+            provider.context.client_info.token_endpoint_auth_method
+            == "client_secret_post"
+        )
+        assert "configured-secret" not in storage.path.read_text()
+
+    @pytest.mark.usefixtures("fake_home")
+    def test_configured_client_binds_its_registered_callback_port(self) -> None:
+        """Interactive login uses the exact configured loopback callback URI."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=FileTokenStorage("gmail"),
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+        )
+
+        assert [str(uri) for uri in provider.context.client_metadata.redirect_uris] == [
+            "http://localhost:8765/callback"
+        ]
+
+    @pytest.mark.usefixtures("fake_home")
+    async def test_configured_client_uses_secret_post_for_refresh(self) -> None:
+        """Configured clients include their secret in refresh-token exchanges."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("gmail", server_url="https://mcp.example.com/mcp")
+        await storage.set_tokens(_make_tokens())
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=storage,
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+            interactive=False,
+        )
+        await provider._initialize()
+
+        request = await provider._refresh_token()
+
+        assert b"client_secret=configured-secret" in request.content
+
+
 def _make_tokens(access_token: str = "at"):
     return OAuthToken(
         access_token=access_token,

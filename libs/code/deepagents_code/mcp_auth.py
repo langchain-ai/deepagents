@@ -41,7 +41,9 @@ from mcp.client.auth.utils import (
 )
 from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
 from mcp.shared.auth import (
+    AnyUrl,
     OAuthClientInformationFull,
+    OAuthClientMetadata,
     OAuthMetadata,
     OAuthToken,
 )
@@ -90,6 +92,9 @@ class McpServerSpec(TypedDict, total=False):
     auth: Literal["oauth"]
     """Authentication mode for remote MCP servers that require OAuth login."""
 
+    oauth: OAuthClientConfig
+    """Optional configured OAuth client credentials for a remote server."""
+
     type: Literal["stdio", "http", "sse"]
     """Transport type when the config uses the `type` key."""
 
@@ -110,6 +115,19 @@ class McpServerSpec(TypedDict, total=False):
 
     env: dict[str, str]
     """Environment overrides for launching a stdio MCP server."""
+
+
+class OAuthClientConfig(TypedDict):
+    """Configured OAuth client credentials for a remote MCP server."""
+
+    clientId: str
+    """OAuth client ID, optionally with `${VAR}` references."""
+
+    clientSecret: str
+    """OAuth client secret, optionally with `${VAR}` references."""
+
+    redirectUri: str
+    """Registered loopback callback URI, optionally with `${VAR}` references."""
 
 
 logger = logging.getLogger(__name__)
@@ -215,16 +233,79 @@ def resolve_headers(
             where = f"mcpServers.{server_name}.headers.{name}" if server_name else name
             msg = f"{where} must be a string, got {type(value).__name__}"
             raise TypeError(msg)
-        resolved[name] = _interpolate(value, header=name, server_name=server_name)
+        resolved[name] = _interpolate(
+            value,
+            field=f"headers.{name}",
+            server_name=server_name,
+        )
     return resolved
 
 
-def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
+def resolve_oauth_client_config(
+    config: OAuthClientConfig,
+    *,
+    server_name: str,
+) -> OAuthClientInformationFull:
+    """Resolve a configured OAuth client only when its server is activated.
+
+    Args:
+        config: Validated configured OAuth client values from MCP configuration.
+        server_name: Owning MCP server name for interpolation errors.
+
+    Returns:
+        Static client information for the OAuth authorization-code flow.
+
+    Raises:
+        ValueError: If interpolation produces a non-local callback URI.
+    """
+    redirect_uri = _interpolate(
+        config["redirectUri"],
+        field="oauth.redirectUri",
+        server_name=server_name,
+    )
+    if not _is_loopback_callback_uri(redirect_uri):
+        msg = (
+            f"mcpServers.{server_name}.oauth.redirectUri must be an exact "
+            "http://localhost:<port>/callback URI."
+        )
+        raise ValueError(msg)
+    return OAuthClientInformationFull(
+        client_id=_interpolate(
+            config["clientId"], field="oauth.clientId", server_name=server_name
+        ),
+        client_secret=_interpolate(
+            config["clientSecret"],
+            field="oauth.clientSecret",
+            server_name=server_name,
+        ),
+        redirect_uris=[AnyUrl(redirect_uri)],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        token_endpoint_auth_method="client_secret_post",  # noqa: S106  # OAuth method, not a secret
+    )
+
+
+def _is_loopback_callback_uri(uri: str) -> bool:
+    """Return whether `uri` is a canonical local OAuth callback URI."""
+    try:
+        parsed = urlparse(uri)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname == _LOOPBACK_URI_HOST
+        and port is not None
+        and uri == f"http://{_LOOPBACK_URI_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+    )
+
+
+def _interpolate(s: str, *, field: str, server_name: str | None) -> str:
     """Expand `${VAR}` references in `s` against the current environment.
 
     Args:
         s: Raw header value.
-        header: Header name, used in error messages.
+        field: Configuration field name, used in error messages.
         server_name: Owning server name for error messages.
 
     Returns:
@@ -239,7 +320,7 @@ def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
         val = os.environ.get(var_name)
         if val is None:
             where = (
-                f"mcpServers.{server_name}.headers.{header}" if server_name else header
+                f"mcpServers.{server_name}.{field}" if server_name else field
             )
             msg = (
                 f"{where} references unset env var {var_name}. "
@@ -1167,6 +1248,7 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._configured_client_info = kwargs.pop("configured_client_info", None)
         self._suppress_expected_reauth_logs = bool(
             kwargs.pop("suppress_expected_reauth_logs", False)
         )
@@ -1181,6 +1263,11 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         # fail loudly rather than silently regress to the 401-on-restart
         # bug this class exists to prevent.
         await super()._initialize()
+        if self._configured_client_info is not None:
+            # Configured credentials are intentionally not written to token
+            # storage. They also take precedence over an older DCR result for
+            # the same server URL, which may otherwise have been restored above.
+            self.context.client_info = self._configured_client_info
         await self._apply_stored_expiry()
 
     async def _apply_stored_expiry(self) -> None:
@@ -1248,9 +1335,12 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         whole identity+client token family.
         """
         self.context.current_tokens = await self.context.storage.get_tokens()
-        client_info = await self.context.storage.get_client_info()
-        if client_info is not None:
-            self.context.client_info = client_info
+        if self._configured_client_info is not None:
+            self.context.client_info = self._configured_client_info
+        else:
+            client_info = await self.context.storage.get_client_info()
+            if client_info is not None:
+                self.context.client_info = client_info
         await self._apply_stored_expiry()
 
     async def _acquire_refresh_lock(self, lock: FileLock) -> bool:
@@ -1510,6 +1600,7 @@ def build_oauth_provider(
     server_url: str,
     storage: TokenStorage,
     extra_auth_params: dict[str, str] | None = None,
+    oauth_config: OAuthClientConfig | None = None,
     interactive: bool = True,
     ui: OAuthInteraction | None = None,
 ) -> OAuthClientProvider:
@@ -1520,20 +1611,46 @@ def build_oauth_provider(
         server_url: Remote MCP server URL.
         storage: Token storage implementation for this server.
         extra_auth_params: Optional query params for the interactive auth URL.
+        oauth_config: Optional validated static OAuth client configuration.
         interactive: Whether the provider may prompt on stdin.
         ui: Interaction surface used for URL display and paste-back
             input in interactive mode.
 
     Returns:
         A configured `OAuthClientProvider`.
+
+    Raises:
+        ValueError: If configured callback validation fails.
     """
     from deepagents_code.mcp_providers import resolve_provider
 
     policy = resolve_provider(server_url)
+    configured_client_info = (
+        resolve_oauth_client_config(oauth_config, server_name=server_name)
+        if oauth_config is not None
+        else None
+    )
     redirect_uri: str | None = None
 
     if interactive:
-        if policy.supports_loopback_callback():
+        if configured_client_info is not None:
+            configured_redirect_uris = configured_client_info.redirect_uris
+            if not configured_redirect_uris:  # Constructed above with one URI.
+                msg = "Configured OAuth client has no redirect URI"
+                raise ValueError(msg)
+            configured_redirect_uri = str(configured_redirect_uris[0])
+            configured_port = urlparse(configured_redirect_uri).port
+            if configured_port is None:  # Validated config makes this unreachable.
+                msg = "Configured OAuth redirect URI has no port"
+                raise ValueError(msg)
+            callback_server = _LoopbackOAuthCallbackServer(port=configured_port)
+            redirect_uri = configured_redirect_uri
+            redirect, callback = _make_loopback_handlers(
+                callback_server=callback_server,
+                extra_auth_params=extra_auth_params,
+                ui=ui,
+            )
+        elif policy.supports_loopback_callback():
             fixed = policy.loopback_port()
             if fixed is not None:
                 port = fixed
@@ -1580,11 +1697,20 @@ def build_oauth_provider(
     else:
         redirect, callback = _make_reauth_required_handlers(server_name=server_name)
 
-    metadata = (
-        policy.client_metadata(redirect_uri=redirect_uri)
-        if redirect_uri is not None
-        else policy.client_metadata()
-    )
+    if configured_client_info is not None:
+        metadata = OAuthClientMetadata(
+            client_name="deepagents-code",
+            redirect_uris=configured_client_info.redirect_uris,
+            grant_types=configured_client_info.grant_types,
+            response_types=configured_client_info.response_types,
+            token_endpoint_auth_method="client_secret_post",  # noqa: S106  # OAuth method, not a secret
+        )
+    else:
+        metadata = (
+            policy.client_metadata(redirect_uri=redirect_uri)
+            if redirect_uri is not None
+            else policy.client_metadata()
+        )
 
     return _ExpiryAwareOAuthClientProvider(
         server_url=server_url,
@@ -1592,6 +1718,7 @@ def build_oauth_provider(
         storage=storage,
         redirect_handler=redirect,
         callback_handler=callback,
+        configured_client_info=configured_client_info,
         suppress_expected_reauth_logs=not interactive,
     )
 
@@ -1940,6 +2067,7 @@ async def login(
         server_url=server_config["url"],
         storage=storage,
         extra_auth_params=result.extra_auth_params or None,
+        oauth_config=server_config.get("oauth"),
         ui=ui,
     )
     conn: StreamableHttpConnection | SSEConnection

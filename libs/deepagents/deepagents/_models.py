@@ -54,7 +54,18 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     if isinstance(model, BaseChatModel):
         return model
 
-    return init_chat_model(model, **apply_provider_profile(model))
+    resolved = init_chat_model(model, **apply_provider_profile(model))
+    # OpenAI-compatible gateway clients reached via a custom base_url log LLM
+    # spans with null ls_provider/ls_model_name, so cost never resolves. Tag the
+    # resolved model's span metadata with the inspected provider (defaulting to
+    # "openai" for the gateway path) and effective model id so LangSmith can look
+    # up pricing.
+    provider = get_model_provider(resolved) or "openai"
+    model_id = get_model_identifier(resolved)
+    metadata = {key: value for key, value in {"ls_provider": provider, "ls_model_name": model_id}.items() if value}
+    if metadata:
+        resolved = resolved.with_config(metadata=metadata)
+    return resolved
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:

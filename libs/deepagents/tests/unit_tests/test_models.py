@@ -67,6 +67,17 @@ def _scrub_openrouter_allow_azure_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
 
 
+def _make_resolved_mock() -> MagicMock:
+    """Mock resolved model whose `with_config` returns itself.
+
+    `resolve_model` calls `.with_config` to attach LangSmith span metadata, so
+    the mock must return itself to keep identity assertions on the init result.
+    """
+    model = MagicMock(spec=BaseChatModel)
+    model.with_config.return_value = model
+    return model
+
+
 def _make_model(attrs: dict) -> MagicMock:
     """Create a mock BaseChatModel exposing `attrs` via attribute access.
 
@@ -90,7 +101,7 @@ class TestResolveModel:
 
     def test_openai_prefix_uses_responses_api(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
-            mock.return_value = MagicMock(spec=BaseChatModel)
+            mock.return_value = _make_resolved_mock()
             result = resolve_model("openai:gpt-5")
 
         mock.assert_called_once_with("openai:gpt-5", use_responses_api=True)
@@ -98,7 +109,7 @@ class TestResolveModel:
 
     def test_openrouter_prefix_sets_attribution(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
-            mock.return_value = MagicMock(spec=BaseChatModel)
+            mock.return_value = _make_resolved_mock()
             result = resolve_model("openrouter:anthropic/claude-sonnet-4-6")
 
         mock.assert_called_once_with(
@@ -111,7 +122,7 @@ class TestResolveModel:
 
     def test_nvidia_prefix_sets_billing_origin(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
-            mock.return_value = MagicMock(spec=BaseChatModel)
+            mock.return_value = _make_resolved_mock()
             result = resolve_model("nvidia:nvidia/nemotron-3-super-120b-a12b")
 
         mock.assert_called_once_with(
@@ -184,11 +195,23 @@ class TestResolveModel:
 
     def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
-            mock.return_value = MagicMock(spec=BaseChatModel)
+            mock.return_value = _make_resolved_mock()
             result = resolve_model("anthropic:claude-sonnet-4-6")
 
         mock.assert_called_once_with("anthropic:claude-sonnet-4-6")
         assert result is mock.return_value
+
+    def test_gateway_model_tags_ls_provider_and_model_name(self) -> None:
+        resolved = _make_model({"model_name": "gpt-5"})
+        resolved._get_ls_params = MagicMock(return_value={})
+        resolved.with_config.return_value = resolved
+        with patch("deepagents._models.init_chat_model", return_value=resolved):
+            result = resolve_model("openai:gpt-5")
+
+        assert result is resolved
+        _, kwargs = resolved.with_config.call_args
+        assert kwargs["metadata"]["ls_provider"] == "openai"
+        assert kwargs["metadata"]["ls_model_name"] == "gpt-5"
 
 
 class TestGetModelIdentifier:

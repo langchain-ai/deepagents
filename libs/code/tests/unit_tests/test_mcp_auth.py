@@ -2746,6 +2746,33 @@ class TestLogin:
         assert tokens is not None
         assert tokens.access_token == "new"
 
+    async def test_login_rejects_connection_that_does_not_save_a_token(self) -> None:
+        """A successful unauthenticated handshake must not report OAuth success."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        async def _fake_handshake(connections: dict) -> None:
+            del connections
+
+        with (
+            patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake),
+            pytest.raises(RuntimeError, match="no token was saved"),
+        ):
+            await login(
+                server_name="gmail",
+                server_config={
+                    "transport": "http",
+                    "url": "https://mcp.example.com/mcp",
+                    "auth": "oauth",
+                    "oauth": {
+                        "clientId": "configured-client",
+                        "clientSecret": "configured-secret",
+                        "redirectUri": "http://localhost:8765/callback",
+                    },
+                },
+                ui=CliOAuthInteraction(),
+            )
+
     async def test_login_rejects_stdio_server(self) -> None:
         """OAuth login is limited to HTTP/SSE transports."""
         from deepagents_code.mcp_auth import login
@@ -2770,7 +2797,12 @@ class TestLogin:
 
         async def _fake_handshake(connections: dict) -> None:
             await asyncio.sleep(0)
-            captured.update(next(iter(connections.values())))
+            server_name, connection = next(iter(connections.items()))
+            captured.update(connection)
+            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            await storage.set_tokens(
+                OAuthToken(access_token="new", token_type="Bearer")
+            )
 
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 

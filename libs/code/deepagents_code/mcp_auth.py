@@ -2047,7 +2047,7 @@ async def login(
         ValueError: If `server_config` isn't an http/sse server.
         RuntimeError: If header env-var interpolation fails, the device
             flow fails or times out, or the OAuth handshake aborts.
-    """  # noqa: DOC502 - `RuntimeError` surfaces via `resolve_headers` / `_run_device_flow`
+    """
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StreamableHttpConnection,
@@ -2115,4 +2115,12 @@ async def login(
         )
 
     await _drive_handshake({server_name: conn})
+    if await storage.get_tokens() is None:
+        msg = (
+            f"MCP server '{server_name}' completed the connection without starting "
+            "OAuth, so no token was saved. Verify the server URL: OAuth-protected "
+            "MCP servers must return an OAuth challenge before dcode can open the "
+            "authorization URL."
+        )
+        raise RuntimeError(msg)
     await ui.show_success(success_message)

@@ -43,6 +43,10 @@ CRITICAL: Match what the user asked for EXACTLY.
 - If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach. Walk through the chain of failures to find the root cause.
 - If steps are repeatedly failing, make note of what's going wrong and share an updated plan with the user.
 - Use tools and dependencies specified by the user or already present in the codebase. Don't substitute without asking.
+- Distinguish transient from non-transient tool errors before re-issuing a call:
+  - Transient failures (network glitch, timeout, HTTP 5xx / service unavailable) may be retried once with the same arguments.
+  - Non-transient failures (authorization/permission denied, "does not have permission", quota exceeded, API disabled or "has not been used in project ... or it is disabled", invalid credentials) must NOT be retried with identical arguments — retrying cannot fix them. Stop, surface the concrete remediation to the user (reauthorize, grant permission, or enable the API at the console URL the error names), and only re-issue the same call after the user confirms the underlying cause is resolved.
+  - Some tools (e.g. MCP tools) return these errors as ordinary tool-result content strings rather than a structured status/error field, so read the tool result text and infer failure from it.
 
 ## Tool Usage
 

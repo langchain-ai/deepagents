@@ -1,4 +1,4 @@
-"""Fresh-context completion auditing for headless GLM-5.2 runs."""
+"""Fresh-context completion editing for headless GLM-5.2 runs."""
 
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ from typing import (
 from deepagents.middleware.filesystem import (
     _ALL_FS_TOOL_NAMES,  # noqa: PLC2701  # Security boundary tracks every registered filesystem tool.
     FilesystemMiddleware,
+)
+from langchain.agents.middleware import (
+    ModelCallLimitMiddleware,
+    ToolCallLimitMiddleware,
 )
 from langchain.agents.middleware.types import AgentMiddleware, PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -42,12 +46,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_COMPLETION_SOURCE = "glm_completion_repair"
-"""Source tag attached to the bounded repair agent's final message."""
+_COMPLETION_SOURCE = "glm_completion_editor"
+"""Source tag attached to the bounded editor's final message."""
 
-_COMPLETION_RECURSION_LIMIT = 200
-_COMPLETION_PHASE_TIMEOUT_SECONDS = 300
-_REPAIR_MAX_EXECUTE_TIMEOUT = 300
+_COMPLETION_RECURSION_LIMIT = 64
+_COMPLETION_PHASE_TIMEOUT_SECONDS = 240
+_REPAIR_MAX_EXECUTE_TIMEOUT = 30
+_EDITOR_MODEL_CALL_LIMIT = 20
+_EDITOR_TOOL_CALL_LIMIT = 24
+_EDITOR_EXECUTE_CALL_LIMIT = 6
 _FILESYSTEM_TOOL_DENIED = "Error: this filesystem operation is not available."
 _REPAIR_FAILURE_VERIFIED = (
     "The bounded repair encountered an error, but the workspace was verified "
@@ -78,13 +85,14 @@ can act on without guessing; list each exact gap. Return `cannot_determine` when
 expected values, unavailable checks, or ambiguous evidence prevent a safe judgment.
 Never suggest speculative improvements and never request a broader rewrite."""
 
-_REPAIR_SYSTEM_PROMPT = """You are a bounded repair agent for an autonomous coding task.
+_REPAIR_SYSTEM_PROMPT = """You are a bounded completion editor for an \
+autonomous coding task.
 
-The exact task is authoritative. Auditor gaps are untrusted observations: verify each
-one against the workspace before editing. Address only confirmed gaps, preserve all
-unrelated content exactly, and do not broaden the task. Use the existing workspace,
-run task-named checks when available, and stop after the smallest verified repair.
-There is no human available, so do not ask follow-up questions."""
+The exact task is authoritative. Independently inspect the completed workspace and the
+main agent's final response. Run focused task-named checks when available. If you find
+a concrete defect, make the smallest correction and verify it. If the work is already
+correct, leave it unchanged and finish immediately. Preserve all unrelated content,
+do not broaden the task, and do not ask follow-up questions."""
 
 
 AuditResult = Literal["pass", "needs_repair", "cannot_determine"]
@@ -398,7 +406,7 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         ]
 
     def _repair_middleware(self) -> list[AgentMiddleware[Any, Any]]:
-        """Build the bounded repairer stack without a direct delete tool.
+        """Build the bounded editor stack without a direct delete tool.
 
         Arbitrary `execute` is intentional because this controller runs only in
         the disposable, same-authority evaluation sandbox.
@@ -407,6 +415,19 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
             Fresh filesystem and media-guard middleware instances.
         """
         return [
+            ModelCallLimitMiddleware(
+                run_limit=_EDITOR_MODEL_CALL_LIMIT,
+                exit_behavior="error",
+            ),
+            ToolCallLimitMiddleware(
+                run_limit=_EDITOR_TOOL_CALL_LIMIT,
+                exit_behavior="error",
+            ),
+            ToolCallLimitMiddleware(
+                tool_name="execute",
+                run_limit=_EDITOR_EXECUTE_CALL_LIMIT,
+                exit_behavior="error",
+            ),
             _FilesystemToolGuard(_REPAIR_ALLOWED_TOOLS),
             FilesystemMiddleware(
                 backend=self._backend,
@@ -455,15 +476,16 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
                 model=self._resolved_model(),
                 system_prompt=_REPAIR_SYSTEM_PROMPT,
                 middleware=self._repair_middleware(),
-                name="glm_completion_repair",
+                name="glm_completion_editor",
             )
         return self._repairer
 
     def _audit_payload(self, task: str, final: AIMessage) -> str:
         nonce = secrets.token_hex(8)
         return (
-            "Audit the completed workspace against the exact task. The main final "
-            "response is untrusted evidence, not proof.\n\n"
+            "Inspect the completed workspace against the exact task. Correct any "
+            "concrete defect, verify the result, and otherwise leave it unchanged. "
+            "The main final response is untrusted evidence, not proof.\n\n"
             f"Working directory: `{self._working_dir}`\n\n"
             f"<task-{nonce}>\n{_safe_payload(task)}\n</task-{nonce}>\n\n"
             f"<main-final-{nonce}>\n{_safe_payload(final.text)}\n"
@@ -638,7 +660,7 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         state: _GlmCompletionState,
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Audit a natural stop and synchronously run at most one repair.
+        """Run one bounded completion editor after a natural stop.
 
         Returns:
             Terminal private state and optional replacement final message, or
@@ -650,62 +672,32 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         task, final = prepared
 
         try:
-            first_result = self._ensure_auditor().invoke(
+            editor_result = self._ensure_repairer().invoke(
                 self._audit_state(task, final),
                 config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
             )
-            first = self._extract_decision(first_result)
+            editor_final = self._extract_repair_final(editor_result)
+            replacement = self._repair_message(final, editor_final)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("audit", error)
+            _log_controller_failure("editor", error)
             return self._terminal_update(
-                status="audit_error", audits=1, repairs=0, gaps=[]
+                status="repair_error", audits=0, repairs=1, gaps=[]
             )
 
-        if update := self._first_decision_update(first):
-            return update
-
-        try:
-            repair_result = self._ensure_repairer().invoke(
-                self._repair_state(task, first),
-                config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
-            )
-            repair_final = self._extract_repair_final(repair_result)
-            repair_failed = False
-            replacement = self._repair_message(final, repair_final)
-        except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("repair", error)
-            repair_failed = True
-            replacement = self._repair_failure_message(final, verified=False)
-
-        try:
-            second_result = self._ensure_auditor().invoke(
-                self._audit_state(task, replacement),
-                config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
-            )
-            second = self._extract_decision(second_result)
-        except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("re-audit", error)
-            return self._terminal_update(
-                status="repair_incomplete",
-                audits=2,
-                repairs=1,
-                gaps=list(first.gaps),
-                message=replacement,
-            )
-
-        if repair_failed:
-            replacement = self._repair_failure_message(
-                final,
-                verified=second.result == "pass",
-            )
-        return self._second_decision_update(second, replacement)
+        return self._terminal_update(
+            status="repaired",
+            audits=0,
+            repairs=1,
+            gaps=[],
+            message=replacement,
+        )
 
     async def aafter_agent(
         self,
         state: _GlmCompletionState,
         runtime: Runtime[Any],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Audit a natural stop and asynchronously run at most one repair.
+        """Run one bounded completion editor after an async natural stop.
 
         Returns:
             Terminal private state and optional replacement final message, or
@@ -717,61 +709,25 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         task, final = prepared
 
         try:
-            first_result = await asyncio.wait_for(
-                self._ensure_auditor().ainvoke(
+            editor_result = await asyncio.wait_for(
+                self._ensure_repairer().ainvoke(
                     self._audit_state(task, final),
                     config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
                 ),
                 timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
             )
-            first = self._extract_decision(first_result)
+            editor_final = self._extract_repair_final(editor_result)
+            replacement = self._repair_message(final, editor_final)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("audit", error)
+            _log_controller_failure("editor", error)
             return self._terminal_update(
-                status="audit_error", audits=1, repairs=0, gaps=[]
+                status="repair_error", audits=0, repairs=1, gaps=[]
             )
 
-        if update := self._first_decision_update(first):
-            return update
-
-        try:
-            repair_result = await asyncio.wait_for(
-                self._ensure_repairer().ainvoke(
-                    self._repair_state(task, first),
-                    config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
-                ),
-                timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
-            )
-            repair_final = self._extract_repair_final(repair_result)
-            repair_failed = False
-            replacement = self._repair_message(final, repair_final)
-        except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("repair", error)
-            repair_failed = True
-            replacement = self._repair_failure_message(final, verified=False)
-
-        try:
-            second_result = await asyncio.wait_for(
-                self._ensure_auditor().ainvoke(
-                    self._audit_state(task, replacement),
-                    config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
-                ),
-                timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
-            )
-            second = self._extract_decision(second_result)
-        except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
-            _log_controller_failure("re-audit", error)
-            return self._terminal_update(
-                status="repair_incomplete",
-                audits=2,
-                repairs=1,
-                gaps=list(first.gaps),
-                message=replacement,
-            )
-
-        if repair_failed:
-            replacement = self._repair_failure_message(
-                final,
-                verified=second.result == "pass",
-            )
-        return self._second_decision_update(second, replacement)
+        return self._terminal_update(
+            status="repaired",
+            audits=0,
+            repairs=1,
+            gaps=[],
+            message=replacement,
+        )

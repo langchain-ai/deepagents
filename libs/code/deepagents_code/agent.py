@@ -1820,8 +1820,8 @@ def create_cli_agent(
     )
 
     # GLM-5.2 can end long headless tasks with analysis or an unchecked artifact.
-    # In fully auto-approved mode, give its natural stop to an isolated read-only
-    # auditor and allow at most one fresh, bounded repair pass. This is installed
+    # In fully auto-approved mode, give its natural stop to one fresh, bounded
+    # completion editor that may verify and correct the workspace. This is installed
     # immediately before RubricMiddleware so the reverse-order `after_agent`
     # chain lets an explicit caller rubric finish first; the controller itself
     # also no-ops whenever a rubric is present.

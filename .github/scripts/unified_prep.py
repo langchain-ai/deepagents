@@ -5,10 +5,11 @@ buckets specs by provider, clamps shard_parallel to satisfy the two
 concurrency invariants, maps each category to its Harbor dataset, and emits
 per-provider matrices to GITHUB_OUTPUT.
 
-Invariants (see docs/superpowers/specs/2026-07-10-unified-evals-ci-design.md §6):
+Concurrency invariants:
   per model:  concurrency * shard_parallel <= 40
   global:     num_providers * shard_parallel <= 64
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -19,13 +20,22 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import models  # noqa: E402  (models.py in same dir)
+import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
 
 MAX_TASKS_PER_MODEL = 40
 MAX_RUNNERS = 64
 
 KNOWN_PROVIDERS = {
-    "anthropic", "baseten", "fireworks", "google_genai", "groq",
-    "nvidia", "ollama", "openai", "openrouter", "xai",
+    "anthropic",
+    "baseten",
+    "fireworks",
+    "google_genai",
+    "groq",
+    "nvidia",
+    "ollama",
+    "openai",
+    "openrouter",
+    "xai",
 }
 
 CATEGORY_MAP: dict[str, dict] = {
@@ -50,6 +60,39 @@ CATEGORY_MAP: dict[str, dict] = {
 }
 
 DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
+
+
+def parse_int_input(
+    name: str,
+    raw: str,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
+    """Parse an integer input constrained to an inclusive range.
+
+    Args:
+        name: Input name to include in validation errors.
+        raw: Raw input value.
+        minimum: Smallest accepted value.
+        maximum: Largest accepted value, or `None` for no upper bound.
+
+    Returns:
+        The parsed integer.
+
+    Raises:
+        SystemExit: If `raw` is not an integer in the accepted range.
+    """
+    accepted_range = f"{minimum}..{maximum}" if maximum is not None else f">= {minimum}"
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        msg = f"{name} must be an integer in {accepted_range}, got {raw!r}"
+        raise SystemExit(msg) from None
+    if value < minimum or (maximum is not None and value > maximum):
+        msg = f"{name} must be an integer in {accepted_range}, got {raw!r}"
+        raise SystemExit(msg)
+    return value
 
 
 def slugify(spec: str) -> str:
@@ -95,6 +138,8 @@ def build_provider_matrices(
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
                 "agent_impl": cm["agent_impl"],
+                # Per-model datasets isolate runs; unified_summary is the
+                # cross-model comparison surface.
                 "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
                 "n_shards": n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat]),
                 "shard_parallel": shard_parallel,
@@ -128,22 +173,34 @@ def main(argv: list[str] | None = None) -> int:
             if c.strip()
         )
     )
-    concurrency = int(os.environ.get("UNIFIED_CONCURRENCY", "4"))
-    requested_sp = int(os.environ.get("UNIFIED_SHARD_PARALLEL", "10"))
+    concurrency = parse_int_input(
+        "UNIFIED_CONCURRENCY",
+        os.environ.get("UNIFIED_CONCURRENCY", "4"),
+        minimum=1,
+        maximum=MAX_TASKS_PER_MODEL,
+    )
+    requested_sp = parse_int_input(
+        "UNIFIED_SHARD_PARALLEL",
+        os.environ.get("UNIFIED_SHARD_PARALLEL", "10"),
+        minimum=1,
+    )
     n_shards_by_cat = {
-        "autonomous": int(os.environ.get("UNIFIED_N_SHARDS_AUTONOMOUS", DEFAULT_N_SHARDS["autonomous"])),
-        "conversation": int(os.environ.get("UNIFIED_N_SHARDS_CONVERSATION", DEFAULT_N_SHARDS["conversation"])),
-        "context": int(os.environ.get("UNIFIED_N_SHARDS_CONTEXT", DEFAULT_N_SHARDS["context"])),
+        category: parse_int_input(
+            f"UNIFIED_N_SHARDS_{category.upper()}",
+            os.environ.get(f"UNIFIED_N_SHARDS_{category.upper()}", str(default)),
+            minimum=1,
+            maximum=shard_matrix.MAX_SHARDS,
+        )
+        for category, default in DEFAULT_N_SHARDS.items()
     }
 
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
     if unknown:
-        raise SystemExit(f"Unknown categor(y/ies): {unknown}. Valid: {sorted(CATEGORY_MAP)}")
-    if concurrency < 1 or concurrency > MAX_TASKS_PER_MODEL:
-        raise SystemExit(f"concurrency must be 1..{MAX_TASKS_PER_MODEL}, got {concurrency}")
-
+        raise SystemExit(
+            f"Unknown categor(y/ies): {unknown}. Valid: {sorted(CATEGORY_MAP)}"
+        )
     # Validate + dedupe the free-form CSV via the shared resolver.
     try:
         model_specs = models._resolve_models("harbor", selection)
@@ -158,16 +215,19 @@ def main(argv: list[str] | None = None) -> int:
             seen.add(p)
             providers_present.append(p)
 
-    shard_parallel = clamp_shard_parallel(requested_sp, len(providers_present), concurrency)
+    shard_parallel = clamp_shard_parallel(
+        requested_sp, len(providers_present), concurrency
+    )
     # clamp guarantees both invariants; assert as a safety net.
     assert concurrency * shard_parallel <= MAX_TASKS_PER_MODEL
     assert len(providers_present) * shard_parallel <= MAX_RUNNERS
 
-    matrices = build_provider_matrices(model_specs, categories, shard_parallel, n_shards_by_cat)
+    matrices = build_provider_matrices(
+        model_specs, categories, shard_parallel, n_shards_by_cat
+    )
 
     outputs: dict[str, object] = {
         "effective_shard_parallel": str(shard_parallel),
-        "providers": providers_present,
         # The expected grid, so the combiner can flag missing/incomplete leaves
         # instead of silently ranking a model on fewer categories.
         "models": model_specs,

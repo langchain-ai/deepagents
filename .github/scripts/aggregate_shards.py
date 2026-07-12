@@ -219,12 +219,14 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
     shard cannot inflate the scores:
       - pass@K: fraction of present tasks with at least one observed passing trial
         (a task that ran fewer than K rollouts still passes iff it passed once).
-      - avg@K: passing trials / (present tasks * rollouts) -- the denominator is
-        the EXPECTED trial count, not the number of results that happened to land.
+      - avg@K: passing trials, capped at K per task, divided by
+        (present tasks * rollouts). The denominator is the EXPECTED trial count,
+        and duplicated rollouts cannot inflate the score above 1.
     """
     per_task: list[dict] = []
     passk_sum = 0.0
     total_trials = total_passed = total_errored = 0
+    capped_passed = 0
 
     for task in sorted(by_task):
         n = by_task[task]["trials"]
@@ -232,6 +234,7 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
         errored = by_task[task]["errored"]
         total_trials += n
         total_passed += c
+        capped_passed += min(c, rollouts)
         total_errored += errored
 
         # A task passes @K iff it has >=1 observed pass; missing rollouts can only
@@ -250,10 +253,10 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
 
     n_tasks = len(by_task)
     dataset_passk = round(passk_sum / n_tasks, 6) if n_tasks else None
-    # Denominator is the expected trial count (tasks * rollouts) so missing
-    # rollouts count as failures rather than being dropped from the average.
+    # Missing rollouts count as failures through the expected denominator, while
+    # per-task capping prevents duplicated rollouts from inflating the numerator.
     expected_trials = n_tasks * rollouts
-    avg_at_k = round(total_passed / expected_trials, 6) if expected_trials else None
+    avg_at_k = round(capped_passed / expected_trials, 6) if expected_trials else None
     totals = {
         "tasks": n_tasks,
         "trials": total_trials,
@@ -317,7 +320,11 @@ def render_step_summary(summary: dict) -> str:
     totals = summary["totals"]
     lines.append(
         f"- Tasks: {totals['tasks']} | Trials: {totals['trials']}"
-        + (f" / {totals['expected_trials']} expected" if totals.get("expected_trials") else "")
+        + (
+            f" / {totals['expected_trials']} expected"
+            if totals.get("expected_trials")
+            else ""
+        )
         + f" | Passed: {totals['passed']} | Errored: {totals['errored']}"
     )
     if summary.get("skipped_files"):
@@ -331,8 +338,12 @@ def render_step_summary(summary: dict) -> str:
     passk = summary.get(f"pass@{k}")
     avgk = summary.get(f"avg@{k}")
     lines.extend(["", "| metric | value |", "|---|---|"])
-    lines.append(f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |")
-    lines.append(f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |")
+    lines.append(
+        f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |"
+    )
+    lines.append(
+        f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -370,7 +381,10 @@ def _incomplete_reason(
     if shard_shortfall:
         reasons.append(f"only {shards_found}/{expected_shards} shards reported")
     if count_mismatch:
-        reasons.append(f"trials {totals['trials']}/{totals['expected_trials']}")
+        reasons.append(
+            "per-task rollout counts differ from K "
+            f"(trials {totals['trials']}/{totals['expected_trials']})"
+        )
     if skipped_files:
         reasons.append(f"{skipped_files} unreadable result file(s)")
     if malformed_rewards:
@@ -393,7 +407,9 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Where to write summary.json and per_task.jsonl (default: root).",
     )
-    parser.add_argument("--dataset", default=None, help="Dataset ref, recorded in the summary.")
+    parser.add_argument(
+        "--dataset", default=None, help="Dataset ref, recorded in the summary."
+    )
     parser.add_argument(
         "--model",
         default=None,
@@ -441,7 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
     shard_failure = args.harbor_result not in (None, "", "success")
     # Fewer shards than the caller declared (only checkable when it passes a count).
-    shard_shortfall = args.expected_shards is not None and shards_found < args.expected_shards
+    shard_shortfall = (
+        args.expected_shards is not None and shards_found < args.expected_shards
+    )
     # Files we found but couldn't trust: a lost result deflates the scores.
     data_loss = agg.skipped_files > 0 or agg.malformed_rewards > 0
 
@@ -457,7 +475,13 @@ def main(argv: list[str] | None = None) -> int:
             skipped_files=agg.skipped_files,
             harbor_result=args.harbor_result,
             incomplete=incomplete,
-            totals={"tasks": 0, "trials": 0, "expected_trials": 0, "passed": 0, "errored": 0},
+            totals={
+                "tasks": 0,
+                "trials": 0,
+                "expected_trials": 0,
+                "passed": 0,
+                "errored": 0,
+            },
             pass_at_k=None,
             avg_at_k=None,
         )
@@ -493,7 +517,9 @@ def main(argv: list[str] | None = None) -> int:
     # Incomplete if a shard job failed, a shard is missing, a present task ran a
     # number of trials other than K (missing OR duplicated rollouts), or a result
     # was unreadable / had a non-numeric reward.
-    count_mismatch = parts.totals["trials"] != parts.totals["expected_trials"]
+    count_mismatch = any(
+        stats["trials"] != args.rollouts for stats in agg.by_task.values()
+    )
     incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
     summary = make_summary(
         dataset=args.dataset,

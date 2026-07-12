@@ -32,6 +32,14 @@ on:
       sandbox_env:
         type: string
         default: "langsmith"
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
+        type: boolean
+        default: false
+      harbor_package_override:
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -111,6 +119,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-baseten:
     needs: prep
@@ -133,6 +143,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-fireworks:
     needs: prep
@@ -155,6 +167,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-google_genai:
     needs: prep
@@ -177,6 +191,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-groq:
     needs: prep
@@ -199,6 +215,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-nvidia:
     needs: prep
@@ -221,6 +239,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-ollama:
     needs: prep
@@ -243,6 +263,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-openai:
     needs: prep
@@ -265,6 +287,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-openrouter:
     needs: prep
@@ -287,6 +311,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-xai:
     needs: prep
@@ -309,6 +335,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   eval-other:
     needs: prep
@@ -331,6 +359,8 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
 
   combine:
     name: "📊 Combine cross-model results"
@@ -370,8 +400,29 @@ jobs:
 
       - name: "⬇️ Download leaf summaries"
         run: |
-          gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir _leaves \
-            || echo "::warning::No harbor-* artifacts found for this run."
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No harbor-* artifacts matched; combining an empty set."
+              break
+            fi
+            echo "Leaf download attempt ${attempt} failed:"
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Leaf download failed after ${attempt} attempts (not an empty-artifact case)."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
 
       - name: "📊 Combine"
         env:
@@ -399,6 +450,7 @@ jobs:
             --title "Deep Agents Unified Evals"
 
       - name: "📤 Upload combined results"
+        if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unified-combined

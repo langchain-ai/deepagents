@@ -102,6 +102,8 @@ jobs:
               # tests that validate it — otherwise the change skips its guard.
               - '.github/workflows/evals.yml'
               - '.github/workflows/harbor.yml'
+              - '.github/workflows/_harbor_run.yml'
+              - '.github/workflows/unified_evals.yml'
               - '.github/workflows/clbench.yml'
               - '.github/workflows/evals_trials.yml'
               - '.github/workflows/_eval.yml'

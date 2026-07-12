@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import aggregate_shards as agg
+import aggregate_unified as unified
 
 
 def _write_trial(
@@ -71,21 +72,31 @@ def test_aggregate_and_summary(tmp_path: Path):
     # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
     assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
     assert totals == {
-        "tasks": 3, "trials": 9, "expected_trials": 9, "passed": 4, "errored": 0,
+        "tasks": 3,
+        "trials": 9,
+        "expected_trials": 9,
+        "passed": 4,
+        "errored": 0,
     }
     # avg@K: passing trials / expected trials = 4 / (3 tasks * 3 rollouts) = 4/9.
     assert abs(avg_at_k - 4 / 9) < 1e-6
     assert len(per_task) == 3
     # per-task pass@K is a scalar under a dynamic "pass@{K}" key.
     assert {r["task"]: r["pass@3"] for r in per_task} == {
-        "taskA": 1.0, "taskB": 0.0, "taskC": 1.0,
+        "taskA": 1.0,
+        "taskB": 0.0,
+        "taskC": 1.0,
     }
 
 
 def test_errored_and_missing_count_as_fail(tmp_path: Path):
     _write_trial(tmp_path / "t__0", "taskX", reward=1.0)
-    _write_trial(tmp_path / "t__1", "taskX", errored=True)      # exception -> fail + errored
-    _write_trial(tmp_path / "t__2", "taskX", reward=None)       # no verifier reward -> fail + errored
+    _write_trial(
+        tmp_path / "t__1", "taskX", errored=True
+    )  # exception -> fail + errored
+    _write_trial(
+        tmp_path / "t__2", "taskX", reward=None
+    )  # no verifier reward -> fail + errored
     by_task = agg.aggregate(tmp_path).by_task
     assert by_task["taskX"] == {"trials": 3, "passed": 1, "errored": 2}
 
@@ -100,18 +111,26 @@ def test_end_to_end_writes_files(tmp_path: Path):
     _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
     _write_trial(tmp_path / "a__1", "taskA", reward=0.0)
     out = tmp_path / "out"
-    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out), "--dataset", "ds/x"])
+    rc = agg.main(
+        [str(tmp_path), "--rollouts", "2", "--out-dir", str(out), "--dataset", "ds/x"]
+    )
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
     assert summary["dataset"] == "ds/x"
     assert summary["model"] == "m1"
     assert summary["totals"] == {
-        "tasks": 1, "trials": 2, "expected_trials": 2, "passed": 1, "errored": 0,
+        "tasks": 1,
+        "trials": 2,
+        "expected_trials": 2,
+        "passed": 1,
+        "errored": 0,
     }
     assert summary["pass@2"] == 1.0  # pass@2: taskA passed at least once
     assert summary["avg@2"] == 0.5  # 1 passing trial of 2 expected
     assert summary["incomplete"] is False  # 2 trials == 2 expected, no shard gate
-    rows = [json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()
+    ]
     assert rows == [
         {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass@2": 1.0}
     ]
@@ -138,7 +157,15 @@ def test_shard_failure_flags_incomplete(tmp_path: Path):
     _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
     out = tmp_path / "out"
     rc = agg.main(
-        [str(tmp_path), "--rollouts", "2", "--harbor-result", "failure", "--out-dir", str(out)]
+        [
+            str(tmp_path),
+            "--rollouts",
+            "2",
+            "--harbor-result",
+            "failure",
+            "--out-dir",
+            str(out),
+        ]
     )
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
@@ -153,7 +180,15 @@ def test_filtered_run_with_success_is_not_incomplete(tmp_path: Path):
     _write_trial(tmp_path / "a__1", "taskA", reward=0.0)
     out = tmp_path / "out"
     rc = agg.main(
-        [str(tmp_path), "--rollouts", "2", "--harbor-result", "success", "--out-dir", str(out)]
+        [
+            str(tmp_path),
+            "--rollouts",
+            "2",
+            "--harbor-result",
+            "success",
+            "--out-dir",
+            str(out),
+        ]
     )
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
@@ -279,7 +314,53 @@ def test_duplicate_rollouts_flag_incomplete(tmp_path: Path):
     summary = json.loads((out / "summary.json").read_text())
     assert summary["totals"]["trials"] == 2
     assert summary["totals"]["expected_trials"] == 1
+    assert summary["totals"]["passed"] == 2
+    assert summary["avg@1"] == 1.0
     assert summary["incomplete"] is True  # trials != expected
+
+
+def test_duplicate_rollout_summary_is_accepted_by_unified_aggregator(
+    tmp_path: Path,
+):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
+    out = tmp_path / "out"
+    agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--out-dir",
+            str(out),
+            "--model",
+            "m1",
+            "--category",
+            "context",
+        ]
+    )
+
+    leaf = unified.read_leaf(out, expected_rollouts=1)
+
+    assert leaf["model"] == "m1"
+    assert leaf["category"] == "context"
+    assert leaf["avg_at_k"] == 1.0
+    assert leaf["incomplete"] is True
+
+
+def test_per_task_rollout_mismatches_do_not_cancel(tmp_path: Path):
+    for index in range(3):
+        _write_trial(tmp_path / f"a__{index}", "taskA", reward=1.0)
+    _write_trial(tmp_path / "b__0", "taskB", reward=1.0)
+    out = tmp_path / "out"
+
+    agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["totals"]["trials"] == 4
+    assert summary["totals"]["expected_trials"] == 4
+    assert summary["totals"]["passed"] == 4
+    assert summary["avg@2"] == 0.75
+    assert summary["incomplete"] is True
 
 
 def test_expected_shards_shortfall_flags_incomplete(tmp_path: Path):
@@ -290,10 +371,14 @@ def test_expected_shards_shortfall_flags_incomplete(tmp_path: Path):
     agg.main(
         [
             str(tmp_path),
-            "--rollouts", "2",
-            "--expected-shards", "3",
-            "--harbor-result", "success",
-            "--out-dir", str(out),
+            "--rollouts",
+            "2",
+            "--expected-shards",
+            "3",
+            "--harbor-result",
+            "success",
+            "--out-dir",
+            str(out),
         ]
     )
     summary = json.loads((out / "summary.json").read_text())
@@ -326,7 +411,9 @@ if __name__ == "__main__":
     import tempfile
     import traceback
 
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+    tests = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
     failures = 0
     for test in tests:
         try:
@@ -348,8 +435,19 @@ def test_model_and_category_recorded_authoritatively(tmp_path: Path):
     # Empty root (the all-errored / null-model case): --model/--category are still
     # recorded, so downstream tooling never sees a null model label.
     out = tmp_path / "out"
-    rc = agg.main([str(tmp_path), "--rollouts", "1", "--out-dir", str(out),
-                   "--model", "openai:gpt-5.6-luna", "--category", "autonomous"])
+    rc = agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--out-dir",
+            str(out),
+            "--model",
+            "openai:gpt-5.6-luna",
+            "--category",
+            "autonomous",
+        ]
+    )
     assert rc == 0
     summary = json.loads((out / "summary.json").read_text())
     assert summary["model"] == "openai:gpt-5.6-luna"

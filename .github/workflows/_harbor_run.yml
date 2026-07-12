@@ -100,6 +100,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(inputs.shard_parallel) }}
@@ -109,6 +112,7 @@ jobs:
       run:
         working-directory: libs/evals
     env:
+      UV_NO_SYNC: "true"
       HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
       HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
@@ -179,7 +183,8 @@ jobs:
             xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
             nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
             *)
-              echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
+              echo "::error::Unsupported model provider: $model_provider"
+              exit 1
               ;;
           esac
 
@@ -718,17 +723,21 @@ jobs:
         env:
           SHARD_PATTERN: shard-${{ steps.slug.outputs.slug }}-*
         run: |
-          mkdir -p _shards
           attempt=1
           while :; do
-            if gh run download "$RUN_ID" --repo "$REPO" --pattern "$SHARD_PATTERN" --dir _shards >dl.log 2>&1; then
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern "$SHARD_PATTERN" --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _shards
               break
             fi
-            if grep -qi 'no artifact' dl.log; then
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _shards
               echo "::warning::No ${SHARD_PATTERN} artifacts matched; aggregating an empty set."
               break
             fi
             echo "Shard download attempt ${attempt} failed:"; cat dl.log
+            rm -rf "$attempt_dir"
             if [ "$attempt" -ge 3 ]; then
               echo "::error::Shard download failed after ${attempt} attempts (not an empty-artifact case)."
               exit 1

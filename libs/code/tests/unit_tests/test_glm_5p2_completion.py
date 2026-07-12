@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -65,6 +66,24 @@ class _FakeAgent:
         """Record and return the next asynchronous result."""
         self.calls.append((state, config))
         return self._next()
+
+
+class _NeverReturningAgent:
+    """Async runnable that waits until its caller cancels it."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+
+    async def ainvoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record the call and wait forever."""
+        self.calls.append((state, config))
+        await asyncio.Event().wait()
+        msg = "unreachable"
+        raise AssertionError(msg)
 
 
 def _decision(
@@ -671,8 +690,11 @@ def test_high_confidence_failure_runs_one_fresh_repair_and_reaudit() -> None:
     assert update["_glm_completion_gaps"] == []
     assert len(auditor.calls) == 2
     assert len(repairer.calls) == 1
-    assert auditor.calls[0][1] == {"recursion_limit": 12}
-    assert repairer.calls[0][1] == {"recursion_limit": 30}
+    assert [config for _, config in auditor.calls] == [
+        {"recursion_limit": 200},
+        {"recursion_limit": 200},
+    ]
+    assert repairer.calls[0][1] == {"recursion_limit": 200}
     messages = update["messages"]
     assert len(messages) == 1
     assert isinstance(messages[0], AIMessage)
@@ -952,6 +974,44 @@ async def test_async_path_runs_one_repair_and_reaudit() -> None:
     assert update["_glm_completion_repairs"] == 1
     assert len(auditor.calls) == 2
     assert len(repairer.calls) == 1
+    assert [config for _, config in auditor.calls] == [
+        {"recursion_limit": 200},
+        {"recursion_limit": 200},
+    ]
+    assert repairer.calls[0][1] == {"recursion_limit": 200}
+
+
+async def test_async_audit_phase_timeout_is_contained(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    middleware = _middleware()
+    auditor = _NeverReturningAgent()
+    repairer = _FakeAgent([])
+    middleware._auditor = cast("Any", auditor)
+    middleware._repairer = cast("Any", repairer)
+    monkeypatch.setattr(
+        "deepagents_code._glm_5p2_completion._COMPLETION_PHASE_TIMEOUT_SECONDS",
+        0.001,
+        raising=False,
+    )
+
+    with caplog.at_level("WARNING", logger="deepagents_code._glm_5p2_completion"):
+        update = await asyncio.wait_for(
+            middleware.aafter_agent(
+                cast("Any", _prepared_state(middleware)), cast("Any", None)
+            ),
+            timeout=0.1,
+        )
+
+    assert update is not None
+    assert update["_glm_completion_status"] == "audit_error"
+    assert update["_glm_completion_audits"] == 1
+    assert update["_glm_completion_repairs"] == 0
+    assert "TimeoutError" not in str(update)
+    assert "Traceback" not in caplog.text
+    assert repairer.calls == []
+    assert auditor.calls[0][1] == {"recursion_limit": 200}
 
 
 def test_graph_replaces_the_natural_final_with_the_fresh_repair() -> None:

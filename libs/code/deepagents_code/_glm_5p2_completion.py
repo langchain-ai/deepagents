@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 _COMPLETION_SOURCE = "glm_completion_repair"
 """Source tag attached to the bounded repair agent's final message."""
 
-_AUDIT_RECURSION_LIMIT = 12
-_REPAIR_RECURSION_LIMIT = 30
+_COMPLETION_RECURSION_LIMIT = 200
+_COMPLETION_PHASE_TIMEOUT_SECONDS = 300
 _REPAIR_MAX_EXECUTE_TIMEOUT = 300
 _FILESYSTEM_TOOL_DENIED = "Error: this filesystem operation is not available."
 _REPAIR_FAILURE_VERIFIED = (
@@ -651,7 +652,7 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         try:
             first_result = self._ensure_auditor().invoke(
                 self._audit_state(task, final),
-                config={"recursion_limit": _AUDIT_RECURSION_LIMIT},
+                config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
             )
             first = self._extract_decision(first_result)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
@@ -666,7 +667,7 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         try:
             repair_result = self._ensure_repairer().invoke(
                 self._repair_state(task, first),
-                config={"recursion_limit": _REPAIR_RECURSION_LIMIT},
+                config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
             )
             repair_final = self._extract_repair_final(repair_result)
             repair_failed = False
@@ -679,7 +680,7 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         try:
             second_result = self._ensure_auditor().invoke(
                 self._audit_state(task, replacement),
-                config={"recursion_limit": _AUDIT_RECURSION_LIMIT},
+                config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
             )
             second = self._extract_decision(second_result)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
@@ -716,9 +717,12 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
         task, final = prepared
 
         try:
-            first_result = await self._ensure_auditor().ainvoke(
-                self._audit_state(task, final),
-                config={"recursion_limit": _AUDIT_RECURSION_LIMIT},
+            first_result = await asyncio.wait_for(
+                self._ensure_auditor().ainvoke(
+                    self._audit_state(task, final),
+                    config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
+                ),
+                timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
             )
             first = self._extract_decision(first_result)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.
@@ -731,9 +735,12 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
             return update
 
         try:
-            repair_result = await self._ensure_repairer().ainvoke(
-                self._repair_state(task, first),
-                config={"recursion_limit": _REPAIR_RECURSION_LIMIT},
+            repair_result = await asyncio.wait_for(
+                self._ensure_repairer().ainvoke(
+                    self._repair_state(task, first),
+                    config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
+                ),
+                timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
             )
             repair_final = self._extract_repair_final(repair_result)
             repair_failed = False
@@ -744,9 +751,12 @@ class _GlmCompletionAuditMiddleware(AgentMiddleware[_GlmCompletionState]):
             replacement = self._repair_failure_message(final, verified=False)
 
         try:
-            second_result = await self._ensure_auditor().ainvoke(
-                self._audit_state(task, replacement),
-                config={"recursion_limit": _AUDIT_RECURSION_LIMIT},
+            second_result = await asyncio.wait_for(
+                self._ensure_auditor().ainvoke(
+                    self._audit_state(task, replacement),
+                    config={"recursion_limit": _COMPLETION_RECURSION_LIMIT},
+                ),
+                timeout=_COMPLETION_PHASE_TIMEOUT_SECONDS,
             )
             second = self._extract_decision(second_result)
         except Exception as error:  # noqa: BLE001  # Contain agent boundary failures.

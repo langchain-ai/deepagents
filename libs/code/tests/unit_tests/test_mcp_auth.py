@@ -1881,6 +1881,53 @@ class TestBuildOAuthProvider:
         assert provider.context.client_metadata.scope == "gmail.readonly gmail.modify"
         await flow.aclose()
 
+    async def test_configured_client_discovers_resource_metadata_when_auth_is_cached(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cached auth metadata does not skip resource discovery or authorization."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("gmail", server_url="https://mcp.example.com/mcp")
+        await storage.set_oauth_metadata(_make_oauth_metadata())
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=storage,
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+            interactive=False,
+        )
+
+        async def _perform_authorization() -> httpx.Request:
+            return httpx.Request("POST", "https://auth.example/token")
+
+        monkeypatch.setattr(provider, "_perform_authorization", _perform_authorization)
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.example.com/mcp")
+        )
+
+        resource_metadata_request = await anext(flow)
+        token_request = await flow.asend(
+            httpx.Response(
+                200,
+                request=resource_metadata_request,
+                json={
+                    "resource": "https://mcp.example.com/mcp",
+                    "authorization_servers": ["https://auth.example"],
+                    "scopes_supported": ["gmail.readonly"],
+                },
+            )
+        )
+
+        assert str(token_request.url) == "https://auth.example/token"
+        await flow.aclose()
+
     async def test_refresh_falls_back_when_preemptive_metadata_discovery_raises(
         self,
         fake_home: Path,

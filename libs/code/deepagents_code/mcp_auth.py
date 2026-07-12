@@ -1495,57 +1495,68 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             if not self._initialized:
                 await self._initialize()
             self.context.protocol_version = request.headers.get(MCP_PROTOCOL_VERSION)
-            if (
-                not self.context.is_token_valid()
-                and (
+            if not self.context.is_token_valid() and (
+                (
                     self.context.can_refresh_token()
-                    or self._configured_client_info is not None
+                    and self.context.oauth_metadata is None
                 )
-                and self.context.oauth_metadata is None
+                or (
+                    self._configured_client_info is not None
+                    and (
+                        self.context.protected_resource_metadata is None
+                        or self.context.oauth_metadata is None
+                    )
+                )
             ):
                 # Pre-empt the SDK's 401-path discovery so its refresh branch
                 # finds populated `oauth_metadata` and uses the advertised token
                 # endpoint instead of guessing `/token`. The resource-metadata
                 # URL is `None`: no 401 yet, so no `WWW-Authenticate` to read.
                 try:
-                    prm_urls = build_protected_resource_metadata_discovery_urls(
-                        None,
-                        self.context.server_url,
-                    )
-                    for url in prm_urls:
-                        # ASYNC119: yielding the request to receive its response is
-                        # this auth generator's handshake protocol, not a value
-                        # escaping a context manager.
-                        response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
-                        prm = await handle_protected_resource_response(response)
-                        if prm is None:
-                            logger.debug(
-                                "Protected resource metadata discovery failed: %s",
-                                url,
+                    if self.context.protected_resource_metadata is None:
+                        prm_urls = build_protected_resource_metadata_discovery_urls(
+                            None,
+                            self.context.server_url,
+                        )
+                        for url in prm_urls:
+                            # ASYNC119: yielding the request to receive its response is
+                            # this auth generator's handshake protocol, not a value
+                            # escaping a context manager.
+                            response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
+                            prm = await handle_protected_resource_response(response)
+                            if prm is None:
+                                logger.debug(
+                                    "Protected resource metadata discovery failed: %s",
+                                    url,
+                                )
+                                continue
+                            self.context.protected_resource_metadata = prm
+                            self.context.auth_server_url = str(
+                                prm.authorization_servers[0]
                             )
-                            continue
-                        self.context.protected_resource_metadata = prm
-                        self.context.auth_server_url = str(prm.authorization_servers[0])
-                        break
-
-                    asm_urls = build_oauth_authorization_server_metadata_discovery_urls(
-                        self.context.auth_server_url,
-                        self.context.server_url,
-                    )
-                    for url in asm_urls:
-                        # ASYNC119: yielding the request to receive its response is
-                        # this auth generator's handshake protocol, not a value
-                        # escaping a context manager.
-                        response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
-                        ok, metadata = await handle_auth_metadata_response(response)
-                        if not ok:
                             break
-                        if metadata is None:
-                            logger.debug("OAuth metadata discovery failed: %s", url)
-                            continue
-                        self.context.oauth_metadata = metadata
-                        await self._persist_oauth_metadata()
-                        break
+
+                    if self.context.oauth_metadata is None:
+                        asm_urls = (
+                            build_oauth_authorization_server_metadata_discovery_urls(
+                                self.context.auth_server_url,
+                                self.context.server_url,
+                            )
+                        )
+                        for url in asm_urls:
+                            # ASYNC119: yielding the request to receive its response is
+                            # this auth generator's handshake protocol, not a value
+                            # escaping a context manager.
+                            response = yield create_oauth_metadata_request(url)  # noqa: ASYNC119
+                            ok, metadata = await handle_auth_metadata_response(response)
+                            if not ok:
+                                break
+                            if metadata is None:
+                                logger.debug("OAuth metadata discovery failed: %s", url)
+                                continue
+                            self.context.oauth_metadata = metadata
+                            await self._persist_oauth_metadata()
+                            break
                 except httpx.HTTPError as exc:
                     # Log only the exception type, never its payload — discovery
                     # responses travel the same channel as bearer tokens.

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "deepagents-code"
 version = "0.1.36"
-description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
+description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
@@ -33,7 +33,7 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.2,<1.0.0",
     "langgraph-cli[inmem]>=0.4.30,<1.0.0",
-    "langgraph-runtime-inmem>=0.30.0,<1.0.0",
+    "langgraph-runtime-inmem>=0.31.0,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional

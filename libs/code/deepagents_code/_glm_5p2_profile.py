@@ -51,8 +51,10 @@ validate it with task-specific non-visual checks.
 
 Create the requested artifact first when the task asks for a file, patch, report, or \
 other deliverable. Then inspect and refine the artifact itself; do not substitute a \
-long explanation for the requested output. Treat supplied inputs as immutable and \
-preserve their fidelity. Write derived outputs separately unless the user explicitly \
+long explanation for the requested output. Treat supplied or fetched source-of-truth \
+data as authoritative: apply only transformations the task explicitly requests, \
+preserve everything else exactly, and compare the final artifact against that source \
+or its stated allowlist. Write derived outputs separately unless the user explicitly \
 requests an in-place change, and retain exact names, values, ordering, and formatting \
 that the task makes significant.
 

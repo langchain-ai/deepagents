@@ -281,6 +281,16 @@ class TaskToolSchema(BaseModel):
 
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
 
+    fork: bool = Field(
+        default=False,
+        description=(
+            "If True, the subagent starts with the full conversation history so far "
+            "instead of just this description. Use when the subagent needs context "
+            "from earlier in the conversation that would be costly or lossy to restate. "
+            "Only available if the harness has enabled forking for this agent."
+        ),
+    )
+
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
 
@@ -297,6 +307,7 @@ When using the Task tool, you must specify a subagent_type parameter to select w
 5. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
 6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
 7. When only the general-purpose agent is provided, you should use it for all tasks. It is great for isolating context and token usage, and completing specific, complex tasks, as it has all the same capabilities as the main agent.
+8. Set `fork=True` when the subagent needs context from earlier in the conversation that would be costly or lossy to restate in `description` (e.g. continuing a long investigation, or referencing attachments from an earlier message). Only available if enabled for this agent; if not, `fork=True` is rejected and you should retry with `fork` omitted or set to `False`.
 
 ### Example usage of the general-purpose agent:
 
@@ -534,6 +545,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
+    allow_fork: bool = False,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -544,6 +556,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
+        allow_fork: Whether the task tool's `fork=True` option is honored.
+            When `False` (the default), a `fork=True` call is rejected with
+            a tool error instead of being invoked.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -659,23 +674,32 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_type: str,
         description: str,
         runtime: ToolRuntime,
+        *,
+        fork: bool = False,
     ) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        subagent_state["messages"] = [HumanMessage(content=description)]
+        if fork:
+            subagent_state["messages"] = [*runtime.state["messages"], HumanMessage(content=description)]
+        else:
+            subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
     def task(
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        fork: bool = False,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+        if fork and not allow_fork:
+            return "The `fork` parameter is not enabled for this agent's task tool. Call again with `fork` omitted or set to `False`."
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -683,6 +707,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             subagent_type,
             description,
             runtime,
+            fork=fork,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -700,10 +725,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        fork: bool = False,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
             return f"We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed_types}"
+        if fork and not allow_fork:
+            return "The `fork` parameter is not enabled for this agent's task tool. Call again with `fork` omitted or set to `False`."
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
@@ -711,6 +740,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             subagent_type,
             description,
             runtime,
+            fork=fork,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -764,6 +794,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Leave unset to use `create_agent`'s default. `CompiledSubAgent`
             entries are unaffected — callers own those runnables' schemas.
+        allow_fork: Whether the `task` tool accepts `fork=True`, which starts
+            a subagent with the parent's full conversation history instead of
+            just the task description. Defaults to `False`: subagents stay
+            isolated by default, and a `fork=True` call is rejected with a
+            tool error unless this is set.
 
     Example:
         ```python
@@ -800,6 +835,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
+        allow_fork: bool = False,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -812,6 +848,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
+        self._allow_fork = allow_fork
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -821,6 +858,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
+            allow_fork=self._allow_fork,
         )
 
         # Build system prompt with available agents
@@ -845,6 +883,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description=self._task_description,
             private_state_keys=value,
             state_schema=self._state_schema,
+            allow_fork=self._allow_fork,
         )
         self.tools = [task_tool]
 

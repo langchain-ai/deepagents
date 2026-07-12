@@ -506,3 +506,175 @@ class TestSubagentMiddlewareInit:
         )
         # This would error if the middleware was accumulated incorrectly
         assert agent is not None
+
+
+class _CapturingRunnable:
+    """Fake compiled-subagent runnable that records the state it was invoked with."""
+
+    def __init__(self) -> None:
+        self.received_state: dict[str, Any] | None = None
+
+    def with_config(self, config: dict[str, object]) -> "_CapturingRunnable":
+        del config
+        return self
+
+    def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+        del config
+        self.received_state = dict(state)
+        return {"messages": [AIMessage(content="done")]}
+
+    async def ainvoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+        del config
+        self.received_state = dict(state)
+        return {"messages": [AIMessage(content="done")]}
+
+
+class TestTaskToolFork:
+    """Tests for the `task` tool's opt-in `fork` parameter (deepagents#4668)."""
+
+    def _runtime(self, task_tool: object, tool_call_id: str, state: dict[str, object]) -> ToolRuntime:
+        return ToolRuntime(
+            state=state,
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id=tool_call_id,
+            store=None,
+        )
+
+    def test_task_fork_inherits_parent_messages(self) -> None:
+        """With `allow_fork=True` and `fork=True`, the subagent sees the parent's prior messages plus the new description."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+            allow_fork=True,
+        )
+        task_tool = middleware.tools[0]
+        prior_messages = [HumanMessage(content="first"), AIMessage(content="second")]
+
+        task_tool.func(
+            description="Continue the investigation.",
+            subagent_type="worker",
+            runtime=self._runtime(task_tool, "call_fork", {"messages": prior_messages}),
+            fork=True,
+        )
+
+        assert capturing.received_state is not None
+        assert capturing.received_state["messages"] == [
+            *prior_messages,
+            HumanMessage(content="Continue the investigation."),
+        ]
+
+    async def test_task_afork_inherits_parent_messages(self) -> None:
+        """Async equivalent: `atask` with `fork=True` inherits the parent's prior messages."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+            allow_fork=True,
+        )
+        task_tool = middleware.tools[0]
+        prior_messages = [HumanMessage(content="first"), AIMessage(content="second")]
+
+        await task_tool.coroutine(
+            description="Continue the investigation.",
+            subagent_type="worker",
+            runtime=self._runtime(task_tool, "call_afork", {"messages": prior_messages}),
+            fork=True,
+        )
+
+        assert capturing.received_state is not None
+        assert capturing.received_state["messages"] == [
+            *prior_messages,
+            HumanMessage(content="Continue the investigation."),
+        ]
+
+    def test_task_fork_false_is_isolated_by_default(self) -> None:
+        """`fork` omitted (or `False`) preserves the existing isolated behavior exactly."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+            allow_fork=True,
+        )
+        task_tool = middleware.tools[0]
+        prior_messages = [HumanMessage(content="first"), AIMessage(content="second")]
+
+        task_tool.func(
+            description="Do the task.",
+            subagent_type="worker",
+            runtime=self._runtime(task_tool, "call_no_fork", {"messages": prior_messages}),
+        )
+
+        assert capturing.received_state is not None
+        assert capturing.received_state["messages"] == [HumanMessage(content="Do the task.")]
+
+    def test_task_fork_rejected_when_not_allowed(self) -> None:
+        """`fork=True` against a middleware with default `allow_fork=False` is a clear tool error, not a silent no-op."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+        )
+        task_tool = middleware.tools[0]
+
+        result = task_tool.func(
+            description="Do the task.",
+            subagent_type="worker",
+            runtime=self._runtime(task_tool, "call_rejected", {"messages": [HumanMessage(content="first")]}),
+            fork=True,
+        )
+
+        assert isinstance(result, str)
+        assert "fork" in result.lower()
+        assert capturing.received_state is None
+
+    async def test_task_afork_rejected_when_not_allowed(self) -> None:
+        """Async equivalent: `atask` with `fork=True` against default `allow_fork=False` is a clear tool error."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+        )
+        task_tool = middleware.tools[0]
+
+        result = await task_tool.coroutine(
+            description="Do the task.",
+            subagent_type="worker",
+            runtime=self._runtime(task_tool, "call_arejected", {"messages": [HumanMessage(content="first")]}),
+            fork=True,
+        )
+
+        assert isinstance(result, str)
+        assert "fork" in result.lower()
+        assert capturing.received_state is None
+
+    def test_task_fork_respects_private_state_keys(self) -> None:
+        """Forked history still has `private_state_keys` stripped, same as the non-fork path."""
+        capturing = _CapturingRunnable()
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[{"name": "worker", "description": "Does work.", "runnable": capturing}],
+            allow_fork=True,
+            private_state_keys=frozenset({"secret_field"}),
+        )
+        task_tool = middleware.tools[0]
+        prior_messages = [HumanMessage(content="first")]
+
+        task_tool.func(
+            description="Continue.",
+            subagent_type="worker",
+            runtime=self._runtime(
+                task_tool,
+                "call_private",
+                {"messages": prior_messages, "secret_field": "top-secret", "public_field": "visible"},
+            ),
+            fork=True,
+        )
+
+        assert capturing.received_state is not None
+        assert "secret_field" not in capturing.received_state
+        assert capturing.received_state["public_field"] == "visible"
+        assert capturing.received_state["messages"] == [*prior_messages, HumanMessage(content="Continue.")]

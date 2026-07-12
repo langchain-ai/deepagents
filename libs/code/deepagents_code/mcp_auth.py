@@ -745,6 +745,10 @@ class _LoopbackCallbackUnavailableError(RuntimeError):
     """Raised when the local callback server cannot be started."""
 
 
+class _AuthorizationChallengeMissingError(RuntimeError):
+    """Raised when a server completes login without requesting authorization."""
+
+
 def _choose_loopback_port() -> int:
     """Return a high local TCP port candidate without opening a socket.
 
@@ -1893,6 +1897,7 @@ def format_login_failure(exc: BaseException) -> str:
     safe_types = (
         _LoopbackCallbackTimeoutError,
         _LoopbackCallbackUnavailableError,
+        _AuthorizationChallengeMissingError,
     )
     if isinstance(exc, safe_types):
         return f"{type(exc).__name__}: {exc}"
@@ -2045,8 +2050,8 @@ async def login(
 
     Raises:
         ValueError: If `server_config` isn't an http/sse server.
-        RuntimeError: If header env-var interpolation fails, the device
-            flow fails or times out, or the OAuth handshake aborts.
+        _AuthorizationChallengeMissingError: If the server completes a
+            connection without starting an authorization flow.
     """
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
@@ -2122,5 +2127,5 @@ async def login(
             "MCP servers must return an OAuth challenge before dcode can open the "
             "authorization URL."
         )
-        raise RuntimeError(msg)
+        raise _AuthorizationChallengeMissingError(msg)
     await ui.show_success(success_message)

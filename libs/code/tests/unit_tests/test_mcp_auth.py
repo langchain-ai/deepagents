@@ -1534,6 +1534,18 @@ class TestFormatLoginFailure:
         assert "Callback timed out" in summary
         assert "_LoopbackCallbackTimeoutError" in summary
 
+    def test_includes_message_for_missing_authorization_challenge(self) -> None:
+        """Missing authorization challenges have a safe remediation message."""
+        from deepagents_code.mcp_auth import _AuthorizationChallengeMissingError
+
+        exc = _AuthorizationChallengeMissingError(
+            "Server did not request authorization"
+        )
+
+        assert format_login_failure(exc) == (
+            "_AuthorizationChallengeMissingError: Server did not request authorization"
+        )
+
     def test_walks_cause_chain_into_class_names(self) -> None:
         """A chained unknown exception still surfaces every link's class name."""
 

@@ -618,7 +618,7 @@ def _is_local_callback_uri(uri: str) -> bool:
     return (
         parsed.scheme == "http"
         and parsed.hostname == "localhost"
-        and port is not None
+        and port not in {None, 0}
         and uri == f"http://localhost:{port}/callback"
     )
 
@@ -1744,8 +1744,10 @@ async def _load_tools_from_config(
                     )
                     return ("unauthenticated", auth_msg)
 
-                if explicit_oauth or "oauth" in server_config or (
-                    stored_tokens is not None and not has_authorization_header
+                if (
+                    explicit_oauth
+                    or "oauth" in server_config
+                    or (stored_tokens is not None and not has_authorization_header)
                 ):
                     # Attach the provider when the user opted in, or when a
                     # prior login (possibly triggered by 401 auto-detection)

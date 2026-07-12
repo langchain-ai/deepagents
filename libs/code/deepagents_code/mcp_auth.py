@@ -319,9 +319,7 @@ def _interpolate(s: str, *, field: str, server_name: str | None) -> str:
         var_name = match.group(1)
         val = os.environ.get(var_name)
         if val is None:
-            where = (
-                f"mcpServers.{server_name}.{field}" if server_name else field
-            )
+            where = f"mcpServers.{server_name}.{field}" if server_name else field
             msg = (
                 f"{where} references unset env var {var_name}. "
                 f"Set {var_name} in the environment or remove the reference."
@@ -420,6 +418,21 @@ class FileTokenStorage(TokenStorage):
             data["expires_at"] = time.time() + tokens.expires_in
         else:
             data.pop("expires_at", None)
+        self._write(data)
+
+    async def clear_tokens(self) -> None:
+        """Remove stored tokens while preserving public OAuth state.
+
+        A configured OAuth client cannot reuse tokens issued to a different
+        client ID. Keep the prior registration and discovered metadata so the
+        token file remains structurally valid, but require a fresh grant for
+        the configured client.
+        """
+        data = self._read()
+        if data is None:
+            return
+        data.pop("tokens", None)
+        data.pop("expires_at", None)
         self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
@@ -1267,6 +1280,17 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             # Configured credentials are intentionally not written to token
             # storage. They also take precedence over an older DCR result for
             # the same server URL, which may otherwise have been restored above.
+            if (
+                self.context.client_info is not None
+                and self.context.client_info.client_id
+                != self._configured_client_info.client_id
+            ):
+                # Tokens are issued to a client, not merely a server URL. Do
+                # not let an existing DCR token suppress authorization for the
+                # configured client or later fail its refresh grant.
+                self.context.clear_tokens()
+                if isinstance(self.context.storage, FileTokenStorage):
+                    await self.context.storage.clear_tokens()
             self.context.client_info = self._configured_client_info
         await self._apply_stored_expiry()
 

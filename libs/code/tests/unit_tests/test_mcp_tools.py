@@ -231,7 +231,16 @@ class TestLoadMCPConfig:
         [
             {"clientId": "id", "clientSecret": "secret"},
             {"clientId": "id", "clientSecret": "secret", "redirectUri": 1},
-            {"clientId": "id", "clientSecret": "secret", "redirectUri": "https://example.com/callback"},
+            {
+                "clientId": "id",
+                "clientSecret": "secret",
+                "redirectUri": "https://example.com/callback",
+            },
+            {
+                "clientId": "id",
+                "clientSecret": "secret",
+                "redirectUri": "http://localhost:0/callback",
+            },
         ],
     )
     def test_load_config_rejects_invalid_configured_oauth_client(

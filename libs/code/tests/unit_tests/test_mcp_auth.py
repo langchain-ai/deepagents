@@ -19,6 +19,7 @@ from mcp.shared.auth import OAuthToken
 from deepagents_code.mcp_auth import (
     FileTokenStorage,
     MCPReauthRequiredError,
+    OAuthClientConfig,
     find_oauth_challenge,
     find_reauth_required,
     format_login_failure,
@@ -100,7 +101,7 @@ class TestConfiguredOAuthClient:
         """Configured values expand at provider creation, not config loading."""
         from deepagents_code.mcp_auth import resolve_oauth_client_config
 
-        config = {
+        config: OAuthClientConfig = {
             "clientId": "${CLIENT_ID}",
             "clientSecret": "${CLIENT_SECRET}",
             "redirectUri": "${REDIRECT_URI}",
@@ -148,6 +149,31 @@ class TestConfiguredOAuthClient:
         assert "configured-secret" not in storage.path.read_text()
 
     @pytest.mark.usefixtures("fake_home")
+    async def test_configured_client_discards_tokens_for_prior_client(self) -> None:
+        """Tokens issued to an old DCR client cannot serve a static client."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("gmail", server_url="https://mcp.example.com/mcp")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+        provider = build_oauth_provider(
+            server_name="gmail",
+            server_url="https://mcp.example.com/mcp",
+            storage=storage,
+            oauth_config={
+                "clientId": "configured-client",
+                "clientSecret": "configured-secret",
+                "redirectUri": "http://localhost:8765/callback",
+            },
+            interactive=False,
+        )
+
+        await provider._initialize()
+
+        assert provider.context.current_tokens is None
+        assert await storage.get_tokens() is None
+
+    @pytest.mark.usefixtures("fake_home")
     def test_configured_client_binds_its_registered_callback_port(self) -> None:
         """Interactive login uses the exact configured loopback callback URI."""
         from deepagents_code.mcp_auth import build_oauth_provider
@@ -163,9 +189,9 @@ class TestConfiguredOAuthClient:
             },
         )
 
-        assert [str(uri) for uri in provider.context.client_metadata.redirect_uris] == [
-            "http://localhost:8765/callback"
-        ]
+        redirect_uris = provider.context.client_metadata.redirect_uris
+        assert redirect_uris is not None
+        assert [str(uri) for uri in redirect_uris] == ["http://localhost:8765/callback"]
 
     @pytest.mark.usefixtures("fake_home")
     async def test_configured_client_uses_secret_post_for_refresh(self) -> None:

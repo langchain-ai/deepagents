@@ -1543,8 +1543,8 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
 
 
 # coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
-CODING_AGENT_KIND = "coding_agent"
-"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+CODING_AGENT_PURPOSE = "coding_agent"
+"""Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
 CODING_AGENT_INTEGRATION = "deepagents-code"
 """Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
@@ -1603,7 +1603,7 @@ def build_coding_agent_metadata(
         The contract metadata dict with unknown keys omitted.
     """
     metadata: dict[str, Any] = {
-        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_agent_purpose": CODING_AGENT_PURPOSE,
         "ls_integration": CODING_AGENT_INTEGRATION,
         "ls_agent_runtime": CODING_AGENT_RUNTIME,
         "thread_id": thread_id,

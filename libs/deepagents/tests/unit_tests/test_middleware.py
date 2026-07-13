@@ -17,6 +17,7 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
+from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
@@ -51,6 +52,7 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
     FilesystemState,
+    GrepSchema,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -869,6 +871,12 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend()
         with pytest.raises(ValueError, match="grep_max_count must be positive"):
             FilesystemMiddleware(backend=backend, grep_max_count=0)
+
+    @pytest.mark.parametrize("max_count", [0, -1])
+    def test_non_positive_per_call_max_count_is_rejected(self, max_count: int) -> None:
+        """The grep tool schema accepts only positive per-call caps."""
+        with pytest.raises(ValidationError, match="greater than 0"):
+            GrepSchema(pattern="needle", max_count=max_count)
 
     def test_glob_not_truncated_omits_note(self):
         """A complete glob must not carry the truncation note."""

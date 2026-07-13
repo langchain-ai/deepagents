@@ -258,6 +258,30 @@ class TestAgrepTimeout:
         with pytest.raises(NotImplementedError):
             await backend.agrep("pattern")
 
+    async def test_agrep_caps_legacy_grep_result(self) -> None:
+        """The inherited async wrapper caps results from an old `grep` signature."""
+
+        class LegacyBackend(BackendProtocol):
+            def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+                self,
+                pattern: str,
+                path: str | None = None,
+                glob: str | None = None,
+            ) -> GrepResult:
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.txt", "line": 1, "text": pattern},
+                        {"path": "/two.txt", "line": 1, "text": pattern},
+                        {"path": "/three.txt", "line": 1, "text": pattern},
+                    ]
+                )
+
+        result = await LegacyBackend().agrep("needle", max_count=2)
+
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
 
 def _runtime_error_from_eloop_context() -> RuntimeError:
     """Create the Python <=3.12 `Path.resolve()` symlink-loop shape via `__context__`."""

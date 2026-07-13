@@ -847,9 +847,9 @@ class FilesystemBackend(BackendProtocol):
 
         # Ripgrep exits 0 on match, 1 on no-match (both expected), 2+ on a hard
         # error (invalid pattern, unreadable directory, malformed glob, etc.).
-        # Reporting zero matches on a hard error would be the silent failure
-        # this resolver is meant to avoid, so fall back to the Python search.
-        if proc.returncode not in (0, 1) and not results:
+        # Returning matches gathered before a hard error would present an
+        # incomplete search as complete, so fall back to the Python search.
+        if proc.returncode not in (0, 1):
             logger.warning("ripgrep exited %d (stderr=%r); using Python grep fallback", proc.returncode, stderr.strip()[:500])
             return None, False
 

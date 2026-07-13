@@ -1096,6 +1096,32 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
 
 
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_nonzero_returncode_discards_partial_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hard ripgrep error after a match reruns the complete Python search."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+
+    def erroring_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[frame], stderr="rg: unreadable directory", returncode=2)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", erroring_popen)
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        result = be.grep("hello", path=str(tmp_path))
+
+    assert any("ripgrep exited 2" in record.getMessage() for record in caplog.records)
+    assert result.error is None
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
 def _rg_match_frame(path: str, line_number: int, text: str) -> str:
     """Build a ripgrep `--json` match frame line for the streaming fake."""
     return json.dumps({"type": "match", "data": {"path": {"text": path}, "lines": {"text": text}, "line_number": line_number}}) + "\n"

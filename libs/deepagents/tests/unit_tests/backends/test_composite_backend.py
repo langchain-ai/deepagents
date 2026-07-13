@@ -1426,6 +1426,36 @@ def test_grep_no_cap_returns_all_across_routes() -> None:
     assert len(result.matches) == 4
 
 
+def test_grep_supports_legacy_backends_across_routes() -> None:
+    """Composite grep preserves old child signatures and caps their results."""
+
+    class LegacyBackend(BackendProtocol):
+        def __init__(self, paths: list[str]) -> None:
+            self.paths = paths
+
+        def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+        ) -> GrepResult:
+            return GrepResult(matches=[{"path": item, "line": 1, "text": pattern} for item in self.paths])
+
+    comp = CompositeBackend(
+        default=LegacyBackend(["/default.txt"]),
+        routes={"/legacy/": LegacyBackend(["/one.txt", "/two.txt", "/three.txt"])},
+    )
+
+    uncapped = comp.grep("needle", path="/")
+    capped = comp.grep("needle", path="/", max_count=2)
+
+    assert uncapped.matches is not None
+    assert len(uncapped.matches) == 4
+    assert capped.matches is not None
+    assert len(capped.matches) == 2
+    assert capped.truncated is True
+
+
 def test_glob_path_stripping_matches_get_backend_and_key() -> None:
     """Verify glob strips route prefix the same way as _get_backend_and_key."""
     mem_store = InMemoryStore()

@@ -56,6 +56,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _apply_grep_max_count,
     _method_accepts_max_count,
     _resolve_backend,
     _supports_delete,
@@ -458,13 +459,6 @@ def _filter_grep_matches_by_permission(
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
-def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResult:
-    """Enforce the tool-level cap when a legacy backend cannot do so while searching."""
-    if max_count is None or result.matches is None or len(result.matches) <= max_count:
-        return result
-    return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
-
-
 def _grep_backend(
     backend: BackendProtocol,
     pattern: str,
@@ -788,6 +782,7 @@ class GrepSchema(BaseModel):
 
     max_count: int | None = Field(
         default=None,
+        gt=0,
         description=(
             "Optional cap on the total number of matches returned across all files. "
             "Leave unset to use the configured default. When the cap is hit, results "

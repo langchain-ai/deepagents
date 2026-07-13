@@ -334,6 +334,13 @@ class GrepResult:
     truncated: bool = False
 
 
+def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResult:
+    """Enforce a match cap after a backend search has completed."""
+    if max_count is None or result.matches is None or len(result.matches) <= max_count:
+        return result
+    return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
+
+
 @dataclass
 class GlobResult:
     """Result from backend `glob` operations.
@@ -530,10 +537,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         if _method_accepts_max_count(type(self), "grep"):
             grep_call = partial(self.grep, pattern, path, glob, max_count=max_count)
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 asyncio.to_thread(grep_call),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
+            return _apply_grep_max_count(result, max_count)
         except TimeoutError:
             logger.warning(
                 "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",

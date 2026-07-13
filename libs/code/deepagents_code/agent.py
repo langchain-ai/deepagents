@@ -1348,8 +1348,18 @@ def create_cli_agent(
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 
-            If `None`, generates one based on `sandbox_type`, `assistant_id`,
-            and `interactive`.
+            If `None`, a system prompt is auto-generated with dynamic context
+            interpolated in (model identity, working directory, sandbox vs.
+            local execution mode, skills path, and interactive-vs-headless
+            guidance).
+
+            !!! warning
+
+                Passing a value here replaces that auto-generated prompt
+                entirely — none of the dynamic context above is added, and
+                `sandbox_type` and `interactive` no longer influence the
+                prompt. Only pass an explicit prompt when you intend to take
+                full ownership of the system prompt's content.
         interactive: When `False`, the auto-generated system prompt is
             tailored for headless non-interactive execution. Ignored when
             `system_prompt` is provided explicitly.

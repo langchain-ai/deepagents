@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from textual.content import Content
+from textual.style import Style as TStyle
 
 from deepagents_code._env_vars import (
     DEBUG,
@@ -18,6 +19,7 @@ from deepagents_code._env_vars import (
 from deepagents_code._version import __version__
 from deepagents_code.tui.widgets.welcome import (
     WelcomeBanner,
+    _debug_tag_style,
     _home_prefixed,
     _langsmith_project_link,
     _langsmith_project_link_style,
@@ -29,6 +31,50 @@ _EDITABLE_PATH = "deepagents_code.tui.widgets.welcome._get_editable_install_path
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"
 _REPLICA_PROJECT = "deepagents_code.tui.widgets.welcome.get_langsmith_replica_project"
 _FETCH_URL = "deepagents_code.tui.widgets.welcome.fetch_langsmith_project_url"
+_DEBUG_STYLE = "deepagents_code.tui.widgets.welcome._debug_tag_style"
+_LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
+
+
+def _raw_style_covering(content: Content, needle: str) -> str | TStyle:
+    """Return the style of the single span whose text contains `needle`.
+
+    The style may be a `TStyle` (built from a themed style) or a raw `str` style
+    string (used under the ANSI theme branch, which `Content.assemble` preserves
+    verbatim — see `test_debug_tag_uses_ansi_markup_under_ansi_theme`). Use
+    `_style_covering` when the style must be a `TStyle`. Indexes the public
+    `content.plain` and reads the public `Span.style` field; update if Textual's
+    span model changes.
+
+    Args:
+        content: Assembled banner content to inspect.
+        needle: Substring identifying the span whose style to return.
+
+    Returns:
+        The style of the one span covering `needle`.
+    """
+    spans = [s for s in content.spans if needle in content.plain[s.start : s.end]]
+    assert len(spans) == 1, f"expected exactly one span covering {needle!r}"
+    return spans[0].style
+
+
+def _style_covering(content: Content, needle: str) -> TStyle:
+    """Return the `TStyle` of the single span whose text contains `needle`.
+
+    Only usable for spans whose style resolves to a `TStyle` (i.e. built from a
+    themed `TStyle`, not a raw `str` style string as used under the ANSI theme
+    branch, which `Content.assemble` preserves as a raw `str` — see
+    `test_debug_tag_uses_ansi_markup_under_ansi_theme`).
+
+    Args:
+        content: Assembled banner content to inspect.
+        needle: Substring identifying the span whose style to return.
+
+    Returns:
+        The `TStyle` of the one span covering `needle`.
+    """
+    style = _raw_style_covering(content, needle)
+    assert isinstance(style, TStyle)
+    return style
 
 
 def _make_banner(
@@ -175,7 +221,6 @@ class TestLocalTagStyle:
     def test_non_ansi_uses_themed_color(self) -> None:
         """Non-ANSI themes color the tag with the theme's tool color."""
         from textual.color import Color as TColor
-        from textual.style import Style as TStyle
 
         from deepagents_code.theme import DARK_COLORS
 
@@ -183,6 +228,27 @@ class TestLocalTagStyle:
         assert isinstance(style, TStyle)
         assert style.bold is True
         assert style.foreground == TColor.parse(DARK_COLORS.tool)
+
+
+class TestDebugTagStyle:
+    """Tests for the `(debug enabled)` tag style."""
+
+    def test_ansi_uses_bold_yellow_markup(self) -> None:
+        """Under ANSI themes the tag stays visible via bold yellow terminal text."""
+        from deepagents_code.theme import DARK_COLORS
+
+        assert _debug_tag_style(ansi=True, colors=DARK_COLORS) == "bold yellow"
+
+    def test_non_ansi_uses_themed_warning_color(self) -> None:
+        """Non-ANSI themes color the tag with the theme's warning color."""
+        from textual.color import Color as TColor
+
+        from deepagents_code.theme import DARK_COLORS
+
+        style = _debug_tag_style(ansi=False, colors=DARK_COLORS)
+        assert isinstance(style, TStyle)
+        assert style.bold is True
+        assert style.foreground == TColor.parse(DARK_COLORS.warning)
 
 
 class TestTitle:
@@ -199,18 +265,144 @@ class TestTitle:
         assert f"v{__version__}" in plain
         assert "(local)" not in plain
 
-    def test_hides_version_when_env_set(self) -> None:
-        """`HIDE_SPLASH_VERSION` removes the version from the title."""
-        plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
+    def test_hides_version_and_local_tag_when_env_set(self) -> None:
+        """`HIDE_SPLASH_VERSION` removes version and local-install details."""
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
         assert f"v{__version__}" not in plain
         assert "(local)" not in plain
 
     def test_marks_editable_install_as_local(self) -> None:
-        """Editable installs append a `(local)` tag to the version."""
+        """Editable installs show a `(local)` tag."""
         with patch(_EDITABLE, return_value=True):
             plain = _make_banner()._build_banner().plain
         assert f"v{__version__}" in plain
         assert "(local)" in plain
+
+    def test_no_debug_tag_by_default(self) -> None:
+        """No `(debug enabled)` tag when `DEEPAGENTS_CODE_DEBUG` is unset."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner()._build_banner().plain
+        assert "(debug enabled)" not in plain
+
+    def test_no_debug_tag_when_env_falsy(self) -> None:
+        """A present-but-falsy `DEEPAGENTS_CODE_DEBUG` shows no `(debug enabled)` tag.
+
+        Locks the truthy gate (`is_env_truthy`) against a regression to a bare
+        presence check (`DEBUG in os.environ`), which every other test would pass.
+        """
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={DEBUG: "0"})._build_banner().plain
+        assert "(debug enabled)" not in plain
+
+    def test_marks_debug_enabled_when_env_set(self) -> None:
+        """`DEEPAGENTS_CODE_DEBUG` shows a `(debug enabled)` tag."""
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert f"v{__version__}" in plain
+        # Leading space guards the separator from the preceding segment.
+        assert " (debug enabled)" in plain
+        assert "(local)" not in plain
+        assert plain.index(f"v{__version__}") < plain.index("(debug enabled)")
+
+    def test_debug_tag_precedes_local_tag(self) -> None:
+        """`(debug enabled)` renders before `(local)` when both apply."""
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert "(debug enabled)" in plain
+        assert "(local)" in plain
+        assert plain.index("(debug enabled)") < plain.index("(local)")
+
+    def test_version_debug_local_render_in_order(self) -> None:
+        """Version, `(debug enabled)`, and `(local)` render in that fixed order.
+
+        The pairwise ordering assertions each pin only two of the three segments,
+        and under different editable states; this locks all three in one banner.
+        """
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert (
+            plain.index(f"v{__version__}")
+            < plain.index("(debug enabled)")
+            < plain.index("(local)")
+        )
+
+    def test_debug_tag_when_version_hidden(self) -> None:
+        """The debug tag remains visible without exposing local-install details."""
+        with patch(_EDITABLE, return_value=True):
+            plain = (
+                _make_banner(env={DEBUG: "1", HIDE_SPLASH_VERSION: "1"})
+                ._build_banner()
+                .plain
+            )
+        assert f"v{__version__}" not in plain
+        assert "(debug enabled)" in plain
+        assert "(local)" not in plain
+
+    def test_title_tags_carry_their_own_styles(self) -> None:
+        """Each title tag's span carries its own style helper's output.
+
+        Guards against wiring regressions where a tag renders with the wrong
+        helper's style or the style lands on the wrong segment; the plain-text
+        assertions above cannot catch either.
+        """
+        from textual.color import Color as TColor
+
+        debug_style = TStyle(foreground=TColor.parse("#010203"), bold=True)
+        local_style = TStyle(foreground=TColor.parse("#040506"), bold=True)
+        with (
+            patch(_EDITABLE, return_value=True),
+            patch(_DEBUG_STYLE, return_value=debug_style),
+            patch(_LOCAL_STYLE, return_value=local_style),
+        ):
+            content = _make_banner(env={DEBUG: "1"})._build_banner()
+        assert _style_covering(content, "(debug enabled)").foreground == TColor.parse(
+            "#010203"
+        )
+        assert _style_covering(content, "(local)").foreground == TColor.parse("#040506")
+
+    def test_debug_tag_uses_ansi_markup_under_ansi_theme(self) -> None:
+        """Under an ANSI theme the assembled debug span carries bold-yellow markup.
+
+        `TestDebugTagStyle` covers `_debug_tag_style` in isolation; only an
+        assembled banner confirms the ANSI branch's markup survives
+        `Content.assemble`, which keeps it a raw `str` rather than a parsed
+        `TStyle` (so `_style_covering` cannot be used here). Guards the ANSI
+        rendering path that every other assembled test misses, since they run
+        under the non-ANSI default theme.
+        """
+        from textual._context import active_app
+
+        app = active_app.get()
+        previous_theme = app.theme
+        app.theme = "ansi-dark"
+        try:
+            with patch(_EDITABLE, return_value=False):
+                content = _make_banner(env={DEBUG: "1"})._build_banner()
+        finally:
+            app.theme = previous_theme
+        assert _raw_style_covering(content, "(debug enabled)") == "bold yellow"
+
+    def test_debug_tag_uses_themed_warning_color_when_assembled(self) -> None:
+        """The real themed warning color reaches the assembled debug span.
+
+        `TestDebugTagStyle` checks `_debug_tag_style` in isolation and
+        `test_title_tags_carry_their_own_styles` patches it with a sentinel;
+        neither confirms the unpatched helper's themed color lands on the span
+        under the default (non-ANSI) theme. Anchored to the banner's resolved
+        theme colors so it tracks whatever palette the active theme provides.
+        """
+        from textual.color import Color as TColor
+
+        from deepagents_code.theme import get_theme_colors
+
+        with patch(_EDITABLE, return_value=False):
+            banner = _make_banner(env={DEBUG: "1"})
+            content = banner._build_banner()
+        warning = get_theme_colors(banner).warning
+        assert _style_covering(content, "(debug enabled)").foreground == TColor.parse(
+            warning
+        )
 
 
 class TestModelLine:
@@ -317,8 +509,6 @@ class TestTracingLine:
 
     def test_project_name_is_clickable_when_url_resolved(self) -> None:
         """The project name is a hyperlink when the URL has been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(
             project_name="dcode-johannes",
             project_urls={
@@ -330,13 +520,11 @@ class TestTracingLine:
             s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert any(
-            "dcode-johannes" in content._text[s.start : s.end] for s in linked_spans
+            "dcode-johannes" in content.plain[s.start : s.end] for s in linked_spans
         )
 
     def test_project_name_not_clickable_without_url(self) -> None:
         """The project name has no link when the URL has not been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(project_name="dcode-johannes")
         content = widget._build_banner()
         linked = [
@@ -440,8 +628,6 @@ class TestReplicaTracingLine:
 
     def test_replica_project_is_clickable_when_url_resolved(self) -> None:
         """The replica project is a hyperlink when the URL has been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(
             project_name="dcode-primary",
             replica_project="dcode-replica",
@@ -454,7 +640,7 @@ class TestReplicaTracingLine:
             s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert any(
-            "dcode-replica" in content._text[s.start : s.end] for s in linked_spans
+            "dcode-replica" in content.plain[s.start : s.end] for s in linked_spans
         )
 
     async def test_fetch_and_update_sets_primary_and_replica_urls(self) -> None:
@@ -596,13 +782,14 @@ class TestEditableInstallPath:
         assert "installed:" not in plain
 
     def test_no_install_path_when_version_hidden(self) -> None:
-        """No install path row when the version is hidden."""
+        """Hiding the version also hides the editable-install path."""
         with (
             patch(_EDITABLE, return_value=True),
             patch(_EDITABLE_PATH, return_value="~/code"),
         ):
             plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
         assert "installed:" not in plain
+        assert "~/code" not in plain
 
     def test_no_install_path_when_cwd_hidden(self) -> None:
         """No install path row when local path displays are hidden."""

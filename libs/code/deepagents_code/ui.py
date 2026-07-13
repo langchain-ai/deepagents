@@ -125,7 +125,7 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
-    console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
+    console.print("  -a, --agent NAME           Agent to use")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
@@ -135,7 +135,7 @@ def show_help() -> None:
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
-    console.print("  --skill NAME               Invoke a skill when the session starts")
+    console.print("  -s, --skill NAME           Invoke a skill when the session starts")
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
@@ -305,8 +305,8 @@ def show_agents_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode agents list")
-    console.print("  dcode agents reset --agent coder")
-    console.print("  dcode agents reset --agent coder --target researcher")
+    console.print("  dcode agents reset --agent NAME")
+    console.print("  dcode agents reset --agent NAME --target SOURCE")
     console.print()
 
 
@@ -333,9 +333,9 @@ def show_reset_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode reset --agent coder")
-    console.print("  dcode reset --agent coder --target researcher")
-    console.print("  dcode reset --agent coder --dry-run")
+    console.print("  dcode reset --agent NAME")
+    console.print("  dcode reset --agent NAME --target SOURCE")
+    console.print("  dcode reset --agent NAME --dry-run")
     console.print()
 
 

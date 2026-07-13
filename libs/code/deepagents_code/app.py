@@ -357,6 +357,7 @@ if TYPE_CHECKING:
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -860,6 +861,33 @@ def _load_cursor_blink_preference() -> bool:
         unreadable, or malformed.
     """
     return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
+
+
+def _load_cursor_style_preference() -> CursorStyle:
+    """Resolve the chat input cursor style.
+
+    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
+    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
+    back to `"block"` when unset or invalid.
+
+    Returns:
+        The resolved cursor style.
+    """
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.cursor_style")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; using block cursor", "display.cursor_style"
+        )
+        return CURSOR_STYLE_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return cast("CursorStyle", value)
 
 
 def _load_terminal_progress_preference() -> bool:
@@ -2138,6 +2166,9 @@ class DeepAgentsApp(App):
         boots with consistent colors before `/theme` runs.
         """
 
+        self._cursor_style = _load_cursor_style_preference()
+        """Visual style used for the chat input cursor."""
+
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
 
@@ -3021,6 +3052,7 @@ class DeepAgentsApp(App):
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
+        self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted

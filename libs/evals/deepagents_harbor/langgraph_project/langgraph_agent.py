@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, Any, cast
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 if TYPE_CHECKING:
@@ -175,6 +177,61 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         model=model,
         backend=backend,
         system_prompt=_SYSTEM_PROMPT,
+    )
+
+
+def _make_execute_tool(backend: LocalShellBackend) -> BaseTool:
+    """Build a single shell-execution tool backed by ``backend``.
+
+    The returned tool runs a command in the sandbox and returns the combined
+    stdout/stderr, appending a truncation note and a non-zero exit code when
+    present. It is the only tool the minimal baseline agent exposes.
+    """
+
+    @tool
+    def execute(command: str, timeout: int | None = None) -> str:
+        """Run a shell command in the sandbox and return its output."""
+        result = backend.execute(command, timeout=timeout)
+        output = result.output
+        if result.truncated:
+            output += "\n[output truncated]"
+        if result.exit_code:
+            output += f"\n[exit code: {result.exit_code}]"
+        return output
+
+    return execute
+
+
+def make_minimal_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare-minimum agent: one ``execute`` tool, no system prompt.
+
+    Experimental Terminal-Bench baseline. This bypasses ``create_deep_agent``
+    (and therefore all of its middleware, built-in tools, and dynamically
+    injected prompt fragments) and wires LangChain's ``create_agent`` directly
+    to a single shell-execution tool backed by ``LocalShellBackend``. The model
+    receives only the task as its first message and can do nothing but run
+    shell commands. The point is to measure what the raw model does with a
+    terminal, then rebuild deliberately from there.
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the selected model in
+            ``configurable.model`` and optional provider kwargs in
+            ``configurable.model_kwargs``.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no model name is provided.
+    """
+    configurable = _configurable(config)
+    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    return create_agent(
+        model=model,
+        tools=[_make_execute_tool(backend)],
+        system_prompt=None,
     )
 
 

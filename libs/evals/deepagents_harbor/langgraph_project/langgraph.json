@@ -20,6 +20,7 @@
   "graphs": {
     "deepagent": "./langgraph_agent.py:make_graph",
     "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
+    "minimal_deepagent": "./langgraph_agent.py:make_minimal_graph",
     "tau3_deepagent": "./langgraph_agent.py:make_tau3_graph"
   }
 }

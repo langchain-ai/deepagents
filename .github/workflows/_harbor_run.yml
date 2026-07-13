@@ -218,7 +218,11 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
+        run: |
+          # Split on whitespace so several specs (e.g. harbor + harbor-langsmith)
+          # can be overridden together in one run.
+          read -ra specs <<< "$HARBOR_PACKAGE_OVERRIDE"
+          uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -512,6 +516,10 @@ jobs:
             bare)
               HARBOR_AGENT_GRAPH=bare_deepagent
               HARBOR_AGENT_LABEL="bare create_deep_agent"
+              ;;
+            minimal)
+              HARBOR_AGENT_GRAPH=minimal_deepagent
+              HARBOR_AGENT_LABEL="minimal create_agent (no prompt, execute only)"
               ;;
             tau3)
               # Requires a Harbor build that forwards the task environment's MCP

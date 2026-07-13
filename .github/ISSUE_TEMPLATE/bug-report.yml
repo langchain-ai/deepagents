@@ -46,8 +46,7 @@ body:
       description: Which area of the repository does this issue relate to? Select at least one.
       options:
         - label: deepagents (SDK)
-        - label: cli
-        - label: code
+        - label: dcode
         - label: talon
         - label: acp
         - label: evals

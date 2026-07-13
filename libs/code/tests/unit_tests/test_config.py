@@ -4496,6 +4496,23 @@ class TestCreateModelEdgeCaseParsing:
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
 
+    @patch("langchain.chat_models.init_chat_model")
+    def test_versioned_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock version suffix is not parsed as a provider separator."""
+        model_id = "meta.llama3-70b-instruct-v1:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
     def test_trailing_colon_raises_error(self) -> None:
         """Trailing colon (e.g., 'anthropic:') raises ModelConfigError."""
         with pytest.raises(ModelConfigError, match="model name is required"):

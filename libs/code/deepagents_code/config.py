@@ -4373,11 +4373,15 @@ def create_model(
     if not model_spec:
         model_spec = _get_default_model_spec()
 
-    # Parse provider:model syntax
+    # Parse provider:model syntax. Bedrock model IDs can include a version suffix
+    # such as `:0`, so resolve their distinctive bare-ID prefixes first.
     provider: str
     model_name: str
+    inferred_provider = detect_provider(model_spec)
     parsed = ModelSpec.try_parse(model_spec)
-    if parsed:
+    if inferred_provider == "bedrock":
+        provider, model_name = inferred_provider, model_spec
+    elif parsed:
         # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
         provider, model_name = parsed.provider, parsed.model
     elif ":" in model_spec:

@@ -1945,6 +1945,9 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `ModelSelectorScreen` is active so the selector's own priority
+        # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
         Binding(
             "ctrl+n",
             "open_notifications",
@@ -2519,6 +2522,12 @@ class DeepAgentsApp(App):
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
+
+        self._active_turn_visible_output_started = False
+        """True once the current turn has displayed model text or a tool call.
+
+        Gates Esc prompt restore without counting hidden agent activity.
+        """
 
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
@@ -3301,6 +3310,7 @@ class DeepAgentsApp(App):
             on_auto_approve_enabled=self._on_auto_approve_enabled,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
+            on_user_visible_output_started=self._on_user_visible_output_started,
             sync_message_content=self._sync_message_content,
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
@@ -10563,6 +10573,9 @@ class DeepAgentsApp(App):
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
+            # Fresh turn: no model text or tool call is visible yet, so an Esc
+            # interrupt may still return this prompt to the input.
+            self._active_turn_visible_output_started = False
 
             # Flush any buffered non-incognito `!` shell output into thread
             # state so this turn's model sees commands run since the last turn.
@@ -11023,6 +11036,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
         self._active_user_message = None
+        # Clear the output-started gate alongside its lifecycle siblings so the
+        # "False at turn start" invariant holds locally, not just via the
+        # start-of-turn reset in `_send_to_agent`.
+        self._active_turn_visible_output_started = False
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -11958,6 +11975,15 @@ class DeepAgentsApp(App):
             for widget in collapsible:
                 widget.remove_class("-grouped")
 
+    def _on_user_visible_output_started(self) -> None:
+        """Record that the current turn has rendered model text or a tool call.
+
+        Hidden model and subagent activity does not call this. Once set, an Esc
+        interrupt no longer returns the prompt to the input because the user has
+        seen work produced from it.
+        """
+        self._active_turn_visible_output_started = True
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -12092,7 +12118,14 @@ class DeepAgentsApp(App):
         the message — the interrupted `UserMessage` stays visible in the
         transcript, dimmed via `set_cancelled()` — so when it does not restore
         it stays silent rather than reporting a "discarded" outcome.
+
+        Restore is also skipped once model text or a tool call is visible for
+        the turn (`_active_turn_visible_output_started`). Returning the prompt
+        then would invite a confusing re-submission of a request that has already
+        produced user-visible work.
         """
+        if self._active_turn_visible_output_started:
+            return
         chat_input = self._chat_input
         if chat_input is None:
             logger.debug(
@@ -12435,7 +12468,8 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it (restoring the interrupted prompt
-           to the chat input when it is empty)
+           to the chat input when it is empty and no user-visible model output
+           — text or a tool call — has appeared yet for the turn)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -14258,6 +14292,34 @@ class DeepAgentsApp(App):
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
+
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Disable `open_notifications` while the model selector is open.
+
+        Textual resolves `priority=True` bindings App-first, so the App's
+        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
+        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
+        Returning `False` here disables the App's binding for this dispatch, so
+        resolution falls through to the selector, whose binding then runs.
+
+        Branches on the action name, not the key, so it stays correct if
+        `ctrl+n` is ever rebound.
+
+        Returns:
+            `False` to disable `open_notifications` while a `ModelSelectorScreen`
+                is active, letting the selector handle Ctrl+N; `True` otherwise,
+                leaving the binding enabled.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        return True
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""

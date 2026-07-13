@@ -1978,8 +1978,8 @@ class TestCtrlDChatInput:
             # A draft swallows the quit rather than half-arming the double-tap.
             assert app._quit_pending is False
 
-    async def test_ctrl_d_does_not_quit_at_end_of_non_empty_input(self) -> None:
-        """Ctrl+D should be a no-op at the end of a non-empty draft."""
+    async def test_ctrl_d_quits_at_end_of_non_empty_input(self) -> None:
+        """Ctrl+D should quit at the end of a non-empty draft."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
@@ -1988,13 +1988,83 @@ class TestCtrlDChatInput:
             text_area.focus()
             await pilot.press("h", "i")
 
+            # Precondition for the quit path: cursor at document end, no
+            # selection. Asserted explicitly so the test documents why this
+            # configuration quits and survives any future default that would
+            # pre-select or reposition the input.
+            assert text_area.selection.is_empty
+            assert text_area.cursor_location == text_area.document.end
+
             with patch.object(app, "exit") as exit_mock:
                 await pilot.press("ctrl+d")
                 await pilot.pause()
 
             assert chat_input.value == "hi"
-            exit_mock.assert_not_called()
+            exit_mock.assert_called_once()
             assert app._quit_pending is False
+
+    async def test_ctrl_d_deletes_selection_at_end_of_input(self) -> None:
+        """Ctrl+D should delete a selection reaching document end, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "i")
+            # select_all leaves a non-empty selection with the cursor at
+            # document end, so only the `selection.is_empty` branch — not the
+            # end-of-document check — keeps Ctrl+D from quitting here.
+            text_area.select_all()
+            assert not text_area.selection.is_empty
+            assert text_area.cursor_location == text_area.document.end
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_right_at_end_of_non_final_line(self) -> None:
+        """Ctrl+D mid-draft (end of a non-final line) should join lines, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "ab\ncd"
+            text_area.focus()
+            # End of the first line: not document end, so delete-right removes
+            # the newline and joins the two lines instead of quitting.
+            text_area.move_cursor((0, 2))
+            assert text_area.cursor_location != text_area.document.end
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "abcd"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_document_end_of_multiline_input(self) -> None:
+        """Ctrl+D at the true end of a multi-line draft should quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "ab\ncd"
+            text_area.focus()
+            text_area.move_cursor(text_area.document.end)
+            assert text_area.selection.is_empty
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "ab\ncd"
+            exit_mock.assert_called_once()
 
     @pytest.mark.parametrize("kind", ["image", "video"])
     async def test_ctrl_d_deletes_bound_media_placeholder_atomically(
@@ -11339,6 +11409,417 @@ class TestEditorSlashCommand:
             app._chat_input = MagicMock()
             await app._handle_command("/editor")
         mock.assert_awaited_once()
+
+
+class TestToolsSlashCommand:
+    """Tests for the `/tools` slash command."""
+
+    async def test_mounts_user_echo_then_catalog(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import ToolEntry
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {"enable_interpreter": False}
+        app._mcp_server_info = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                status="ok",
+            ),
+        ]
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[ToolEntry(name="read_file", description="Read a file")],
+            ) as collect,
+        ):
+            await app._handle_command("/tools")
+
+        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
+        assert mount.await_count == 2
+        first, second = (c.args[0] for c in mount.await_args_list)
+        assert isinstance(first, UserMessage)
+        assert isinstance(second, AppMessage)
+        rendered = second._content.plain
+        assert "read_file" in rendered
+        assert "search_docs" in rendered
+        assert "docs" in rendered
+
+    async def test_built_in_failure_still_shows_mcp(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {}
+        app._mcp_server_info = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                status="ok",
+            ),
+        ]
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                side_effect=RuntimeError("compile boom"),
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        # User echo, the built-in failure notice, and the MCP-only catalog.
+        assert mount.await_count == 3
+        catalog_msg = mount.await_args_list[-1].args[0]
+        assert isinstance(catalog_msg, AppMessage)
+        assert "search_docs" in catalog_msg._content.plain
+
+    async def test_custom_local_agent_uses_its_bound_tools(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        tool_node = SimpleNamespace(
+            tools_by_name={
+                "custom_search": SimpleNamespace(description="Search custom data"),
+                "search_docs": SimpleNamespace(description="Search docs"),
+            }
+        )
+        agent = MagicMock()
+        agent.nodes = {"tools": SimpleNamespace(bound=tool_node)}
+        app = DeepAgentsApp(
+            agent=agent,
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search docs"),),
+                    status="ok",
+                )
+            ],
+        )
+        app._server_kwargs = None
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch("deepagents_code.tool_catalog.collect_built_in_tools") as compile_,
+        ):
+            await app._handle_command("/tools")
+
+        compile_.assert_not_called()
+        assert mount.await_count == 2
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert rendered.count("custom_search") == 1
+        assert "Search custom data" in rendered
+        assert rendered.count("search_docs") == 1
+        assert "Search docs" not in rendered
+        assert "MCP tool descriptions are available in /mcp." in rendered
+
+    async def test_tool_less_local_agent_reports_zero_tools(self) -> None:
+        agent = MagicMock()
+        agent.nodes = {"__start__": SimpleNamespace(), "model": SimpleNamespace()}
+        app = DeepAgentsApp(agent=agent)
+        app._server_kwargs = None
+        app._mcp_server_info = []
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 2
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "0 tools available" in rendered
+        assert "cannot be enumerated" not in rendered
+        assert "still has its built-in tools" not in rendered
+
+    async def test_remote_agent_reports_built_in_enumeration_unsupported(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(spec=[]),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                    status="ok",
+                )
+            ],
+        )
+        app._server_kwargs = None
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 3
+        notice = mount.await_args_list[1].args[0]
+        assert "cannot be enumerated" in str(notice._content)
+        assert "search_docs" in mount.await_args_list[-1].args[0]._content.plain
+
+    async def test_remote_agent_reports_unavailable_mcp_server(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(spec=[]),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="unauthenticated",
+                    error="Login required",
+                )
+            ],
+        )
+        app._server_kwargs = None
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 3
+        notice = str(mount.await_args_list[1].args[0]._content)
+        assert "cannot be enumerated" in notice
+        assert "showing MCP information only" in notice
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "Unavailable MCP servers" in rendered
+        assert "notion" in rendered
+        assert "Login required" in rendered
+
+    async def test_pending_mcp_disable_keeps_active_tools_visible(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="docs",
+            transport="http",
+            tools=(MCPToolInfo(name="search_docs", description="Search"),),
+            status="ok",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        app._server_kwargs = {"enable_interpreter": False}
+        app._apply_optimistic_disabled_state("docs", disabled=True)
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "search_docs" in rendered
+        assert "Unavailable MCP servers" not in rendered
+
+    async def test_pending_mcp_reenable_keeps_reconnect_guidance(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="disabled",
+                    error="Disabled by user (F2 to re-enable).",
+                ),
+            ],
+        )
+        app._server_kwargs = {"enable_interpreter": False}
+        app._apply_optimistic_disabled_state("notion", disabled=False)
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "notion" in rendered
+        assert "Re-enabled — press Ctrl+R to load." in rendered
+        assert "disabled by user" not in rendered
+
+    def test_render_tool_catalog_reports_unavailable(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        servers = [
+            MCPServerInfo(
+                name="broken", transport="http", status="error", error="boom"
+            ),
+            MCPServerInfo(
+                name="notion",
+                transport="http",
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            ),
+        ]
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")], servers
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "1 tool available" in rendered
+        assert "Unavailable MCP servers" in rendered
+        assert "broken" in rendered
+        assert "boom" in rendered
+        assert "notion" in rendered
+        assert "disabled by user" in rendered
+        assert "disabled:" not in rendered
+        assert "F2" not in rendered
+
+    async def test_forwards_enable_interpreter_true(self) -> None:
+        from deepagents_code.tool_catalog import ToolEntry
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {"enable_interpreter": True}
+        app._mcp_server_info = []
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[ToolEntry(name="js_eval", description="Run JS")],
+            ) as collect,
+        ):
+            await app._handle_command("/tools")
+
+        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=True)
+        assert mount.await_count == 2
+        assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
+
+    async def test_built_in_failure_without_mcp_is_honest(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {}
+        app._mcp_server_info = []
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                side_effect=RuntimeError("compile boom"),
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        # Only the user echo and an honest notice — no misleading "0 tools"
+        # catalog when the agent still binds tools that just could not be listed.
+        assert mount.await_count == 2
+        notice = str(mount.await_args_list[-1].args[0]._content)
+        assert "still has its built-in tools" in notice
+        assert "showing MCP tools only" not in notice
+        assert "0 tools available" not in notice
+
+    async def test_remote_agent_without_mcp_is_honest(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(spec=[]))
+        app._server_kwargs = None
+        app._mcp_server_info = []
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 2
+        notice = str(mount.await_args_list[-1].args[0]._content)
+        assert "cannot be enumerated" in notice
+        assert "still has its built-in tools" in notice
+        assert "showing MCP tools only" not in notice
+
+    def test_render_escapes_markup(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="[bold]evil[/bold]", description="desc [red]x[/red]")],
+            [
+                MCPServerInfo(
+                    name="[i]srv",
+                    transport="http",
+                    tools=(MCPToolInfo(name="t", description="d"),),
+                    status="ok",
+                )
+            ],
+        )
+        # Rich markup in external names/descriptions must survive verbatim and
+        # never be parsed (an unclosed "[" would raise if it were).
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "[bold]evil[/bold]" in rendered
+        assert "[red]x[/red]" in rendered
+        assert "[i]srv" in rendered
+
+    def test_render_empty_catalog_reports_zero_without_error(self) -> None:
+        from deepagents_code.tool_catalog import build_catalog_from_server_info
+
+        rendered = DeepAgentsApp._render_tool_catalog(
+            build_catalog_from_server_info([], [])
+        ).plain
+        assert "0 tools available" in rendered
+
+    def test_render_plural_noun_and_column_alignment(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [
+                ToolEntry(name="ls", description="list"),
+                ToolEntry(name="read_file", description="read"),
+            ],
+            [],
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "2 tools available" in rendered
+        # Shorter name padded to the widest name in the group so columns align.
+        assert f"  {'ls'.ljust(len('read_file'))}  list" in rendered
+        assert "  read_file  read" in rendered
+        # No MCP groups → the `/mcp` descriptions pointer must not appear.
+        assert "MCP tool descriptions are available in /mcp." not in rendered
+
+    def test_render_unavailable_without_detail_omits_colon(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        # A non-`ok` server must carry an error, but it may be empty (""), which
+        # yields an empty `detail` — the branch that renders status with no
+        # colon. Use a non-`disabled` status: `disabled` takes its own
+        # "disabled by user" branch, so it would not exercise this path.
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")],
+            [
+                MCPServerInfo(
+                    name="off",
+                    transport="http",
+                    status="awaiting_reconnect",
+                    error="",
+                )
+            ],
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "  off  awaiting_reconnect" in rendered
+        assert "awaiting_reconnect:" not in rendered
+
+    def test_render_includes_mcp_error(self) -> None:
+        from deepagents_code.tool_catalog import (
+            BUILT_IN_GROUP,
+            ToolCatalog,
+            ToolGroup,
+        )
+
+        catalog = ToolCatalog(
+            groups=(ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=()),),
+            mcp_error="MCP discovery failed; showing built-in tools only.",
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "MCP discovery failed" in rendered
 
 
 class TestFetchThreadHistoryData:

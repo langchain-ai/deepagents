@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (32)
+## Public (33)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -41,6 +41,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/threads` |  | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |
 | `/tokens` |  | Show token usage |
+| `/tools` |  | List the tools available to the agent |
 | `/trace` |  | Open this thread in LangSmith |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |

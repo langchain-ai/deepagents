@@ -16,6 +16,7 @@ _TIPS: dict[str, int] = {
     "Use /threads -r to jump back to the thread you just left with /clear": 1,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
+    "Use /tools to list the tools available to the agent": 1,
     "Use /mcp to search your MCP servers and inspect tool parameters": 1,
     "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,

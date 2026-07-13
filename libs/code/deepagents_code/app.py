@@ -7588,6 +7588,16 @@ class DeepAgentsApp(App):
         self.push_screen(dependency_screen)
         return await result_future
 
+    @staticmethod
+    def _is_exit_keyword(value: str, mode: InputMode) -> bool:
+        """Return whether `value` is the bare `exit` keyword in normal mode.
+
+        Matches case-insensitively and ignores surrounding whitespace. Only
+        `normal` mode qualifies, so `exit` typed in shell or command mode is
+        routed normally rather than quitting the app.
+        """
+        return mode == "normal" and value.lower().strip() == "exit"
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -7663,10 +7673,9 @@ class DeepAgentsApp(App):
         # COMMANDS and so carry no bypass tier. Both must run even when the
         # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+        normalized = value.lower().strip()
 
-        if force_bypass or (
-            mode == "command" and value.lower().strip() in always_bypass
-        ):
+        if force_bypass or (mode == "command" and normalized in always_bypass):
             await self._process_message(value, mode)
             return
 
@@ -7716,6 +7725,13 @@ class DeepAgentsApp(App):
         from deepagents_code.hooks import dispatch_hook
 
         await dispatch_hook("user.prompt", {})
+
+        # A bare `exit` quits the app (REPL convention), mirroring `/quit`.
+        # Gated to this interactive path only, so external/scripted callers
+        # (on_external_input) can still send the literal "exit" to the agent.
+        if self._is_exit_keyword(value, mode):
+            self.exit()
+            return
 
         await self._submit_input(value, mode)
 

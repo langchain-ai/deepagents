@@ -42,7 +42,7 @@ CATEGORY_MAP: dict[str, dict] = {
     "autonomous": {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
-        "agent_impl": "dcode",
+        "agent_impl": "bare",
         "ls_dataset": "harbor-index",
     },
     "conversation": {
@@ -54,12 +54,18 @@ CATEGORY_MAP: dict[str, dict] = {
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
-        "agent_impl": "dcode",
+        "agent_impl": "bare",
         "ls_dataset": "context-retrieval-evals",
     },
 }
 
 DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
+
+# Deep-agents harnesses (a `create_deep_agent` graph). The `agent_impl` override
+# swaps between these for the deep-agents categories; categories on a different
+# harness (e.g. `tau3`, which drives its own user simulator) are left untouched.
+DEEPAGENT_IMPLS = {"bare", "dcode"}
+DEFAULT_AGENT_IMPL = "bare"
 
 
 def parse_int_input(
@@ -125,19 +131,27 @@ def build_provider_matrices(
     categories: list[str],
     shard_parallel: int,
     n_shards_by_cat: dict[str, int],
+    agent_impl: str | None = None,
 ) -> dict[str, list[dict]]:
     matrices: dict[str, list[dict]] = {}
     for spec in models_list:
         prov = provider_of(spec)
         for cat in categories:
             cm = CATEGORY_MAP[cat]
+            # The override selects the deep-agents harness; it never applies to a
+            # category pinned to a non-deep-agents harness (e.g. tau3).
+            resolved_impl = (
+                agent_impl
+                if agent_impl and cm["agent_impl"] in DEEPAGENT_IMPLS
+                else cm["agent_impl"]
+            )
             entry = {
                 "model": spec,
                 "provider": prov,
                 "category": cat,
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
-                "agent_impl": cm["agent_impl"],
+                "agent_impl": resolved_impl,
                 # Per-model datasets isolate runs; unified_summary is the
                 # cross-model comparison surface.
                 "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
@@ -194,12 +208,22 @@ def main(argv: list[str] | None = None) -> int:
         for category, default in DEFAULT_N_SHARDS.items()
     }
 
+    agent_impl = (
+        os.environ.get("UNIFIED_AGENT_IMPL", DEFAULT_AGENT_IMPL).strip()
+        or DEFAULT_AGENT_IMPL
+    )
+
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
     if unknown:
         raise SystemExit(
             f"Unknown categor(y/ies): {unknown}. Valid: {sorted(CATEGORY_MAP)}"
+        )
+    if agent_impl not in DEEPAGENT_IMPLS:
+        raise SystemExit(
+            f"UNIFIED_AGENT_IMPL must be one of {sorted(DEEPAGENT_IMPLS)}, "
+            f"got {agent_impl!r}"
         )
     # Validate + dedupe the free-form CSV via the shared resolver.
     try:
@@ -223,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     assert len(providers_present) * shard_parallel <= MAX_RUNNERS
 
     matrices = build_provider_matrices(
-        model_specs, categories, shard_parallel, n_shards_by_cat
+        model_specs, categories, shard_parallel, n_shards_by_cat, agent_impl
     )
 
     outputs: dict[str, object] = {

@@ -119,16 +119,29 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
 
     prep_job = _indented_block(workflow, "  prep:")
     assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in prep_job
+    assert "UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}" in prep_job
     assert (
         "UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}" in prep_job
     )
     assert "run: python .github/scripts/unified_prep.py" in prep_job
+    # A run-configuration summary in prep makes a dispatch's inputs debuggable.
+    assert "$GITHUB_STEP_SUMMARY" in prep_job
+
+    # The harness selector is a constrained choice defaulting to bare.
+    agent_impl_input = _indented_block(workflow, "      agent_impl:")
+    assert "type: choice" in agent_impl_input
+    assert 'default: "bare"' in agent_impl_input
+    assert "- bare" in agent_impl_input
+    assert "- dcode" in agent_impl_input
 
     prep_source = PREP_SCRIPT.read_text()
     conversation = _indented_block(prep_source, '    "conversation": {')
     assert '"dataset": "tau3-subset"' in conversation
     assert '"dataset_path": ""' in conversation
     assert '"agent_impl": "tau3"' in conversation
+    # The deep-agents categories default to the bare harness (dcode is opt-in).
+    for marker in ('    "autonomous": {', '    "context": {'):
+        assert '"agent_impl": "bare"' in _indented_block(prep_source, marker)
 
 
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:

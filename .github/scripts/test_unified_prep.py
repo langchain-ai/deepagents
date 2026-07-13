@@ -64,12 +64,43 @@ def test_build_provider_matrices_cross_products_models_and_categories():
         if e["model"] == "anthropic:opus" and e["category"] == "context"
     )
     assert entry["dataset_path"] == "datasets/context-retrieval-evals"
-    assert entry["agent_impl"] == "dcode"
+    assert entry["agent_impl"] == "bare"
     # readable slug + short hash suffix for collision resistance
     assert entry["langsmith_dataset"].startswith(
         "context-retrieval-evals__anthropic-opus-"
     )
     assert entry["n_shards"] == 3
+
+
+def test_agent_impl_override_applies_only_to_deepagent_categories():
+    models = ["anthropic:opus"]
+    cats = ["autonomous", "conversation", "context"]
+    n = {"autonomous": 10, "conversation": 3, "context": 3}
+
+    # No override -> each category's CATEGORY_MAP default. autonomous/context are
+    # the bare deep-agents harness; conversation is pinned to tau3.
+    default_impls = {
+        e["category"]: e["agent_impl"]
+        for e in up.build_provider_matrices(models, cats, 10, n)["anthropic"]
+    }
+    assert default_impls == {
+        "autonomous": "bare",
+        "conversation": "tau3",
+        "context": "bare",
+    }
+
+    # dcode override -> only the deep-agents categories switch; tau3 is untouched.
+    overridden = {
+        e["category"]: e["agent_impl"]
+        for e in up.build_provider_matrices(models, cats, 10, n, agent_impl="dcode")[
+            "anthropic"
+        ]
+    }
+    assert overridden == {
+        "autonomous": "dcode",
+        "conversation": "tau3",
+        "context": "dcode",
+    }
 
 
 def test_langsmith_dataset_is_collision_resistant():
@@ -222,6 +253,17 @@ def test_main_accepts_category_shard_count_boundaries(tmp_path, monkeypatch):
             lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
             matrix = _j.loads(lines["anthropic_matrix"])
             assert matrix["include"][0]["n_shards"] == boundary
+
+
+def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "tau3")  # valid harness, not selectable here
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    import pytest
+
+    with pytest.raises(SystemExit, match="UNIFIED_AGENT_IMPL"):
+        up.main([])
 
 
 def test_main_rejects_bad_spec(tmp_path, monkeypatch):

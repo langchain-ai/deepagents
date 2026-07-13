@@ -761,8 +761,9 @@ class FilesystemBackend(BackendProtocol):
             context, ok = self._read_grep_context(file_path, self._grep_context_ranges(file_matches, context_lines))
             if not ok:
                 unreadable.append(file_path)
-            context_items: list[ContextLine] = [{"line": number, "text": text} for number, text in context.items()]
-            context_numbers = list(context)
+            match_numbers = {match["line"] for match in file_matches}
+            context_items: list[ContextLine] = [{"line": number, "text": text} for number, text in context.items() if number not in match_numbers]
+            context_numbers = [item["line"] for item in context_items]
             for match in file_matches:
                 line_num = match["line"]
                 before_start = bisect_left(context_numbers, max(1, line_num - context_lines))

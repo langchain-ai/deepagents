@@ -1625,6 +1625,30 @@ class TestFilesystemGrepContext:
             "/sample.txt:\n  1: needle start\n  2- two\n  3- middle\n  4- four\n  5: needle end"
         )
 
+    def test_neighboring_matches_are_excluded_from_context(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle one\nneedle two\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle one",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [],
+            },
+            {
+                "path": "/sample.txt",
+                "line": 3,
+                "text": "needle two",
+                "context_before": [],
+                "context_after": [{"line": 4, "text": "after"}],
+            },
+        ]
+
     def test_context_lines_larger_than_file_iterate_only_existing_lines(self, tmp_path: Path) -> None:
         target = tmp_path / "sample.txt"
         target.write_text("needle")

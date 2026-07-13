@@ -752,9 +752,33 @@ class TestDebugConsoleToggle:
 
             await pilot.press("shift+tab")
             await pilot.pause()
+            # This focus move is the discriminating assertion: without the
+            # `check_action` step-aside, shift+tab is swallowed and focus stays
+            # on `select`. The `_auto_approve` check below is defense-in-depth
+            # only -- the toggle already no-ops under any modal, so it reads
+            # `False` in both the fixed and broken cases.
             assert screen.focused is log
-            # Shift+Tab navigated; it must not have fired the auto-approve toggle.
             assert app._auto_approve is False
+
+    async def test_check_action_gates_toggle_binding_by_screen(self) -> None:
+        """`check_action` steps aside the toggle binding only under the console.
+
+        Guards the enabled path the reverse-focus fix depends on: on the main
+        screen `check_action` must leave `toggle_auto_approve` enabled (return
+        `True`) so shift+tab and ctrl+t still toggle auto-approve; the
+        `test_shift_tab_reverses_focus_*` test only exercises the disabled path.
+        Branching on the action name (not the key) means the same gate covers
+        the `ctrl+t` binding, which also maps to `toggle_auto_approve`.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.check_action("toggle_auto_approve", ()) is True
+
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            assert isinstance(app.screen, DebugConsoleScreen)
+            assert app.check_action("toggle_auto_approve", ()) is False
 
     async def test_toggle_action_closes_open_console(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")

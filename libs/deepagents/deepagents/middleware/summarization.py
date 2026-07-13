@@ -1745,7 +1745,7 @@ def create_summarization_tool_middleware(
         agent = create_deep_agent(
             model=model,
             middleware=[
-                create_summarization_tool_middleware(model, StateBackend),
+                create_summarization_tool_middleware(model, StateBackend()),
             ],
         )
         ```

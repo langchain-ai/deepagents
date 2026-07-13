@@ -75,6 +75,12 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.time_budget import (
+    OnExceed,
+    TimeBudgetMiddleware,
+    TimeBudgetState,
+    TimeBudgetStatus,
+)
 
 __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
@@ -91,6 +97,7 @@ __all__ = [
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",
+    "OnExceed",
     "RubricEvaluation",
     "RubricMiddleware",
     "RubricResult",
@@ -100,5 +107,8 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "TimeBudgetMiddleware",
+    "TimeBudgetState",
+    "TimeBudgetStatus",
     "create_summarization_tool_middleware",
 ]

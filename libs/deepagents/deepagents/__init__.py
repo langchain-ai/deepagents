@@ -15,6 +15,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
     SubAgentMiddleware,
 )
+from deepagents.middleware.time_budget import TimeBudgetMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -43,6 +44,7 @@ __all__ = [
     "SubAgent",
     "SubAgentMiddleware",
     "SystemPromptConfig",
+    "TimeBudgetMiddleware",
     "__version__",
     "create_deep_agent",
     "register_harness_profile",

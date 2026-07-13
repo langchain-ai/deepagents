@@ -44,6 +44,13 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
+"""Chat input cursor style (`block` or `underline`).
+
+Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
+through to the config file and then the default block cursor.
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 

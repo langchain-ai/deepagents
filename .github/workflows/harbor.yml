@@ -1,19 +1,22 @@
 # Harbor evaluation workflow for Deep Agents
 #
-# Runs terminal-bench evaluations via Harbor with Docker or LangSmith
-# sandboxes.
+# Runs Harbor evaluations (terminal-bench, harbor-index, tau3, local datasets)
+# with Docker or LangSmith sandboxes; terminal-bench is the default.
 # Models are selected via dropdown or comma-separated override.
+#
+# Config (non-secret):
+#   OLLAMA_HOST is hardcoded to https://ollama.com in the workflow env for
+#   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
 #   LANGSMITH_API_KEY          — experiment tracking (always required)
 #   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
-#   OPENAI_API_KEY             — needed for OpenAI models
+#   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
 #   XAI_API_KEY                — needed for xAI/Grok models
 #   GROQ_API_KEY               — needed for Groq-hosted models
 #   OLLAMA_API_KEY             — needed for Ollama Cloud models
-#   OLLAMA_HOST                — set to https://ollama.com for cloud inference
 #   NVIDIA_API_KEY             — needed for NVIDIA NIM models
 #   BASETEN_API_KEY            — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
@@ -27,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       dataset:
-        description: "Terminal-bench dataset to run through Harbor."
+        description: "Dataset to run through Harbor."
         required: true
         default: "terminal-bench/terminal-bench-2"
         type: choice
@@ -35,38 +38,24 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "tau3-subset"
+          - "harbor-index/harbor-index-1.0"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false
         default: ""
         type: string
-      models:
-        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+      dataset_path:
+        description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
         required: false
         default: ""
+        type: string
+      models:
+        description: "The single model to evaluate (provider:model). This workflow runs exactly one model — model groups are not accepted. Override with models_override."
+        required: true
+        default: "fireworks:accounts/fireworks/models/glm-5p2"
         type: choice
         options:
-          - ""
-          - all
-          - set0
-          - set1
-          - set2
-          - frontier
-          - mega
-          - fast
-          - open
-          - open-fireworks
-          - docs
-          - anthropic
-          - baseten
-          - fireworks
-          - google_genai
-          - groq
-          - nvidia
-          - openai
-          - ollama
-          - openrouter
-          - xai
           - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
@@ -124,7 +113,7 @@ on:
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        description: "Override: a single model ref not in the dropdown (e.g. 'openai:gpt-5.6'). Takes priority over the dropdown when non-empty. Must resolve to exactly one model."
         required: false
         default: ""
         type: string
@@ -156,14 +145,19 @@ on:
         default: ""
         type: string
       rollouts_per_task:
-        description: "Rollouts per task."
+        description: "Rollouts (attempts) per task = K. Reported as a single pass@K and avg@K. No cap."
         required: true
-        default: "1"
+        default: "3"
+        type: string
+      n_retries:
+        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        required: true
+        default: "0"
         type: string
       concurrency:
-        description: "Concurrent trials (sandbox slots)."
+        description: "Concurrent trials (sandbox slots) per shard job. Capped at 4."
         required: true
-        default: "1"
+        default: "4"
         type: string
       agent_timeout_multiplier:
         description: "Multiplier for the agent EXECUTION timeout (e.g. 0.1 caps each rollout's wall-clock to bound model cost). Setup + env-build timeouts are unaffected, so the agent-setup phase is still tested at full budget — useful for cheap concurrency stress tests."
@@ -175,22 +169,31 @@ on:
         required: false
         default: false
         type: boolean
-      n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation. Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped so models x shards <= 256 (GitHub's matrix limit)."
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         required: false
-        default: "1"
+        default: false
+        type: boolean
+      n_shards:
+        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10 (with concurrency capped at 4 and a single model, at most 40 concurrent sandboxes)."
+        required: false
+        default: "10"
         type: string
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         required: false
         default: ""
         type: string
 permissions:
   contents: read
+  # Lets the called reusable workflow manage run artifacts; a caller caps the
+  # callee's token, so it must be granted here.
+  actions: write
 
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  HARBOR_DATASET_PATH: ${{ inputs.dataset_path || '' }}
 
 jobs:
   prep:
@@ -198,10 +201,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      matrix: ${{ steps.shard-matrix.outputs.matrix }}
-      # Effective shard count after capping to the selectable work (<= n_shards).
-      # The harbor job reads this so its partition matches the emitted matrix.
-      n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
+      # The single resolved model spec (this workflow accepts exactly one model).
+      model: ${{ steps.extract-model.outputs.model }}
+      # Eval category derived from the dataset inputs, consumed by the leaf
+      # workflow's unified reporting (autonomous | conversation | context).
+      category: ${{ steps.category.outputs.category }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -251,441 +255,74 @@ jobs:
         id: set-matrix
         run: python .github/scripts/models.py harbor
         env:
-          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+          HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'fireworks:accounts/fireworks/models/glm-5p2' }}
 
-      - name: "🔀 Expand matrix by shard"
-        id: shard-matrix
-        # Cross-products the model matrix with the shard axis, caps the shard
-        # count to the selectable work (min(n_shards, n_tasks)) so empty shard
-        # jobs aren't spawned, and guards against GitHub's 256-job matrix cap.
-        # See shard_matrix.py (unit-tested in test_shard_matrix.py).
+      - name: "🔒 Validate single model + resource limits"
+        # This workflow evaluates exactly ONE model. Fail fast (before the matrix
+        # fans out) if the resolved model set is not a single model, or if the
+        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; with one
+        # model their product bounds concurrent sandboxes to 40). Inputs are read
+        # via env (no shell interpolation) and int-parsed in the script.
+        # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
+        env:
+          N_SHARDS: ${{ inputs.n_shards || '10' }}
+          CONCURRENCY: ${{ inputs.concurrency || '4' }}
+          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+        run: python .github/scripts/validate_harbor_limits.py
+
+      - name: "🎯 Extract single model"
+        id: extract-model
+        # The leaf workflow (_harbor_run.yml) now owns its own shard matrix, so
+        # this job only needs to hand it the single resolved model spec. The
+        # "🔒 Validate single model" step above already guarantees the matrix
+        # has exactly one entry; pull it out via env (no shell interpolation
+        # of untrusted input).
         env:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-          N_SHARDS: ${{ inputs.n_shards || '1' }}
-          N_TASKS: ${{ inputs.n_tasks }}
-        run: python .github/scripts/shard_matrix.py
+        run: |
+          echo "model=$(python3 -c 'import json, os; print(json.loads(os.environ["MODEL_MATRIX"])["include"][0]["model"])')" >> "$GITHUB_OUTPUT"
 
-  harbor:
-    name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
+      - name: "🏷️ Derive category"
+        id: category
+        # Mirrors the leaf's own category convention: an explicit local
+        # dataset path is always "context"; a tau3 dataset ref is
+        # "conversation"; everything else (terminal-bench, harbor-index, ...)
+        # is "autonomous".
+        env:
+          DATASET_PATH: ${{ inputs.dataset_path }}
+          DATASET: ${{ inputs.dataset_override || inputs.dataset }}
+        run: |
+          if [ -n "${DATASET_PATH}" ]; then
+            echo "category=context" >> "$GITHUB_OUTPUT"
+          elif [[ "${DATASET}" == *tau3* ]]; then
+            echo "category=conversation" >> "$GITHUB_OUTPUT"
+          else
+            echo "category=autonomous" >> "$GITHUB_OUTPUT"
+          fi
+
+  run:
+    name: "📊 Evals - Harbor (${{ needs.prep.outputs.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
-    runs-on: ubuntu-latest
-    environment: evals
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
-
-    defaults:
-      run:
-        working-directory: libs/evals
-    env:
-      HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
-      HARBOR_N_TASKS: ${{ inputs.n_tasks }}
-      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
-      HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
-      HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
-      HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
-      HARBOR_SHARD_INDEX: ${{ matrix.shard }}
-      # Effective shard count from prep (capped to selectable work), not the raw
-      # input — the partition must match the matrix or tasks would be dropped.
-      HARBOR_N_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
-      HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
-      HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
-      HARBOR_MODEL: ${{ matrix.model }}
-      LANGSMITH_TRACING: "true"
-      OLLAMA_HOST: "https://ollama.com"
-    steps:
-      - name: "🔑 Verify sandbox credentials"
-        working-directory: .
-        env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
-        run: |
-          missing=()
-
-          # LangSmith is always required (experiment tracking)
-          [ -z "$LANGSMITH_API_KEY" ] && missing+=("LANGSMITH_API_KEY")
-
-          # Sandbox provider credentials
-          case "$HARBOR_SANDBOX_ENV" in
-            docker)
-              ;; # No additional credentials needed
-            langsmith)
-              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
-              ;;
-            *)
-              echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
-              exit 1
-              ;;
-          esac
-
-          # Model provider key (infer from model prefix)
-          model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
-            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
-            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
-            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
-            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
-            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
-            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
-            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
-            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
-            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
-            *)
-              echo "::warning::No credential check defined for provider '$model_provider' -- verify secrets manually"
-              ;;
-          esac
-
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required secrets for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL: ${missing[*]}"
-            exit 1
-          fi
-          echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
-
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: "🐍 Set up Python + UV"
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: "3.12"
-          cache-suffix: harbor
-          working-directory: libs/evals
-
-      - name: "📦 Install Dependencies"
-        run: uv sync --group test --locked
-
-      - name: "⚓ Install Harbor override"
-        if: ${{ inputs.harbor_package_override != '' }}
-        env:
-          # Passed via env (not interpolated into the shell) to avoid injection.
-          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
-        # --reinstall --refresh defeats any stale cached wheel for this git ref,
-        # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
-
-      - name: "🔇 Suppress Harbor first-run tips"
-        run: |
-          mkdir -p ~/.cache/harbor
-          echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
-
-      - name: "⚓ Run Harbor"
-        env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
-        run: |
-          # Stage current checkout packages for LangGraph's sandbox install.
-          local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          # partners/ must pre-exist: rsync only creates the final path component.
-          mkdir -p "$local_deps_dir/partners"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
-          # deepagents-code pins langchain-quickjs via a path source
-          # (../partners/quickjs); stage it so the editable install resolves.
-          rsync -a --delete \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '.pytest_cache' \
-            --exclude 'build' \
-            --exclude 'dist' \
-            --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
-
-          n_tasks_flag=""
-          if [ "$HARBOR_N_TASKS" != "0" ]; then
-            n_tasks_flag="--n-tasks $HARBOR_N_TASKS"
-          fi
-          if ! [[ "$HARBOR_ROLLOUTS_PER_TASK" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
-            exit 1
-          fi
-          # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
-          if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
-            echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
-            exit 1
-          fi
-          # Allowlist the boolean; only literal true/false accepted.
-          verification_flag=()
-          case "$HARBOR_DISABLE_VERIFICATION" in
-            true)  verification_flag=(--disable-verification) ;;
-            false) ;;
-            *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
-          esac
-
-          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-            echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
-            exit 1
-          fi
-
-          include_args=()
-          if [[ "$HARBOR_N_SHARDS" =~ ^[1-9][0-9]*$ ]] && [ "$HARBOR_N_SHARDS" -gt 1 ]; then
-            # Sharding: run this shard's disjoint slice of the dataset. Resolve the
-            # live task list from Harbor's own manifest (no drift), compose it with
-            # include_tasks/n_tasks exactly as an unsharded run would, then partition
-            # by i % n_shards. select_shard_tasks reproduces the include-glob +
-            # n_tasks subset of Harbor's _filter_task_ids; task_display_name mirrors
-            # each task id's get_name() (see .github/scripts/shard_matrix.py + tests).
-            if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
-              echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
-            fi
-            uv run python - <<'PY' > shard_tasks.txt
-          import asyncio
-          import os
-          import sys
-          from fnmatch import fnmatch
-          from harbor.registry.client.package import PackageDatasetClient
-
-          # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
-          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
-          from shard_matrix import select_shard_tasks, task_display_name
-
-          ds = os.environ["HARBOR_DATASET"]
-          n = int(os.environ["HARBOR_N_SHARDS"])
-          i = int(os.environ["HARBOR_SHARD_INDEX"])
-          include_globs = os.environ.get("HARBOR_INCLUDE_TASKS", "").split()
-          raw_n_tasks = os.environ.get("HARBOR_N_TASKS", "0").strip() or "0"
-          if not raw_n_tasks.isdigit():
-              sys.exit(f"::error::Invalid n_tasks (must be an integer): {raw_n_tasks!r}")
-          n_tasks = int(raw_n_tasks)
-          md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
-
-          # Native manifest order (do NOT sort): the n_tasks cap must pick the same
-          # first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks], native order).
-          names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
-          if not names:
-              # Resolved zero usable names from a non-empty manifest -> the id shape
-              # changed and get_name() stopped yielding a name. Fail loudly instead
-              # of letting every shard collapse into the legitimate-empty no-op
-              # below, which would run the whole sharded job on nothing and report
-              # green. (A genuinely empty selection is handled per-shard, not here.)
-              sys.exit(
-                  f"::error::Resolved 0 usable task names from {ds}@latest "
-                  f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
-                  "shape (get_name() returned nothing)."
-              )
-          selected = names
-          if include_globs:
-              selected = [
-                  name for name in selected if any(fnmatch(name, glob) for glob in include_globs)
-              ]
-              if not selected:
-                  sys.exit(
-                      "::error::No Harbor tasks matched include_tasks filters: "
-                      + " ".join(include_globs)
-                  )
-          tasks = select_shard_tasks(selected, [], n_tasks, n, i)
-          if tasks:
-              print("\n".join(tasks))
-          PY
-            mapfile -t shard_tasks < shard_tasks.txt
-            if [ "${#shard_tasks[@]}" -eq 0 ]; then
-              # Fewer selected tasks than shards (e.g. n_tasks < n_shards): this
-              # shard's slice is legitimately empty. No-op successfully — the other
-              # shards cover the full selection — instead of failing the workflow.
-              echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
-              echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
-              exit 0
-            fi
-            for t in "${shard_tasks[@]}"; do
-              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
-                echo "::error::Invalid resolved shard task name: $t"; exit 1
-              fi
-              include_args+=(--include-task-name "$t")
-            done
-            # The n_tasks cap is already applied during selection above; clear the
-            # flag so Harbor doesn't re-cap each shard to n_tasks (which would run up
-            # to n_tasks * n_shards instead of n_tasks total).
-            n_tasks_flag=""
-            echo "Shard $HARBOR_SHARD_INDEX of $HARBOR_N_SHARDS -> ${#shard_tasks[@]} tasks: ${shard_tasks[*]}"
-          elif [ -n "$HARBOR_INCLUDE_TASKS" ]; then
-            read -r -a include_tasks <<< "$HARBOR_INCLUDE_TASKS"
-            for t in "${include_tasks[@]}"; do
-              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
-                echo "::error::Invalid Harbor include task filter: $t"
-                exit 1
-              fi
-              include_args+=(--include-task-name "$t")
-            done
-          fi
-
-          env_flag="--env $HARBOR_SANDBOX_ENV"
-          case "$HARBOR_AGENT_IMPL" in
-            dcode)
-              HARBOR_AGENT_GRAPH=deepagent
-              HARBOR_AGENT_LABEL="dcode harness"
-              ;;
-            bare)
-              HARBOR_AGENT_GRAPH=bare_deepagent
-              HARBOR_AGENT_LABEL="bare create_deep_agent"
-              ;;
-            tau3)
-              # Requires a Harbor build that forwards the task environment's MCP
-              # servers into the LangGraph graph configurable. The pinned Harbor
-              # does not yet, so set `harbor_package_override` to such a build
-              # until that support ships in a release; otherwise tau3_deepagent
-              # exits early with no MCP servers.
-              HARBOR_AGENT_GRAPH=tau3_deepagent
-              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            *)
-              echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
-              exit 1
-              ;;
-          esac
-          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
-          echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
-          echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
-          echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
-          echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
-
-          agent_env_args=(
-            --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
-            --agent-env 'LANGSMITH_TRACING=true'
-            --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
-          )
-          model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;
-            google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
-            openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
-            baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
-            ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
-            groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
-            xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
-            nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
-          esac
-
-          echo "LangSmith plugin experiment base: $HARBOR_LANGSMITH_EXPERIMENT"
-          echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
-          echo ""
-
-          uv run harbor run \
-            --agent langgraph \
-            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
-            --agent-kwarg config=langgraph.json \
-            --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET" \
-            -n "$HARBOR_CONCURRENCY" \
-            --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
-            --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
-            "${verification_flag[@]}" \
-            $n_tasks_flag \
-            "${include_args[@]}" \
-            "${agent_env_args[@]}" \
-            --jobs-dir harbor-jobs/terminal-bench \
-            $env_flag \
-            --model "$HARBOR_MODEL" \
-            --plugin langsmith \
-            --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
-            --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
-
-      - name: "🔍 Find latest Harbor job"
-        id: latest-job
-        # An empty shard skipped the Harbor run, so there is no job dir to find.
-        if: ${{ env.SHARD_EMPTY != 'true' }}
-        run: |
-          latest_job=$(python - <<'PY'
-          from pathlib import Path
-
-          jobs_dir = Path("harbor-jobs/terminal-bench")
-          job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
-          if not job_dirs:
-              raise SystemExit("No Harbor job directory found")
-          print(job_dirs[-1])
-          PY
-          )
-          echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
-
-      - name: "📝 Write workflow summary"
-        if: always()
-        env:
-          HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
-          HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
-          HARBOR_AGENT_LABEL: ${{ env.HARBOR_AGENT_LABEL }}
-          HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
-          HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
-          LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
-          SHARD_EMPTY: ${{ env.SHARD_EMPTY }}
-        run: |
-          {
-            echo "## Harbor run"
-            echo
-            echo "- Model: $HARBOR_MODEL"
-            if [ "$SHARD_EMPTY" = "true" ]; then
-              echo "- Shard: $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS — empty (no tasks assigned), skipped"
-            fi
-            echo "- Dataset: ${HARBOR_DATASET}"
-            echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
-            echo "- Concurrency: ${HARBOR_CONCURRENCY}"
-            if [ "$HARBOR_N_TASKS" = "0" ]; then
-              echo "- Max tasks: all"
-            else
-              echo "- Max tasks: ${HARBOR_N_TASKS}"
-            fi
-            if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
-              echo "- Included tasks: ${HARBOR_INCLUDE_TASKS}"
-            else
-              echo "- Included tasks: all"
-            fi
-            echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_LABEL} (${HARBOR_AGENT_GRAPH})"
-            echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
-            echo "- LangSmith experiment base: ${HARBOR_LANGSMITH_EXPERIMENT}"
-            if [ "$LATEST_JOB_OUTCOME" = "success" ]; then
-              echo "- Harbor job dir: $HARBOR_JOB_DIR"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "📤 Upload Harbor artifacts"
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: harbor-${{ strategy.job-index }}
-          path: |
-            libs/evals/harbor-jobs/terminal-bench
-          if-no-files-found: warn
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ needs.prep.outputs.model }}
+      category: ${{ needs.prep.outputs.category }}
+      dataset: ${{ inputs.dataset_override || inputs.dataset }}
+      dataset_path: ${{ inputs.dataset_path }}
+      agent_impl: ${{ inputs.agent_impl }}
+      # Empty: the leaf derives the dataset name itself.
+      langsmith_dataset: ""
+      rollouts: ${{ inputs.rollouts_per_task }}
+      n_shards: ${{ inputs.n_shards }}
+      # Run every shard in parallel (cap = n_shards).
+      shard_parallel: ${{ inputs.n_shards }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      n_retries: ${{ inputs.n_retries }}
+      n_tasks: ${{ inputs.n_tasks }}
+      include_tasks: ${{ inputs.include_tasks }}
+      agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      disable_verification: ${{ inputs.disable_verification }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}

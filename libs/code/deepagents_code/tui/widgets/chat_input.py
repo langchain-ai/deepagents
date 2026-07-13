@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
 
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
 
 
@@ -1254,11 +1255,6 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
-        if event.key == "delete" and self._delete_placeholder_token(backwards=False):
-            event.prevent_default()
-            event.stop()
-            return
-
         # If completion is active, let parent handle navigation keys.
         # Space is included so that slash-command completion can accept the
         # selected suggestion via the same code path as Tab (avoiding a
@@ -1303,6 +1299,11 @@ class ChatTextArea(TextArea):
             return
 
         await super()._on_key(event)
+
+    def action_delete_right(self) -> None:
+        """Delete a bound placeholder atomically or the next character."""
+        if not self._delete_placeholder_token(backwards=False):
+            super().action_delete_right()
 
     def _delete_placeholder_token(self, *, backwards: bool) -> bool:
         """Delete a full placeholder token (image, video, or paste) in one keypress.
@@ -1666,6 +1667,12 @@ class ChatInput(Vertical):
         border: none;
         background: transparent;
         padding: 0;
+    }
+
+    ChatInput ChatTextArea.cursor-underline .text-area--cursor {
+        background: transparent;
+        color: $text;
+        text-style: underline;
     }
 
     ChatInput ChatTextArea:focus {
@@ -2900,12 +2907,20 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.text = val
 
-    def set_value_at_end(self, val: str) -> None:
-        """Set the input value and place the cursor at the end of the text."""
+    def set_value_at_end(self, val: str) -> bool:
+        """Set the input value and place the cursor at the end of the text.
+
+        Returns:
+            `True` when the value was written, `False` when the text area is
+            unavailable and the value could not be set. Callers that surface a
+            "restored"/"moved to input" toast should gate it on this so the
+            toast never claims a write that did not happen.
+        """
         if not self._text_area:
-            return
+            return False
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
+        return True
 
     def discard_text(self) -> bool:
         """Clear the draft, keeping it restorable via undo (ctrl+z).
@@ -2984,6 +2999,15 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def set_cursor_style(self, *, style: CursorStyle) -> None:
+        """Set the input cursor's visual style.
+
+        Args:
+            style: Whether to render a block or underlined character cell.
+        """
+        if self._text_area is not None:
+            self._text_area.set_class(style == "underline", "cursor-underline")
 
     def set_cursor_blink(self, *, blink: bool) -> None:
         """Toggle the input's cursor blink without changing focus.

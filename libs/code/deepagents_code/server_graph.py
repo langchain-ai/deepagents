@@ -47,18 +47,6 @@ def _print_startup_error(message: str) -> None:
     )
 
 
-def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP adapter modules whose first import may block.
-
-    Called via `asyncio.to_thread` before MCP loading; kept as a small helper so
-    tests can patch it and assert the warmup stays off the server event loop.
-    """
-    from langchain_mcp_adapters import (
-        sessions as _sessions,  # noqa: F401
-        tools as _tools,  # noqa: F401
-    )
-
-
 def _get_mcp_session_manager() -> Any:  # noqa: ANN401
     """Return the process-wide MCP session manager singleton.
 
@@ -92,8 +80,9 @@ async def _build_tools(
     `asyncio.run` (which raises inside a running loop). `stateless=True` ensures
     discovery only uses throwaway sessions, while the shared runtime session
     manager binds real sessions lazily inside the server loop on first tool
-    invocation. MCP adapter imports are warmed in a worker thread first because
-    first import can perform blocking package-resource scans.
+    invocation. MCP adapter imports are warmed in a worker thread inside
+    `_load_tools_from_config` (only when active servers exist) because first
+    import can perform blocking package-resource scans.
 
     Args:
         config: Deserialized server configuration.
@@ -116,8 +105,6 @@ async def _build_tools(
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
-
-        await asyncio.to_thread(_warm_mcp_adapter_imports)
 
         try:
             mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(

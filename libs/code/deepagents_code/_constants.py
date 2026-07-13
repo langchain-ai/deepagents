@@ -14,27 +14,13 @@ DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
 FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
-"""Broad stem shared by every fully-qualified Fireworks ID.
-
-Used for provider *inference* (does this ID belong to Fireworks?), in the same
-spirit as LangChain's own `accounts/fireworks`-based inference. The trailing
-slash keeps the match anchored to the account namespace so lookalikes such as
-`accounts/fireworks-enterprise/...` do not resolve to Fireworks. Deliberately
-broader than `FIREWORKS_MODEL_ID_PREFIXES` so any current or future
-`accounts/fireworks/*` namespace resolves to the provider, not just `models/`
-and `routers/`."""
+"""Prefix used to infer Fireworks from fully-qualified IDs."""
 
 FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (
     "accounts/fireworks/models/",
     "accounts/fireworks/routers/",
 )
-"""Fully-qualified prefixes for Fireworks model and router IDs.
-
-Narrower than `FIREWORKS_PROVIDER_ID_PREFIX`: these enumerate the exact
-namespaces used for display stripping and reasoning-effort classification. The
-full namespace segment (through `models/` or `routers/`) is included so that
-stripping leaves only the bare model name rather than a leftover
-`models/`/`routers/` fragment."""
+"""Model and router ID prefixes used for stripping and classification."""
 
 SYSTEM_MESSAGE_PREFIX: Final[str] = "[SYSTEM]"
 """Prefix for synthetic human messages (e.g. interrupt cancellation notices).

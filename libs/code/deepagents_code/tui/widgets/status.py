@@ -70,9 +70,7 @@ class ModelLabel(Widget):
         name = self.model
         if not name or not self.provider:
             return name
-        # Match case-insensitively so a mixed-case ID (which `detect_provider`
-        # still resolves to the provider) is stripped too; slice off the raw
-        # length to preserve the original casing of the remaining model name.
+        # Match on normalized text but slice the original to preserve its casing.
         name_lower = name.lower()
         for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
             if name_lower.startswith(prefix):

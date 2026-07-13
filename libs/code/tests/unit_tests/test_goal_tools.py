@@ -367,6 +367,9 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
         "_goal_status",
         "_goal_rubric",
         "_goal_status_note",
+        "_completed_goal_objective",
+        "_completed_goal_rubric",
+        "_completed_goal_status_note",
         "_pending_goal_completion_note",
         "_sticky_rubric",
     ):

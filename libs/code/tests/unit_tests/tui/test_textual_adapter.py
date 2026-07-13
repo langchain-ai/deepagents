@@ -1278,12 +1278,29 @@ class TestFormatRubricEvent:
         )
 
     def test_max_iterations_reached_event(self) -> None:
-        """Hitting the iteration cap should warn the user it is unsatisfied."""
+        """Hitting the iteration cap should show gaps and preserve the goal."""
         assert (
             _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "max_iterations_reached",
+                    "explanation": "coverage is still missing",
+                    "criteria": [
+                        {
+                            "name": "tests pass",
+                            "passed": False,
+                            "gap": "integration test failed",
+                        },
+                        {"name": "docs updated", "passed": True},
+                    ],
+                },
+                goal_active=True,
             )
-            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
+            == "⚠ Iteration limit reached with unmet acceptance criteria: "
+            "coverage is still missing\n"
+            "  ✗ tests pass — integration test failed\n"
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
         )
 
     def test_grader_failure_results_render_warning(self) -> None:
@@ -1302,7 +1319,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "grader_error"},
             )
-            == "⚠ Rubric grader error"
+            == "⚠ Grader/infrastructure failure"
         )
 
     def test_unknown_terminal_result_renders_fallback(self) -> None:

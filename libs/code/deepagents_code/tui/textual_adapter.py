@@ -223,8 +223,14 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
-def _format_rubric_event(data: dict[str, Any]) -> str | None:
+def _format_rubric_event(
+    data: dict[str, Any], *, goal_active: bool = False
+) -> str | None:
     """Format a rubric custom-stream event for the chat transcript.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
 
     Returns:
         A user-visible message for rubric events, or `None` for custom-stream
@@ -264,16 +270,29 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
                 lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
         return "\n".join(lines)
     if result == "max_iterations_reached":
-        return (
-            f"{glyphs.warning} Acceptance criteria not satisfied "
-            "(iteration limit reached)"
-        )
-    if result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
-        return (
-            f"{glyphs.warning} Rubric "
-            + label
+        lines = [
+            f"{glyphs.warning} Iteration limit reached with unmet acceptance criteria"
             + (f": {explanation}" if explanation else "")
+        ]
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name", "criterion"))
+                gap = str(criterion.get("gap", "")).strip()
+                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
+        if goal_active:
+            lines.append(
+                "The goal remains active. Continue with another prompt to resume or "
+                "retry, use `/goal <objective>` to amend it, or `/goal clear` to "
+                "clear it."
+            )
+        return "\n".join(lines)
+    if result == "failed":
+        return f"{glyphs.warning} Rubric grader failed" + (
+            f": {explanation}" if explanation else ""
+        )
+    if result == "grader_error":
+        return f"{glyphs.warning} Grader/infrastructure failure" + (
+            f": {explanation}" if explanation else ""
         )
     # A `rubric_evaluation_end` with an unrecognized result is still a terminal
     # grading event; surface it rather than silently dropping it (e.g. if the
@@ -513,6 +532,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     rubric: str | None = None,
+    goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -541,6 +561,7 @@ async def execute_task_textual(
             in the checkpoint).
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
@@ -802,7 +823,12 @@ async def execute_task_textual(
                 if current_stream_mode == "custom":
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
-                        _format_rubric_event(rubric_message) if rubric_message else None
+                        _format_rubric_event(
+                            rubric_message,
+                            goal_active=goal_active,
+                        )
+                        if rubric_message
+                        else None
                     )
                     if formatted_rubric_event is not None and is_main_agent:
                         await adapter._mount_message(AppMessage(formatted_rubric_event))

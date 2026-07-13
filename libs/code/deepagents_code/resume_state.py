@@ -23,6 +23,9 @@ have no model-node write site; the two exceptions are called out below:
     from inside the graph by the agent's `update_goal` tool.
 - `_pending_goal_completion_note` — an agent-requested completion awaiting the
     post-turn rubric result and, when needed, user approval.
+- `_completed_goal_objective` / `_completed_goal_rubric` /
+    `_completed_goal_status_note` — the most recent completed goal retained for
+    history after its active goal and rubric fields are cleared.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
@@ -122,6 +125,15 @@ class GoalRubricChannels(AgentState):
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Evidence or blocker note recorded by `update_goal`."""
+
+    _completed_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Most recently completed goal, retained after active state is cleared."""
+
+    _completed_goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Acceptance criteria associated with the most recently completed goal."""
+
+    _completed_goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Completion evidence retained for goal history display."""
 
     _pending_goal_completion_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Completion evidence awaiting rubric and user approval."""

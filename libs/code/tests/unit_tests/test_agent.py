@@ -3269,7 +3269,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,

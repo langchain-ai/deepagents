@@ -44,6 +44,15 @@ class TestResumeState:
         metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
         assert PrivateStateAttr in metadata
 
+    def test_completed_goal_history_fields_are_private(self) -> None:
+        hints = get_type_hints(ResumeState, include_extras=True)
+        for field in (
+            "_completed_goal_objective",
+            "_completed_goal_rubric",
+            "_completed_goal_status_note",
+        ):
+            assert PrivateStateAttr in getattr(hints[field], "__metadata__", ())
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState

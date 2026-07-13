@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { run, closeBody } = require('./close-old-prs.js');
+const { run, closeBody, ageInDays, COMMENT_MARKER } = require('./close-old-prs.js');
 
 function httpError(message, status) {
   const error = new Error(message);
@@ -100,10 +100,11 @@ function makeGithub({
 
 const context = { repo: { owner: 'langchain-ai', repo: 'deepagents' } };
 const now = new Date('2026-05-08T00:00:00Z');
+const workflowBot = { login: 'github-actions[bot]', type: 'Bot' };
 
 test('warns after 14 days and closes after 30 days from opening', async () => {
   const comments = new Map([
-    [102, [{ id: 77, body: '<!-- old-pr-auto-close -->\nwarning' }]],
+    [102, [{ id: 77, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
   const live = new Map([
     [103, { labels: ['do-not-close'] }],
@@ -124,7 +125,7 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   const summary = await run({ github, context, core, options: { now } });
 
   assert.deepEqual(summary, {
-    checked: 4, warned: 1, closed: 1, skipped: 2, incomplete: false, errors: [],
+    checked: 4, warned: 1, closed: 1, skipped: 2, incomplete: false, truncated: false, errors: [],
   });
   assert.equal(calls.createComment.length, 1);
   assert.equal(calls.createComment[0].issue_number, 101);
@@ -136,22 +137,25 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   assert.equal(core.failed, null);
 });
 
-test('closes an old PR even when the warning comment is missing', async () => {
+test('warns an old PR that was never warned instead of closing it', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 201, created_at: '2026-04-01T00:00:00Z' }],
   });
 
   const summary = await run({ github, context, core: makeCore(), options: { now } });
 
-  assert.equal(summary.closed, 1);
+  // Warn-first: a 37-day-old PR with no prior bot warning is warned now and
+  // only becomes eligible to close on a later run.
+  assert.equal(summary.warned, 1);
+  assert.equal(summary.closed, 0);
   assert.equal(calls.createComment[0].issue_number, 201);
-  assert.match(calls.createComment[0].body, /being closed automatically/);
-  assert.deepEqual(calls.close, [201]);
+  assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.deepEqual(calls.close, []);
 });
 
 test('does not duplicate warning comments on daily runs', async () => {
   const comments = new Map([
-    [301, [{ id: 88, body: '<!-- old-pr-auto-close -->\nwarning' }]],
+    [301, [{ id: 88, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
   const { github, calls } = makeGithub({
     items: [{ number: 301, created_at: '2026-04-23T00:00:00Z' }],
@@ -162,6 +166,59 @@ test('does not duplicate warning comments on daily runs', async () => {
 
   assert.equal(summary.skipped, 1);
   assert.equal(calls.createComment.length, 0);
+  assert.equal(calls.updateComment.length, 0);
+  assert.deepEqual(calls.close, []);
+});
+
+test('ignores marker comments posted by PR participants when warning', async () => {
+  const comments = new Map([
+    [302, [{
+      id: 89,
+      body: `${COMMENT_MARKER}\nforged warning`,
+      user: { login: 'contributor', type: 'User' },
+    }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 302, created_at: '2026-04-23T00:00:00Z' }],
+    comments,
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.warned, 1);
+  assert.equal(calls.createComment.length, 1);
+  assert.equal(calls.createComment[0].issue_number, 302);
+  assert.equal(calls.updateComment.length, 0);
+});
+
+test('warns a PR exactly at the warning threshold', async () => {
+  const { github, calls } = makeGithub({
+    // 2026-04-24 is exactly 14 days before `now`.
+    items: [{ number: 310, created_at: '2026-04-24T00:00:00Z' }],
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.warned, 1);
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.deepEqual(calls.close, []);
+});
+
+test('does not close a warned PR the day before the close threshold', async () => {
+  const comments = new Map([
+    [311, [{ id: 90, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
+  const { github, calls } = makeGithub({
+    // 2026-04-09 is 29 days before `now`: already warned, but not yet old enough.
+    items: [{ number: 311, created_at: '2026-04-09T00:00:00Z' }],
+    comments,
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(summary.closed, 0);
   assert.equal(calls.updateComment.length, 0);
   assert.deepEqual(calls.close, []);
 });
@@ -193,9 +250,27 @@ test('skips PRs that are no longer open', async () => {
   assert.deepEqual(calls.close, []);
 });
 
+test('skips a PR that 404s on the live re-fetch', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 510, created_at: '2026-04-01T00:00:00Z' }],
+    getErrors: new Map([[510, httpError('not found', 404)]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  // A deleted/transferred PR is a routine skip, not an error — it must not
+  // land in summary.errors or fail the run.
+  assert.equal(summary.skipped, 1);
+  assert.equal(summary.errors.length, 0);
+  assert.equal(calls.createComment.length, 0);
+  assert.deepEqual(calls.close, []);
+  assert.equal(core.failed, null);
+});
+
 test('does not rewrite an identical close comment', async () => {
   const body = closeBody({ closeDays: 30, bypassLabel: 'do-not-close' });
-  const comments = new Map([[601, [{ id: 5, body }]]]);
+  const comments = new Map([[601, [{ id: 5, body, user: workflowBot }]]]);
   const { github, calls } = makeGithub({
     items: [{ number: 601, created_at: '2026-04-01T00:00:00Z' }],
     comments,
@@ -209,14 +284,43 @@ test('does not rewrite an identical close comment', async () => {
   assert.deepEqual(calls.close, [601]);
 });
 
-test('continues after a single PR failure and fails the run at the end', async () => {
-  const getErrors = new Map([[701, httpError('temporary outage', 503)]]);
+test('warns instead of closing when only a participant marker exists', async () => {
+  const comments = new Map([
+    [602, [{
+      id: 6,
+      body: `${COMMENT_MARKER}\nforged warning`,
+      user: { login: 'contributor', type: 'User' },
+    }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [{ number: 602, created_at: '2026-04-01T00:00:00Z' }],
+    comments,
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  // A forged participant marker is not a real warning, so a 37-day-old PR is
+  // treated as unwarned: it gets a genuine bot warning and is neither closed
+  // nor has the forged comment overwritten.
+  assert.equal(summary.warned, 1);
+  assert.equal(summary.closed, 0);
+  assert.equal(calls.createComment.length, 1);
+  assert.equal(calls.createComment[0].issue_number, 602);
+  assert.equal(calls.updateComment.length, 0);
+  assert.deepEqual(calls.close, []);
+});
+
+test('keeps the run green after an isolated transient per-PR error', async () => {
+  const comments = new Map([
+    [702, [{ id: 70, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
+  ]);
   const { github, calls } = makeGithub({
     items: [
       { number: 701, created_at: '2026-04-08T00:00:00Z' },
       { number: 702, created_at: '2026-04-08T00:00:00Z' },
     ],
-    getErrors,
+    comments,
+    getErrors: new Map([[701, httpError('temporary outage', 503)]]),
   });
   const core = makeCore();
 
@@ -227,9 +331,50 @@ test('continues after a single PR failure and fails the run at the end', async (
   assert.equal(summary.errors.length, 1);
   assert.equal(summary.errors[0].number, 701);
   assert.equal(summary.errors[0].status, 503);
-  assert.match(core.warnings[0], /PR #701 failed \(HTTP 503\)/);
-  assert.match(core.failed, /#701/);
+  assert.equal(summary.errors[0].transient, true);
+  assert.match(core.warnings[0], /PR #701 failed \(HTTP 503, transient\)/);
+  // A lone 503 self-heals on the next run, so the day's run stays green while
+  // the healthy PR still closes.
+  assert.equal(core.failed, null);
   assert.deepEqual(calls.close, [702]);
+});
+
+test('fails the run on a non-transient per-PR error', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 710, created_at: '2026-04-08T00:00:00Z' }],
+    getErrors: new Map([[710, httpError('forbidden', 403)]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.errors.length, 1);
+  assert.equal(summary.errors[0].transient, false);
+  assert.match(core.warnings[0], /PR #710 failed \(HTTP 403, fatal\)/);
+  assert.match(core.failed, /#710/);
+  assert.deepEqual(calls.close, []);
+});
+
+test('fails the run when every processed PR errors, even transiently', async () => {
+  const { github } = makeGithub({
+    items: [
+      { number: 720, created_at: '2026-04-08T00:00:00Z' },
+      { number: 721, created_at: '2026-04-08T00:00:00Z' },
+    ],
+    getErrors: new Map([
+      [720, httpError('outage', 503)],
+      [721, httpError('outage', 502)],
+    ]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  // Individually transient, but a run where nothing succeeded is systemic and
+  // must not report success.
+  assert.equal(summary.errors.length, 2);
+  assert.ok(summary.errors.every(error => error.transient));
+  assert.match(core.failed, /All 2 processed PR\(s\) failed/);
 });
 
 test('creates the bypass label when it does not exist', async () => {
@@ -305,15 +450,16 @@ test('honors maxItems truncation', async () => {
     })),
   });
 
-  const summary = await run({
-    github,
-    context,
-    core: makeCore(),
-    options: { now, maxItems: 2 },
-  });
+  const core = makeCore();
+  const summary = await run({ github, context, core, options: { now, maxItems: 2 } });
 
   assert.equal(summary.checked, 2);
   assert.equal(summary.incomplete, false);
+  // Hitting the cap is surfaced (flag + warning) rather than looking like a
+  // complete sweep, but does not fail the run since it self-corrects.
+  assert.equal(summary.truncated, true);
+  assert.match(core.warnings[0], /Reached maxItems cap \(2\)/);
+  assert.equal(core.failed, null);
 });
 
 test('uses all non-draft open PRs and rejects invalid thresholds', async () => {
@@ -346,4 +492,24 @@ test('rejects non-integer threshold configuration', async () => {
     run({ github, context, core: makeCore(), options: { now, maxItems: '10O' } }),
     /maxItems must be a positive integer/,
   );
+});
+
+test('ageInDays throws on an unparseable created date', () => {
+  assert.throws(() => ageInDays('not-a-date', now), /Unparseable created date/);
+});
+
+test('records an unparseable created date as a fatal per-PR error', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 1001, created_at: 'not-a-date' }],
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  // A malformed date must surface loudly, not silently skip the PR forever.
+  assert.equal(summary.errors.length, 1);
+  assert.equal(summary.errors[0].number, 1001);
+  assert.equal(summary.errors[0].transient, false);
+  assert.match(core.failed, /#1001/);
+  assert.deepEqual(calls.close, []);
 });

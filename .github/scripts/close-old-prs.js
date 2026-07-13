@@ -5,6 +5,7 @@ const DEFAULT_WARNING_DAYS = 14;
 const DEFAULT_CLOSE_DAYS = 30;
 const DEFAULT_MAX_ITEMS = 1000;
 const COMMENT_MARKER = '<!-- old-pr-auto-close -->';
+const WORKFLOW_BOT_LOGIN = 'github-actions[bot]';
 
 function parsePositiveInt(value, fallback, name) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -23,11 +24,21 @@ function parsePositiveInt(value, fallback, name) {
 function ageInDays(createdAt, now) {
   const created = new Date(createdAt).getTime();
   if (!Number.isFinite(created)) {
-    // A NaN age would slip past every `age >= threshold` guard and silently
-    // skip the PR forever, so surface it as an error instead.
+    // A non-finite age fails every numeric comparison (`age < warningDays` and
+    // `age >= closeDays` are both false for NaN), so the PR would evade the
+    // young-skip, get warned once, then linger open forever without ever
+    // closing. Surface it as an error instead.
     throw new Error(`Unparseable created date: ${JSON.stringify(createdAt)}`);
   }
   return Math.floor((now.getTime() - created) / MS_PER_DAY);
+}
+
+function isTransient(status) {
+  // Rate-limit and 5xx responses are typically momentary, and the daily cron
+  // retries the PR on its next run. Everything else (auth, validation, or a
+  // status-less throw such as a code bug) is treated as fatal so the run fails
+  // loudly instead of silently skipping work.
+  return status === 429 || (typeof status === 'number' && status >= 500);
 }
 
 function labelNames(labels) {
@@ -69,30 +80,11 @@ async function findMarkerComment({ github, owner, repo, issueNumber }) {
     github.rest.issues.listComments,
     { owner, repo, issue_number: issueNumber, per_page: 100 },
   );
-  return comments.find(comment => comment.body?.includes(COMMENT_MARKER));
-}
-
-async function upsertComment({ github, owner, repo, issueNumber, body }) {
-  const existing = await findMarkerComment({ github, owner, repo, issueNumber });
-  if (existing) {
-    if (existing.body !== body) {
-      await github.rest.issues.updateComment({
-        owner,
-        repo,
-        comment_id: existing.id,
-        body,
-      });
-    }
-    return existing;
-  }
-
-  await github.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: issueNumber,
-    body,
-  });
-  return null;
+  return comments.find(comment =>
+    comment.user?.login === WORKFLOW_BOT_LOGIN &&
+    comment.user?.type === 'Bot' &&
+    comment.body?.includes(COMMENT_MARKER),
+  );
 }
 
 function warningBody({ warningDays, closeDays, bypassLabel }) {
@@ -137,7 +129,17 @@ async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
     )) {
       for (const item of response.data) {
         items.push(item);
-        if (items.length >= maxItems) return { items, incomplete: false };
+        if (items.length >= maxItems) {
+          // Hitting the cap looks identical to a complete sweep unless we say
+          // so. It self-corrects across runs (oldest PRs are processed first),
+          // so this only warns rather than failing, but a green run must not
+          // hide that some open PRs went unprocessed.
+          core.warning(
+            `Reached maxItems cap (${maxItems}); some open PRs were not ` +
+            `processed this run. Raise max_items if the backlog is larger.`,
+          );
+          return { items, incomplete: false, truncated: true };
+        }
       }
     }
   } catch (error) {
@@ -147,9 +149,9 @@ async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
     );
     // Process whatever was collected, but report incompleteness so the caller
     // fails the run — a swallowed search error must not look like a clean pass.
-    return { items, incomplete: true };
+    return { items, incomplete: true, truncated: false };
   }
-  return { items, incomplete: false };
+  return { items, incomplete: false, truncated: false };
 }
 
 async function processPr({
@@ -200,25 +202,15 @@ async function processPr({
     return 'skipped';
   }
 
-  if (age >= closeDays) {
-    await upsertComment({
-      github,
-      owner,
-      repo,
-      issueNumber: number,
-      body: closeBody({ closeDays, bypassLabel }),
-    });
-    await github.rest.pulls.update({
-      owner,
-      repo,
-      pull_number: number,
-      state: 'closed',
-    });
-    core.info(`Closed PR #${number} after ${age} day(s)`);
-    return 'closed';
-  }
-
+  // Warn-first: a PR is only ever closed once it already carries a warning
+  // comment posted by this workflow, so every PR gets at least one warning
+  // cycle (closeDays - warningDays days) of notice. A PR that is already past
+  // closeDays but was never warned (e.g. the backlog on the first run) is
+  // warned now and becomes eligible to close on a later run. A forged marker
+  // from a PR participant does not count — findMarkerComment requires the bot
+  // author — so it can neither trigger nor block a close.
   const existing = await findMarkerComment({ github, owner, repo, issueNumber: number });
+
   if (!existing) {
     await github.rest.issues.createComment({
       owner,
@@ -230,13 +222,38 @@ async function processPr({
     return 'warned';
   }
 
+  if (age >= closeDays) {
+    // Upgrade the existing warning to the close notice in place, skipping the
+    // API call if it already says exactly that (e.g. a retried run).
+    const body = closeBody({ closeDays, bypassLabel });
+    if (existing.body !== body) {
+      await github.rest.issues.updateComment({
+        owner,
+        repo,
+        comment_id: existing.id,
+        body,
+      });
+    }
+    await github.rest.pulls.update({
+      owner,
+      repo,
+      pull_number: number,
+      state: 'closed',
+    });
+    core.info(`Closed PR #${number} after ${age} day(s)`);
+    return 'closed';
+  }
+
   core.info(`PR #${number} is ${age} day(s) old; already warned, no action`);
   return 'skipped';
 }
 
 async function run({ github, context, core, options = {} }) {
   const { owner, repo } = context.repo;
-  const bypassLabel = options.bypassLabel ?? process.env.BYPASS_LABEL ?? DEFAULT_BYPASS_LABEL;
+  // `||` (not `??`) so an empty string falls back to the default: an
+  // empty-named label can never be applied, which would silently disable the
+  // bypass mechanism.
+  const bypassLabel = options.bypassLabel || process.env.BYPASS_LABEL || DEFAULT_BYPASS_LABEL;
   const warningDays = parsePositiveInt(
     options.warningDays ?? process.env.WARNING_DAYS,
     DEFAULT_WARNING_DAYS,
@@ -259,10 +276,10 @@ async function run({ github, context, core, options = {} }) {
   }
 
   await ensureLabel({ github, owner, repo, name: bypassLabel });
-  const { items: prs, incomplete } = await searchOpenPrs({ github, owner, repo, maxItems, core });
+  const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });
   core.info(`Found ${prs.length} open PR(s)`);
 
-  const summary = { checked: 0, warned: 0, closed: 0, skipped: 0, incomplete, errors: [] };
+  const summary = { checked: 0, warned: 0, closed: 0, skipped: 0, incomplete, truncated, errors: [] };
   for (const item of prs) {
     summary.checked += 1;
     try {
@@ -280,8 +297,12 @@ async function run({ github, context, core, options = {} }) {
       summary[result] += 1;
     } catch (error) {
       const status = error.status ?? 'unknown';
-      core.warning(`PR #${item.number} failed (HTTP ${status}): ${error.stack ?? error.message}`);
-      summary.errors.push({ number: item.number, status, message: error.message });
+      const transient = isTransient(status);
+      core.warning(
+        `PR #${item.number} failed (HTTP ${status}, ${transient ? 'transient' : 'fatal'}): ` +
+        `${error.stack ?? error.message}`,
+      );
+      summary.errors.push({ number: item.number, status, message: error.message, transient });
     }
   }
 
@@ -290,9 +311,18 @@ async function run({ github, context, core, options = {} }) {
     `closed ${summary.closed}; skipped ${summary.skipped}; errors ${summary.errors.length}`,
   );
 
-  const problems = summary.errors.map(error => `#${error.number}: ${error.message}`);
+  // A transient per-PR error (rate limit / 5xx) self-heals on the next daily
+  // run, so it must not turn an otherwise-fine run red. Fail only on an
+  // incomplete search, a non-transient error, or every processed PR failing
+  // (systemic — even if each individual failure looked transient).
+  const fatalErrors = summary.errors.filter(error => !error.transient);
+  const allFailed = summary.checked > 0 && summary.errors.length === summary.checked;
+  const problems = fatalErrors.map(error => `#${error.number}: ${error.message}`);
   if (incomplete) {
     problems.unshift('PR search did not complete; processed a partial list');
+  }
+  if (allFailed && fatalErrors.length === 0) {
+    problems.push(`All ${summary.checked} processed PR(s) failed with transient errors`);
   }
   if (problems.length > 0) {
     core.setFailed(problems.join('; '));

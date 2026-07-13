@@ -32,6 +32,7 @@ dependencies = [
 examples = [
     "langchain-baseten>=0.2.1",
     "langchain-openai>=1.3.3",
+    "tavily-python>=0.7.22",
 ]
 test = [
     "pytest>=9.1.1",

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from typing import Any, Literal
 
 from acp import (
     run_agent as run_acp_agent,
@@ -13,11 +14,34 @@ from acp.schema import (
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from dotenv import load_dotenv
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import Checkpointer, CompiledStateGraph
+from tavily import TavilyClient
 
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from examples.local_context import LocalContextMiddleware
+
+
+@tool
+def web_search(
+    query: str,
+    max_results: int = 5,
+    topic: Literal["general", "news", "finance"] = "general",
+) -> dict[str, Any]:
+    """Search the web with Tavily for current information.
+
+    Args:
+        query: The search query to execute. Be specific and include important keywords.
+        max_results: Maximum number of search results to return.
+        topic: Tavily topic filter. Use "general" for most queries, "news" for current
+            events, or "finance" for financial information.
+
+    Returns:
+        Tavily search results, including titles, URLs, and content snippets.
+    """
+    client = TavilyClient()
+    return client.search(query=query, max_results=max_results, topic=topic)
 
 
 def _get_interrupt_config(mode_id: str) -> dict:
@@ -71,6 +95,7 @@ async def _serve_example_agent() -> None:
         return create_deep_agent(
             # Falls back to Deep Agent default model if not provided
             model=context.model,
+            tools=[web_search],
             checkpointer=checkpointer,
             backend=backend,
             interrupt_on=interrupt_config,
@@ -109,9 +134,11 @@ async def _serve_example_agent() -> None:
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]
     openai_models = [
+        {"value": "openai:gpt-5.6-sol", "name": "GPT-5.6-Sol"},
+        {"value": "openai:gpt-5.6-terra", "name": "GPT-5.6-Terra"},
+        {"value": "openai:gpt-5.6-luna", "name": "GPT-5.6-Luna"},
         {"value": "openai:gpt-5.5", "name": "GPT-5.5"},
         {"value": "openai:gpt-5.4-pro", "name": "GPT-5.4 Pro"},
-        {"value": "openai:gpt-5.3-codex", "name": "GPT-5.3 Codex"},
     ]
     models = baseten_models + anthropic_models + openai_models
 

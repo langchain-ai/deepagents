@@ -30,7 +30,11 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryMiddleware
+from deepagents.middleware.memory import (
+    MEMORY_READONLY_SYSTEM_PROMPT,
+    MEMORY_SYSTEM_PROMPT,
+    MemoryMiddleware,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -102,6 +106,31 @@ def test_memory_system_prompt_trust_and_investigation_balance() -> None:
     assert "FIRST, IMMEDIATE" not in formatted
     assert "before doing anything else" not in formatted
     assert "MAIN PRIORITIES" not in formatted
+
+
+def test_readonly_prompt_keeps_trust_and_drops_persistence() -> None:
+    """Read-only prompt loads memory + trust framing but omits save guidance."""
+    formatted = MEMORY_READONLY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+    # Still a valid memory template: has the slot and the memory block.
+    assert "{agent_memory}" in MEMORY_READONLY_SYSTEM_PROMPT
+    assert "<agent_memory>" in formatted
+    assert "**Trust and verification:**" in formatted
+    # Auto-save guidance from the default prompt must be gone.
+    assert "**Learning from feedback:**" not in formatted
+    assert "**When to update memories:**" not in formatted
+    assert "top priority" not in formatted
+    # And it must explicitly signal saving is off.
+    assert "disabled" in formatted
+
+
+def test_readonly_prompt_is_accepted_by_middleware() -> None:
+    """`MemoryMiddleware` accepts the read-only prompt (has the required slot)."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt=MEMORY_READONLY_SYSTEM_PROMPT,
+    )
+    assert middleware.system_prompt is MEMORY_READONLY_SYSTEM_PROMPT
 
 
 def test_format_agent_memory_empty() -> None:

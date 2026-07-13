@@ -103,6 +103,22 @@ def test_agent_impl_override_applies_only_to_deepagent_categories():
     }
 
 
+def test_agent_impl_override_applies_across_providers():
+    # The override is resolved per entry, independent of provider bucket, so it
+    # must reach every provider's matrix identically.
+    models = ["anthropic:opus", "openai:gpt"]
+    mats = up.build_provider_matrices(
+        models,
+        ["autonomous", "context"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10, "context": 3},
+        agent_impl="dcode",
+    )
+    assert set(mats) == {"anthropic", "openai"}
+    for prov in ("anthropic", "openai"):
+        assert {e["agent_impl"] for e in mats[prov]} == {"dcode"}
+
+
 def test_build_provider_matrices_rejects_unknown_agent_impl():
     # Defense in depth: a truthy-but-unknown harness must not flow silently into
     # a matrix entry, even for a caller that bypasses main()'s validation.

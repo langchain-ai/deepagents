@@ -34,7 +34,7 @@ Four principles cut across all three categories and explain why the task sets lo
 1. **Reuse credible external benchmarks; don't invent tasks.** Every category is sourced from an established, independently-authored benchmark (Harbor / Terminal-Bench, τ³-bench, Context-Bench). This keeps the eval honest — we aren't grading ourselves on tasks we wrote to flatter our agent.
 2. **Curate small subsets by *measured* difficulty, not by hand.** Where we take a subset, tasks are tiered by the **empirical pass rate of a strong reference model (Opus 4.8)** over multiple rollouts, not by an author's guess at how hard they are.
 3. **Optimize for a discriminating spread with headroom, not saturation.** A benchmark every model solves (or every model fails) ranks nothing. We deliberately keep the scarce *intermittent* tasks — the ones a strong model solves only some of the time — because they carry the most signal, and we weight toward hard tasks so the set doesn't saturate as models improve.
-4. **Keep set sizes small enough to fit the CI budget while preserving signal.** Subsets are sized (~30 tasks/category) to fit GitHub's 6-hour per-job limit and the workflow's concurrency caps, run at 3 rollouts each.
+4. **Keep set sizes small enough to fit the CI budget while preserving signal.** Where we subset (conversation and context), sets are sized to ~30 tasks to fit GitHub's 6-hour per-job limit and the workflow's concurrency caps; autonomous runs the full published index (see below). Runs default to 3 rollouts each.
 
 ## Category detail
 
@@ -89,7 +89,7 @@ Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default
 - **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
 - **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
 - **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
-- **`harbor_package_override`** — install an unreleased Harbor build instead of the pinned version.
+- **`harbor_package_override`** *(required when `categories` includes `conversation`)* — set to `harbor[langsmith] @ git+https://github.com/harbor-framework/harbor.git@a7667a073b42b34aa552034df950f963756f79de`. The pinned Harbor `0.16.1` does not forward task-environment MCP servers to the LangGraph agent, so the `tau3` harness fails without this compatible build. Runs that omit `conversation` can leave the input empty and use the pinned release.
 
 The `prep` job writes a **run-configuration summary** — every input plus the values it derived (resolved model list, effective `shard_parallel` after clamping) — to the run summary, so a dispatch's exact settings are visible for debugging. The run then publishes one cross-model comparison — a leaderboard and (for full runs) a radar chart — to the same run summary.
 

@@ -132,12 +132,19 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     summary_step = _indented_block(
         prep_job, '      - name: "📝 Summarize dispatch inputs"'
     )
+    # Runs even when the parse step failed, so a bad dispatch still records what
+    # was requested.
+    assert "if: ${{ always() }}" in summary_step
     summary_env = _indented_block(summary_step, "        env:")
     assert (
         "HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}"
         in summary_env
     )
-    assert "IN_HARBOR_OVERRIDE:" not in summary_env
+    # Enforce the invariant, not one variable name: the only reference to the
+    # override spec anywhere in the summary step may be the `!= ''` boolean.
+    # A raw interpolation under *any* name (e.g. `X: ${{ inputs.harbor_package_override }}`)
+    # would leak a credentialed spec into the public summary and must fail here.
+    assert re.search(r"inputs\.harbor_package_override(?!\s*!=)", summary_step) is None
     assert '[ "${HARBOR_OVERRIDE_SET}" = "true" ]' in summary_step
 
     # The harness selector is a constrained choice defaulting to bare.
@@ -155,6 +162,94 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     # The deep-agents categories default to the bare harness (dcode is opt-in).
     for marker in ('    "autonomous": {', '    "context": {'):
         assert '"agent_impl": "bare"' in _indented_block(prep_source, marker)
+
+
+def test_agent_impl_choice_matches_prep_allowlist() -> None:
+    """Keep the dispatch `choice` options and the prep allowlist in lockstep.
+
+    The YAML `choice` gates dispatches at the UI; `DEEPAGENT_IMPLS` in the prep
+    script is the backstop that `SystemExit`s an unknown value. If one gains an
+    impl the other lacks, a dispatch either offers an option prep rejects or
+    accepts a value the UI never presents — so the two sources must be equal.
+    """
+    workflow = UNIFIED_WORKFLOW.read_text()
+    agent_impl_input = _indented_block(workflow, "      agent_impl:")
+    yaml_options = set(re.findall(r"^\s+- (\S+)$", agent_impl_input, re.MULTILINE))
+    assert yaml_options == {"bare", "dcode"}
+
+    prep_source = PREP_SCRIPT.read_text()
+    literal = re.search(r"DEEPAGENT_IMPLS = \{([^}]+)\}", prep_source)
+    assert literal is not None
+    allowlist = set(re.findall(r'"([^"]+)"', literal.group(1)))
+    assert yaml_options == allowlist
+
+
+def test_summary_flags_inert_agent_impl_and_renders_resolved_models(
+    tmp_path: Path,
+) -> None:
+    """The run summary reports effective config, not just the raw inputs.
+
+    `agent_impl` only affects the deep-agents (autonomous/context) categories,
+    so when neither runs the value is inert and must be flagged rather than
+    imply a harness was used. The resolved model list is emitted as a plain
+    comma list, not the raw JSON array prep writes to `GITHUB_OUTPUT`.
+    """
+    workflow = UNIFIED_WORKFLOW.read_text()
+    prep_job = _indented_block(workflow, "  prep:")
+    summary_step = _indented_block(
+        prep_job, '      - name: "📝 Summarize dispatch inputs"'
+    )
+    script = _step_script(summary_step)
+
+    def run(tag: str, resolved_categories: str, resolved_models: str) -> str:
+        summary = tmp_path / f"{tag}.md"
+        env = os.environ.copy()
+        env.update(
+            {
+                "GITHUB_STEP_SUMMARY": str(summary),
+                "IN_MODELS": "anthropic:opus",
+                "RESOLVED_MODELS": resolved_models,
+                "IN_CATEGORIES": "n/a",
+                "RESOLVED_CATEGORIES": resolved_categories,
+                "IN_AGENT_IMPL": "dcode",
+                "IN_ROLLOUTS": "3",
+                "IN_CONCURRENCY": "4",
+                "IN_SHARD_PARALLEL": "10",
+                "EFFECTIVE_SHARD_PARALLEL": "10",
+                "IN_N_SHARDS_AUTONOMOUS": "10",
+                "IN_N_SHARDS_CONVERSATION": "3",
+                "IN_N_SHARDS_CONTEXT": "3",
+                "IN_SANDBOX_ENV": "langsmith",
+                "IN_FORCE_BUILD": "false",
+                "HARBOR_OVERRIDE_SET": "false",
+            }
+        )
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        return summary.read_text()
+
+    inert = "not applicable (no autonomous/context category selected)"
+
+    # No deep-agents category selected -> agent_impl is inert and flagged.
+    out = run("inert", '["conversation"]', '["anthropic:opus"]')
+    assert inert in out
+    # ...and the JSON array is rendered as a plain list.
+    assert "| models (resolved) | `anthropic:opus` |" in out
+
+    # A deep-agents category is selected -> no flag.
+    out = run("eligible", '["autonomous","conversation"]', '["anthropic:opus"]')
+    assert inert not in out
+
+    # Prep didn't complete (empty outputs) -> no misleading flag; honest fallback.
+    out = run("failed", "", "")
+    assert inert not in out
+    assert "(prep did not complete)" in out
 
 
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:

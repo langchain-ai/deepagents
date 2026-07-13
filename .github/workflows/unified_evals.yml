@@ -117,6 +117,7 @@ jobs:
           IN_MODELS: ${{ inputs.models }}
           RESOLVED_MODELS: ${{ steps.p.outputs.models }}
           IN_CATEGORIES: ${{ inputs.categories }}
+          RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
           IN_AGENT_IMPL: ${{ inputs.agent_impl }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
@@ -134,15 +135,31 @@ jobs:
           # public, so report only whether an override was set.
           override_status="(pinned)"
           [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
+
+          # RESOLVED_MODELS is a JSON array; render it as a plain comma list.
+          resolved_models="${RESOLVED_MODELS:-(prep did not complete)}"
+          resolved_models="${resolved_models#[}"
+          resolved_models="${resolved_models%]}"
+          resolved_models="${resolved_models//\"/}"
+
+          # agent_impl only affects the autonomous/context (deep-agents)
+          # categories. When neither ran, the value is inert — flag it rather
+          # than imply a harness was used. An empty RESOLVED_CATEGORIES means
+          # prep didn't complete, so report the requested value as-is.
+          agent_impl_note=""
+          case "${RESOLVED_CATEGORIES}" in
+            *'"autonomous"'* | *'"context"'* | '') ;;
+            *) agent_impl_note=" — not applicable (no autonomous/context category selected)" ;;
+          esac
           {
             echo "## Unified evals — run configuration"
             echo ""
             echo "| Input | Value |"
             echo "|---|---|"
             echo "| models (requested) | \`${IN_MODELS}\` |"
-            echo "| models (resolved) | \`${RESOLVED_MODELS:-(prep did not complete)}\` |"
+            echo "| models (resolved) | \`${resolved_models}\` |"
             echo "| categories | \`${IN_CATEGORIES}\` |"
-            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\` |"
+            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard_parallel (requested → effective) | \`${IN_SHARD_PARALLEL}\` → \`${EFFECTIVE_SHARD_PARALLEL:-?}\` |"

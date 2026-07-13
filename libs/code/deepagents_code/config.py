@@ -3823,8 +3823,9 @@ def detect_provider(model_name: str) -> str | None:
     # Fireworks uses fully-qualified IDs like `accounts/fireworks/models/<name>`.
     # `init_chat_model` can infer the provider from this prefix, but the inferred
     # name is not exposed on the returned model, so resolving it here keeps the
-    # provider visible to the `/model` confirmation, the status bar, and the
-    # early credential check instead of leaving the raw ID unprefixed.
+    # provider visible to every downstream consumer of `detect_provider` (e.g.
+    # the `/model` confirmation, the status bar, and the early credential check)
+    # instead of leaving the raw ID unprefixed.
     if model_lower.startswith(FIREWORKS_PROVIDER_ID_PREFIX):
         return "fireworks"
 

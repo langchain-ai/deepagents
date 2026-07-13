@@ -1205,6 +1205,24 @@ class TestServerProcessGroup:
         )
         assert _server_process_group(4321) == 4321
 
+    def test_unexpected_getpgid_error_warns_and_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`ProcessLookupError` failure falls back to root but is logged."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+
+        def _raise(_pid: int) -> int:
+            raise PermissionError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+
+        with caplog.at_level(logging.WARNING):
+            assert _server_process_group(4321) is None
+
+        assert "falling back to root-only signaling" in caplog.text
+
 
 class TestTerminateServerProcess:
     """Tests for detached process-group teardown."""
@@ -1297,12 +1315,59 @@ class TestTerminateServerProcess:
             "deepagents_code.client.launch.server.time.sleep", lambda _: None
         )
         process = self._own_group_process()
-        process.wait.return_value = 0
+        process.poll.return_value = 0
 
         assert _wait_for_process_group_exit(process, 4321, 1) is True
 
-        # The leader is only reaped after the second probe proves the group is
-        # gone; its earlier exit does not end the group-level wait.
+        # Reaping the leader does not end the group-level wait while a
+        # descendant keeps the first probe alive.
+        assert process.poll.call_count == 2
+        process.wait.assert_called_once_with()
+
+    def test_group_wait_reaps_leader_before_first_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zombie leader cannot make an otherwise empty group look alive."""
+        leader_reaped = False
+
+        def _poll() -> int:
+            nonlocal leader_reaped
+            leader_reaped = True
+            return 0
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            if leader_reaped:
+                raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        process = self._own_group_process()
+        process.poll.side_effect = _poll
+
+        assert _wait_for_process_group_exit(process, 4321, 0) is True
+
+        process.poll.assert_called_once_with()
+        process.wait.assert_called_once_with()
+
+    def test_group_wait_permission_error_probe_keeps_waiting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An EPERM probe means "still alive", so the wait must not stop early."""
+        probes = iter([PermissionError(), ProcessLookupError()])
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            raise next(probes)
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.time.sleep", lambda _: None
+        )
+        process = self._own_group_process()
+
+        # First probe raises EPERM (unsignalable but live); only the second,
+        # which proves the group is gone, ends the wait successfully.
+        assert _wait_for_process_group_exit(process, 4321, 1) is True
         process.wait.assert_called_once_with()
 
     def test_never_signals_dcodes_process_group(
@@ -1536,4 +1601,74 @@ class TestTerminateServerProcess:
             ((4321, 0),),
         ]
         start_mock.assert_awaited_once()
+        assert server._process is None
+
+    def test_root_sigterm_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On the root-only path a vanished process is not escalated to SIGKILL."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = ProcessLookupError
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.kill.assert_not_called()
+
+    def test_root_sigterm_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """On the root-only path an undeliverable SIGTERM reports the orphan."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = PermissionError
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.kill.assert_not_called()
+        assert "may be orphaned" in caplog.text
+
+    def test_root_sigkill_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """On the root-only path a failed escalation SIGKILL reports the orphan."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = subprocess.TimeoutExpired(cmd="langgraph", timeout=3)
+        process.kill.side_effect = PermissionError
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        process.kill.assert_called_once_with()
+        assert "may be orphaned" in caplog.text
+
+    def test_stop_process_warns_when_teardown_leaves_process_alive(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A process still alive after teardown surfaces the orphan risk."""
+        server = ServerProcess()
+        process = MagicMock()
+        process.pid = 4321
+        # `poll()` never reports exit, modeling teardown that could not kill it.
+        process.poll.return_value = None
+        server._process = process
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server._terminate_server_process",
+            MagicMock(),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            server._stop_process()
+
+        assert "Dropping handle to server pid=4321 that is still running" in caplog.text
         assert server._process is None

@@ -387,9 +387,9 @@ def _server_process_group(pid: int) -> int | None:
 
     Returns `None` — meaning "signal only the root process" — on Windows (no
     POSIX process groups) and whenever the server is not the leader of its own
-    dedicated group. The `pgid == os.getpgid(0)` guard ensures the resolved
-    group is never dcode's own group; signaling that group would kill the TUI
-    along with the server.
+    dedicated group. As a defensive check, the `pgid == os.getpgid(0)` clause
+    also refuses to return dcode's own group, so the group handed back can never
+    be the one whose termination would take down the TUI.
 
     Args:
         pid: Process id of the server subprocess.
@@ -402,9 +402,22 @@ def _server_process_group(pid: int) -> int | None:
         return None
     try:
         pgid = os.getpgid(pid)
-    except OSError:
+        own_pgid = os.getpgid(0)
+    except ProcessLookupError:
+        # The process already exited; there is no group left to signal.
         return None
-    if pgid != pid or pgid == os.getpgid(0):
+    except OSError:
+        # Resolving the group failed unexpectedly (getpgid on an owned child
+        # should not). Fall back to root-only signaling, but surface it so a
+        # silently orphaned descendant tree is diagnosable rather than invisible.
+        logger.warning(
+            "Could not resolve process group for pid=%d; "
+            "falling back to root-only signaling",
+            pid,
+            exc_info=True,
+        )
+        return None
+    if pgid != pid or pgid == own_pgid:
         return None
     return pgid
 
@@ -414,12 +427,12 @@ def _wait_for_process_group_exit(
 ) -> bool:
     """Wait until every process in a POSIX process group has exited.
 
-    `Popen.wait()` only observes the group leader. Descendants may remain alive
-    after that leader exits, so probe the group with signal 0 until it no
-    longer exists or the timeout expires.
+    `Popen.wait()` only observes the group leader. Poll it on every pass so an
+    exited leader does not remain a zombie and keep the group probe alive, then
+    continue probing because descendants may remain after the leader exits.
 
     Args:
-        process: The group leader, reaped once the group is gone.
+        process: The group leader, reaped as soon as it exits.
         pgid: Process group id to probe.
         timeout: Maximum seconds to wait for the whole group.
 
@@ -428,6 +441,9 @@ def _wait_for_process_group_exit(
     """
     deadline = time.monotonic() + timeout
     while True:
+        # `poll()` reaps an exited leader without blocking. Until that happens,
+        # its zombie entry keeps `killpg(..., 0)` reporting the group as alive.
+        process.poll()
         try:
             os.killpg(pgid, 0)
         except ProcessLookupError:
@@ -690,10 +706,11 @@ class ServerProcess:
             stderr=subprocess.STDOUT,
             # Detach the server from dcode's controlling terminal and process
             # group on POSIX. Without a new session the server inherits dcode's
-            # session/process group and receives the same terminal job-control
-            # signals as the TUI: SIGTSTP when the user suspends dcode (Ctrl+Z),
-            # and SIGHUP when the host terminal is closed — suspending or hanging
-            # up the server alongside dcode. `start_new_session=True` runs
+            # session/process group and receives the same terminal-generated
+            # signals as the TUI: the SIGTSTP job-control stop when the user
+            # suspends dcode (Ctrl+Z), and the SIGHUP hangup when the host
+            # terminal is closed — suspending or hanging up the server alongside
+            # dcode. `start_new_session=True` runs
             # `setsid()` so the server leads its own session/process group
             # instead. `start_new_session` is ignored on Windows, so it is left
             # off there.
@@ -818,9 +835,10 @@ class ServerProcess:
         if self._process.poll() is None:
             _terminate_server_process(self._process)
             # `_terminate_server_process` is best-effort. If the process is still
-            # alive here (e.g. SIGKILL failed with EPERM), dropping the handle
-            # below is the last chance to signal it, so make that visible rather
-            # than clearing state as if shutdown succeeded.
+            # alive here (e.g. SIGKILL failed with EPERM), then once we drop the
+            # handle below we can no longer observe or reap this pid, so surface
+            # the still-running process rather than clearing state as if shutdown
+            # succeeded.
             if self._process.poll() is None:
                 logger.warning(
                     "Dropping handle to server pid=%d that is still running; "

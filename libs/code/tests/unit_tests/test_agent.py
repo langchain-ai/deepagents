@@ -3293,45 +3293,10 @@ class TestCreateCliAgentInterpreterWiring:
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
 
-    @pytest.mark.parametrize(
-        ("model", "interactive", "auto_approve", "expected"),
-        [
-            (
-                "fireworks:accounts/fireworks/models/glm-5p2",
-                False,
-                True,
-                True,
-            ),
-            (
-                "fireworks:accounts/fireworks/models/glm-5p2",
-                True,
-                True,
-                False,
-            ),
-            (
-                "fireworks:accounts/fireworks/models/glm-5p2",
-                False,
-                False,
-                False,
-            ),
-            ("openai:gpt-5.5", False, True, False),
-        ],
-    )
-    def test_glm_completion_audit_requires_headless_auto_approve(
+    def test_glm_headless_does_not_add_completion_agent(
         self,
         tmp_path: Path,
-        *,
-        model: str,
-        interactive: bool,
-        auto_approve: bool,
-        expected: bool,
     ) -> None:
-        from deepagents.middleware.rubric import RubricMiddleware
-
-        from deepagents_code._glm_5p2_completion import (
-            _GlmCompletionAuditMiddleware,
-        )
-
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -3349,11 +3314,11 @@ class TestCreateCliAgentInterpreterWiring:
                 return_value=fake_model,
             ),
         ):
-            _, backend = create_cli_agent(
-                model=model,
+            create_cli_agent(
+                model="fireworks:accounts/fireworks/models/glm-5p2",
                 assistant_id="test",
-                interactive=interactive,
-                auto_approve=auto_approve,
+                interactive=False,
+                auto_approve=True,
                 enable_ask_user=False,
                 enable_memory=False,
                 enable_skills=False,
@@ -3363,26 +3328,12 @@ class TestCreateCliAgentInterpreterWiring:
 
         _, kwargs = mock_create.call_args
         middleware = kwargs["middleware"]
-        audits = [
-            item
+        completion_agents = [
+            type(item).__name__
             for item in middleware
-            if isinstance(item, _GlmCompletionAuditMiddleware)
+            if type(item).__name__.startswith("_GlmCompletion")
         ]
-        assert bool(audits) is expected
-        if not expected:
-            return
-
-        assert len(audits) == 1
-        audit = audits[0]
-        assert audit._backend is backend
-        assert audit._working_dir == str(tmp_path)
-        audit_index = middleware.index(audit)
-        rubric_index = next(
-            index
-            for index, item in enumerate(middleware)
-            if isinstance(item, RubricMiddleware)
-        )
-        assert rubric_index == audit_index + 1
+        assert completion_agents == []
 
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

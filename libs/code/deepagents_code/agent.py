@@ -69,7 +69,6 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmReadFileMediaGuard,
-    _is_glm_5p2_model,
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
@@ -1818,31 +1817,6 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
-
-    # GLM-5.2 can end long headless tasks with analysis or an unchecked artifact.
-    # In fully auto-approved mode, give its natural stop to one fresh, bounded
-    # completion editor that may verify and correct the workspace. This is installed
-    # immediately before RubricMiddleware so the reverse-order `after_agent`
-    # chain lets an explicit caller rubric finish first; the controller itself
-    # also no-ops whenever a rubric is present.
-    if not interactive and auto_approve and _is_glm_5p2_model(model):
-        from deepagents_code._glm_5p2_completion import (
-            _GlmCompletionAuditMiddleware,
-        )
-
-        if effective_cwd is not None:
-            completion_working_dir = effective_cwd
-        elif sandbox_type is not None:
-            completion_working_dir = Path(get_default_working_dir(sandbox_type))
-        else:
-            completion_working_dir = Path.cwd()
-        agent_middleware.append(
-            _GlmCompletionAuditMiddleware(
-                model=model,
-                backend=composite_backend,
-                working_dir=completion_working_dir,
-            )
-        )
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

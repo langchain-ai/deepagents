@@ -158,18 +158,31 @@ def test_prompt_is_concise_and_execution_focused() -> None:
 
     assert suffix.startswith("<glm_5p2_execution>\n")
     assert suffix.endswith("\n</glm_5p2_execution>")
-    assert 150 <= len(suffix.split()) <= 260
+    assert 240 <= len(suffix.split()) <= 360
 
     required_phrases = (
         "Do not call `read_file` on images, PDFs, audio, or video",
         "Do not reopen generated media for visual inspection",
-        "Create the requested artifact first",
+        "Identify every required output path",
+        "must, only, exact, ordered, ranged, and prohibited",
+        "valid, parseable artifact before long-running",
+        "reserve the final part of the run",
+        "exact requested version, date, revision, tokenizer, library, or source",
+        "record a checksum",
+        "separate working copy when the task permits",
         "Treat supplied or fetched source-of-truth data as authoritative",
         "apply only transformations the task explicitly requests",
+        "Do not strip prefixes or tags, repair grammar, normalize",
         "compare the final artifact against that source or its stated allowlist",
+        "same interpreter and entrypoint",
+        "A successful exit only proves that the command ran",
+        "assert the actual result against the required value",
+        "task-stated examples",
+        "below, at, and above",
+        "execution-plan structure",
+        "repeated measurements",
         "one retry",
         "pivot",
-        "Run task-named checks",
         "Stop immediately",
     )
     for phrase in required_phrases:

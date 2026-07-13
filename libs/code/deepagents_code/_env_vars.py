@@ -183,6 +183,12 @@ The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
 """
 
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
+"""
+
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"
 """Disable all terminal escape/control sequence output when enabled."""
 

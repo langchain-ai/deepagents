@@ -410,8 +410,8 @@ jobs:
             exit 1
           fi
 
-  # Generate release notes from CHANGELOG.md (with git log fallback)
-  # and collect contributor shoutouts from merged PRs
+  # Generate release notes from CHANGELOG.md, append the package commit history,
+  # and collect contributor shoutouts
   release-notes:
     name: 📝 Generate release notes
     needs:
@@ -424,7 +424,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
-      release-body: ${{ steps.generate-release-body.outputs.release-body }}
+      release-body: ${{ steps.finalize-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -448,6 +448,7 @@ jobs:
         id: resolve-refs
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           # Detect PEP 440 pre-release versions:
@@ -459,7 +460,46 @@ jobs:
           fi
           echo "is-prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
-          # Determine previous tag
+          # Fail loudly if RELEASE_SHA does not resolve. The helpers below pass it
+          # to git as the second arg of `merge-base --is-ancestor` and to `git tag
+          # --merged`, where an unresolvable value exits 128 — indistinguishable
+          # from "no predecessor" — and would silently mislabel the Git log as an
+          # initial release. Verifying it once here rules that failure mode out.
+          if ! git rev-parse -q --verify "$RELEASE_SHA^{commit}" >/dev/null; then
+            echo "::error::RELEASE_SHA '$RELEASE_SHA' does not resolve to a commit"
+            exit 1
+          fi
+
+          valid_previous_tag() {
+            local tag="$1"
+            # merge-base --is-ancestor exits 1 for "not an ancestor" and 128 on
+            # error; both are treated as "invalid predecessor" and trigger the
+            # fallback below. Both arguments are known to resolve — the tag via the
+            # rev-parse --verify below, and RELEASE_SHA via the check above — so a
+            # non-zero exit reflects ancestry, not a bad ref, and the fallback is
+            # the safe response.
+            [ -n "$tag" ] \
+              && [ "$tag" != "$PKG_NAME==0.0.0" ] \
+              && git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null \
+              && git merge-base --is-ancestor "$tag" "$RELEASE_SHA"
+          }
+
+          latest_stable_tag() {
+            local tag
+            local tag_version
+            while IFS= read -r tag; do
+              [ "$tag" = "$PKG_NAME==$VERSION" ] && continue
+              tag_version="${tag#"$PKG_NAME=="}"
+              if [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                printf '%s' "$tag"
+                return
+              fi
+            done < <(git tag --merged "$RELEASE_SHA" --sort=-version:refname \
+              --list "$PKG_NAME==*")
+          }
+
+          # Prefer the expected predecessor, then fall back to the highest stable
+          # package tag that is actually in the release commit's history.
           if [ "$IS_PRERELEASE" = "true" ]; then
             # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
             # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
@@ -470,26 +510,30 @@ jobs:
               echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
             fi
 
-            # Try exact base version tag first (e.g. deepagents==0.5.2)
-            PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==${BASE_VERSION}$" || true) | head -1)
-            if [ -z "$PREV_TAG" ]; then
-              # Fall back to latest stable release tag
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
+            PREV_TAG="$PKG_NAME==$BASE_VERSION"
           else
             PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
             [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-            if [ -z "$PREV_TAG" ]; then
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
           fi
 
-          # Validate prev tag exists
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
-            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-            [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
-          else
-            PREV_TAG=""
+          if ! valid_previous_tag "$PREV_TAG"; then
+            PREV_TAG=$(latest_stable_tag)
+          fi
+
+          # A stable release with no reachable predecessor tag is anomalous unless
+          # this is genuinely the package's first release. Distinguish the two by
+          # whether any prior stable package tag exists at all: none means a true
+          # initial release (the log spanning full history is expected); some, but
+          # none reachable from the release commit, means the log would wrongly span
+          # the full history and be labeled an initial release — surface that. This
+          # covers minor/major bumps (X.Y.0), not just patches.
+          if [ -z "$PREV_TAG" ] && [ "$IS_PRERELEASE" != "true" ]; then
+            PRIOR_STABLE_TAGS=$(git tag --list "$PKG_NAME==*" \
+              | (grep -Ev "^${PKG_NAME}==${VERSION}$" || true) \
+              | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true))
+            if [ -n "$PRIOR_STABLE_TAGS" ]; then
+              echo "::warning::No prior stable tag reachable from $RELEASE_SHA for $PKG_NAME==$VERSION; Git log will span the package's full history"
+            fi
           fi
 
           echo "Previous tag: $PREV_TAG"
@@ -513,6 +557,96 @@ jobs:
           fi
           echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate package Git log
+        id: generate-git-log
+        env:
+          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          RANGE="$RELEASE_SHA"
+          SUMMARY="Git log for initial release"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..$RELEASE_SHA"
+            SUMMARY="Git log since $PREV_TAG"
+          fi
+
+          MAX_COMMITS=100
+          MAX_GIT_LOG_BYTES=25000
+          MAX_SUBJECT_LENGTH=200
+          COMMIT_COUNT=0
+          GIT_LOG_BYTES=0
+          TRUNCATED=false
+          GIT_LOG_FAILED=false
+          GIT_LOG=""
+
+          # Capture the SHAs first so a `git log` failure is caught here. A command
+          # inside a `< <(...)` process substitution is exempt from `set -e`, so its
+          # failure would otherwise be swallowed and mistaken for an empty history.
+          if ! COMMITS=$(git log --date-order --max-count=$((MAX_COMMITS + 1)) \
+            --format=%H "$RANGE" -- "$WORKING_DIR"); then
+            echo "::warning::git log failed for range '$RANGE'; the Git log section will note the failure"
+            GIT_LOG_FAILED=true
+            COMMITS=""
+          fi
+
+          while IFS= read -r SHA; do
+            if [ -z "$SHA" ]; then
+              continue
+            fi
+            SUBJECT=$(git show -s --format=%s "$SHA")
+
+            if [ "$COMMIT_COUNT" -ge "$MAX_COMMITS" ]; then
+              TRUNCATED=true
+              break
+            fi
+            if [ "${#SUBJECT}" -gt "$MAX_SUBJECT_LENGTH" ]; then
+              SUBJECT="${SUBJECT:0:$MAX_SUBJECT_LENGTH}…"
+            fi
+            SUBJECT=$(printf '%s' "$SUBJECT" \
+              | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+            SHORT_SHA=$(git rev-parse --short=7 "$SHA")
+            ENTRY="- [\`$SHORT_SHA\`](https://github.com/$REPOSITORY/commit/$SHA) $SUBJECT"
+            ENTRY_BYTES=$(printf '%s' "$ENTRY" | wc -c | tr -d ' ')
+            SEPARATOR_BYTES=0
+            if [ -n "$GIT_LOG" ]; then
+              SEPARATOR_BYTES=1
+            fi
+            if [ $((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES)) \
+              -gt "$MAX_GIT_LOG_BYTES" ]; then
+              TRUNCATED=true
+              break
+            fi
+
+            if [ -z "$GIT_LOG" ]; then
+              GIT_LOG="$ENTRY"
+            else
+              GIT_LOG=$(printf "%s\n%s" "$GIT_LOG" "$ENTRY")
+            fi
+            GIT_LOG_BYTES=$((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES))
+            COMMIT_COUNT=$((COMMIT_COUNT + 1))
+          done <<< "$COMMITS"
+
+          if [ "$GIT_LOG_FAILED" = "true" ]; then
+            GIT_LOG="Git log unavailable: \`git log\` failed for range \`$RANGE\`."
+          elif [ -z "$GIT_LOG" ]; then
+            GIT_LOG="No commits found."
+          fi
+
+          DESCRIPTION="This commit history includes changes to this package. Commits are listed newest first."
+          if [ "$TRUNCATED" = "true" ]; then
+            DESCRIPTION="$DESCRIPTION The log is truncated to the newest $COMMIT_COUNT commits to keep the release notes a reasonable size."
+          fi
+          DETAILS=$(printf '<details>\n<summary>%s</summary>\n\n%s\n\n%s\n\n</details>' "$SUMMARY" "$DESCRIPTION" "$GIT_LOG")
+          {
+            echo 'details<<EOF'
+            echo "$DETAILS"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
 
       # Resolve the human who shipped this release so release notes can credit
       # them. Primary source is whoever merged the release PR (the release commit
@@ -594,9 +728,9 @@ jobs:
           CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
           RELEASE_BODY=""
 
-          # Try to extract current version's section from CHANGELOG.md
-          # (Pre-releases won't have a CHANGELOG entry and the git log fallback is
-          # also skipped for them — they get the banner + contributors only)
+          # Try to extract the current version's section from CHANGELOG.md. When
+          # there is no matching section, the package Git log appended below
+          # serves as the release notes instead.
           if [ -f "$CHANGELOG_PATH" ]; then
             echo "Found CHANGELOG.md, extracting version $VERSION section..."
 
@@ -618,23 +752,6 @@ jobs:
             fi
           else
             echo "No CHANGELOG.md found at $CHANGELOG_PATH"
-          fi
-
-          # Fallback to git log if CHANGELOG extraction failed
-          # (Skip for pre-releases — they get the banner + contributors only)
-          if [ -z "$RELEASE_BODY" ] && [ "$IS_PRERELEASE" != "true" ]; then
-            echo "Falling back to git log for release notes..."
-
-            FALLBACK_PREV="$PREV_TAG"
-            if [ -z "$FALLBACK_PREV" ]; then
-              PREAMBLE="Initial release"
-              FALLBACK_PREV=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
-            else
-              PREAMBLE="Changes since $FALLBACK_PREV"
-            fi
-
-            GIT_LOG=$(git log --format="%s" "$FALLBACK_PREV".."$RELEASE_COMMIT" -- "$WORKING_DIR")
-            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
           fi
 
           # ── Collect contributors from merged PRs ──
@@ -815,6 +932,57 @@ jobs:
           fi
 
           # Output release body using heredoc for proper multiline handling
+          {
+            echo 'release-body<<EOF'
+            echo "$RELEASE_BODY"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Add package Git log to release body
+        id: finalize-release-body
+        env:
+          BASE_RELEASE_BODY: ${{ steps.generate-release-body.outputs.release-body }}
+          GIT_LOG_DETAILS: ${{ steps.generate-git-log.outputs.details }}
+        run: |
+          set -euo pipefail
+
+          # Keep the generated output below 120,000 bytes as a conservative margin
+          # beneath GitHub's 125,000-character release-body limit. Replace the log
+          # with a small notice when room is tight, or drop it entirely if even the
+          # notice would not fit.
+          MAX_RELEASE_BODY_BYTES=120000
+          BODY_BYTES=$(printf '%s' "$BASE_RELEASE_BODY" | wc -c | tr -d ' ')
+          DETAILS_BYTES=$(printf '%s' "$GIT_LOG_DETAILS" | wc -c | tr -d ' ')
+          RELEASE_BODY="$BASE_RELEASE_BODY"
+          SEPARATOR_BYTES=0
+          if [ -n "$BASE_RELEASE_BODY" ]; then
+            SEPARATOR_BYTES=2
+          fi
+          # The base body alone can exceed the budget (e.g. a very large CHANGELOG
+          # section). Nothing here can shrink it, so surface that accurately rather
+          # than blaming the Git log in the branch below, and append nothing —
+          # RELEASE_BODY stays as the base body initialized above.
+          if [ "$BODY_BYTES" -gt "$MAX_RELEASE_BODY_BYTES" ]; then
+            echo "::warning::Base release body ($BODY_BYTES bytes) already exceeds the ${MAX_RELEASE_BODY_BYTES}-byte budget before the Git log is added; GitHub may reject it"
+          elif [ $((BODY_BYTES + DETAILS_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
+            if [ -n "$BASE_RELEASE_BODY" ]; then
+              RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$GIT_LOG_DETAILS")
+            else
+              RELEASE_BODY="$GIT_LOG_DETAILS"
+            fi
+          else
+            echo "::warning::Full Git log omitted to keep the release body within GitHub's size limit"
+            COMPACT_DETAILS=$(printf '<details>\n<summary>Git log</summary>\n\nGit log omitted because the rest of these release notes is near GitHub'"'"'s size limit.\n\n</details>')
+            COMPACT_BYTES=$(printf '%s' "$COMPACT_DETAILS" | wc -c | tr -d ' ')
+            if [ $((BODY_BYTES + COMPACT_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
+              if [ -n "$BASE_RELEASE_BODY" ]; then
+                RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$COMPACT_DETAILS")
+              else
+                RELEASE_BODY="$COMPACT_DETAILS"
+              fi
+            fi
+          fi
+
           {
             echo 'release-body<<EOF'
             echo "$RELEASE_BODY"

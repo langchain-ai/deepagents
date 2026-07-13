@@ -40,6 +40,8 @@ jobs:
       - name: "Fetch base release metadata"
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,403,404,422
           script: |
             const fs = require('fs');
             const baseSha = context.payload.pull_request.base.sha;

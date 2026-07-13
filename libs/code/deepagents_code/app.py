@@ -29,13 +29,14 @@ from textual.css.query import NoMatches
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -45,6 +46,7 @@ from deepagents_code import (
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    MCP_REENABLED_PENDING_ERROR,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -356,15 +358,19 @@ if TYPE_CHECKING:
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
+    from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
+    from deepagents_code.tui.widgets.debug_console import SnapshotField
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
@@ -856,6 +862,33 @@ def _load_cursor_blink_preference() -> bool:
         unreadable, or malformed.
     """
     return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
+
+
+def _load_cursor_style_preference() -> CursorStyle:
+    """Resolve the chat input cursor style.
+
+    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
+    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
+    back to `"block"` when unset or invalid.
+
+    Returns:
+        The resolved cursor style.
+    """
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.cursor_style")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; using block cursor", "display.cursor_style"
+        )
+        return CURSOR_STYLE_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return cast("CursorStyle", value)
 
 
 def _load_terminal_progress_preference() -> bool:
@@ -1687,6 +1720,13 @@ class TextualSessionState:
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+        self.previous_thread_id: str | None = None
+        """Thread id abandoned by the most recent `reset_thread`.
+
+        Set by every `reset_thread` caller — `/clear`, `/force-clear`, and the
+        agent-switch teardown — not just `/clear`. Lets the TUI point users
+        back to the thread they just left; `None` until the first reset.
+        """
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
@@ -1723,9 +1763,13 @@ class TextualSessionState:
     def reset_thread(self) -> str:
         """Reset to a new thread.
 
+        Records the outgoing thread as `previous_thread_id` first, so the UI
+        can offer a one-step path back to it.
+
         Returns:
             The new thread_id.
         """
+        self.previous_thread_id = self._thread_id
         self.thread_id = _new_thread_id()  # setter resets the turn markers
         self.approval_mode_key = None
         return self.thread_id
@@ -1896,6 +1940,29 @@ class _ChatScroll(VerticalScroll):
         return self.max_scroll_y > 0
 
 
+class _MainScreen(Screen[None]):
+    """Default screen containing the main chat interface.
+
+    Exists so `AUTO_FOCUS` can be scoped to this screen rather than the `App`.
+    An App-level `AUTO_FOCUS` is the fallback for *every* screen, so a
+    `"#chat-input"` selector there resolves to nothing on modals (whose DOM has
+    no such widget) and leaves them opening with no focused control. Keeping it
+    on the main screen lets modals retain Textual's default first-focusable
+    behavior.
+    """
+
+    AUTO_FOCUS = "#chat-input"
+    """Focus the chat text area whenever this screen needs a focus target.
+
+    Overrides Textual's default `"*"`, which would focus the earlier-composed,
+    still-focusable `_ChatScroll` (`#chat`) instead. The first automatic focus
+    pass runs before the nested chat text area is mounted, so
+    `DeepAgentsApp.on_mount` applies the startup focus synchronously once the
+    input exists. This selector remains the focus target when the screen later
+    resumes without a focused widget.
+    """
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1924,6 +1991,11 @@ class DeepAgentsApp(App):
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `DebugConsoleScreen` is active so the console's own `shift+tab`
+        # reverse-focus traversal runs instead; keep the action name in sync
+        # there. That branch keys on the `toggle_auto_approve` action, so it also
+        # steps aside the `ctrl+t` binding above while the console is open.
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -1955,6 +2027,16 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            # Mirrors DEBUG_TOGGLE_KEY in tui.widgets.debug_console; the literal
+            # is repeated here to avoid an eager import at class-body scope (see
+            # the startup-performance rules in AGENTS.md).
+            "ctrl+backslash",
+            "toggle_debug_console",
+            "Debug Console",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -1970,6 +2052,11 @@ class DeepAgentsApp(App):
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
+
+    @override
+    def get_default_screen(self) -> Screen[None]:
+        """Return the main screen with chat-specific startup focus."""
+        return _MainScreen(id="_default")
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""
@@ -2112,6 +2199,9 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+
+        self._cursor_style = _load_cursor_style_preference()
+        """Visual style used for the chat input cursor."""
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
@@ -2996,6 +3086,7 @@ class DeepAgentsApp(App):
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
+        self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
@@ -3013,8 +3104,12 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Focus the input immediately so the cursor is visible on first paint
-        self._chat_input.focus_input()
+        # `Widget.focus()` defers the actual focus change by posting a callback.
+        # Terminal keys may already be ahead of that callback in the app queue,
+        # so set focus synchronously while startup is still handling Mount.
+        input_widget = self._chat_input.input_widget
+        if input_widget is not None:
+            self.screen.set_focus(input_widget)
 
         if self._launch_init_requested:
             dependency_screen, dependency_result = (
@@ -3784,7 +3879,7 @@ class DeepAgentsApp(App):
                 cwd_choice = await self._offer_thread_cwd_switch(
                     candidate,
                     restart_server=False,
-                    allow_abort=True,
+                    abort="resume",
                 )
             except Exception:
                 logger.exception(
@@ -7576,6 +7671,16 @@ class DeepAgentsApp(App):
         self.push_screen(dependency_screen)
         return await result_future
 
+    @staticmethod
+    def _is_exit_keyword(value: str, mode: InputMode) -> bool:
+        """Return whether `value` is the bare `exit` keyword in normal mode.
+
+        Matches case-insensitively and ignores surrounding whitespace. Only
+        `normal` mode qualifies, so `exit` typed in shell or command mode is
+        routed normally rather than quitting the app.
+        """
+        return mode == "normal" and value.lower().strip() == "exit"
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -7607,8 +7712,10 @@ class DeepAgentsApp(App):
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — /model opens selector,
-            # /model <name> does a direct switch that shouldn't race with agent.
+            # Only bare form (no args) bypasses — the selector-opening form is
+            # safe, but an argument form does a direct action that shouldn't
+            # race the agent (e.g. `/model <name>` switches models, `/threads
+            # -r <id>` resumes a thread).
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -7649,10 +7756,9 @@ class DeepAgentsApp(App):
         # COMMANDS and so carry no bypass tier. Both must run even when the
         # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+        normalized = value.lower().strip()
 
-        if force_bypass or (
-            mode == "command" and value.lower().strip() in always_bypass
-        ):
+        if force_bypass or (mode == "command" and normalized in always_bypass):
             await self._process_message(value, mode)
             return
 
@@ -7702,6 +7808,13 @@ class DeepAgentsApp(App):
         from deepagents_code.hooks import dispatch_hook
 
         await dispatch_hook("user.prompt", {})
+
+        # A bare `exit` quits the app (REPL convention), mirroring `/quit`.
+        # Gated to this interactive path only, so external/scripted callers
+        # (on_external_input) can still send the literal "exit" to the agent.
+        if self._is_exit_keyword(value, mode):
+            self.exit()
+            return
 
         await self._submit_input(value, mode)
 
@@ -8336,6 +8449,191 @@ class DeepAgentsApp(App):
 
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
+
+    async def _handle_tools_command(self, command: str) -> None:
+        """List the tools available to the agent as a chat message.
+
+        Managed sessions enumerate built-ins off the UI thread with a
+        credential-free agent compile; preconfigured local agents are inspected
+        directly so their custom tool set stays authoritative. MCP tools reuse
+        the metadata loaded for the running agent rather than re-discovering,
+        because discovery uses `asyncio.run`, which cannot run inside Textual's
+        live event loop.
+
+        Args:
+            command: The raw command text (displayed as a user message).
+        """
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.tool_catalog import (
+            build_catalog_from_server_info,
+            collect_built_in_tools,
+            collect_tools_from_agent,
+        )
+
+        await self._mount_message(UserMessage(command))
+
+        server_info = self._mcp_server_info_for_tools()
+
+        built_in = []
+        # Set to a human-readable reason when built-in tools cannot be listed:
+        # a remote/custom agent we cannot introspect, or a compile that raised.
+        # The agent still binds those tools; only enumeration failed. Left empty
+        # on success. Drives the notice logic below.
+        enumeration_failed_reason = ""
+        if self._server_kwargs is None:
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+            except Exception:
+                # `collect_tools_from_agent` is defensively written, but a remote
+                # graph proxy can do real work on attribute access and raise.
+                # Mirror the managed branch: log and degrade to the notice below
+                # rather than letting it escape as an unhandled handler error.
+                logger.exception("Failed to inspect agent tools for /tools")
+                active_tools = None
+            if active_tools is None:
+                enumeration_failed_reason = (
+                    "Built-in tools cannot be enumerated for this custom or "
+                    "remote agent"
+                )
+            else:
+                # The local graph's tool node holds built-in *and* MCP tools;
+                # MCP tools are rendered separately from `server_info`, so drop
+                # them here to avoid listing each MCP tool twice.
+                mcp_names = {
+                    tool.name for server in server_info for tool in server.tools
+                }
+                built_in = [tool for tool in active_tools if tool.name not in mcp_names]
+        else:
+            enable_interpreter = bool(self._server_kwargs.get("enable_interpreter"))
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=enable_interpreter,
+                )
+            except Exception:
+                logger.exception("Failed to enumerate built-in tools for /tools")
+                enumeration_failed_reason = "Could not enumerate built-in tools"
+
+        catalog = build_catalog_from_server_info(built_in, server_info)
+        has_mcp_info = any(group.source == "mcp" for group in catalog.groups) or bool(
+            catalog.unavailable
+        )
+        if enumeration_failed_reason and not has_mcp_info:
+            # No MCP tools or unavailable-server statuses to show: rendering "0
+            # tools available" would wrongly imply the agent has no tools at all,
+            # when in fact only the listing failed. Surface the reason on its own.
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}. The agent still has its "
+                    "built-in tools; they just cannot be listed here.",
+                ),
+            )
+            return
+        if enumeration_failed_reason:
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}; showing MCP information only."
+                ),
+            )
+
+        await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+
+    def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
+        """Return MCP metadata matching the tools bound to the running agent.
+
+        The `/mcp` viewer optimistically replaces a newly disabled server with
+        a tool-less cosmetic entry before reconnect. Until reconnect actually
+        rebuilds the agent, its original tools remain callable, so `/tools`
+        must use the saved pre-toggle entry instead.
+
+        Returns:
+            MCP server metadata for the active agent tool set.
+        """
+        return [
+            self._mcp_optimistic_original_server_info.get(server.name, server)
+            for server in self._mcp_server_info or []
+        ]
+
+    @staticmethod
+    def _render_tool_catalog(catalog: ToolCatalog) -> Content:
+        """Render a tool catalog as chat `Content`.
+
+        Shows a count header, then each group's heading with its rows:
+        built-in groups render aligned `name  description` rows, while MCP
+        groups render names only — their descriptions are surfaced via `/mcp`,
+        noted by a pointer line whenever any MCP tools are present. Then any MCP
+        servers that loaded with no tools and a non-`ok` status, and finally a
+        discovery-error notice if the catalog carries one. Every display
+        string — tool names/descriptions and MCP server names/statuses, some of
+        which are external — is added as a plain-text span (via `Content.styled`
+        or a `(text, style)` tuple) that is never parsed as markup.
+
+        Args:
+            catalog: Collected tool groups, unavailable MCP servers, and any
+                discovery-error notice.
+
+        Returns:
+            Assembled `Content` ready to mount in an `AppMessage`.
+        """
+        from deepagents_code.tool_catalog import unavailable_server_display
+
+        total = sum(len(group.tools) for group in catalog.groups)
+        noun = "tool" if total == 1 else "tools"
+
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            Content.styled(f"{total} {noun} available", "bold"),
+        ]
+
+        def _section(heading: str, rows: list[tuple[str, str]]) -> None:
+            """Append a bold heading and left-aligned `label  detail` rows."""
+            if not rows:
+                return
+            width = max(len(label) for label, _ in rows)
+            parts.extend(("\n\n", Content.styled(heading, "bold")))
+            for label, detail in rows:
+                row = f"  {label.ljust(width)}  {detail}".rstrip()
+                parts.extend(("\n", (row, "dim")))
+
+        has_mcp_tools = False
+        for group in catalog.groups:
+            if group.source == "mcp":
+                has_mcp_tools = has_mcp_tools or bool(group.tools)
+                rows = [(entry.name, "") for entry in group.tools]
+            else:
+                rows = [(entry.name, entry.description) for entry in group.tools]
+            _section(group.label, rows)
+
+        if has_mcp_tools:
+            parts.extend(
+                ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
+            )
+
+        def _unavailable_row(server: UnavailableServer) -> tuple[str, str]:
+            """Map an unavailable server to a `(name, detail)` row for `_section`.
+
+            Args:
+                server: An MCP server discovered with no usable tools.
+
+            Returns:
+                A `(name, detail)` pair for `_section` to align and render.
+            """
+            label, detail = unavailable_server_display(server)
+            return (server.name, f"{label}: {detail}" if detail else label)
+
+        _section(
+            "Unavailable MCP servers",
+            [_unavailable_row(server) for server in catalog.unavailable],
+        )
+
+        if catalog.mcp_error:
+            parts.extend(("\n\n", (catalog.mcp_error, "dim")))
+
+        return Content.assemble(*parts)
 
     def _goal_state_update(self) -> dict[str, Any]:
         """Build checkpoint state for TUI-owned goal/rubric metadata.
@@ -9643,7 +9941,7 @@ class DeepAgentsApp(App):
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/threads, /trace, "
+                "/tools, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -9651,6 +9949,7 @@ class DeepAgentsApp(App):
                 f"  {newline_shortcut():<15} Insert newline\n"
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -9718,6 +10017,51 @@ class DeepAgentsApp(App):
                     prefix="Started new thread",
                     thread_id=new_thread_id,
                 )
+                previous_thread_id = self._session_state.previous_thread_id
+                if previous_thread_id:
+                    import sqlite3
+
+                    from deepagents_code.sessions import thread_exists
+
+                    # Best-effort: on any failure just suppress the hint (never
+                    # crash `/clear`), but log unexpected errors loudly so a
+                    # real bug isn't silently read as "not resumable".
+                    try:
+                        previous_thread_is_resumable = await thread_exists(
+                            previous_thread_id
+                        )
+                    except (sqlite3.Error, OSError):
+                        logger.debug(
+                            "Could not check whether previous thread %s is resumable",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                    except Exception:
+                        logger.warning(
+                            "Unexpected error checking previous thread %s resumability",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                else:
+                    previous_thread_is_resumable = False
+                if previous_thread_id and previous_thread_is_resumable:
+                    previous_msg_widget = AppMessage(
+                        f"Previous thread: {previous_thread_id}"
+                    )
+                    await self._mount_message(previous_msg_widget)
+                    self._schedule_thread_message_link(
+                        previous_msg_widget,
+                        prefix="Previous thread",
+                        thread_id=previous_thread_id,
+                    )
+                    await self._mount_message(
+                        AppMessage(
+                            "Resume it with /threads -r"
+                            f" (or /threads -r {previous_thread_id})"
+                        )
+                    )
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -9766,8 +10110,8 @@ class DeepAgentsApp(App):
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
-        elif cmd == "/threads":
-            await self._show_thread_selector()
+        elif cmd == "/threads" or cmd.startswith("/threads "):
+            await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
         elif cmd == "/update" or cmd.startswith("/update "):
@@ -9839,6 +10183,8 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
+        elif cmd == "/tools":
+            await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -10027,6 +10373,8 @@ class DeepAgentsApp(App):
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
+        elif cmd == "/debug":
+            self._open_debug_console()
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -12596,7 +12944,14 @@ class DeepAgentsApp(App):
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
-        """Handle quit action (Ctrl+D)."""
+        """Handle the Ctrl+D binding.
+
+        Delete-confirm screens and the auth/thread selectors keep their own
+        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
+        deletes a non-empty selection or the character right of the cursor.
+        Only at the end of the prompt with no active selection does it exit
+        the app.
+        """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
@@ -12621,6 +12976,26 @@ class DeepAgentsApp(App):
                 return
             self._arm_quit_pending("Ctrl+D")
             return
+
+        # Delegate Ctrl+D when delete-right can remove selected text or content
+        # after the cursor. Check `self.focused` (the active screen's focused
+        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
+        # focus but must not be edited from under it, so Ctrl+D quits in that case.
+        chat_input = self._chat_input
+        if chat_input is not None:
+            text_area = chat_input.input_widget
+            if (
+                text_area is not None
+                and self.focused is text_area
+                and chat_input.value
+                and (
+                    not text_area.selection.is_empty
+                    or text_area.cursor_location != text_area.document.end
+                )
+            ):
+                text_area.action_delete_right()
+                return
+
         self.exit()
 
     def exit(
@@ -12883,7 +13258,7 @@ class DeepAgentsApp(App):
             self.screen.action_move_up()
             return
         if isinstance(self.screen, MCPViewerScreen):
-            self.screen.action_move_up()
+            self.screen.action_jump_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -14298,32 +14673,136 @@ class DeepAgentsApp(App):
         action: str,
         parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
     ) -> bool | None:
-        """Disable `open_notifications` while the model selector is open.
+        """Step aside priority app bindings that the active screen needs.
 
-        Textual resolves `priority=True` bindings App-first, so the App's
-        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
-        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
-        Returning `False` here disables the App's binding for this dispatch, so
-        resolution falls through to the selector, whose binding then runs.
+        Textual resolves `priority=True` bindings App-first, so these app actions
+        would otherwise consume the key before the active screen sees it.
+        Returning `False` disables the app binding for this dispatch so the key
+        reverts to the active screen's own handling. Depending on the screen that
+        is either a competing screen binding or default key handling:
 
-        Branches on the action name, not the key, so it stays correct if
-        `ctrl+n` is ever rebound.
+        - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
+            priority `ctrl+n -> toggle_names` binding that then wins.
+        - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
+            binding for the key; stepping aside lets it fall through to the
+            console's `key_shift_tab` reverse-focus traversal. Without this the
+            binding fires `action_toggle_auto_approve`, which no-ops under a
+            `ModalScreen` that lacks dedicated `shift+tab` handling (as
+            `DebugConsoleScreen` does), so the key would be silently swallowed.
+            Note this keys on the action, and `toggle_auto_approve` is
+            also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is open.
+
+        Branches on action names, not keys, so this stays correct if a binding is
+        ever rebound.
 
         Returns:
-            `False` to disable `open_notifications` while a `ModelSelectorScreen`
-                is active, letting the selector handle Ctrl+N; `True` otherwise,
-                leaving the binding enabled.
+            `False` to disable the app binding for this dispatch (letting the
+                active screen or default key handling take the key); `True` to
+                leave it enabled.
         """
         if action == "open_notifications":
             from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
             if isinstance(self.screen, ModelSelectorScreen):
                 return False
+        if action == "toggle_auto_approve":
+            from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+            if isinstance(self.screen, DebugConsoleScreen):
+                return False
         return True
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()
+
+    def action_toggle_debug_console(self) -> None:
+        """Toggle the Debug Console overlay via keybind or the `/debug` command."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        if isinstance(self.screen, DebugConsoleScreen):
+            self.pop_screen()
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+        self._open_debug_console()
+
+    def _open_debug_console(self) -> None:
+        """Push the read-only Debug Console modal."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        def handle_result(_: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(
+            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+        )
+
+    def _build_debug_snapshot(self) -> list[SnapshotField]:
+        """Capture a point-in-time session/runtime snapshot for the console.
+
+        Each field is captured defensively: a subsystem that raises degrades to
+        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        because a diagnostic tool must still open when the app is misbehaving.
+
+        Returns:
+            Ordered ``(label, value)`` fields for the console header.
+        """
+        from deepagents_code._debug import installed_debug_log_path
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._version import __version__
+        from deepagents_code.tui.widgets.debug_console import SnapshotField
+
+        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+            try:
+                return SnapshotField(label=label, value=fn())
+            except Exception as exc:  # a diagnostic must still open on a bad field
+                # WARNING (not DEBUG) so the traceback lands in the always-on
+                # in-memory buffer and is visible in the console itself; the
+                # package logger sits at INFO by default, which drops DEBUG.
+                logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                return SnapshotField(
+                    label=label, value=f"(unavailable: {type(exc).__name__})"
+                )
+
+        def _mcp() -> str:
+            servers = self._mcp_server_info or []
+            if not servers:
+                return "none"
+            return ", ".join(f"{s.name} ({s.status})" for s in servers)
+
+        def _tokens() -> str:
+            stats = self._session_stats
+            return (
+                f"{stats.input_tokens} in / {stats.output_tokens} out "
+                f"/ {stats.request_count} req"
+            )
+
+        def _log_path() -> str:
+            path = installed_debug_log_path()
+            if path:
+                return str(path)
+            # DEEPAGENTS_CODE_DEBUG can read truthy with no handler installed —
+            # e.g. a bad path, or the var set after import via .env. Distinguish
+            # that from the plain no-file-logging case so the console does not
+            # imply a file exists (and hint that a request went unfulfilled).
+            if is_env_truthy(DEBUG):
+                return "in-memory only (file logging requested but unavailable)"
+            return "in-memory only"
+
+        return [
+            _safe("Version", lambda: __version__),
+            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _safe("CWD", lambda: self._cwd),
+            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Sandbox", lambda: self._sandbox_type or "local"),
+            _safe("MCP servers", _mcp),
+            _safe("Tokens", _tokens),
+            _safe("Debug log", _log_path),
+        ]
 
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""
@@ -15300,7 +15779,8 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — press Ctrl+R to load.",
+                            error=MCP_REENABLED_PENDING_ERROR,
+                            pending_reconnect=True,
                         ),
                     )
         self._mcp_server_info = updated
@@ -16238,6 +16718,144 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
+    async def _handle_threads_command(self, command: str) -> None:
+        """Dispatch `/threads`, optionally resuming a thread without the modal.
+
+        Bare `/threads` opens the interactive selector. `/threads -r [ID]`
+        resumes in place: `-r` alone returns to the thread left by the most
+        recent reset (e.g. `/clear`), falling back to the most recent thread
+        for the active agent; `-r <ID>` resumes a specific thread. Both forms
+        only resume threads owned by the active agent, mirroring the
+        launch-time `-r` flag.
+
+        Args:
+            command: The raw command text, e.g. `"/threads -r abc123"`.
+        """
+        args = command.split()[1:]  # drop the leading "/threads"
+
+        if not args:
+            await self._show_thread_selector()
+            return
+
+        if args[0].lower() not in {"-r", "--resume"}:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /threads (open selector) or /threads -r [ID] "
+                    "(resume the previous or a specific thread)."
+                )
+            )
+            return
+
+        max_resume_args = 2  # flag plus at most one thread id
+        if len(args) > max_resume_args:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Usage: /threads -r [ID] accepts at most one thread ID."),
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
+        requested_id = args[1] if len(args) == max_resume_args else None
+        target = await self._resolve_threads_resume_target(requested_id)
+        if target is not None:
+            await self._resume_thread(target)
+
+    async def _resolve_threads_resume_target(
+        self, requested_id: str | None
+    ) -> str | None:
+        """Resolve a `/threads -r` argument to a concrete, resumable thread id.
+
+        Only threads owned by the active agent resolve: an explicit id owned by
+        another agent is refused, and the bare-`-r` fallback is filtered to the
+        active agent's most recent thread.
+
+        Args:
+            requested_id: Explicit thread id from `-r <ID>`, or `None` for a
+                bare `-r` (resume the previous or most-recent thread).
+
+        Returns:
+            The thread id to resume, or `None` when nothing suitable exists;
+            in that case a user-facing message has already been mounted.
+        """
+        import sqlite3
+
+        from deepagents_code.sessions import (
+            find_similar_threads,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        try:
+            active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+            if requested_id is not None:
+                if await thread_exists(requested_id):
+                    owner = await get_thread_agent(requested_id)
+                    if owner == active_agent:
+                        return requested_id
+                    if owner:
+                        msg = (
+                            f"Thread '{requested_id}' belongs to agent '{owner}', not "
+                            f"the active agent '{active_agent}'. Switch agents first."
+                        )
+                    else:
+                        msg = (
+                            f"Could not verify which agent owns thread "
+                            f"'{requested_id}', so it was not resumed."
+                        )
+                    await self._mount_message(AppMessage(msg))
+                    return None
+                hint = f"Thread '{requested_id}' not found."
+                similar = await find_similar_threads(requested_id)
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                await self._mount_message(AppMessage(hint))
+                return None
+
+            # Bare `-r`: prefer the thread the session just left (e.g. via
+            # `/clear`), then fall back to the most recent inactive thread on disk.
+            previous = (
+                self._session_state.previous_thread_id if self._session_state else None
+            )
+            if previous and await thread_exists(previous):
+                owner = await get_thread_agent(previous)
+                if owner == active_agent:
+                    return previous
+
+            current = self._session_state.thread_id if self._session_state else None
+            candidate = await get_most_recent(
+                active_agent,
+                exclude_thread_id=current,
+            )
+            if candidate:
+                return candidate
+
+            msg = f"No previous threads for '{active_agent}' to resume."
+            await self._mount_message(AppMessage(msg))
+        except (sqlite3.Error, OSError):
+            # Expected thread-store failures: log for a debug session and tell
+            # the user to retry. Mirrors the launch-time resolver's handling.
+            logger.warning(
+                "Thread-history lookup failed resolving resume target %r",
+                requested_id,
+                exc_info=True,
+            )
+            await self._mount_message(
+                AppMessage("Could not look up thread history. Please try again.")
+            )
+        except Exception:
+            # Anything else (e.g. a programming error, or a widget-mount fault)
+            # is a real bug, not "database unavailable" — surface it loudly
+            # instead of masking it behind the retry message above.
+            logger.exception(
+                "Unexpected error resolving resume target %r", requested_id
+            )
+            await self._mount_message(
+                AppMessage("Something went wrong resolving that thread.")
+            )
+        return None
+
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
         from functools import partial
@@ -16704,7 +17322,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
-        allow_abort: bool = False,
+        abort: CwdSwitchAbortMode | None = None,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -16714,16 +17332,16 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
-            allow_abort: When True (launch-time `-r` resume), the prompt offers a
-                third "abort" option that declines the resume entirely.
+            abort: When set, the prompt offers a third "abort" option that
+                declines the resume/switch entirely; the mode selects its
+                wording (see `CwdSwitchAbortMode`). `None` hides the option.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
-                declined the resume or a requested switch was accepted but
-                failed (the caller should stop the resume). The two abort
-                sources are mode-exclusive: the user-declined abort fires only
-                when `allow_abort` is True, and the switch-failed abort only
-                when `restart_server` is True.
+                declined the resume/switch or a requested switch was accepted but
+                failed (the caller should stop the resume). The user-declined
+                abort fires only when `abort` is set, and the switch-failed
+                abort only when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -16739,14 +17357,28 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
-                allow_abort=allow_abort,
+                abort=abort,
             )
         )
         if choice == "abort":
             return "abort"
         if choice == "switch":
             if restart_server:
-                return await self._replace_server_after_cwd_switch(target)
+                outcome = await self._replace_server_after_cwd_switch(target)
+                if outcome == "abort":
+                    # A failed restart returns "abort" just like a user-declined
+                    # abort, so the caller cannot tell them apart.
+                    # `_replace_server_after_cwd_switch` already rolled back and
+                    # notified, but that toast is transient -- leave a persistent
+                    # in-chat record so a failed switch is not mistaken for a
+                    # deliberate cancel.
+                    await self._mount_message(
+                        AppMessage(
+                            "Could not switch to the thread's directory; staying "
+                            "on the current thread.",
+                        )
+                    )
+                return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
             return "continue"
@@ -16843,6 +17475,7 @@ class DeepAgentsApp(App):
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
                 restart_server=True,
+                abort="thread_switch",
             )
             if cwd_choice == "abort":
                 return
@@ -16863,7 +17496,11 @@ class DeepAgentsApp(App):
         prev_session_thread = self._session_state.thread_id
         prev_cwd = Path(self._cwd)
 
-        cwd_choice = await self._offer_thread_cwd_switch(thread_id, restart_server=True)
+        cwd_choice = await self._offer_thread_cwd_switch(
+            thread_id,
+            restart_server=True,
+            abort="thread_switch",
+        )
         if cwd_choice == "abort":
             return
 
@@ -16909,6 +17546,13 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
+
+            # The switch succeeded: record the thread we just left so a
+            # subsequent bare `/threads -r` steps back to it rather than
+            # resolving `previous == current` and reporting "Already on
+            # thread". Set only after the last statement that can raise, so a
+            # failed switch (handled below) never leaves a stale pointer.
+            self._session_state.previous_thread_id = prev_session_thread
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

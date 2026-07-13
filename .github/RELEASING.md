@@ -218,7 +218,7 @@ The [release workflow (`.github/workflows/release.yml`)](https://github.com/lang
 
 1. **Setup** - Resolves package name to working directory
 2. **Build** - Creates distribution package
-3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts changelog and collects contributor shoutouts; pre-release checks run tests against the built package
+3. **Release Notes** + **Pre-release Checks** - Run in parallel; release notes extracts the changelog, appends a collapsible package-scoped Git log (newest commit first, up to 100 commits, truncated further if the log grows large), and collects contributor shoutouts; pre-release checks run tests against the built package
 4. **Test PyPI** - Publishes to test.pypi.org for validation (after pre-release checks pass)
 5. **Publish** - Publishes to PyPI (requires Test PyPI to succeed)
 6. **Mark Release** - Creates a published GitHub release with the built artifacts; updates PR labels. For the SDK (`libs/deepagents`), we set it as the repository's `latest` (unless it's a pre-release).
@@ -383,7 +383,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
      -f dangerous-nonmain-release=true
    ```
 
-6. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
+6. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, a collapsible package-scoped Git log, contributor shoutouts (but no changelog), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
 7. **Clean up** — delete the branch after the workflow succeeds:
 

@@ -13,8 +13,10 @@ from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
+    "Use /threads -r to jump back to the thread you just left with /clear": 1,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
+    "Use /tools to list the tools available to the agent": 1,
     "Use /mcp to search your MCP servers and inspect tool parameters": 1,
     "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,
@@ -23,6 +25,7 @@ _TIPS: dict[str, int] = {
     "Use /effort high to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
+    r"Press Ctrl+\ to open the Debug Console and inspect session state and logs": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
     "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,

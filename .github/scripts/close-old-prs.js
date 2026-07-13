@@ -88,11 +88,12 @@ async function findMarkerComment({ github, owner, repo, issueNumber }) {
 }
 
 function warningBody({ warningDays, closeDays, bypassLabel }) {
+  const noticeDays = closeDays - warningDays;
   return [
     COMMENT_MARKER,
     `This PR has been open for at least ${warningDays} days.`,
     '',
-    `It will be closed automatically ${closeDays} days after it was opened (based on age, regardless of recent activity) unless the \`${bypassLabel}\` label is applied.`,
+    `It will be closed automatically once it has been open for at least ${closeDays} days and this warning is at least ${noticeDays} days old, unless the \`${bypassLabel}\` label is applied.`,
   ].join('\n');
 }
 
@@ -122,11 +123,13 @@ async function getLivePr({ github, owner, repo, number }) {
 async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
   const query = `repo:${owner}/${repo} is:pr is:open draft:false`;
   const items = [];
+  let incomplete = false;
   try {
     for await (const response of github.paginate.iterator(
       github.rest.search.issuesAndPullRequests,
       { q: query, per_page: 100, sort: 'created', order: 'asc' },
     )) {
+      incomplete ||= response.data.incomplete_results === true;
       for (const item of response.data) {
         items.push(item);
         if (items.length >= maxItems) {
@@ -138,7 +141,7 @@ async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
             `Reached maxItems cap (${maxItems}); some open PRs were not ` +
             `processed this run. Raise max_items if the backlog is larger.`,
           );
-          return { items, incomplete: false, truncated: true };
+          return { items, incomplete, truncated: true };
         }
       }
     }
@@ -151,7 +154,7 @@ async function searchOpenPrs({ github, owner, repo, maxItems, core }) {
     // fails the run — a swallowed search error must not look like a clean pass.
     return { items, incomplete: true, truncated: false };
   }
-  return { items, incomplete: false, truncated: false };
+  return { items, incomplete, truncated: false };
 }
 
 async function processPr({
@@ -222,7 +225,9 @@ async function processPr({
     return 'warned';
   }
 
-  if (age >= closeDays) {
+  const noticeDays = closeDays - warningDays;
+  const warningAge = ageInDays(existing.created_at, now);
+  if (age >= closeDays && warningAge >= noticeDays) {
     // Upgrade the existing warning to the close notice in place, skipping the
     // API call if it already says exactly that (e.g. a retried run).
     const body = closeBody({ closeDays, bypassLabel });
@@ -244,7 +249,9 @@ async function processPr({
     return 'closed';
   }
 
-  core.info(`PR #${number} is ${age} day(s) old; already warned, no action`);
+  core.info(
+    `PR #${number} is ${age} day(s) old and was warned ${warningAge} day(s) ago; no action`,
+  );
   return 'skipped';
 }
 
@@ -311,18 +318,11 @@ async function run({ github, context, core, options = {} }) {
     `closed ${summary.closed}; skipped ${summary.skipped}; errors ${summary.errors.length}`,
   );
 
-  // A transient per-PR error (rate limit / 5xx) self-heals on the next daily
-  // run, so it must not turn an otherwise-fine run red. Fail only on an
-  // incomplete search, a non-transient error, or every processed PR failing
-  // (systemic — even if each individual failure looked transient).
-  const fatalErrors = summary.errors.filter(error => !error.transient);
-  const allFailed = summary.checked > 0 && summary.errors.length === summary.checked;
-  const problems = fatalErrors.map(error => `#${error.number}: ${error.message}`);
+  // Continue processing after an individual API failure, but fail the run when
+  // any PR was skipped because its warning or closure could not be completed.
+  const problems = summary.errors.map(error => `#${error.number}: ${error.message}`);
   if (incomplete) {
     problems.unshift('PR search did not complete; processed a partial list');
-  }
-  if (allFailed && fatalErrors.length === 0) {
-    problems.push(`All ${summary.checked} processed PR(s) failed with transient errors`);
   }
   if (problems.length > 0) {
     core.setFailed(problems.join('; '));

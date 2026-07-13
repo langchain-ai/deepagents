@@ -28,6 +28,7 @@ function makeGithub({
   createLabelError = null,
   iteratorError = null,
   maxPagesBeforeError = null,
+  incompleteResults = false,
   getErrors = new Map(),
 } = {}) {
   const calls = {
@@ -52,7 +53,12 @@ function makeGithub({
           if (createLabelError) throw createLabelError;
           labelPresent = true;
         },
-        listComments: async ({ issue_number }) => ({ data: comments.get(issue_number) ?? [] }),
+        listComments: async ({ issue_number }) => ({
+          data: (comments.get(issue_number) ?? []).map(comment => ({
+            created_at: '2026-04-22T00:00:00Z',
+            ...comment,
+          })),
+        }),
         createComment: async params => { calls.createComment.push(params); },
         updateComment: async params => { calls.updateComment.push(params); },
       },
@@ -90,6 +96,7 @@ function makeGithub({
       if (maxPagesBeforeError !== null && index >= maxPagesBeforeError) {
         throw iteratorError;
       }
+      page.incomplete_results = incompleteResults;
       yield { data: page };
     }
     if (iteratorError && maxPagesBeforeError === null) throw iteratorError;
@@ -150,7 +157,38 @@ test('warns an old PR that was never warned instead of closing it', async () => 
   assert.equal(summary.closed, 0);
   assert.equal(calls.createComment[0].issue_number, 201);
   assert.match(calls.createComment[0].body, /open for at least 14 days/);
+  assert.match(calls.createComment[0].body, /warning is at least 16 days old/);
   assert.deepEqual(calls.close, []);
+});
+
+test('gives backlogged PRs the full warning interval before closing', async () => {
+  const comments = new Map([
+    [202, [{
+      id: 78,
+      body: `${COMMENT_MARKER}\nwarning`,
+      user: workflowBot,
+      created_at: '2026-05-07T00:00:00Z',
+    }]],
+    [203, [{
+      id: 79,
+      body: `${COMMENT_MARKER}\nwarning`,
+      user: workflowBot,
+      created_at: '2026-04-22T00:00:00Z',
+    }]],
+  ]);
+  const { github, calls } = makeGithub({
+    items: [
+      { number: 202, created_at: '2026-04-01T00:00:00Z' },
+      { number: 203, created_at: '2026-04-01T00:00:00Z' },
+    ],
+    comments,
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(summary.closed, 1);
+  assert.deepEqual(calls.close, [203]);
 });
 
 test('does not duplicate warning comments on daily runs', async () => {
@@ -310,7 +348,7 @@ test('warns instead of closing when only a participant marker exists', async () 
   assert.deepEqual(calls.close, []);
 });
 
-test('keeps the run green after an isolated transient per-PR error', async () => {
+test('fails the run after an isolated transient per-PR error', async () => {
   const comments = new Map([
     [702, [{ id: 70, body: `${COMMENT_MARKER}\nwarning`, user: workflowBot }]],
   ]);
@@ -333,9 +371,7 @@ test('keeps the run green after an isolated transient per-PR error', async () =>
   assert.equal(summary.errors[0].status, 503);
   assert.equal(summary.errors[0].transient, true);
   assert.match(core.warnings[0], /PR #701 failed \(HTTP 503, transient\)/);
-  // A lone 503 self-heals on the next run, so the day's run stays green while
-  // the healthy PR still closes.
-  assert.equal(core.failed, null);
+  assert.match(core.failed, /#701: temporary outage/);
   assert.deepEqual(calls.close, [702]);
 });
 
@@ -370,11 +406,10 @@ test('fails the run when every processed PR errors, even transiently', async () 
 
   const summary = await run({ github, context, core, options: { now } });
 
-  // Individually transient, but a run where nothing succeeded is systemic and
-  // must not report success.
   assert.equal(summary.errors.length, 2);
   assert.ok(summary.errors.every(error => error.transient));
-  assert.match(core.failed, /All 2 processed PR\(s\) failed/);
+  assert.match(core.failed, /#720: outage/);
+  assert.match(core.failed, /#721: outage/);
 });
 
 test('creates the bypass label when it does not exist', async () => {
@@ -439,6 +474,20 @@ test('keeps collected pages and fails the run when search pagination fails', asy
   assert.equal(summary.checked, 100);
   assert.equal(summary.incomplete, true);
   assert.match(core.warnings[0], /Search failed after collecting 100 PR\(s\)/);
+  assert.match(core.failed, /did not complete/);
+});
+
+test('fails the run when search returns successful but incomplete results', async () => {
+  const { github } = makeGithub({
+    items: [{ number: 850, created_at: '2026-05-07T00:00:00Z' }],
+    incompleteResults: true,
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.checked, 1);
+  assert.equal(summary.incomplete, true);
   assert.match(core.failed, /did not complete/);
 });
 

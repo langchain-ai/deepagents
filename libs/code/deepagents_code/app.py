@@ -6553,10 +6553,7 @@ class DeepAgentsApp(App):
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
-            if self._is_exit_keyword(value, mode):
-                self.exit()
-            else:
-                await self._handle_user_message(value)
+            await self._handle_user_message(value)
         else:
             # Fail safe: never default to the agent dispatch path on an
             # unrecognized mode, since that would silently leak `!!`/`!`
@@ -7301,7 +7298,12 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _is_exit_keyword(value: str, mode: InputMode) -> bool:
-        """Return whether the submitted input is the plain `exit` command."""
+        """Return whether `value` is the bare `exit` keyword in normal mode.
+
+        Matches case-insensitively and ignores surrounding whitespace. Only
+        `normal` mode qualifies, so `exit` typed in shell or command mode is
+        routed normally rather than quitting the app.
+        """
         return mode == "normal" and value.lower().strip() == "exit"
 
     def _can_bypass_queue(self, value: str) -> bool:
@@ -7374,11 +7376,7 @@ class DeepAgentsApp(App):
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
         normalized = value.lower().strip()
 
-        if (
-            force_bypass
-            or (mode == "command" and normalized in always_bypass)
-            or self._is_exit_keyword(value, mode)
-        ):
+        if force_bypass or (mode == "command" and normalized in always_bypass):
             await self._process_message(value, mode)
             return
 
@@ -7428,6 +7426,13 @@ class DeepAgentsApp(App):
         from deepagents_code.hooks import dispatch_hook
 
         await dispatch_hook("user.prompt", {})
+
+        # A bare `exit` quits the app (REPL convention), mirroring `/quit`.
+        # Gated to this interactive path only, so external/scripted callers
+        # (on_external_input) can still send the literal "exit" to the agent.
+        if self._is_exit_keyword(value, mode):
+            self.exit()
+            return
 
         await self._submit_input(value, mode)
 

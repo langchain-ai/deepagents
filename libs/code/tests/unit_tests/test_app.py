@@ -11226,7 +11226,11 @@ class TestSlashCommandBypass:
             assert len(app._pending_messages) == 0
 
     async def test_exit_keyword_exits_from_normal_mode(self) -> None:
-        """Plain exit should quit when submitted as normal input."""
+        """Plain exit quits from normal mode, case-insensitive and whitespace-stripped.
+
+        The `  EXIT  ` literal is the only coverage of the `.lower().strip()`
+        normalization; keep the padding and casing when editing this test.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -11269,17 +11273,27 @@ class TestSlashCommandBypass:
     async def test_exit_keyword_requires_exact_match(self) -> None:
         """Other messages containing exit should still go to the agent."""
         app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
 
-        with (
-            patch.object(app, "exit") as exit_mock,
-            patch.object(
-                app, "_handle_user_message", new_callable=AsyncMock
-            ) as handler,
-        ):
-            await app._process_message("exit now", "normal")
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as handler,
+            ):
+                app.post_message(ChatInput.Submitted("exit now", "normal"))
+                await pilot.pause()
 
-        exit_mock.assert_not_called()
-        handler.assert_awaited_once_with("exit now")
+            exit_mock.assert_not_called()
+            handler.assert_awaited_once_with("exit now")
+
+    def test_exit_keyword_only_matches_normal_mode(self) -> None:
+        """`exit` quits only in normal mode; shell/command input is untouched."""
+        assert DeepAgentsApp._is_exit_keyword("exit", "normal") is True
+        assert DeepAgentsApp._is_exit_keyword("exit", "shell") is False
+        assert DeepAgentsApp._is_exit_keyword("exit", "shell_incognito") is False
+        assert DeepAgentsApp._is_exit_keyword("exit", "command") is False
 
     async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
         """/force-clear should process immediately when agent is running."""
@@ -11353,6 +11367,28 @@ class TestSlashCommandBypass:
             assert list(app._pending_messages) == [
                 QueuedMessage(text="next task", mode="normal")
             ]
+
+    async def test_external_prompt_exit_is_forwarded(self) -> None:
+        """An external `exit` prompt should be sent to the agent, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as handler,
+            ):
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(kind="prompt", payload="exit", source="test")
+                    )
+                )
+                await pilot.pause()
+
+            exit_mock.assert_not_called()
+            handler.assert_awaited_once_with("exit")
 
     async def test_version_executes_during_connecting(self) -> None:
         """/version should process immediately when only connecting."""

@@ -14,7 +14,7 @@
       "key": "ls_agent_purpose",
       "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
       "type": "string",
-      "allowedValues": ["coding_agent"],
+      "allowedValues": ["coding"],
       "requirement": "always",
       "requiredWhereKnown": false
     },

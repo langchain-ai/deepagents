@@ -1543,7 +1543,7 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
 
 
 # coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
-CODING_AGENT_PURPOSE = "coding_agent"
+CODING_AGENT_PURPOSE = "coding"
 """Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
 CODING_AGENT_INTEGRATION = "deepagents-code"

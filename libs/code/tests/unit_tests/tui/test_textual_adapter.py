@@ -856,7 +856,7 @@ class TestBuildStreamConfig:
         from deepagents_code._version import __version__
 
         metadata = build_stream_config("t-id", assistant_id=None)["metadata"]
-        assert metadata["ls_agent_purpose"] == "coding_agent"
+        assert metadata["ls_agent_purpose"] == "coding"
         assert metadata["ls_integration"] == "deepagents-code"
         assert metadata["ls_agent_runtime"] == "Deep Agents Code"
         assert metadata["ls_trace_schema_version"] == "coding-agent-v1"

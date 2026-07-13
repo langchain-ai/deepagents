@@ -366,6 +366,7 @@ import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
+MAX_LINE_COUNT_BYTES = 1024 * 1024
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -422,17 +423,21 @@ try:
     msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
     effective_limit = MAX_OUTPUT_BYTES - msg_bytes
 
+    at_eof = False
     with open(path, 'r', encoding='utf-8', newline=None) as f:
-        for raw_line in f:
+        while line_count < offset:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
+                break
             line_count += 1
-            if line_count <= offset:
-                continue
-            # Once the page is full (or byte-capped) keep iterating instead of
-            # breaking: the loop must reach EOF so line_count holds the true
-            # total, which feeds total_lines and the next_offset bound.
-            if truncated or returned_lines >= limit:
-                continue
 
+        while not at_eof and returned_lines < limit and not truncated:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
+                break
+            line_count += 1
             line = raw_line.rstrip('\\n').rstrip('\\r')
             piece = line if returned_lines == 0 else '\\n' + line
             piece_bytes = len(piece.encode('utf-8'))
@@ -444,15 +449,29 @@ try:
                     if prefix:
                         parts.append(prefix)
                         current_bytes += len(prefix.encode('utf-8'))
-                continue
+                break
 
             parts.append(piece)
             current_bytes += piece_bytes
             returned_lines += 1
 
+        if not at_eof:
+            at_eof = f.tell() == st.st_size
+
     if returned_lines == 0 and not truncated:
         print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
         sys.exit(0)
+
+    # Count the complete file only when its size makes that extra work bounded.
+    # surrogateescape keeps an invalid byte after the requested page from
+    # invalidating content that was decoded successfully.
+    if at_eof:
+        total_lines = line_count
+    elif st.st_size <= MAX_LINE_COUNT_BYTES:
+        with open(path, 'r', encoding='utf-8', errors='surrogateescape', newline=None) as f:
+            total_lines = sum(1 for _ in f)
+    else:
+        total_lines = None
 
     text = ''.join(parts)
     if truncated:
@@ -464,15 +483,19 @@ try:
     # If even the first requested line overflows the cap no full line was
     # returned: advance by one so the read still makes progress instead of
     # looping on the same page (that line's tail is unreadable via line offsets).
+    resumes_partial_line = truncated and returned_lines > 0
     if truncated and returned_lines == 0:
         returned_lines = 1
 
     end_line = offset + returned_lines
-    next_offset = end_line if end_line < line_count else None
+    if total_lines is not None:
+        next_offset = end_line if end_line < total_lines else None
+    else:
+        next_offset = end_line if not at_eof or resumes_partial_line else None
     print(json.dumps({{
         'encoding': 'utf-8',
         'content': text,
-        'total_lines': line_count,
+        'total_lines': total_lines,
         'start_line': offset + 1,
         'end_line': end_line,
         'next_offset': next_offset,
@@ -492,9 +515,10 @@ base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
 Output: single-line JSON. On success (text): `{{"encoding", "content",
 "total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
 and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
-next unread line (`null` once the file is fully read). On success (binary):
-`{{"encoding": "base64", "content": ...}}` without pagination keys. On failure:
-`{{"error": ...}}`.
+next unread line (`null` once the file is fully read). `total_lines` is `null`
+when counting the rest of a large file would exceed the bounded scan. On success
+(binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
+On failure: `{{"error": ...}}`.
 """
 
 

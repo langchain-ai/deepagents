@@ -1414,6 +1414,42 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("     1\tone\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
+    def test_read_file_unknown_total_reports_next_offset(self):
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content="one", encoding="utf-8"),
+            start_line=1,
+            end_line=1,
+            next_offset=1,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == "     1\tone\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+
+    def test_read_file_truncation_preserves_remaining_lines_notice(self):
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content="x" * 1000, encoding="utf-8"),
+            total_lines=2,
+            start_line=1,
+            end_line=1,
+            next_offset=1,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
+
+        assert isinstance(result, ToolMessage)
+        assert "Output was truncated due to size limits" in result.content
+        assert result.content.endswith("[Read 1 line (lines 1-1 of 2 total). 1 line remaining from offset 1.]")
+
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""
         backend, _ = _make_backend()

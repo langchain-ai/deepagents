@@ -537,15 +537,18 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
     total_lines = read_result.total_lines
     start_line = read_result.start_line
     end_line = read_result.end_line
-    if total_lines is None or start_line is None or end_line is None or end_line >= total_lines:
+    next_offset = read_result.next_offset
+    if start_line is None or end_line is None or next_offset is None:
         return ""
-    # Backends set `next_offset` to a concrete offset whenever `end_line <
-    # total_lines` (the partial-window case gated above), so it is non-None
-    # here; the fallback only guards a malformed `ReadResult`.
-    next_offset = read_result.next_offset if read_result.next_offset is not None else end_line
-    remaining = total_lines - end_line
+
     read_count = end_line - start_line + 1
     read_unit = "line" if read_count == 1 else "lines"
+    if total_lines is None:
+        return f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}). More lines remain from offset {next_offset}.]"
+    if end_line >= total_lines:
+        return ""
+
+    remaining = total_lines - end_line
     remaining_unit = "line" if remaining == 1 else "lines"
     return (
         f"\n\n[Read {read_count} {read_unit} "
@@ -1513,18 +1516,21 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         args_schema = ReadVideoFileSchema if video_enabled else ReadFileSchema
         token_limit = self._tool_token_limit_before_evict
 
-        def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
+        def _truncate(content: str, file_path: str, *, line_limit: int | None = None, suffix: str = "") -> str:
             if line_limit is not None:
                 lines = content.splitlines(keepends=True)
                 if len(lines) > line_limit:
                     content = "".join(lines[:line_limit])
 
-            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
+            if token_limit and len(content) + len(suffix) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
-                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
+                max_content_length = max(
+                    0,
+                    NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg) - len(suffix),
+                )
                 content = content[:max_content_length] + truncation_msg
 
-            return content
+            return content + suffix
 
         def _handle_read_result(  # noqa: PLR0911  # one branch per distinct read-result disposition
             read_result: ReadResult | str,
@@ -1613,12 +1619,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             content = format_content_with_line_numbers(content, start_line=read_result.start_line or offset + 1)
-            content += _remaining_lines_notice(read_result)
+            notice = _remaining_lines_notice(read_result)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate(content, validated_path),
+                content=_truncate(content, validated_path, suffix=notice),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

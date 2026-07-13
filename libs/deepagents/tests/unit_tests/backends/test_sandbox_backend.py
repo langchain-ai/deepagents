@@ -1397,6 +1397,20 @@ def test_read_script_final_window_has_null_next_offset(tmp_path: Path) -> None:
     assert result["next_offset"] is None
 
 
+def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tmp_path: Path) -> None:
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"first\n" + (b"a" * (1024 * 1024)) + b"\xff")
+
+    result = _run_read_script(target, offset=0, limit=1)
+
+    assert result["encoding"] == "utf-8"
+    assert result["content"] == "first"
+    assert result["total_lines"] is None
+    assert result["start_line"] == 1
+    assert result["end_line"] == 1
+    assert result["next_offset"] == 1
+
+
 def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Path) -> None:
     """A byte-capped page must not advance `next_offset` past lines it dropped.
 

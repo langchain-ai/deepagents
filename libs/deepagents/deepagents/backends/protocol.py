@@ -187,7 +187,7 @@ class ReadResult:
     Attributes:
         error: Error message on failure, None on success.
         file_data: FileData dict on success, None on failure.
-        total_lines: Total number of source lines in text files.
+        total_lines: Total number of source lines when the backend can determine it.
         start_line: 1-indexed first source line returned in `file_data`.
         end_line: 1-indexed last source line returned in `file_data`.
         next_offset: 0-indexed offset for the next unread source line.

@@ -1065,26 +1065,116 @@ class TestGetMCPTools:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_remote_headers_are_resolved_and_passed(
+    async def test_remote_url_and_headers_are_resolved_and_passed(
         self,
         monkeypatch: pytest.MonkeyPatch,
         fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
     ) -> None:
-        """Resolved static headers are attached to remote connections."""
+        """Resolved URLs and static headers reach remote connections."""
+        monkeypatch.setenv("DA_MCP_HOST", "mcp.linear.app")
         monkeypatch.setenv("DA_TOKEN", "tok-123")
         _session, recorded = fake_create_session
         config = {
             "mcpServers": {
                 "linear": {
                     "transport": "http",
-                    "url": "https://mcp.linear.app/mcp",
+                    "url": "https://${DA_MCP_HOST}/mcp",
                     "headers": {"Authorization": "Bearer ${DA_TOKEN}"},
                 }
             }
         }
 
         await _load_tools_from_config(config)
+        assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
+
+    async def test_stdio_fields_resolve_before_preflight_and_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Stdio preflight and connection creation use resolved values."""
+        monkeypatch.setenv("DA_MCP_HOME", "/opt/mcp")
+        monkeypatch.setenv("DA_MCP_TOKEN", "token")
+        _session, recorded = fake_create_session
+        checked: list[dict[str, Any]] = []
+        config = {
+            "mcpServers": {
+                "srv": {
+                    "command": "${DA_MCP_HOME}/server",
+                    "args": ["--root", "${DA_MCP_HOME}"],
+                    "env": {"TOKEN": "${DA_MCP_TOKEN}"},
+                }
+            }
+        }
+
+        with patch(
+            "deepagents_code.mcp_tools._check_stdio_server",
+            side_effect=lambda _name, server: checked.append(server),
+        ):
+            await _load_tools_from_config(config)
+
+        assert checked[0]["command"] == "/opt/mcp/server"
+        assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert recorded[0] == {
+            "command": "/opt/mcp/server",
+            "args": ["--root", "/opt/mcp"],
+            "env": {"TOKEN": "token"},
+            "transport": "stdio",
+        }
+
+    async def test_unset_variable_skips_only_affected_server(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """An unresolved field does not prevent sibling servers from loading."""
+        monkeypatch.delenv("MISSING_DA_MCP_PATH", raising=False)
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                "broken": {
+                    "command": "node",
+                    "args": ["${MISSING_DA_MCP_PATH}"],
+                },
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.args[0]" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_non_string_field_skips_only_affected_server(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """A `TypeError` from resolution skips its server, not its siblings."""
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                # `env` is a dict (passes shape validation) but its value is
+                # not a string, so resolution raises `TypeError`.
+                "broken": {"command": "node", "env": {"PORT": 1}},
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.env.PORT" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
 
     async def test_empty_env_is_coerced_to_none(
         self,

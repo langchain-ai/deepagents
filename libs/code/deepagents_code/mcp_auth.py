@@ -48,6 +48,8 @@ from mcp.shared.auth import (
 from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import override
 
+from deepagents_code.mcp_config import resolve_mcp_server_env
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -158,9 +160,6 @@ class _ExpectedReauthLogFilter(logging.Filter):
 
 logging.getLogger("mcp.client.auth.oauth2").addFilter(_ExpectedReauthLogFilter())
 
-_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-"""Matches `${VAR}` placeholders inside config strings for env-var substitution."""
-
 _SAFE_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Matches server names that are safe to embed in token-file basenames.
 
@@ -189,66 +188,6 @@ the concern: the OS releases an `fcntl` lock when the holding process exits. On
 timeout the provider reloads tokens from disk and avoids using any still-stale
 refresh token (see `_acquire_refresh_lock`).
 """
-
-
-def resolve_headers(
-    headers: dict[str, str],
-    *,
-    server_name: str | None = None,
-) -> dict[str, str]:
-    """Resolve `${VAR}` env-var references in header values.
-
-    Args:
-        headers: Raw header mapping from MCP config.
-        server_name: Optional server name for error messages.
-
-    Returns:
-        A new dict with env-var references resolved to current values.
-
-    Raises:
-        TypeError: If a header value is not a string.
-        RuntimeError: If a `${VAR}` reference points to an unset env var.
-    """  # noqa: DOC502 - RuntimeError is raised via `_interpolate`
-    resolved: dict[str, str] = {}
-    for name, value in headers.items():
-        if not isinstance(value, str):
-            where = f"mcpServers.{server_name}.headers.{name}" if server_name else name
-            msg = f"{where} must be a string, got {type(value).__name__}"
-            raise TypeError(msg)
-        resolved[name] = _interpolate(value, header=name, server_name=server_name)
-    return resolved
-
-
-def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
-    """Expand `${VAR}` references in `s` against the current environment.
-
-    Args:
-        s: Raw header value.
-        header: Header name, used in error messages.
-        server_name: Owning server name for error messages.
-
-    Returns:
-        Interpolated string.
-
-    Raises:
-        RuntimeError: If a referenced env var is unset.
-    """  # noqa: DOC502 - raised inside the inner `replace` substitution callback
-
-    def replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        val = os.environ.get(var_name)
-        if val is None:
-            where = (
-                f"mcpServers.{server_name}.headers.{header}" if server_name else header
-            )
-            msg = (
-                f"{where} references unset env var {var_name}. "
-                f"Set {var_name} in the environment or remove the reference."
-            )
-            raise RuntimeError(msg)
-        return val
-
-    return _REF_RE.sub(replace, s)
 
 
 def _tokens_dir() -> Path:
@@ -1739,6 +1678,14 @@ def format_login_failure(exc: BaseException) -> str:
     if reauth is not None:
         return str(reauth)
 
+    from deepagents_code.mcp_tools import MCPConfigError
+
+    if isinstance(exc, MCPConfigError):
+        # Config-interpolation errors are our own and are raised before the
+        # OAuth handshake, so they carry no token material and their
+        # field-scoped messages are safe (and useful) to render verbatim.
+        return str(exc)
+
     safe_types = (
         _LoopbackCallbackTimeoutError,
         _LoopbackCallbackUnavailableError,
@@ -1894,15 +1841,17 @@ async def login(
 
     Raises:
         ValueError: If `server_config` isn't an http/sse server.
-        RuntimeError: If header env-var interpolation fails, the device
-            flow fails or times out, or the OAuth handshake aborts.
-    """  # noqa: DOC502 - `RuntimeError` surfaces via `resolve_headers` / `_run_device_flow`
+        MCPConfigError: If config env-var interpolation fails or a
+            supported field has a non-string value.
+        RuntimeError: If the device flow fails or times out, or the
+            OAuth handshake aborts.
+    """  # noqa: DOC502 - `RuntimeError` surfaces via the device flow / handshake
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StreamableHttpConnection,
     )
 
-    from deepagents_code.mcp_tools import _resolve_server_type
+    from deepagents_code.mcp_tools import MCPConfigError, _resolve_server_type
 
     # OAuth login is discovery-based (RFC 9728), so it works for any remote
     # http/sse server — whether the config opted in with `auth: oauth` or the
@@ -1915,14 +1864,22 @@ async def login(
             "OAuth login is only valid for http/sse."
         )
         raise ValueError(msg)
+    try:
+        resolved_config = resolve_mcp_server_env(server_name, server_config)
+    except (RuntimeError, TypeError) as exc:
+        # Re-raise as MCPConfigError (a ValueError) so callers' existing
+        # config-error handling catches it, and `format_login_failure`
+        # preserves the actionable, field-scoped message instead of
+        # collapsing it to a bare "RuntimeError"/"TypeError".
+        raise MCPConfigError(str(exc)) from exc
 
     from deepagents_code.mcp_providers import resolve_provider
 
-    storage = FileTokenStorage(server_name, server_url=server_config["url"])
-    policy = resolve_provider(server_config["url"])
+    storage = FileTokenStorage(server_name, server_url=resolved_config["url"])
+    policy = resolve_provider(resolved_config["url"])
     result = await policy.run_login(
         server_name=server_name,
-        server_url=server_config["url"],
+        server_url=resolved_config["url"],
         storage=storage,
         ui=ui,
     )
@@ -1937,7 +1894,7 @@ async def login(
 
     provider = build_oauth_provider(
         server_name=server_name,
-        server_url=server_config["url"],
+        server_url=resolved_config["url"],
         storage=storage,
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
@@ -1946,21 +1903,18 @@ async def login(
     if transport == "http":
         conn = StreamableHttpConnection(
             transport="streamable_http",
-            url=server_config["url"],
+            url=resolved_config["url"],
             auth=provider,
         )
     else:
         conn = SSEConnection(
             transport="sse",
-            url=server_config["url"],
+            url=resolved_config["url"],
             auth=provider,
         )
 
-    if "headers" in server_config:
-        conn["headers"] = resolve_headers(
-            server_config["headers"],
-            server_name=server_name,
-        )
+    if "headers" in resolved_config:
+        conn["headers"] = resolved_config["headers"]
 
     await _drive_handshake({server_name: conn})
     await ui.show_success(success_message)

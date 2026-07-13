@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 
+from deepagents_code.mcp_config import resolve_mcp_server_env
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
@@ -453,7 +455,7 @@ def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
     """Validate a single server configuration.
 
-    Performs only shape checks — `${VAR}` header interpolation is deferred
+    Performs only shape checks — `${VAR}` config interpolation is deferred
     to activation time so one unset env var only fails its own server
     rather than hiding every other MCP entry in the same file.
 
@@ -832,7 +834,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` header interpolation is deferred to activation time, so no RuntimeError here)
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` config interpolation is deferred to activation time, so no RuntimeError here)
     config = _load_mcp_config_top_level(Path(config_path))
     _validate_mcp_config_servers(config)
 
@@ -1618,6 +1620,20 @@ async def _load_tools_from_config(
             ready `Connection` otherwise.
         """
         server_type = transports[server_name]
+        # Config env-var resolution is the only step that raises `TypeError`
+        # (non-string field). Keep it in its own `try` so an unexpected
+        # `TypeError` from the connectivity checks below — whose contract is
+        # `RuntimeError` only — surfaces as a real bug instead of being
+        # relabeled as a per-server config skip.
+        try:
+            server_config = resolve_mcp_server_env(server_name, server_config)
+        except (RuntimeError, TypeError) as exc:
+            logger.warning(
+                "MCP server '%s' skipped: config error: %s",
+                server_name,
+                exc,
+            )
+            return ("error", str(exc))
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
@@ -1647,12 +1663,7 @@ async def _load_tools_from_config(
                     )
 
                 if "headers" in server_config:
-                    from deepagents_code.mcp_auth import resolve_headers
-
-                    conn["headers"] = resolve_headers(
-                        server_config["headers"],
-                        server_name=server_name,
-                    )
+                    conn["headers"] = server_config["headers"]
 
                 from deepagents_code.mcp_auth import (
                     FileTokenStorage,
@@ -2102,8 +2113,8 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed. (Header `${VAR}`
-            interpolation is deferred to activation inside
+        RuntimeError: If the merged MCP config is malformed. (`${VAR}`
+            config interpolation is deferred to activation inside
             `_load_tools_from_config`, which captures such failures into the
             returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
@@ -2200,7 +2211,7 @@ async def resolve_and_load_mcp_tools(
         # here (rather than loading all or none) preserves the SSRF/header-
         # exfiltration gate: a non-allowlisted remote entry from an attacker-
         # controlled .mcp.json never reaches the preflight HEAD probe or the
-        # `${VAR}` header interpolation during the discovery handshake.
+        # `${VAR}` config interpolation during the discovery handshake.
         servers = config["mcpServers"]
         kept: dict[str, Any] = {}
         for name, server in servers.items():

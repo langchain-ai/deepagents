@@ -1278,7 +1278,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.mode",
         group="Startup",
-        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        summary=(
+            "Default permission mode at launch ('manual' or legacy "
+            "'dangerously-auto' for unrestricted permissions)."
+        ),
         kind=OptionKind.STARTUP_MODE_DELEGATE,
         default="manual",
         toml_keys=("startup", "mode"),

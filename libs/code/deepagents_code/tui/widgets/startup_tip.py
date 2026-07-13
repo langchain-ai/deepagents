@@ -36,7 +36,7 @@ _TIPS: dict[str, int] = {
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
-    "Press Shift+Tab to toggle auto-approve mode": 2,
+    "Press Shift+Tab to toggle unrestricted permissions": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
     "Launch with dcode -s <name> to auto-invoke a skill at startup": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,

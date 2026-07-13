@@ -1279,11 +1279,19 @@ class TestFormatRubricEvent:
 
     def test_max_iterations_reached_event(self) -> None:
         """Hitting the iteration cap should warn the user it is unsatisfied."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
-            )
-            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
+        assert _format_rubric_event(
+            {
+                "type": "rubric_evaluation_end",
+                "result": "max_iterations_reached",
+                "criteria": [
+                    {"name": "tests pass", "passed": False, "gap": "not run"},
+                    {"name": "docs", "passed": True},
+                ],
+            },
+        ) == (
+            "⚠ Automatic iteration stopped: acceptance criteria remain unmet "
+            "(iteration limit reached)\n"
+            "  ✗ tests pass — not run"
         )
 
     def test_grader_failure_results_render_warning(self) -> None:

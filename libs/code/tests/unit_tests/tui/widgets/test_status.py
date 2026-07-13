@@ -76,6 +76,23 @@ class TestCwdDisplay:
             assert cwd.styles.padding.right == 1
 
 
+class TestPermissionModeDisplay:
+    """Tests for user-facing permission-mode terminology."""
+
+    async def test_unrestricted_mode_uses_clear_copy(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            display = pilot.app.query_one("#auto-approve-indicator", Static)
+
+            bar.set_auto_approve(enabled=True)
+            await pilot.pause()
+            assert str(display.render()) == "unrestricted"
+
+            bar.set_auto_approve(enabled=False)
+            await pilot.pause()
+            assert str(display.render()) == "manual"
+
+
 class TestBranchDisplay:
     """Tests for the git branch display in the status bar."""
 

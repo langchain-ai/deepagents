@@ -379,13 +379,6 @@ Available subagent types:
 
 - general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.
 
-## Goal and Rubric Tools
-
-Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
-complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
-Use `update_goal` only when you have evidence that the goal is complete or blocked.
-
 ## `ask_user`
 
 You have access to the `ask_user` tool to ask the user questions when you need clarification or input.

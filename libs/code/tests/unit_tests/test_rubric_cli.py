@@ -306,9 +306,21 @@ class TestProcessRubricEvent:
 
     def test_max_iterations(self) -> None:
         out = _render_event(
-            {"type": "rubric_evaluation_end", "result": "max_iterations_reached"}
+            {
+                "type": "rubric_evaluation_end",
+                "result": "max_iterations_reached",
+                "criteria": [
+                    {"name": "tests", "passed": False, "gap": "still failing"},
+                    {"name": "docs", "passed": True},
+                ],
+            }
         )
+        assert "Automatic iteration stopped" in out
         assert "iteration limit reached" in out
+        assert "tests" in out
+        assert "still failing" in out
+        assert "docs" not in out
+        assert "Retry with another message" in out
 
     def test_failed(self) -> None:
         out = _render_event(

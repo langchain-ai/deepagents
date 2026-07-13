@@ -111,8 +111,8 @@ class ApprovalMenu(Container):
         Binding("enter", "select", "Select", show=False),
         Binding("1", "select_approve", "Approve", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_auto", "Auto-approve", show=False),
-        Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("2", "select_auto", "Unrestricted", show=False),
+        Binding("a", "select_auto", "Unrestricted", show=False),
         Binding("3", "select_reject", "Reject", show=False),
         Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
@@ -410,13 +410,13 @@ class ApprovalMenu(Container):
         if count == 1:
             options = [
                 "1. Approve (y)",
-                "2. Auto-approve for this thread (a)",
+                "2. Use unrestricted permissions for this thread (a)",
                 "3. Reject (n)",
             ]
         else:
             options = [
                 f"1. Approve all {count} (y)",
-                "2. Auto-approve for this thread (a)",
+                "2. Use unrestricted permissions for this thread (a)",
                 f"3. Reject all {count} (n)",
             ]
 

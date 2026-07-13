@@ -264,10 +264,18 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
                 lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
         return "\n".join(lines)
     if result == "max_iterations_reached":
-        return (
-            f"{glyphs.warning} Acceptance criteria not satisfied "
-            "(iteration limit reached)"
-        )
+        lines = [
+            (
+                f"{glyphs.warning} Automatic iteration stopped: "
+                "acceptance criteria remain unmet (iteration limit reached)"
+            )
+        ]
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name", "criterion"))
+                gap = str(criterion.get("gap", "")).strip()
+                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
+        return "\n".join(lines)
     if result in {"failed", "grader_error"}:
         label = "grader failed" if result == "failed" else "grader error"
         return (

@@ -46,6 +46,7 @@ from deepagents_code import (
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    DEFAULT_RUBRIC_MAX_ITERATIONS,
     MCP_REENABLED_PENDING_ERROR,
     SYSTEM_MESSAGE_PREFIX,
 )
@@ -1989,7 +1990,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
-        Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+t", "toggle_auto_approve", "Toggle Unrestricted", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         # `check_action` steps this binding aside (returns `False`) while a
         # `DebugConsoleScreen` is active so the console's own `shift+tab`
@@ -1999,7 +2000,7 @@ class DeepAgentsApp(App):
         Binding(
             "shift+tab",
             "toggle_auto_approve",
-            "Toggle Auto-Approve",
+            "Toggle Unrestricted",
             show=False,
             priority=True,
         ),
@@ -2045,8 +2046,8 @@ class DeepAgentsApp(App):
         Binding("enter", "approval_select", "Select", show=False),
         Binding("y", "approval_yes", "Yes", show=False),
         Binding("1", "approval_yes", "Yes", show=False),
-        Binding("2", "approval_auto", "Auto", show=False),
-        Binding("a", "approval_auto", "Auto", show=False),
+        Binding("2", "approval_auto", "Unrestricted", show=False),
+        Binding("a", "approval_auto", "Unrestricted", show=False),
         Binding("3", "approval_no", "No", show=False),
         Binding("n", "approval_no", "No", show=False),
     ]
@@ -6638,7 +6639,7 @@ class DeepAgentsApp(App):
             self._session_state.auto_approve = True
             if not await self._write_live_approval_mode():
                 self._warn_live_approval_mode_unavailable(
-                    "Auto-approve could not sync to the running agent; "
+                    "Unrestricted permissions could not sync to the running agent; "
                     "approval prompts may continue."
                 )
 
@@ -8845,6 +8846,18 @@ class DeepAgentsApp(App):
             text = f"{text}\n\n{note}"
         await self._mount_message(AppMessage(text))
 
+    async def _clear_completed_goal(self) -> None:
+        """Remove a completed goal so later turns are not evaluated against it."""
+        self._clear_all_goal_rubric_state()
+        self._sync_status_rubric()
+        if not await self._persist_goal_rubric_state():
+            await self._mount_message(
+                ErrorMessage(
+                    "The goal completed for this session, but its saved state could "
+                    "not be cleared from the thread."
+                )
+            )
+
     async def _commit_pending_goal_completion(
         self,
         note: str,
@@ -8856,21 +8869,68 @@ class DeepAgentsApp(App):
         self._goal_status_note = note
         self._pending_goal_completion_note = None
         self._sync_status_rubric()
-        persisted = await self._persist_goal_rubric_state()
         await self._announce_goal_status_transition(previous_status)
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
-            )
+        await self._clear_completed_goal()
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
         self._pending_goal_completion_note = None
         persisted = await self._persist_goal_rubric_state()
         await self._mount_goal_rubric_result(message, persisted=persisted)
+
+    @staticmethod
+    def _remaining_unmet_criteria(
+        state_values: dict[str, Any],
+    ) -> list[tuple[str, str | None]]:
+        """Return failed criteria from the latest exhausted grading evaluation."""
+        evaluations = state_values.get("_rubric_evaluations")
+        if not isinstance(evaluations, list):
+            return []
+        for evaluation in reversed(evaluations):
+            if not isinstance(evaluation, dict):
+                continue
+            if evaluation.get("result") != "max_iterations_reached":
+                continue
+            criteria = evaluation.get("criteria")
+            if not isinstance(criteria, list):
+                return []
+            remaining: list[tuple[str, str | None]] = []
+            for criterion in criteria:
+                if (
+                    not isinstance(criterion, dict)
+                    or criterion.get("passed") is not False
+                ):
+                    continue
+                name = str(criterion.get("name") or "Unnamed criterion")
+                gap_value = criterion.get("gap")
+                gap = str(gap_value).strip() if gap_value is not None else ""
+                remaining.append((name, gap or None))
+            return remaining
+        return []
+
+    async def _announce_goal_iteration_exhaustion(
+        self,
+        state_values: dict[str, Any],
+    ) -> None:
+        """Explain how to continue after automatic goal iteration is exhausted."""
+        if not self._active_goal:
+            return
+        parts: list[str | Content] = [
+            (
+                "Automatic iteration stopped because the grading iteration limit "
+                "was reached. The goal remains active."
+            )
+        ]
+        remaining = self._remaining_unmet_criteria(state_values)
+        if remaining:
+            parts.append("\n\nRemaining unmet criteria:")
+            for name, gap in remaining:
+                parts.append(f"\n- {name}" + (f": {gap}" if gap else ""))
+        parts.append(
+            "\n\nSend a follow-up to retry or resume, use `/goal <revised objective>` "
+            "to amend or replace it, or `/goal clear`."
+        )
+        await self._mount_message(AppMessage(Content.assemble(*parts)))
 
     async def _resolve_pending_goal_completion(
         self,
@@ -9033,6 +9093,10 @@ class DeepAgentsApp(App):
         )
         if not completion_committed:
             await self._announce_goal_status_transition(previous_status)
+            if self._goal_status == "complete":
+                await self._clear_completed_goal()
+        if payload.rubric_status == "max_iterations_reached":
+            await self._announce_goal_iteration_exhaustion(state_values)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
         await self._remount_pending_goal_rubric_review()
@@ -9090,6 +9154,14 @@ class DeepAgentsApp(App):
             return
         await self._set_rubric_max_iterations(value)
 
+    def _grader_iteration_limit_display(self) -> str:
+        """Return the known iteration limit or an honest server-default label."""
+        if self._rubric_max_iterations is not None:
+            return str(self._rubric_max_iterations)
+        if self._server_kwargs is None and self._remote_agent() is not None:
+            return "server default"
+        return f"{DEFAULT_RUBRIC_MAX_ITERATIONS} (default)"
+
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
@@ -9097,12 +9169,7 @@ class DeepAgentsApp(App):
         `/goal show` and `/rubric show` so the default wording stays in sync.
         """
         model = self._rubric_model or "current chat model"
-        iterations = (
-            str(self._rubric_max_iterations)
-            if self._rubric_max_iterations is not None
-            else "SDK default"
-        )
-        return model, iterations
+        return model, self._grader_iteration_limit_display()
 
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
@@ -9148,9 +9215,23 @@ class DeepAgentsApp(App):
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            has_goal_state = bool(
+                self._active_goal
+                or self._goal_status
+                or self._goal_status_note
+                or self._pending_goal_completion_note
+                or self._pending_goal_objective
+                or self._pending_goal_rubric
+            )
+            if not has_goal_state:
+                await self._mount_message(AppMessage("No active goal to clear."))
+                return
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-clear cleanup")
-            self._clear_all_goal_rubric_state()
+            if self._active_goal:
+                self._clear_all_goal_rubric_state()
+            else:
+                self._reset_goal_tracking()
             self._sync_status_rubric()
             persisted = await self._persist_goal_rubric_state()
             await self._mount_goal_rubric_result("Goal cleared.", persisted=persisted)
@@ -9179,8 +9260,8 @@ class DeepAgentsApp(App):
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist and ask before applying it. Once accepted, the "
-            "goal stays active for this thread until completed, blocked, or "
-            "cleared. Follow-up prompts continue working toward that goal."
+            "goal remains active across follow-up turns until it is completed, "
+            "blocked, paused, replaced, or cleared."
         )
 
     async def _show_goal_state(self) -> None:
@@ -9212,9 +9293,8 @@ class DeepAgentsApp(App):
             )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
-                    "Goal is active for this thread until completed, blocked, or "
-                    "cleared.\nFollow-up prompts will continue working toward this "
-                    "goal."
+                    "Goal remains active across follow-up turns until it is "
+                    "completed, blocked, paused, replaced, or cleared."
                 )
             lines.append(
                 "Commands:\n/goal clear\n/goal show\n"
@@ -9363,6 +9443,10 @@ class DeepAgentsApp(App):
             if result["type"] == "accepted":
                 await self._accept_goal_rubric(self._pending_goal_rubric or "")
                 return
+            if result["type"] == "accepted_unrestricted":
+                await self._on_auto_approve_enabled()
+                await self._accept_goal_rubric(self._pending_goal_rubric or "")
+                return
             if result["type"] == "edited":
                 await self._accept_goal_rubric(result["criteria"])
                 return
@@ -9433,11 +9517,13 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
+        iteration_limit = self._grader_iteration_limit_display()
         await self._mount_message(
             AppMessage(
-                "Goal accepted. It will stay active for this thread until completed, "
-                "blocked, or cleared.\nUse /goal show to inspect it or /goal clear "
-                "to remove it."
+                f"Goal accepted · grading iteration limit: {iteration_limit}.\n"
+                "It remains active across follow-up turns until it is completed, "
+                "blocked, paused, replaced, or cleared.\n"
+                "Use /goal to inspect it."
             )
         )
         if not persisted:
@@ -9462,6 +9548,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal complete")
         elif self._active_goal and self._goal_status == "blocked":
             self._status_bar.set_rubric_label(f"{glyphs.warning} Goal blocked")
+        elif self._active_goal:
+            self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal active")
         elif self._next_rubric:
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric: next turn")
         elif self._active_rubric:
@@ -9950,7 +10038,7 @@ class DeepAgentsApp(App):
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
                 "  Ctrl+\\          Toggle the debug console\n"
-                "  Shift+Tab       Toggle auto-approve mode\n"
+                "  Shift+Tab       Toggle unrestricted permissions\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
@@ -10939,29 +11027,10 @@ class DeepAgentsApp(App):
                 else None
             )
 
-            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
-            # just above, so the status alone can't distinguish an already-active
-            # goal from one resumed this turn. Branch the wording on the reset
-            # signal instead. The status guard still holds: a failed reset rolls
-            # the status back to blocked, so no notice fires in that case.
-            #
-            # The `message != _active_goal` check suppresses the notice on the
-            # goal-setting turn, and works only because acceptance sends the
-            # objective verbatim as the message. If a future change wraps or
-            # annotates the objective before sending (as the skill path already
-            # does with its envelope prompt), the equality would no longer match
-            # and the notice would wrongly fire on the initial turn.
-            if (
-                self._active_goal
-                and self._goal_status == "active"
-                and message.strip() != self._active_goal.strip()
-            ):
-                notice = (
-                    f"Resuming previously blocked goal: {self._active_goal}"
-                    if resuming_blocked
-                    else f"Continuing active goal: {self._active_goal}"
+            if resuming_blocked and self._active_goal:
+                await self._mount_message(
+                    AppMessage(f"Resuming previously blocked goal: {self._active_goal}")
                 )
-                await self._mount_message(AppMessage(notice))
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
@@ -11250,10 +11319,11 @@ class DeepAgentsApp(App):
             spec = self._effective_model_spec()
             panel.prepare_turn(model_label=_display_model_label(spec))
 
-        rubric = self._next_rubric or self._active_rubric
+        active_rubric = None if self._goal_status == "complete" else self._active_rubric
+        rubric = self._next_rubric or active_rubric
         if self._next_rubric is not None:
             self._last_consumed_next_rubric = self._next_rubric
-            self._last_consumed_next_previous_rubric = self._active_rubric
+            self._last_consumed_next_previous_rubric = active_rubric
             await self._persist_goal_rubric_state()
             self._next_rubric = None
             self._sync_status_rubric()
@@ -11752,6 +11822,8 @@ class DeepAgentsApp(App):
                 else await self._fetch_thread_history_data(history_thread_id)
             )
             self._restore_goal_rubric_state(payload)
+            if self._goal_status == "complete":
+                await self._clear_completed_goal()
 
             # Adopt the resumed thread's model (session-only) so the session
             # continues on the model it was last using, not the global default.
@@ -13276,7 +13348,7 @@ class DeepAgentsApp(App):
             if not await self._write_live_approval_mode():
                 if self._auto_approve:
                     self._warn_live_approval_mode_unavailable(
-                        "Auto-approve could not sync to the running agent; "
+                        "Unrestricted permissions could not sync to the running agent; "
                         "approval prompts may continue."
                     )
                 elif self._agent_running:
@@ -14797,7 +14869,10 @@ class DeepAgentsApp(App):
             _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
             _safe("Thread", lambda: self._lc_thread_id or "(none)"),
             _safe("CWD", lambda: self._cwd),
-            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe(
+                "Permissions",
+                lambda: "unrestricted" if self._auto_approve else "manual",
+            ),
             _safe("Sandbox", lambda: self._sandbox_type or "local"),
             _safe("MCP servers", _mcp),
             _safe("Tokens", _tokens),

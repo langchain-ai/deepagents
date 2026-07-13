@@ -252,6 +252,25 @@ class TestGoalCommand:
         assert "acceptance" in goal_cmd.hidden_keywords.split()
 
 
+class TestGoalAndRubricDescriptions:
+    """Validate the primary goal and rubric command copy and compatibility alias."""
+
+    def test_primary_descriptions_are_outcome_focused(self) -> None:
+        descriptions = {command.name: command.description for command in COMMANDS}
+
+        assert descriptions["/goal"] == (
+            "Turn an outcome into acceptance criteria and pursue it"
+        )
+        assert descriptions["/rubric"] == "Use acceptance criteria you already have"
+
+    def test_criteria_is_hidden_compatibility_alias(self) -> None:
+        rubric = next(command for command in COMMANDS if command.name == "/rubric")
+        visible = {entry.name for entry in SLASH_COMMANDS}
+
+        assert "/criteria" in rubric.aliases
+        assert "/criteria" not in visible
+
+
 class TestCopyCommand:
     """Validate the `/copy` entry specifically."""
 

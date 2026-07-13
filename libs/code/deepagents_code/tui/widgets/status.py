@@ -466,7 +466,7 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto")
+            indicator.update("unrestricted")
             indicator.add_class("on")
         else:
             indicator.update("manual")

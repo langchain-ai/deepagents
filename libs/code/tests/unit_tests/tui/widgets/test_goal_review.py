@@ -36,6 +36,26 @@ class TestGoalReviewMenu:
             assert "- tests pass" in markdown.source
             assert "Proposed criteria" in markdown.source
 
+    async def test_actions_explain_execution_and_feedback(self) -> None:
+        """Every review action should state its effect clearly."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            options = [
+                str(widget.content)
+                for widget in app.query(".goal-review-option").results(Static)
+            ]
+
+        assert any("Accept and run (y)" in option for option in options)
+        assert any(
+            "Accept and run automatically with unrestricted permissions (a)" in option
+            for option in options
+        )
+        assert any("Edit (e)" in option for option in options)
+        assert any("Reject with feedback (r)" in option for option in options)
+        assert any("Cancel (n)" in option for option in options)
+
     async def test_accept_resolves_accepted(self) -> None:
         """Accept should resolve with the accepted result."""
         app = _GoalReviewTestApp()
@@ -51,6 +71,22 @@ class TestGoalReviewMenu:
             menu.action_accept()
 
             assert await future == {"type": "accepted"}
+
+    async def test_accept_unrestricted_resolves_automatic_result(self) -> None:
+        """Automatic acceptance should return its distinct execution decision."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_accept_unrestricted()
+
+            assert await future == {"type": "accepted_unrestricted"}
 
     async def test_edit_prefills_and_submits_revised_criteria(self) -> None:
         """Edit should prefill generated criteria and submit revisions."""
@@ -118,6 +154,22 @@ class TestGoalReviewMenu:
 
             assert await future == {"type": "accepted"}
 
+    async def test_keypress_automatic_acceptance_resolves_distinct_result(self) -> None:
+        """The automatic quick-key should enable the unattended execution path."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("a")
+
+            assert await future == {"type": "accepted_unrestricted"}
+
     async def test_keypress_reject_enters_reject_mode(self) -> None:
         """The reject quick-key opens the feedback editor without resolving."""
         app = _GoalReviewTestApp()
@@ -170,7 +222,7 @@ class TestGoalReviewMenu:
             assert await future == {"type": "cancelled"}
 
     async def test_arrow_navigation_then_enter_selects_highlighted(self) -> None:
-        """Down+Enter dispatches `action_select` to the highlighted option (edit)."""
+        """Arrow navigation dispatches the highlighted edit action."""
         app = _GoalReviewTestApp()
 
         async with app.run_test() as pilot:
@@ -181,10 +233,10 @@ class TestGoalReviewMenu:
             )
             menu.set_future(future)
 
-            await pilot.press("down", "enter")
+            await pilot.press("down", "down", "enter")
 
             text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
-            assert menu._selected == 1
+            assert menu._selected == 2
             assert text_input.display is True
             assert future.done() is False
 

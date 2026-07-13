@@ -787,6 +787,19 @@ class TestHelpScreenDrift:
             "Add them to the Options section in ui.show_help()."
         )
 
+    def test_auto_approve_flag_is_described_as_unrestricted(self) -> None:
+        """Legacy flag spelling should use clear permission-mode display copy."""
+        help_buf = io.StringIO()
+        test_console = Console(file=help_buf, highlight=False, width=200)
+
+        with patch("deepagents_code.ui.console", test_console):
+            show_help()
+
+        help_text = help_buf.getvalue()
+        assert "--auto-approve" in help_text
+        assert "Unrestricted (auto)" in help_text
+        assert "Auto-approve all tool calls" not in help_text
+
     def test_threads_list_flags_appear_in_help(self) -> None:
         """Every `threads list`-specific --flag must appear in show_threads_list_help().
 

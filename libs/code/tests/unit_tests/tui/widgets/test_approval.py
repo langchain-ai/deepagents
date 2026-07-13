@@ -284,7 +284,22 @@ class TestGetCommandDisplayGuard:
 
 
 class TestOptionOrdering:
-    """Tests for the HITL option ordering: approve, auto-approve, reject."""
+    """Tests for the HITL option ordering and compatibility decisions."""
+
+    def test_unrestricted_option_uses_clear_user_facing_copy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The legacy auto decision should display as unrestricted permissions."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hi"}})
+        options = [MagicMock(), MagicMock(), MagicMock()]
+        monkeypatch.setattr(menu, "_option_widgets", options)
+
+        menu._update_options()
+
+        automatic = options[1].update.call_args.args[0]
+        assert "Use unrestricted permissions for this thread" in automatic
+        assert "Auto-approve" not in automatic
 
     @pytest.mark.parametrize(
         ("index", "expected_type"),

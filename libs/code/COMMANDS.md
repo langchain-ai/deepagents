@@ -23,7 +23,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
-| `/goal` |  | Set a persistent objective by drafting acceptance criteria |
+| `/goal` |  | Turn an outcome into acceptance criteria and pursue it |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |
@@ -34,7 +34,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
-| `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
+| `/rubric` | `/criteria` | Use acceptance criteria you already have |
 | `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
 | `/theme` |  | Change color theme |

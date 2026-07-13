@@ -23,10 +23,14 @@ from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 # Menu options in display order: (label, `action_*` suffix). The list index is
 # the cursor position, so labels and dispatch stay aligned from one source.
 _OPTIONS: tuple[tuple[str, str], ...] = (
-    ("1. Accept proposed criteria (y)", "accept"),
-    ("2. Edit criteria (e)", "edit"),
-    ("3. Reject with message (r)", "reject_with_message"),
-    ("4. Cancel (n)", "cancel"),
+    ("1. Accept and run (y)", "accept"),
+    (
+        "2. Accept and run automatically with unrestricted permissions (a)",
+        "accept_unrestricted",
+    ),
+    ("3. Edit (e)", "edit"),
+    ("4. Reject with feedback (r)", "reject_with_message"),
+    ("5. Cancel (n)", "cancel"),
 )
 
 
@@ -35,6 +39,13 @@ class GoalReviewAccepted(TypedDict):
 
     type: Literal["accepted"]
     """Discriminator tag for accepting generated criteria unchanged."""
+
+
+class GoalReviewAcceptedUnrestricted(TypedDict):
+    """Widget result when criteria are accepted with unrestricted execution."""
+
+    type: Literal["accepted_unrestricted"]
+    """Discriminator tag for accepting and enabling unrestricted execution."""
 
 
 class GoalReviewEdited(TypedDict):
@@ -65,7 +76,11 @@ class GoalReviewCancelled(TypedDict):
 
 
 GoalReviewResult = (
-    GoalReviewAccepted | GoalReviewEdited | GoalReviewRejected | GoalReviewCancelled
+    GoalReviewAccepted
+    | GoalReviewAcceptedUnrestricted
+    | GoalReviewEdited
+    | GoalReviewRejected
+    | GoalReviewCancelled
 )
 
 
@@ -102,11 +117,13 @@ class GoalReviewMenu(Container):
         Binding("enter", "select", "Select", show=False),
         Binding("1", "accept", "Accept", show=False),
         Binding("y", "accept", "Accept", show=False),
-        Binding("2", "edit", "Edit", show=False),
+        Binding("2", "accept_unrestricted", "Accept automatically", show=False),
+        Binding("a", "accept_unrestricted", "Accept automatically", show=False),
+        Binding("3", "edit", "Edit", show=False),
         Binding("e", "edit", "Edit", show=False),
-        Binding("3", "reject_with_message", "Reject with message", show=False),
-        Binding("r", "reject_with_message", "Reject with message", show=False),
-        Binding("4", "cancel", "Cancel", show=False),
+        Binding("4", "reject_with_message", "Reject with feedback", show=False),
+        Binding("r", "reject_with_message", "Reject with feedback", show=False),
+        Binding("5", "cancel", "Cancel", show=False),
         Binding("n", "cancel", "Cancel", show=False),
         Binding("escape", "cancel", "Cancel", show=False),
     ]
@@ -239,6 +256,12 @@ class GoalReviewMenu(Container):
         if self._input_mode is not None:
             return
         self._submit({"type": "accepted"})
+
+    def action_accept_unrestricted(self) -> None:
+        """Accept the criteria and request unrestricted execution."""
+        if self._input_mode is not None:
+            return
+        self._submit({"type": "accepted_unrestricted"})
 
     def action_edit(self) -> None:
         """Open the inline editor for revised criteria."""
@@ -376,6 +399,6 @@ class GoalReviewMenu(Container):
             return
         self._help_widget.update(
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/e/r/n quick keys {glyphs.bullet} "
+            f"Enter select {glyphs.bullet} y/a/e/r/n quick keys {glyphs.bullet} "
             "Esc cancel"
         )

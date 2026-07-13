@@ -13,6 +13,8 @@ from typing import Final
 DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
+DEFAULT_RUBRIC_MAX_ITERATIONS: Final[int] = 3
+
 FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
 """Prefix used to infer Fireworks from fully-qualified IDs."""
 

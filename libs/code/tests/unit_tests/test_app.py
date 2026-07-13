@@ -5521,7 +5521,8 @@ class TestGoalCommand:
 
         assert "Use /goal when you have a plain-language objective" in usage
         assert "draft a checklist and ask before applying it" in usage
-        assert "the goal stays active for this thread" in usage
+        assert "goal remains active across follow-up turns" in usage
+        assert "paused, replaced, or cleared" in usage
         assert "when you want dcode to propose" not in usage
 
     def test_goal_usage_text_mentions_grader_settings(self) -> None:
@@ -5628,8 +5629,23 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert (
-                "Grader: current chat model · max iterations: SDK default" in rendered
+                "Grader: current chat model · max iterations: 3 (default)" in rendered
             )
+
+    async def test_goal_show_uses_server_default_for_external_graph(self) -> None:
+        """External graphs should not be assigned the bundled SDK default."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "active"
+
+            with patch.object(app, "_remote_agent", return_value=object()):
+                await app._handle_command("/goal show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "max iterations: server default" in rendered
 
     async def test_goal_show_footer_lists_grader_aliases(self) -> None:
         """`/goal show` should advertise the grader-alias commands in its footer."""
@@ -6044,9 +6060,31 @@ class TestGoalCommand:
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == _rubric_status_label(
-                "checkmark", "Rubric set"
+                "checkmark", "Goal active"
             )
             handle.assert_awaited_once_with("add refresh tokens")
+
+    async def test_goal_accept_unrestricted_enables_mode_and_starts_work(self) -> None:
+        """Enable unrestricted mode and start work without leaving review."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            future = self._goal_review_future({"type": "accepted_unrestricted"})
+            enable = AsyncMock()
+            handle = AsyncMock()
+
+            with (
+                patch.object(app, "_on_auto_approve_enabled", enable),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await app._finish_pending_goal_rubric_review(future)
+
+            enable.assert_awaited_once()
+            handle.assert_awaited_once_with("add refresh tokens")
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- tests pass"
 
     async def test_goal_accept_persists_thread_metadata(self) -> None:
         """Accepted goals should be checkpointed on the current thread."""
@@ -6133,6 +6171,22 @@ class TestGoalCommand:
 
             handle.assert_awaited_once_with("add refresh tokens")
             assert app._initial_goal is None
+
+    async def test_goal_acceptance_shows_configured_iteration_limit(self) -> None:
+        """Starting goal execution should show the configured grading limit."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            app._rubric_max_iterations = 5
+
+            with patch.object(app, "_handle_user_message", AsyncMock()):
+                await app._accept_goal_rubric("- tests pass")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal accepted · grading iteration limit: 5" in rendered
 
     async def test_goal_review_accepts_revised_criteria(self) -> None:
         """The review widget's free-text answer should accept revised criteria."""
@@ -6439,10 +6493,13 @@ class TestGoalCommand:
                 await app._sync_goal_rubric_state_from_thread()
 
             fetch.assert_awaited_once_with("thread-1")
-            assert app._active_goal == "add refresh tokens"
-            assert app._goal_status == "complete"
-            assert app._goal_status_note == "tests pass"
-            assert app._active_rubric == "- tests pass"
+            assert app._active_goal is None
+            assert app._goal_status is None
+            assert app._goal_status_note is None
+            assert app._active_rubric is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked complete by the agent." in rendered
+            assert "tests pass" in rendered
 
     async def test_sync_goal_completion_auto_commits_after_rubric_satisfied(
         self,
@@ -6472,12 +6529,17 @@ class TestGoalCommand:
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
-            assert app._goal_status == "complete"
-            assert app._goal_status_note == "tests pass"
+            assert app._active_goal is None
+            assert app._goal_status is None
+            assert app._goal_status_note is None
+            assert app._active_rubric is None
             assert app._pending_goal_completion_note is None
             assert updater.aupdate_state.await_args is not None
             state_update = updater.aupdate_state.await_args.args[1]
-            assert state_update["_goal_status"] == "complete"
+            assert state_update["_goal_status"] is None
+            assert state_update["_goal_objective"] is None
+            assert state_update["_goal_rubric"] is None
+            assert state_update["rubric"] is None
             assert state_update["_pending_goal_completion_note"] is None
 
     async def test_sync_goal_completion_rejects_when_rubric_not_satisfied(
@@ -6513,6 +6575,58 @@ class TestGoalCommand:
             assert app._pending_goal_completion_note is None
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "rubric was not satisfied" in rendered
+
+    async def test_iteration_exhaustion_preserves_goal_and_shows_next_steps(
+        self,
+    ) -> None:
+        """Exhaustion should preserve the unmet goal and explain recovery paths."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass\n- docs updated"
+            app._rubric_max_iterations = 2
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- tests pass\n- docs updated",
+                    "_rubric_status": "max_iterations_reached",
+                    "_rubric_evaluations": [
+                        {
+                            "result": "max_iterations_reached",
+                            "criteria": [
+                                {
+                                    "name": "tests pass",
+                                    "passed": False,
+                                    "gap": "one test still fails",
+                                },
+                                {"name": "docs updated", "passed": True},
+                            ],
+                        }
+                    ],
+                }
+            )
+
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+                await pilot.pause()
+
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "active"
+            assert app._active_rubric == "- tests pass\n- docs updated"
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "Automatic iteration stopped because the grading iteration limit "
+                "was reached" in rendered
+            )
+            assert "Remaining unmet criteria:" in rendered
+            assert "tests pass: one test still fails" in rendered
+            assert "retry or resume" in rendered
+            assert "/goal <revised objective>" in rendered
+            assert "/goal clear" in rendered
 
     async def test_sync_goal_completion_requests_manual_approval(
         self,
@@ -6553,7 +6667,9 @@ class TestGoalCommand:
             action_requests = request_approval.await_args.args[0]
             assert action_requests[0]["name"] == "update_goal"
             assert action_requests[0]["args"]["status"] == "complete"
-            assert app._goal_status == "complete"
+            assert app._active_goal is None
+            assert app._goal_status is None
+            assert app._active_rubric is None
             assert app._pending_goal_completion_note is None
 
     async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
@@ -6698,10 +6814,8 @@ class TestGoalCommand:
             assert "Goal:\nmake the app start faster" in rendered
             assert "Status:\nactive" in rendered
             assert "Criteria:\n- measure baseline\n- improve startup" in rendered
-            assert "Goal is active for this thread until completed" in rendered
-            assert (
-                "Follow-up prompts will continue working toward this goal." in rendered
-            )
+            assert "Goal remains active across follow-up turns" in rendered
+            assert "paused, replaced, or cleared" in rendered
             assert "Commands:\n/goal clear\n/goal show" in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
@@ -6811,6 +6925,46 @@ class TestGoalCommand:
                 str(w._content) == "Goal cleared." for w in app.query(AppMessage)
             )
 
+    async def test_goal_clear_without_active_goal_reports_noop(self) -> None:
+        """`/goal clear` should report when there is no goal and preserve rubrics."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_rubric = "- standalone rubric"
+
+            await app._handle_command("/goal clear")
+            await pilot.pause()
+
+            assert app._active_rubric == "- standalone rubric"
+            assert any(
+                str(widget._content) == "No active goal to clear."
+                for widget in app.query(AppMessage)
+            )
+
+    async def test_goal_clear_removes_orphaned_metadata_and_preserves_rubric(
+        self,
+    ) -> None:
+        """Orphaned goal fields should remain clearable without deleting a rubric."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_rubric = "- standalone rubric"
+            app._goal_status = "blocked"
+            app._goal_status_note = "orphaned note"
+            app._pending_goal_completion_note = "orphaned completion"
+
+            await app._handle_command("/goal clear")
+            await pilot.pause()
+
+            assert app._active_rubric == "- standalone rubric"
+            assert app._goal_status is None
+            assert app._goal_status_note is None
+            assert app._pending_goal_completion_note is None
+            assert any(
+                str(widget._content) == "Goal cleared."
+                for widget in app.query(AppMessage)
+            )
+
     @pytest.mark.parametrize("verb", ["show", "status", "accept", "edit", "clear"])
     async def test_goal_reserved_word_objective_drafts_goal(self, verb: str) -> None:
         """Reserved words only act as `/goal` subcommands when used alone."""
@@ -6867,7 +7021,7 @@ class TestGoalCommand:
             # does not render the accepted criteria as an error body.
             assert app._active_goal == "add refresh tokens"
             assert any(
-                "Goal accepted. It will stay active for this thread" in str(w._content)
+                "Goal accepted · grading iteration limit: 3" in str(w._content)
                 for w in app.query(AppMessage)
             )
             assert any(
@@ -7108,6 +7262,24 @@ class TestRubricCommand:
             assert mock_execute.await_args.kwargs["rubric"] == "tests pass"
             assert app._active_rubric == "tests pass"
 
+    async def test_completed_goal_rubric_is_not_applied_to_later_turn(self) -> None:
+        """Completed criteria must not grade an unrelated follow-up turn."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "completed goal"
+            app._active_rubric = "old criteria"
+            app._goal_status = "complete"
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("unrelated follow-up")
+
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["rubric"] is None
+
     async def test_blocked_goal_resets_to_active_before_user_turn(self) -> None:
         """A user response should retry a blocked goal instead of stale state."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -7147,7 +7319,7 @@ class TestRubricCommand:
             assert app._goal_status == "active"
             assert app._goal_status_note is None
             assert app._status_bar.rubric_label == _rubric_status_label(
-                "checkmark", "Rubric set"
+                "checkmark", "Goal active"
             )
 
     async def test_blocked_goal_reset_is_persisted_before_user_turn(self) -> None:
@@ -7191,8 +7363,10 @@ class TestRubricCommand:
                 },
             )
 
-    async def test_active_goal_is_not_reset_and_sends_no_retry_context(self) -> None:
-        """A non-blocked goal turn must not flip state or inject retry context."""
+    async def test_active_goal_persists_without_repetitive_transcript_notice(
+        self,
+    ) -> None:
+        """Keep follow-up goal visibility out of the transcript."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7200,6 +7374,7 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "active"
             app._goal_status_note = None
+            app._sync_status_rubric()
             started = asyncio.Event()
 
             def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
@@ -7216,11 +7391,16 @@ class TestRubricCommand:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["user_input"] == "keep going"
             assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
-            assert any(
-                str(w._content) == "Continuing active goal: add refresh tokens"
+            assert mock_execute.await_args.kwargs["rubric"] == "tests pass"
+            assert not any(
+                str(w._content).startswith("Continuing active goal")
                 for w in app.query(AppMessage)
             )
             assert app._goal_status == "active"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Goal active"
+            )
 
     async def test_resume_notice_wording_when_goal_was_blocked(self) -> None:
         """Resuming a blocked goal announces a resume, not a plain continue.
@@ -7834,8 +8014,8 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Rubric max iterations: 7" in rendered
 
-    async def test_rubric_state_reports_sdk_default_when_cap_unset(self) -> None:
-        """`/rubric show` labels an unset cap as the SDK default."""
+    async def test_rubric_state_reports_default_limit_when_cap_unset(self) -> None:
+        """`/rubric show` exposes the default iteration limit."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7845,7 +8025,7 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations: SDK default" in rendered
+            assert "Rubric max iterations: 3 (default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
         """External graph sessions cannot change construction-time rubric caps."""
@@ -19461,8 +19641,7 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.auto_approve is True
         force.assert_not_called()
         notify.assert_called_once()
-        # Toggling on emits the auto-approve warning, not the manual one.
-        assert "Auto-approve could not sync" in notify.call_args.args[0]
+        assert "Unrestricted permissions could not sync" in notify.call_args.args[0]
 
     async def test_auto_approve_all_failed_write_warns(self) -> None:
         app = DeepAgentsApp(auto_approve=False)

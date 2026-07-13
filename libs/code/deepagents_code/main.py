@@ -1717,14 +1717,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=None,
         help=(
-            "Interactive mode only: auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell execution, file "
+            "Interactive mode only: Unrestricted (auto) runs all tool calls without "
+            "prompting. Affected tools: shell execution, file "
             "writes/edits, web search, and URL fetch. Headless mode approves "
             "non-shell tools; shell is disabled unless allowed via "
             "--shell-allow-list. "
             "Use with caution — the agent can execute arbitrary commands. When "
             "omitted, the launch default comes from [startup].mode in "
-            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
+            "~/.deepagents/config.toml ('manual' or legacy 'dangerously-auto', "
+            "which enables unrestricted permissions)."
         ),
     )
 

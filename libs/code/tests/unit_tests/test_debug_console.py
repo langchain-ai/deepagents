@@ -830,7 +830,7 @@ class TestDebugConsoleToggle:
             assert snapshot["Thread"] == "thread-xyz"
             assert snapshot["CWD"] == "/tmp/work"
             assert "Version" in snapshot
-            assert "Auto-approve" in snapshot
+            assert snapshot["Permissions"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
     async def test_build_snapshot_formats_mcp_servers(self) -> None:

@@ -272,19 +272,95 @@ def _fake_request(
     system_message: SystemMessage | None,
     *,
     context: object | None = None,
+    state: dict[str, object] | None = None,
+    tools: list[object] | None = None,
 ) -> SimpleNamespace:
     """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
-    return SimpleNamespace(
-        system_message=system_message,
-        runtime=SimpleNamespace(context=context or {}),
-        override=lambda **kw: SimpleNamespace(**kw),
+    values = {
+        "system_message": system_message,
+        "runtime": SimpleNamespace(context=context or {}),
+        "state": state or {},
+        "tools": tools or [],
+    }
+
+    def override(**updates: object) -> SimpleNamespace:
+        return SimpleNamespace(**(values | updates))
+
+    return SimpleNamespace(**values, override=override)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {},
+        {
+            "_goal_objective": "finished",
+            "_goal_status": "complete",
+            "_goal_rubric": "tests pass",
+        },
+    ],
+)
+def test_wrap_model_call_removes_goal_tools_without_active_context(
+    state: dict[str, object],
+) -> None:
+    """Inactive and completed goal state should not influence ordinary turns."""
+    middleware = GoalToolsMiddleware()
+    captured: dict[str, SimpleNamespace] = {}
+    execute = SimpleNamespace(name="execute")
+    request = _fake_request(
+        SystemMessage(content="base instructions"),
+        state=state,
+        tools=[execute, *middleware.tools],
     )
+
+    middleware.wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    forwarded = captured["request"]
+    assert forwarded.system_message.content == "base instructions"
+    assert [tool.name for tool in forwarded.tools] == ["execute"]
+
+
+def test_wrap_model_call_preserves_goal_tools_for_standalone_rubric() -> None:
+    """A standalone rubric should retain goal-tool access and guidance."""
+    middleware = GoalToolsMiddleware()
+    captured: dict[str, SimpleNamespace] = {}
+    request = _fake_request(
+        None,
+        state={"_sticky_rubric": "tests pass"},
+        tools=list(middleware.tools),
+    )
+
+    middleware.wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    forwarded = captured["request"]
+    assert [tool.name for tool in forwarded.tools] == [
+        "get_rubric",
+        "get_goal",
+        "update_goal",
+    ]
+    assert GOAL_TOOLS_SYSTEM_PROMPT in forwarded.system_message.content[0]["text"]
+
+
+def test_goal_tool_prompt_forbids_calls_without_session_context() -> None:
+    """The model instructions should state the inactive-tool precondition."""
+    prompt = GOAL_TOOLS_SYSTEM_PROMPT.replace("\n", " ")
+    assert "when a goal or rubric was set earlier" in prompt
+    assert "If neither is active, do not call these tools" in prompt
 
 
 def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
     """Guidance should append to an existing system message's blocks."""
     captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(SystemMessage(content="base instructions"))
+    request = _fake_request(
+        SystemMessage(content="base instructions"),
+        state={"_goal_objective": "ship it", "_goal_status": "active"},
+    )
 
     result = GoalToolsMiddleware().wrap_model_call(
         request,  # ty: ignore[invalid-argument-type]
@@ -302,7 +378,7 @@ def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
 def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
     """Guidance should seed a fresh system message when none exists."""
     captured: dict[str, SimpleNamespace] = {}
-    request = _fake_request(None)
+    request = _fake_request(None, state={"_sticky_rubric": "tests pass"})
 
     GoalToolsMiddleware().wrap_model_call(
         request,  # ty: ignore[invalid-argument-type]
@@ -319,6 +395,7 @@ def test_wrap_model_call_appends_blocked_goal_retry_context() -> None:
     request = _fake_request(
         None,
         context={"blocked_goal_retry_context": "<dcode_blocked_goal_retry_context />"},
+        state={"_goal_objective": "ship it", "_goal_status": "blocked"},
     )
 
     GoalToolsMiddleware().wrap_model_call(
@@ -340,7 +417,10 @@ async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:
         captured["request"] = request
         return "response"
 
-    request = _fake_request(SystemMessage(content="base instructions"))
+    request = _fake_request(
+        SystemMessage(content="base instructions"),
+        state={"_goal_objective": "ship it", "_goal_status": "active"},
+    )
 
     result = await GoalToolsMiddleware().awrap_model_call(
         request,  # ty: ignore[invalid-argument-type]

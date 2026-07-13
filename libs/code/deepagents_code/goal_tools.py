@@ -43,10 +43,12 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
+Only call `get_goal`, `get_rubric`, or `update_goal` when a goal or rubric was set
+earlier in this session. If neither is active, do not call these tools.
 Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
-complete.
-When a goal is active, use `get_goal` to inspect the objective and current status.
-Use `update_goal` only when you have evidence that the goal is complete or blocked."""
+complete. When a goal is active, use `get_goal` to inspect the objective and current
+status. Use `update_goal` only when you have evidence that the goal is complete or
+blocked."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
@@ -219,6 +221,34 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     }
 
 
+_GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric", "update_goal"})
+
+
+def _has_active_goal_or_rubric(state: dict[str, Any]) -> bool:
+    """Return whether goal tools are relevant to the current request."""
+    goal = _goal_snapshot(state)
+    if goal["active"]:
+        return True
+    rubric = _rubric_snapshot(state)
+    return rubric["active"] and rubric["source"] != "goal"
+
+
+def _request_tool_name(value: object) -> str | None:
+    """Return a model-request tool name from supported tool representations."""
+    if isinstance(value, dict):
+        name = value.get("name")
+        if isinstance(name, str):
+            return name
+        function = value.get("function")
+        if isinstance(function, dict):
+            function_name = function.get("name")
+            if isinstance(function_name, str):
+                return function_name
+        return None
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else None
+
+
 def _update_goal_command(
     *,
     status: Literal["complete", "blocked"],
@@ -386,11 +416,21 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def _request_with_goal_system_context(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Inject goal guidance and any one-turn retry context.
+        """Expose goal tools and guidance only when goal context is active.
 
         Returns:
-            Model request with goal context appended to the system prompt.
+            Model request with goal context appended, or with goal tools removed
+            when no goal or rubric is active.
         """
+        state = cast("dict[str, Any]", request.state or {})
+        if not _has_active_goal_or_rubric(state):
+            tools = [
+                value
+                for value in request.tools
+                if _request_tool_name(value) not in _GOAL_TOOL_NAMES
+            ]
+            return request.override(tools=tools)
+
         retry_context = _runtime_blocked_goal_retry_context(request.runtime.context)
         prompt_parts = [GOAL_TOOLS_SYSTEM_PROMPT]
         if retry_context is not None:

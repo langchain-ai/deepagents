@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import fnmatch
+import functools
 import json
 import logging
 import re
@@ -18,10 +19,12 @@ import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
+
+from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -31,6 +34,8 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -109,13 +114,24 @@ class MCPServerInfo:
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
 
+    pending_reconnect: bool = False
+    """`True` for a disabled entry that was just re-enabled in the TUI and is
+    awaiting a reconnect to load its tools.
+
+    Lets `/tools` (`tool_catalog.split_mcp_server_info`) preserve the reconnect
+    guidance held in `error` instead of collapsing it to the generic "disabled
+    by user" label — an explicit flag rather than a fragile match on the
+    guidance text. Only meaningful while `status == "disabled"`.
+    """
+
     def __post_init__(self) -> None:
         """Enforce the status/error/tools consistency invariant.
 
         Raises:
             ValueError: If any of: `status='ok'` with a non-`None` error;
                 non-`ok` status without an error message; non-`ok` status
-                carrying tools.
+                carrying tools; or `pending_reconnect` set without
+                `status='disabled'`.
         """
         if self.status == "ok":
             if self.error is not None:
@@ -137,6 +153,12 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = (
+                f"MCPServerInfo {self.name!r}: pending_reconnect requires "
+                f"status='disabled' (got {self.status!r})"
+            )
+            raise ValueError(msg)
 
     def needs_attention(self) -> bool:
         """Return whether this server is blocked on user login."""
@@ -450,7 +472,7 @@ def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
     """Validate a single server configuration.
 
-    Performs only shape checks — `${VAR}` header interpolation is deferred
+    Performs only shape checks — `${VAR}` config interpolation is deferred
     to activation time so one unset env var only fails its own server
     rather than hiding every other MCP entry in the same file.
 
@@ -829,7 +851,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` header interpolation is deferred to activation time, so no RuntimeError here)
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` config interpolation is deferred to activation time, so no RuntimeError here)
     config = _load_mcp_config_top_level(Path(config_path))
     _validate_mcp_config_servers(config)
 
@@ -1089,7 +1111,7 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
     if shutil.which(command) is None:
         msg = (
-            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            f"MCP server '{server_name}': configured command not found on PATH. "
             "Install it or check your MCP config."
         )
         raise RuntimeError(msg)
@@ -1115,17 +1137,47 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.head(url)
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
+        # Name the failure *class* (e.g. `ConnectTimeout`, `InvalidURL`) so the
+        # failure mode stays diagnosable, but keep the URL redacted: `str(exc)`
+        # echoes the URL (which may carry `${VAR}`-injected credentials), while
+        # the class name never does.
         msg = (
-            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            f"MCP server '{server_name}': configured URL is unreachable "
+            f"({type(exc).__name__}). "
             "Check that the URL is correct and the server is running."
         )
         raise RuntimeError(msg) from exc
     if response.status_code >= 500:  # noqa: PLR2004  # HTTP server-error band
         msg = (
-            f"MCP server '{server_name}': {url} returned HTTP "
+            f"MCP server '{server_name}': configured URL returned HTTP "
             f"{response.status_code}. Server may be down; retry later."
         )
         raise RuntimeError(msg)
+
+
+def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
+    """Return whether a supported config value contains an env reference.
+
+    Exceptions raised after interpolation may include resolved connection
+    values in their messages or traceback. Treat every environment-derived
+    value as potentially sensitive so those failures can be reported without
+    exposing the resolved value.
+
+    Args:
+        server_config: Raw, unresolved MCP server configuration.
+
+    Returns:
+        Whether a supported value contains a `${...}` reference.
+    """
+    scalar_values = [server_config.get("command"), server_config.get("url")]
+    sequence_values = server_config.get("args")
+    if isinstance(sequence_values, list):
+        scalar_values.extend(sequence_values)
+    for field in ("env", "headers"):
+        mapping = server_config.get(field)
+        if isinstance(mapping, dict):
+            scalar_values.extend(mapping.values())
+    return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
 async def _discover_tools(session: ClientSession) -> list[Any]:
@@ -1474,6 +1526,84 @@ def _apply_tool_filter(
     return [t for t in tools if not _any_entry_matches(t.name, entries)]
 
 
+_MCP_LOAD_CONCURRENCY = 8
+"""Upper bound on MCP servers preflighted/discovered concurrently.
+
+Independent servers are probed in parallel so graph load no longer scales
+linearly with server count, but the fan-out is capped so a large config cannot
+spawn an unbounded number of simultaneous socket/subprocess handshakes (or
+`asyncio.to_thread` `shutil.which` workers).
+"""
+
+
+def _warm_mcp_adapter_imports() -> None:
+    """Eagerly import MCP adapter modules whose first import may block.
+
+    Run via `asyncio.to_thread` before adapter symbols are used, so the initial
+    (potentially blocking) package-resource scan stays off the server event
+    loop. Because this runs inside `_load_tools_from_config`, it happens only
+    when at least one active MCP server exists — a config with no MCP servers
+    never imports the adapters.
+    """
+    from langchain_mcp_adapters import (
+        sessions as _sessions,  # noqa: F401
+        tools as _tools,  # noqa: F401
+    )
+
+
+async def _gather_bounded(
+    factories: Sequence[Callable[[], Awaitable[_T]]],
+    *,
+    limit: int,
+) -> list[_T]:
+    """Await coroutine factories with bounded concurrency, preserving order.
+
+    Results are returned in submission order (not completion order), so callers
+    can zip them back against their inputs to keep deterministic ordering. If a
+    factory raises (including a cancellation/shutdown signal), the remaining
+    tasks are cancelled and awaited before the exception propagates, so no
+    background work is left running.
+
+    `asyncio.gather` propagates only the *first* task to finish with an
+    exception; when several tasks fail concurrently the rest are cancelled
+    during teardown and their exceptions would otherwise be discarded silently.
+    To keep concurrent failures debuggable, each dropped (non-cancellation)
+    sibling exception is logged at debug level before the first one propagates.
+
+    Args:
+        factories: Zero-arg callables each returning an awaitable to run.
+        limit: Maximum number of awaitables in flight at once. Values below 1
+            are clamped to 1.
+
+    Returns:
+        The awaited results in the same order as `factories`.
+    """
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def _run(factory: Callable[[], Awaitable[_T]]) -> _T:
+        async with semaphore:
+            return await factory()
+
+    tasks = [asyncio.create_task(_run(factory)) for factory in factories]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.debug(
+                    "MCP concurrent load: a sibling task failed while another "
+                    "failure was already propagating; logging the dropped "
+                    "exception for debugging",
+                    exc_info=result,
+                )
+        raise
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
     *,
@@ -1504,7 +1634,11 @@ async def _load_tools_from_config(
     Raises:
         RuntimeError: If `session_manager` is reconfigured incompatibly with
             sessions already active on it.
-    """  # noqa: DOC501, DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`; `KeyboardInterrupt` / `SystemExit` / `CancelledError` are re-raised pass-throughs
+    """  # noqa: DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`
+    # Warm the adapter imports off the event loop *here* (rather than in the
+    # caller) so a config with no active MCP servers — which returns before
+    # ever reaching this function — never pays the adapter-import cost.
+    await asyncio.to_thread(_warm_mcp_adapter_imports)
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StdioConnection,
@@ -1513,28 +1647,60 @@ async def _load_tools_from_config(
     )
     from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
-    skipped: dict[str, tuple[MCPServerStatus, str]] = {}
+    server_items = list(config["mcpServers"].items())
+    # Resolve each server's transport once, up front. `_resolve_server_type` is
+    # pure, so this is a readability/DRY win over recomputing it in preflight,
+    # discovery, and the final fold-in loop below.
+    transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
 
-    for server_name, server_config in config["mcpServers"].items():
-        server_type = _resolve_server_type(server_config)
+    async def _preflight_and_connect(
+        server_name: str,
+        server_config: dict[str, Any],
+    ) -> tuple[MCPServerStatus, str] | Connection:
+        """Preflight one server and build its connection config.
+
+        Per-server preflight/config failures are captured here so one bad
+        server never aborts loading the others.
+
+        Returns:
+            A `(status, error)` tuple when the server must be skipped, or a
+            ready `Connection` otherwise.
+        """
+        server_type = transports[server_name]
+        # Capture this from the *raw* config, before resolution below rebinds
+        # `server_config` to the expanded copy. Once `${...}` refs are expanded,
+        # a downstream setup error may echo the resolved (secret-bearing) value,
+        # so those messages are redacted; plain configs keep full detail.
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+        # Config env-var resolution is the only step that raises `TypeError`
+        # (non-string field). Keep it in its own `try` so an unexpected
+        # `TypeError` from the connectivity checks below — whose contract is
+        # `RuntimeError` only — surfaces as a real bug instead of being
+        # relabeled as a per-server config skip.
+        try:
+            server_config = resolve_mcp_server_env(server_name, server_config)
+        except (RuntimeError, TypeError) as exc:
+            logger.warning(
+                "MCP server '%s' skipped: config error: %s",
+                server_name,
+                exc,
+            )
+            return ("error", str(exc))
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
             elif server_type == "stdio":
-                _check_stdio_server(server_name, server_config)
+                # `shutil.which` makes blocking `os.access` calls; run it
+                # off the event loop so blockbuster doesn't reject it.
+                await asyncio.to_thread(_check_stdio_server, server_name, server_config)
         except RuntimeError as exc:
             logger.warning(
                 "MCP server '%s' skipped: pre-flight failed: %s",
                 server_name,
                 exc,
             )
-            skipped[server_name] = ("error", str(exc))
+            return ("error", str(exc))
 
-    connections: dict[str, Connection] = {}
-    for server_name, server_config in config["mcpServers"].items():
-        if server_name in skipped:
-            continue
-        server_type = _resolve_server_type(server_config)
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 if server_type == "http":
@@ -1549,12 +1715,7 @@ async def _load_tools_from_config(
                     )
 
                 if "headers" in server_config:
-                    from deepagents_code.mcp_auth import resolve_headers
-
-                    conn["headers"] = resolve_headers(
-                        server_config["headers"],
-                        server_name=server_name,
-                    )
+                    conn["headers"] = server_config["headers"]
 
                 from deepagents_code.mcp_auth import (
                     FileTokenStorage,
@@ -1580,8 +1741,7 @@ async def _load_tools_from_config(
                         "MCP server '%s' skipped: not authenticated.",
                         server_name,
                     )
-                    skipped[server_name] = ("unauthenticated", auth_msg)
-                    continue
+                    return ("unauthenticated", auth_msg)
 
                 if explicit_oauth or (
                     stored_tokens is not None and not has_authorization_header
@@ -1597,21 +1757,55 @@ async def _load_tools_from_config(
                         interactive=False,
                     )
 
-                connections[server_name] = conn
-            else:
-                connections[server_name] = StdioConnection(
-                    command=server_config["command"],
-                    args=server_config.get("args", []),
-                    env=server_config.get("env") or None,
-                    transport="stdio",
-                )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            logger.warning(
-                "MCP server '%s' skipped: config/setup failed: %s",
-                server_name,
-                exc,
+                return conn
+            return StdioConnection(
+                command=server_config["command"],
+                args=server_config.get("args", []),
+                env=server_config.get("env") or None,
+                transport="stdio",
             )
-            skipped[server_name] = ("error", str(exc))
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if redact_failure_details:
+                error = (
+                    f"MCP server {server_name!r}: setup failed after "
+                    "resolving environment variables."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed (%s; details "
+                    "redacted because config uses environment interpolation)",
+                    server_name,
+                    exc.__class__.__name__,
+                )
+            else:
+                error = str(exc)
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed",
+                    server_name,
+                    exc_info=exc,
+                )
+            return ("error", error)
+
+    # Preflight + connection build runs concurrently across servers (bounded).
+    # Results come back in submission order, so `skipped`/`connections` are
+    # assembled in config order and stay deterministic regardless of which
+    # server's probe finished first.
+    preflight_results = await _gather_bounded(
+        [
+            functools.partial(_preflight_and_connect, name, cfg)
+            for name, cfg in server_items
+        ],
+        limit=_MCP_LOAD_CONCURRENCY,
+    )
+
+    skipped: dict[str, tuple[MCPServerStatus, str]] = {}
+    connections: dict[str, Connection] = {}
+    for (server_name, _server_config), result in zip(
+        server_items, preflight_results, strict=True
+    ):
+        if isinstance(result, tuple):
+            skipped[server_name] = result
+        else:
+            connections[server_name] = result
 
     runtime_manager: MCPSessionManager | None = session_manager
     if runtime_manager is not None:
@@ -1619,22 +1813,41 @@ async def _load_tools_from_config(
     elif not stateless:
         runtime_manager = MCPSessionManager(connections=connections)
 
-    all_tools: list[BaseTool] = []
-    server_infos: list[MCPServerInfo] = []
+    async def _discover_server(
+        server_name: str,
+        server_config: dict[str, Any],
+        transport: str,
+    ) -> tuple[list[BaseTool], MCPServerInfo]:
+        """Discover one server's tools and build its `MCPServerInfo`.
 
-    for server_name, server_config in config["mcpServers"].items():
-        transport = _resolve_server_type(server_config)
-        if server_name in skipped:
-            status, error = skipped[server_name]
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=transport,
-                    status=status,
-                    error=error,
-                ),
-            )
-            continue
+        Both discovery failures (classified as auth vs. generic error) and
+        post-discovery tool-construction failures are captured as a non-`ok`
+        `MCPServerInfo` with no tools, so a single failing server never aborts
+        the load for the others. Cancellation/shutdown signals are re-raised so
+        the bounded runner can tear the whole load down.
+
+        Returns:
+            The server's LangChain tools plus its `MCPServerInfo` entry.
+        """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+
+        def _log_caught_exception(
+            level: int,
+            message: str,
+            caught: BaseException,
+        ) -> None:
+            """Log a caught exception without exposing resolved config values."""
+            if redact_failure_details:
+                rendered_message = message % server_name
+                logger.log(
+                    level,
+                    "%s (%s; details redacted because config uses environment "
+                    "interpolation)",
+                    rendered_message,
+                    caught.__class__.__name__,
+                )
+            else:
+                logger.log(level, message, server_name, exc_info=caught)
 
         try:
             async with create_session(connections[server_name]) as discover_session:
@@ -1642,7 +1855,7 @@ async def _load_tools_from_config(
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate third-party discovery failures per server
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
@@ -1656,17 +1869,17 @@ async def _load_tools_from_config(
                     if transport in _SUPPORTED_REMOTE_TYPES
                     else None
                 )
-            except Exception:
+            except Exception as classify_exc:  # noqa: BLE001 - classification must not abort other servers
                 # Classifying the failure is best-effort. If a classifier
                 # itself raises, degrade this one server to a plain error
                 # rather than letting the exception abort tool loading for
                 # every remaining server.
                 reauth = None
                 challenge_url = None
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s': failed to classify discovery error",
-                    server_name,
-                    exc_info=True,
+                    classify_exc,
                 )
 
             if reauth is not None:
@@ -1676,19 +1889,21 @@ async def _load_tools_from_config(
                 # re-login, and keep the original exception only in debug logs
                 # so expected re-auth skips don't flood non-interactive output.
                 status = "unauthenticated"
-                error = (
-                    f"{reauth} "
-                    "(token refresh failed; the original error is in debug logs)"
+                detail = (
+                    "details redacted because config uses environment interpolation"
+                    if redact_failure_details
+                    else "the original error is in debug logs"
                 )
+                error = f"{reauth} (token refresh failed; {detail})"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
@@ -1706,106 +1921,180 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             else:
                 status = "error"
-                error = str(exc)
-                logger.warning(
-                    "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                error = (
+                    (
+                        f"MCP server {server_name!r}: tool discovery failed "
+                        "after resolving environment variables."
+                    )
+                    if redact_failure_details
+                    else str(exc)
                 )
+                _log_caught_exception(
+                    logging.WARNING,
+                    "MCP server '%s' skipped: tool discovery failed",
+                    exc,
+                )
+            return [], MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                status=status,
+                error=error,
+            )
+
+        # Tool construction and filtering run after the discovery session has
+        # closed and can still fail (schema conversion, custom tool filters).
+        # Isolate them too so a construction error degrades this one server to
+        # an error entry instead of aborting the whole concurrent load — the
+        # same guarantee the discovery `try` above provides. Cancellation and
+        # shutdown signals still propagate so the bounded runner can tear down.
+        try:
+            if runtime_manager is None:
+                server_tools: list[BaseTool] = [
+                    convert_mcp_tool_to_langchain_tool(
+                        None,
+                        mcp_tool,
+                        connection=connections[server_name],
+                        server_name=server_name,
+                        tool_name_prefix=True,
+                    )
+                    for mcp_tool in mcp_tools
+                ]
+            else:
+                server_tools = [
+                    _build_cached_mcp_tool(
+                        mcp_tool=mcp_tool,
+                        server_name=server_name,
+                        session_manager=runtime_manager,
+                        tool_name_prefix=True,
+                    )
+                    for mcp_tool in mcp_tools
+                ]
+
+            server_tools = _apply_tool_filter(server_tools, server_name, server_config)
+
+            # Pair each tool's input_schema by its LangChain (server-prefixed)
+            # name — the same form `server_tools` carries — so the lookup needs
+            # no string surgery and stays correct if `tool_name_prefix` ever
+            # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
+            # but Python's `frozen=True` does not freeze nested mutables; a
+            # shared reference would let one holder mutate every other's view.
+            schemas: dict[str, dict[str, Any] | None] = {}
+            for mcp_tool in mcp_tools:
+                tool_name = getattr(mcp_tool, "name", "")
+                try:
+                    raw_schema = getattr(mcp_tool, "inputSchema", None)
+                    schema_copy = (
+                        copy.deepcopy(raw_schema) if raw_schema is not None else None
+                    )
+                except (AttributeError, TypeError, RecursionError) as exc:
+                    logger.warning(
+                        "MCP tool %r on server %r: inputSchema access raised "
+                        "%s: %s; rendering with no parameters",
+                        tool_name,
+                        server_name,
+                        exc.__class__.__name__,
+                        exc,
+                    )
+                    schema_copy = None
+                lc_name = f"{server_name}_{tool_name}"
+                schemas[lc_name] = schema_copy
+
+            tool_infos: list[MCPToolInfo] = []
+            for tool in server_tools:
+                schema = schemas.get(tool.name)
+                if schema is None and schemas:
+                    logger.debug(
+                        "MCP tool %r on server %r: no schema matched in lookup "
+                        "(available keys: %s); rendering with no parameters",
+                        tool.name,
+                        server_name,
+                        list(schemas.keys())[:5],
+                    )
+                tool_infos.append(
+                    MCPToolInfo(
+                        name=tool.name,
+                        description=tool.description or "",
+                        input_schema=schema,
+                    ),
+                )
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 - isolate third-party tool conversion failures per server
+            error = (
+                (
+                    f"MCP server {server_name!r}: tool construction failed "
+                    "after resolving environment variables."
+                )
+                if redact_failure_details
+                else str(exc)
+            )
+            _log_caught_exception(
+                logging.WARNING,
+                "MCP server '%s' skipped: tool construction failed",
+                exc,
+            )
+            return [], MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                status="error",
+                error=error,
+            )
+
+        return server_tools, MCPServerInfo(
+            name=server_name,
+            transport=transport,
+            tools=tuple(tool_infos),
+        )
+
+    # Discovery also runs concurrently (bounded) across the servers that
+    # survived preflight. Because `_gather_bounded` returns results in
+    # submission order and skipped servers are folded back in below by
+    # iterating `server_items` in config order, `server_infos` stays in config
+    # order and the returned tools stay sorted by tool name — regardless of
+    # which server's probe finished first.
+    discover_items = [
+        (server_name, server_config, transports[server_name])
+        for server_name, server_config in server_items
+        if server_name not in skipped
+    ]
+    discovery_results = await _gather_bounded(
+        [
+            functools.partial(_discover_server, name, cfg, transport)
+            for name, cfg, transport in discover_items
+        ],
+        limit=_MCP_LOAD_CONCURRENCY,
+    )
+    discovered: dict[str, tuple[list[BaseTool], MCPServerInfo]] = {
+        server_name: result
+        for (server_name, _cfg, _transport), result in zip(
+            discover_items, discovery_results, strict=True
+        )
+    }
+
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
+    for server_name, _server_config in server_items:
+        if server_name in skipped:
+            status, error = skipped[server_name]
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
-                    transport=transport,
+                    transport=transports[server_name],
                     status=status,
                     error=error,
                 ),
             )
             continue
-
-        if runtime_manager is None:
-            server_tools = [
-                convert_mcp_tool_to_langchain_tool(
-                    None,
-                    mcp_tool,
-                    connection=connections[server_name],
-                    server_name=server_name,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
-        else:
-            server_tools = [
-                _build_cached_mcp_tool(
-                    mcp_tool=mcp_tool,
-                    server_name=server_name,
-                    session_manager=runtime_manager,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
-
-        server_tools = _apply_tool_filter(server_tools, server_name, server_config)
+        server_tools, server_info = discovered[server_name]
         all_tools.extend(server_tools)
-
-        # Pair each tool's input_schema by its LangChain (server-prefixed)
-        # name — the same form `server_tools` carries — so the lookup needs
-        # no string surgery and stays correct if `tool_name_prefix` ever
-        # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
-        # but Python's `frozen=True` does not freeze nested mutables; a
-        # shared reference would let one holder mutate every other's view.
-        schemas: dict[str, dict[str, Any] | None] = {}
-        for mcp_tool in mcp_tools:
-            tool_name = getattr(mcp_tool, "name", "")
-            try:
-                raw_schema = getattr(mcp_tool, "inputSchema", None)
-                schema_copy = (
-                    copy.deepcopy(raw_schema) if raw_schema is not None else None
-                )
-            except (AttributeError, TypeError, RecursionError) as exc:
-                logger.warning(
-                    "MCP tool %r on server %r: inputSchema access raised %s: %s; "
-                    "rendering with no parameters",
-                    tool_name,
-                    server_name,
-                    exc.__class__.__name__,
-                    exc,
-                )
-                schema_copy = None
-            lc_name = f"{server_name}_{tool_name}"
-            schemas[lc_name] = schema_copy
-
-        tool_infos: list[MCPToolInfo] = []
-        for tool in server_tools:
-            schema = schemas.get(tool.name)
-            if schema is None and schemas:
-                logger.debug(
-                    "MCP tool %r on server %r: no schema matched in lookup "
-                    "(available keys: %s); rendering with no parameters",
-                    tool.name,
-                    server_name,
-                    list(schemas.keys())[:5],
-                )
-            tool_infos.append(
-                MCPToolInfo(
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=schema,
-                ),
-            )
-        server_infos.append(
-            MCPServerInfo(
-                name=server_name,
-                transport=transport,
-                tools=tuple(tool_infos),
-            ),
-        )
+        server_infos.append(server_info)
 
     all_tools.sort(key=lambda tool: tool.name)
     return all_tools, None if stateless else runtime_manager, server_infos
@@ -1926,8 +2215,8 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed. (Header `${VAR}`
-            interpolation is deferred to activation inside
+        RuntimeError: If the merged MCP config is malformed. (`${VAR}`
+            config interpolation is deferred to activation inside
             `_load_tools_from_config`, which captures such failures into the
             returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
@@ -2024,7 +2313,7 @@ async def resolve_and_load_mcp_tools(
         # here (rather than loading all or none) preserves the SSRF/header-
         # exfiltration gate: a non-allowlisted remote entry from an attacker-
         # controlled .mcp.json never reaches the preflight HEAD probe or the
-        # `${VAR}` header interpolation during the discovery handshake.
+        # `${VAR}` config interpolation during the discovery handshake.
         servers = config["mcpServers"]
         kept: dict[str, Any] = {}
         for name, server in servers.items():

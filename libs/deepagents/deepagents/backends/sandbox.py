@@ -57,19 +57,27 @@ path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
 try:
+    real_root = os.path.realpath(path)
     os.chdir(path)
-    matches = sorted(glob.glob(pattern, recursive=True))
-    for m in matches:
-        try:
-            st = os.stat(m)
-        except OSError:
-            continue
-        print(json.dumps({{
-            'path': m,
-            'size': st.st_size,
-            'mtime': st.st_mtime,
-            'is_dir': os.path.isdir(m),
-        }}))
+    rel_pattern = pattern.lstrip('/')
+    if any(seg == '..' for seg in rel_pattern.replace(chr(92), '/').split('/')):
+        print(json.dumps({{'error': 'invalid_pattern'}}))
+    else:
+        matches = sorted(glob.glob(rel_pattern, recursive=True))
+        for m in matches:
+            candidate = os.path.realpath(m)
+            if candidate != real_root and not candidate.startswith(real_root + os.sep):
+                continue
+            try:
+                st = os.stat(candidate)
+            except OSError:
+                continue
+            print(json.dumps({{
+                'path': m,
+                'size': st.st_size,
+                'mtime': st.st_mtime,
+                'is_dir': os.path.isdir(candidate),
+            }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
@@ -102,11 +110,21 @@ if os.path.isdir(search_path):
     # stay relative to the search root, matching the `FilesystemBackend`
     # semantics where `/` anchors to the root, not the filesystem.
     rel_glob = glob_pat.lstrip('/')
+    if any(seg == '..' for seg in rel_glob.replace(chr(92), '/').split('/')):
+        sys.stderr.write('glob contains path traversal\\n')
+        sys.exit(2)
+    real_root = os.path.realpath(search_path)
     rel_files = sorted(glob.glob(rel_glob, recursive=True))
     # Open the glob-relative path (cwd is the search root) but report the
     # path prefixed with the search root, so GrepResult.path matches the
     # `<root>/<match>` form that `grep -r` emits on the --include route.
-    targets = [(rel, os.path.join(search_path, rel)) for rel in rel_files]
+    targets = []
+    for rel in rel_files:
+        real_open = os.path.realpath(rel)
+        if real_open != real_root and not real_open.startswith(real_root + os.sep):
+            continue
+        display_path = os.path.join(search_path, os.path.relpath(real_open, real_root))
+        targets.append((real_open, display_path))
 else:
     targets = [(search_path, search_path)]
 

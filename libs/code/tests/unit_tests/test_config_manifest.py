@@ -21,6 +21,7 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
+    CURSOR_STYLE_DEFAULT,
     NON_OPTION_ENV_VARS,
     ConfigOption,
     OptionKind,
@@ -32,7 +33,7 @@ from deepagents_code.config_manifest import (
     resolve_interpreter_kwargs,
     resolve_scalar,
 )
-from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
 # PyPI/DNS work. This module checks whether update settings came from the env,
@@ -79,6 +80,66 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
+    """The effective log level follows debug mode when no level is explicit."""
+    option = get_option("debug.log_level")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.LOG_LEVEL, raising=False)
+
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    assert resolve_scalar(option, toml_data={}) == ("INFO", "default")
+
+    monkeypatch.setenv(_env_vars.DEBUG, "true")
+    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+
+
+def test_debug_log_level_validates_explicit_value(monkeypatch) -> None:
+    """Explicit log levels are normalized and invalid values use the runtime default."""
+    option = get_option("debug.log_level")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.DEBUG, "true")
+
+    monkeypatch.setenv(_env_vars.LOG_LEVEL, " warning ")
+    assert resolve_scalar(option, toml_data={}) == (
+        "WARNING",
+        f"env ({_env_vars.LOG_LEVEL})",
+    )
+
+    monkeypatch.setenv(_env_vars.LOG_LEVEL, "TRACE")
+    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+
+
+@pytest.mark.parametrize(("debug", "expected"), [(None, "INFO"), ("1", "DEBUG")])
+def test_config_get_and_show_report_dynamic_log_level(
+    monkeypatch, capsys, debug: str | None, expected: str
+) -> None:
+    """Both config command paths report the runtime's effective default."""
+    import json
+
+    monkeypatch.delenv(_env_vars.LOG_LEVEL, raising=False)
+    if debug is None:
+        monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.DEBUG, debug)
+
+    get_args = argparse.Namespace(
+        config_command="get",
+        key="debug.log_level",
+        output_format="json",
+    )
+    assert run_config_command(get_args) == 0
+    get_payload = json.loads(capsys.readouterr().out)
+    assert get_payload["data"]["value"] == expected
+
+    show_args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(show_args) == 0
+    show_payload = json.loads(capsys.readouterr().out)
+    row = next(
+        item for item in show_payload["data"] if item["key"] == "debug.log_level"
+    )
+    assert row["value"] == expected
 
 
 # --- Provider install helpers ----------------------------------------------
@@ -853,6 +914,64 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={})[0] is False
 
 
+def test_cursor_style_option_definition() -> None:
+    """Cursor style supports env and config.toml and defaults to a block."""
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    assert opt.kind is OptionKind.CURSOR_STYLE_DELEGATE
+    assert opt.default == CURSOR_STYLE_DEFAULT
+    assert opt.toml_keys == ("ui", "cursor_style")
+    assert opt.env_var == _env_vars.CURSOR_STYLE
+
+
+def test_resolve_cursor_style_from_env(monkeypatch, caplog) -> None:
+    """A valid env value wins; an invalid value falls through to config.toml."""
+    import logging
+
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    toml_data = {"ui": {"cursor_style": "underline"}}
+
+    monkeypatch.setenv(_env_vars.CURSOR_STYLE, "block")
+    assert resolve_scalar(opt, toml_data=toml_data) == (
+        "block",
+        f"env ({_env_vars.CURSOR_STYLE})",
+    )
+
+    monkeypatch.setenv(_env_vars.CURSOR_STYLE, "bar")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(opt, toml_data=toml_data) == (
+            "underline",
+            "config.toml",
+        )
+    assert any(
+        _env_vars.CURSOR_STYLE in record.getMessage() for record in caplog.records
+    )
+
+
+def test_resolve_cursor_style_from_toml(caplog) -> None:
+    """Only supported cursor styles are accepted from config.toml."""
+    import logging
+
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"ui": {"cursor_style": "underline"}}) == (
+        "underline",
+        "config.toml",
+    )
+
+    for raw in ("bar", 1):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            value, source = resolve_scalar(opt, toml_data={"ui": {"cursor_style": raw}})
+        assert (value, source) == (CURSOR_STYLE_DEFAULT, "default")
+        assert any(
+            "[ui].cursor_style" in record.getMessage() for record in caplog.records
+        )
+
+    assert resolve_scalar(opt, toml_data={}) == (CURSOR_STYLE_DEFAULT, "default")
+
+
 def test_collapse_pastes_default_enabled() -> None:
     """Paste collapsing is enabled by default when unset."""
     opt = get_option("display.collapse_pastes")
@@ -1446,6 +1565,42 @@ def test_resolve_toml_str_success_and_type_mismatch(caplog) -> None:
         value, source = resolve_scalar(opt, toml_data={"threads": {"sort_order": 123}})
     assert (value, source) == ("updated_at", "default")
     assert any("sort_order" in r.getMessage() for r in caplog.records)
+
+
+def test_startup_mode_option_definition() -> None:
+    """`startup.mode` is config.toml-only and uses runtime mode validation."""
+    opt = get_option("startup.mode")
+    assert opt is not None
+    assert opt.group == "Startup"
+    assert opt.kind is OptionKind.STARTUP_MODE_DELEGATE
+    assert opt.default == DEFAULT_STARTUP_MODE
+    assert opt.toml_keys == ("startup", "mode")
+    assert opt.env_var is None
+
+
+def test_resolve_startup_mode_from_toml(caplog) -> None:
+    """`startup.mode` resolves only valid runtime modes from config.toml."""
+    import logging
+
+    opt = get_option("startup.mode")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"startup": {"mode": "dangerously-auto"}}) == (
+        "dangerously-auto",
+        "config.toml",
+    )
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        value, source = resolve_scalar(opt, toml_data={"startup": {"mode": "yolo"}})
+    assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
+    assert any("[startup].mode='yolo'" in r.getMessage() for r in caplog.records)
+
+    for raw in (["manual"], {"name": "manual"}):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            value, source = resolve_scalar(opt, toml_data={"startup": {"mode": raw}})
+        assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
+        assert any("[startup].mode" in r.getMessage() for r in caplog.records)
+
+    assert resolve_scalar(opt, toml_data={}) == (DEFAULT_STARTUP_MODE, "default")
 
 
 def test_resolve_toml_float_success_non_bool() -> None:

@@ -535,6 +535,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
+    "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -562,9 +563,18 @@ Storing a key for this service via `/auth` also enables tracing at startup
 name, so it gets special handling beyond a plain key copy.
 """
 
+TAVILY_SERVICE = "tavily"
+"""Service name for Tavily web search in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` gates the spawn-time `web_search`
+tool (see `server_graph._build_tools`), so a key added to a running server
+takes effect only after a respawn — the app offers that restart, and this
+constant is the single name its `/auth` handling compares against.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
     LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
-    "tavily": "TAVILY_API_KEY",
+    TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
@@ -585,6 +595,9 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -612,6 +625,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "google_vertexai": "max_retries",
     "groq": "max_retries",
     "litellm": "max_retries",
+    "meta": "max_retries",
     "mistralai": "max_retries",
     "openai": "max_retries",
     "openrouter": "max_retries",
@@ -657,6 +671,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   huggingface   the integration and huggingface_hub both read
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   meta          ChatMetaModel reads MODEL_API_BASE.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
     #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
@@ -690,6 +705,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
+    "meta": ("MODEL_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
@@ -1419,6 +1435,63 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     return list(models)
 
 
+def _ollama_host_reachable(
+    base: str, *, timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS
+) -> bool:
+    """Return whether a TCP listener appears to accept connections at `base`.
+
+    A lightweight presence preflight so Ollama discovery can skip the HTTP
+    probe entirely when no daemon is running (e.g. Ollama is not installed).
+    The check opens and immediately closes a TCP connection to the endpoint's
+    host and port. Any failure -- connection refused, DNS error, timeout, or
+    sockets blocked under `pytest-socket` -- is treated as "not reachable" so
+    discovery falls back gracefully; an unexpected (non-`OSError`) failure is
+    additionally logged at warning so a real bug isn't misreported as absence.
+
+    Args:
+        base: Base URL of the Ollama daemon, e.g. `http://localhost:11434`.
+        timeout: Socket connection timeout in seconds.
+
+    Returns:
+        `True` when a connection is established (a daemon appears present) or
+            when the target cannot be determined (deferring to the HTTP probe);
+            `False` when the connection cannot be made.
+    """
+    import socket
+
+    parsed = urlparse(base)
+    host = parsed.hostname
+    if not host:
+        # Can't determine a target host; let the HTTP probe make the decision.
+        return True
+    try:
+        port = parsed.port
+    except ValueError:
+        # Malformed port (out of range / non-numeric); defer to the HTTP probe.
+        return True
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    # Mirror the discovery probe below: expected transport failures (refused,
+    # DNS, timeout) just mean the daemon is absent and stay silent; anything
+    # else is surfaced at warning so a real bug isn't misreported as "not
+    # detected". `pytest-socket`'s `SocketBlockedError` inherits from
+    # `Exception` (not `OSError`), so the broad branch catches it. The socket
+    # is its own context manager, so `with` closes the probe connection.
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+    except Exception as exc:  # noqa: BLE001  # see comment above
+        logger.warning(
+            "Ollama presence preflight raised unexpected %s for %s: %s",
+            type(exc).__name__,
+            base,
+            exc,
+        )
+        return False
+
+
 def _fetch_ollama_installed_models(
     endpoint: str | None,
     *,
@@ -1456,6 +1529,17 @@ def _fetch_ollama_installed_models(
             base,
         )
         return []
+
+    # Presence preflight (local endpoints only -- remote hosts may be reachable
+    # only through a proxy that the HTTP probe honors but a raw socket does
+    # not). A dead/absent daemon (the common case when Ollama is not installed)
+    # refuses the connection; detecting that here lets us skip the HTTP probe
+    # and log a quiet "not detected" line instead of a misleading
+    # "discovery failed ... Connection refused" debug line.
+    if _is_local_endpoint(base) and not _ollama_host_reachable(base, timeout=timeout):
+        logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
+        return []
+
     url = f"{base}/api/tags"
 
     headers = _ollama_discovery_headers(base, content_type=False)
@@ -2336,8 +2420,9 @@ class ModelConfig:
 
         Returns:
             Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, or contains
-                invalid TOML syntax.
+                Returns empty config if file is missing, unreadable, contains
+                invalid TOML syntax, or is structurally invalid (valid TOML of
+                the wrong shape, e.g. a scalar `[models]`).
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2356,6 +2441,12 @@ class ModelConfig:
         try:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
+            models_section = data.get("models", {})
+            config = cls(
+                default_model=models_section.get("default"),
+                recent_model=models_section.get("recent"),
+                providers=models_section.get("providers", {}),
+            )
         except tomllib.TOMLDecodeError as e:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
@@ -2363,23 +2454,24 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+            config = cls()
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-
-        models_section = data.get("models", {})
-        config = cls(
-            default_model=models_section.get("default"),
-            recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
-        )
+            config = cls()
+        except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape — a scalar
+            # `[models]`, a non-table `providers` — which surfaces here as an
+            # AttributeError from `.get(...)` or a TypeError from the dataclass
+            # constructor. Treat it like any other unreadable config rather than
+            # letting it crash callers (e.g. the /auth modal on Ctrl+R) that
+            # assume load() is total and never raises.
+            logger.warning(
+                "Config file %s is structurally invalid: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
+                e,
+            )
+            config = cls()
 
         # Validate config consistency
         config._validate()
@@ -3552,6 +3644,57 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read thread sort_order config", exc_info=True)
     return "updated_at"
+
+
+STARTUP_MODE_MANUAL = "manual"
+"""Startup approval mode that keeps human-in-the-loop approvals enabled."""
+
+STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
+"""Startup approval mode that auto-approves gated tool calls at launch."""
+
+VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_AUTO})
+"""Accepted values for the `[startup].mode` config option."""
+
+DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
+"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+
+
+def load_startup_mode(config_path: Path | None = None) -> str:
+    """Load the default startup approval mode from config.toml.
+
+    Reads `[startup].mode`, which controls whether the interactive TUI launches
+    with human-in-the-loop approvals enabled (`manual`) or auto-approved
+    (`dangerously-auto`). The explicit `-y`/`--auto-approve` flag overrides this.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"manual"` or `"dangerously-auto"`; falls back to `"manual"` when unset,
+        unreadable, or invalid.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return DEFAULT_STARTUP_MODE
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        startup = data.get("startup")
+        value = startup.get("mode") if isinstance(startup, dict) else None
+        # `value` may be any TOML type; guard against non-strings (e.g. an
+        # array or table) before the frozenset membership test, which would
+        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
+            return value
+        if value is not None:
+            logger.warning(
+                "Ignoring [startup].mode=%r (expected 'manual' or 'dangerously-auto')",
+                value,
+            )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read startup mode config", exc_info=True)
+    return DEFAULT_STARTUP_MODE
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:

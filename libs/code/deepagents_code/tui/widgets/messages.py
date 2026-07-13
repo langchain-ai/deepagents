@@ -29,6 +29,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -63,6 +64,8 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
+
+    from deepagents_code.input import MediaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -256,15 +259,38 @@ class UserMessage(Static):
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        content: str,
+        *,
+        media_snapshot: MediaTracker | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a user message.
 
         Args:
             content: The message content
+            media_snapshot: Optional media tracker state captured at submission.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._media_snapshot = media_snapshot
+
+    @property
+    def raw_text(self) -> str:
+        """The original, untruncated message text as the user submitted it.
+
+        Named `raw_text` rather than `content` to avoid shadowing Textual's
+        read/write `Static.content` property (backed by a mangled attribute);
+        overriding it getter-only would make `self.content = ...` raise.
+        """
+        return self._content
+
+    @property
+    def media_snapshot(self) -> MediaTracker | None:
+        """Media tracker state captured when the message was submitted."""
+        return self._media_snapshot
 
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
@@ -3230,8 +3256,15 @@ class DiffMessage(Static):
                 classes="diff-header",
             )
 
-        # Render the diff with per-line Statics (CSS-driven backgrounds)
-        yield from compose_diff_lines(self._diff_content, max_lines=100)
+        # Never render the contents of credential files (e.g. `.env`) — the diff
+        # would leak secrets into the terminal UI and scrollback.
+        if is_sensitive_file_path(self._file_path):
+            yield Static(
+                Content.styled("Diff hidden — file may contain credentials", "dim")
+            )
+        else:
+            # Render the diff with per-line Statics (CSS-driven backgrounds)
+            yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

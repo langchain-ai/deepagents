@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.6.12",
-    "langchain>=1.3.11,<2.0.0",
+    "langchain>=1.3.12,<2.0.0",
     "deepagents-code>=0.1.27",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
     "harbor[langsmith]>=0.16.1,<0.17.0",
@@ -29,17 +29,17 @@ dependencies = [
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.4.7,<1.5.0",
+    "langchain-anthropic>=1.4.8,<1.5.0",
     "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
-    "langchain-fireworks>=1.4.3,<1.5.0",
-    "langchain-google-genai>=4.2.6,<4.3.0",
+    "langchain-fireworks>=1.4.4,<1.5.0",
+    "langchain-google-genai>=4.2.7,<4.3.0",
     "langchain-groq>=1.1.3,<1.2.0",
-    "langchain-mistralai>=1.1.5,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.2,<1.5.0",
+    "langchain-mistralai>=1.1.6,<1.2.0",
+    "langchain-nvidia-ai-endpoints>=1.4.3,<1.5.0",
     "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.3.3,<1.4.0",
-    "langchain-openrouter>=0.2.4,<0.3.0",
+    "langchain-openai>=1.3.4,<1.4.0",
+    "langchain-openrouter>=0.2.6,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     # Eval-specific dependencies
     "datasets>=5.0.0",

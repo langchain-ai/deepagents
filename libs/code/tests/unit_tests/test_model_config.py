@@ -5447,6 +5447,22 @@ class TestMcpServerTrustListsIsEnabled:
 
         assert lists.is_enabled("docs", project_root=tmp_path, server=self._server())
 
+    def test_blank_name_is_not_enabled(self, tmp_path: Path) -> None:
+        """A blank server name (only from a malformed config) fails closed.
+
+        `is_enabled` short-circuits rather than let
+        `McpProjectServerApproval.create` raise its non-empty `ValueError` out
+        of the trust filter on adversarial `.mcp.json` input.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled("", project_root=tmp_path, server=self._server())
+        assert not lists.is_enabled("   ", project_root=tmp_path, server=self._server())
+
     def test_different_project_root_not_enabled(self, tmp_path: Path) -> None:
         """An approval for one repo does not carry to another."""
         lists = McpServerTrustLists(
@@ -5831,6 +5847,9 @@ class TestLoadMcpServerTrustLists:
 
         assert result.enabled == frozenset()
         assert result.approvals == frozenset()
+        # The dropped names are surfaced so non-interactive paths can explain
+        # why those servers stopped loading.
+        assert result.legacy_ignored == frozenset({"docs"})
 
     def test_bare_string_disabled_is_coerced_to_single_name(
         self, tmp_path: Path

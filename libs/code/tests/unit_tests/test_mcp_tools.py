@@ -4266,3 +4266,129 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
+
+
+class TestProjectRootForMcpConfigPath:
+    """Map a discovered config path back to its owning project root.
+
+    The loader derives its read-side project root from the config path via this
+    function, while the prompt persists the approval under the raw project root.
+    Both discovery layouts must yield the same root or a saved approval never
+    matches on reload (re-prompting forever).
+    """
+
+    def test_root_level_config(self, tmp_path: Path) -> None:
+        """`<root>/.mcp.json` resolves to `<root>`."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        root = tmp_path / "proj"
+        assert project_root_for_mcp_config_path(root / ".mcp.json") == root
+
+    def test_deepagents_subdir_config(self, tmp_path: Path) -> None:
+        """`<root>/.deepagents/.mcp.json` resolves to `<root>`, not the subdir."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        root = tmp_path / "proj"
+        nested = root / ".deepagents" / ".mcp.json"
+        assert project_root_for_mcp_config_path(nested) == root
+
+    def test_relative_path_uses_fallback_base(self, tmp_path: Path) -> None:
+        """A relative config path anchors to the fallback base."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        base = tmp_path / "proj"
+        assert (
+            project_root_for_mcp_config_path(Path(".mcp.json"), fallback=base) == base
+        )
+
+    def test_relative_deepagents_path_uses_fallback_base(self, tmp_path: Path) -> None:
+        """A relative `.deepagents/.mcp.json` anchors to the base, then unwraps."""
+        from deepagents_code.mcp_tools import project_root_for_mcp_config_path
+
+        base = tmp_path / "proj"
+        rel = Path(".deepagents") / ".mcp.json"
+        assert project_root_for_mcp_config_path(rel, fallback=base) == base
+
+
+class TestFilterTrustedProjectServers:
+    """Direct contract for the shared per-server trust filter.
+
+    It is the single place the per-server rule lives (runtime loader + `mcp
+    login` resolver), so reject precedence and the config-trusted default are
+    pinned here rather than only transitively.
+    """
+
+    @staticmethod
+    def _server(command: str = "echo") -> dict[str, Any]:
+        return {"command": command, "args": []}
+
+    def test_disabled_wins_even_when_config_trusted(self, tmp_path: Path) -> None:
+        """An explicit deny drops a server even from a fully trusted config."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset({"blocked"})
+        )
+        servers = {"blocked": self._server(), "ok": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert set(kept) == {"ok"}
+
+    def test_all_kept_when_config_trusted(self, tmp_path: Path) -> None:
+        """A trusted config keeps every non-disabled server."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset()
+        )
+        servers = {"a": self._server(), "b": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert set(kept) == {"a", "b"}
+
+    def test_scoped_approval_kept_when_untrusted(self, tmp_path: Path) -> None:
+        """Without config trust, only a scoped-approved server survives."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        server = self._server()
+        approval = model_config.McpProjectServerApproval.create(
+            project_root=tmp_path, name="docs", server=server
+        )
+        assert approval is not None
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({approval}),
+        )
+        servers = {"docs": server, "unapproved": self._server("run")}
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=False
+        )
+
+        assert set(kept) == {"docs"}
+
+    def test_preserves_input_order(self, tmp_path: Path) -> None:
+        """Kept servers retain their input order."""
+        from deepagents_code.mcp_tools import filter_trusted_project_servers
+
+        lists = model_config.McpServerTrustLists(
+            enabled=frozenset(), disabled=frozenset()
+        )
+        servers = {
+            "z": self._server(),
+            "a": self._server("run"),
+            "m": self._server("go"),
+        }
+
+        kept = filter_trusted_project_servers(
+            servers, lists, project_root=tmp_path, config_trusted=True
+        )
+
+        assert list(kept) == ["z", "a", "m"]

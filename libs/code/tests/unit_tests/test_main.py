@@ -2411,6 +2411,55 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert "could not be saved" not in capsys.readouterr().err
 
+    def test_prompt_includes_valid_sibling_of_disabled_malformed_server(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Session trust never activates a valid server omitted from the prompt."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower_cfg = project_dir / ".mcp.json"
+        lower_cfg.write_text(
+            '{"mcpServers":{"hidden":{"command":"echo"},"broken":{"args":[]}}}'
+        )
+        higher_cfg = project_root / ".mcp.json"
+        higher_cfg.write_text('{"mcpServers":{"visible":{"command":"echo"}}}')
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["broken"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[lower_cfg, higher_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [lower_cfg, higher_cfg]),
+            ),
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        err = capsys.readouterr().err
+        assert '"hidden"' in err
+        assert '"visible"' in err
+        assert '"broken"' not in err
+
     def test_always_allow_persists_names_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3150,6 +3199,102 @@ class TestSelectProjectServersToPersist:
         names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert names == ["docs", "reference"]
+
+    def test_checkbox_picker_space_toggle_derives_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Space unchecks the cursor row and Enter confirms the derived subset.
+
+        Guards the headline "choose which servers to save" mechanism: the
+        confirmed result must come from `_selected_names()` (initial all-checked
+        minus toggles), not a hardcoded list. An inverted `_toggle`, a flipped
+        initial default, or a `_confirm` returning `names` would fail here.
+        """
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, list[str]] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+
+                def _named(name: str) -> Callable[[Any], None]:
+                    return next(
+                        binding.handler
+                        for binding in bindings
+                        if binding.handler.__name__ == name
+                    )
+
+                # Cursor starts on row 0 ("docs"); Space unchecks it, Enter
+                # confirms the remaining ("reference").
+                _named("_toggle")(event)
+                _named("_confirm")(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert names == ["reference"]
+
+    def test_checkbox_picker_escape_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Esc cancels persistence (empty selection), the opposite of Ctrl+C.
+
+        Esc means "remember nothing, allow this session"; Ctrl+C means abort.
+        A regression swapping them would silently turn Esc into a launch abort.
+        """
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, list[str]] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                cancel = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_cancel"
+                )
+                cancel(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert result == []
 
     def test_checkbox_picker_ctrl_c_returns_interrupted(
         self, monkeypatch: pytest.MonkeyPatch

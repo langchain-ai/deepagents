@@ -1716,7 +1716,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trust-project-mcp",
         action="store_true",
-        help="Trust project-level MCP configs with stdio servers "
+        help="Trust project-level MCP configs with stdio and remote servers "
         "(skip interactive approval prompt)",
     )
     parser.add_argument(
@@ -1955,7 +1955,9 @@ async def run_textual_cli_async(
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
 
-            `True` to allow, `False` to deny, `None` to check trust store.
+            `True` to allow, `False` to deny, `None` to fall back to the
+            user's per-server scoped approvals (equivalent to `False` for the
+            whole-config decision).
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -2500,6 +2502,8 @@ def _run_project_mcp_server_checkbox_picker(
                     (
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
                         "Space toggle · Enter confirm · Esc cancel\n"
+                        "Unchecked servers still load this session; they are "
+                        "only left unremembered.\n"
                     ),
                 ),
             ]
@@ -2548,13 +2552,13 @@ def _run_project_mcp_server_checkbox_picker(
     def _interrupt(event: KeyPressEvent) -> None:
         event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
 
-    app = Application[list[str]](
+    app: Application[list[str] | _ProjectMcpTrustPromptOutcome] = Application(
         layout=Layout(
             HSplit(
                 [
                     Window(
                         FormattedTextControl(_help_text),
-                        height=2,
+                        height=3,
                         dont_extend_height=True,
                     ),
                     Window(
@@ -2710,11 +2714,23 @@ def _check_mcp_project_trust(
         project_context = ProjectContext.from_user_cwd(Path.cwd())
         config_paths = discover_mcp_configs(project_context=project_context)
     except (OSError, RuntimeError):
+        logger.debug(
+            "Could not discover MCP configs for project trust check",
+            exc_info=True,
+        )
         return None
 
     _, project_configs = classify_discovered_configs(config_paths)
     if not project_configs and not debug_prompt:
         return None
+
+    # Read the user's allow/deny policy before parsing project configs. Session
+    # approval grants whole-config trust, so the prompt must be built from the
+    # same server set the runtime would retain under that decision: explicitly
+    # disabled entries are removed before they can invalidate a sibling.
+    from deepagents_code.model_config import load_mcp_server_trust_lists
+
+    trust_lists = load_mcp_server_trust_lists()
 
     # Merge configs by server name (last wins, matching the loader) so that
     # a server defined in multiple project configs (for example,
@@ -2722,7 +2738,10 @@ def _check_mcp_project_trust(
     # up once in the prompt.
     loaded_configs = [
         cfg
-        for cfg in (load_mcp_config_lenient(path) for path in project_configs)
+        for cfg in (
+            load_mcp_config_lenient(path, disabled_servers=trust_lists.disabled)
+            for path in project_configs
+        )
         if cfg is not None
     ]
     merged_config = merge_mcp_configs(loaded_configs)
@@ -2750,9 +2769,6 @@ def _check_mcp_project_trust(
     # never the repo — the same boundary the loader enforces). Scoped approvals
     # load only while the project root and server fingerprint match; disabled
     # names never load. The prompt asks only about unresolved servers.
-    from deepagents_code.model_config import load_mcp_server_trust_lists
-
-    trust_lists = load_mcp_server_trust_lists()
     from rich.console import Console as _Console
     from rich.markup import escape
 

@@ -291,6 +291,36 @@ class TestResolveMcpConfigAutodiscover:
         assert set(result.config["mcpServers"]) == {"slack"}
         assert result.untrusted_project_paths == (project_cfg,)
 
+    def test_invalid_unapproved_sibling_does_not_block_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An invalid unapproved entry cannot block an approved login target."""
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        slack = {"type": "http", "url": "https://slack.com/mcp", "auth": "oauth"}
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"},'
+            '"broken":{"args":[]}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project_cfg.parent, "slack", slack),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"slack"}
+        assert result.untrusted_project_paths == (project_cfg,)
+
     def test_symlinked_project_config_uses_containing_project_scope(
         self,
         tmp_path: Path,

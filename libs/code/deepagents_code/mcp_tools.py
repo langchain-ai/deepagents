@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
@@ -1069,17 +1069,42 @@ def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"mcpServers": merged}
 
 
-def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
+def load_mcp_config_lenient(
+    config_path: Path, *, disabled_servers: Collection[str] = ()
+) -> dict[str, Any] | None:
     """Load an MCP config file, returning `None` on any error.
+
+    Disabled servers are removed before per-server validation. This lets trust
+    prompts inspect exactly the servers that whole-config session approval can
+    activate: explicitly denied entries can neither block nor appear in that
+    prompt.
 
     Args:
         config_path: Config path to load.
+        disabled_servers: Server names to remove before validation.
 
     Returns:
         The parsed config, or `None` if loading or validation fails.
     """
-    config, _ = load_mcp_config_with_error(config_path)
-    return config
+    config, _ = _load_mcp_config_top_level_with_error(config_path)
+    if config is None:
+        return None
+
+    servers = config["mcpServers"]
+    filtered = {
+        **config,
+        "mcpServers": {
+            name: server
+            for name, server in servers.items()
+            if name not in disabled_servers
+        },
+    }
+    try:
+        _validate_mcp_config_servers(filtered)
+    except (ValueError, TypeError, RuntimeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None
+    return filtered
 
 
 def load_mcp_config_with_error(
@@ -2132,11 +2157,11 @@ async def resolve_and_load_mcp_tools(
             are gated too because an attacker-controlled `.mcp.json` can SSRF or
             exfiltrate `${VAR}` headers during the discovery preflight.
 
-            - `True`: always trust project configs (all servers).
-            - `False`: drop all project servers (stdio and remote).
-            - `None`: consult the persistent trust store — trusted configs
-                load fully; all servers from untrusted project configs are
-                dropped.
+            - `True`: grant whole-config trust (all servers load).
+            - `False` / `None`: no whole-config trust. `None` is treated
+                identically to `False` — the persistent trust store this once
+                consulted was removed, so project servers load only via the
+                user's scoped approvals / env allowlist described below.
 
             Regardless of this flag, the user-level allow/deny policy
             (`[mcp].enabled_project_server_approvals`,
@@ -2235,6 +2260,21 @@ async def resolve_and_load_mcp_tools(
                 # Surface the read failure as a visible config error (a bare
                 # logger.warning has no handler outside debug mode).
                 config_load_errors.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+            if trust_lists.legacy_ignored:
+                # The removed flat allowlist stops loading these silently; make
+                # it visible here too, since the loader runs in non-interactive
+                # paths where the migration warning would otherwise be unseen.
+                ignored = ", ".join(sorted(trust_lists.legacy_ignored))
+                config_load_errors.append(
+                    (
+                        DEFAULT_CONFIG_PATH,
+                        (
+                            "[mcp].enabled_project_servers is no longer used; "
+                            "re-approve via the project MCP prompt to keep loading: "
+                            f"{ignored}"
+                        ),
+                    )
+                )
 
         if trust_lists.load_failed:
             # Fail closed: the user's allow/deny policy could not be read, so do

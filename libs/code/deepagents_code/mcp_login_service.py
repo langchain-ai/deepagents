@@ -134,7 +134,9 @@ def resolve_mcp_config(
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        _load_mcp_config_top_level_with_error,
         _resolve_project_config_base,
+        _validate_mcp_config_servers,
         classify_discovered_configs,
         discover_mcp_configs,
         filter_trusted_project_servers,
@@ -192,33 +194,42 @@ def resolve_mcp_config(
         trust_lists = load_mcp_server_trust_lists()
         project_base = _resolve_project_config_base(None)
         untrusted_paths: list[Path] = []
-        for path in project_paths:
-            if trust_lists.load_failed:
-                # Fail closed, matching resolve_and_load_mcp_tools and
-                # _check_mcp_project_trust: the user's policy could not be read,
-                # so a configured deny may be missing and a still-live scoped
-                # approval must not be honored (is_enabled would otherwise match
-                # it). Skip every project server and surface the reason below.
-                policy_error = trust_lists.read_error
-                untrusted_paths.append(path)
-                continue
-            project_root = project_root_for_mcp_config_path(path, fallback=project_base)
-            loaded, error = load_mcp_config_with_error(path)
-            if loaded is None:
-                if error is not None:
-                    load_errors.append((path, error))
-                continue
-            servers = loaded.get("mcpServers", {})
-            if not isinstance(servers, dict):
-                continue
-            kept = filter_trusted_project_servers(
-                servers, trust_lists, project_root=project_root
-            )
-            if kept:
-                configs.append({**loaded, "mcpServers": kept})
-                used_paths.append(path)
-            if len(kept) != len(servers):
-                untrusted_paths.append(path)
+        if trust_lists.load_failed:
+            # Fail closed, matching resolve_and_load_mcp_tools and
+            # _check_mcp_project_trust: the user's policy could not be read, so a
+            # configured deny may be missing and a still-live scoped approval
+            # must not be honored (is_enabled would otherwise match it). Skip
+            # every project server and surface the reason below. Hoisted out of
+            # the per-path loop since the policy is read once.
+            policy_error = trust_lists.read_error
+            untrusted_paths = list(project_paths)
+        else:
+            for path in project_paths:
+                project_root = project_root_for_mcp_config_path(
+                    path, fallback=project_base
+                )
+                loaded, error = _load_mcp_config_top_level_with_error(path)
+                if loaded is None:
+                    if error is not None:
+                        load_errors.append((path, error))
+                    continue
+                servers = loaded.get("mcpServers", {})
+                if not isinstance(servers, dict):
+                    continue
+                kept = filter_trusted_project_servers(
+                    servers, trust_lists, project_root=project_root
+                )
+                if kept:
+                    filtered = {**loaded, "mcpServers": kept}
+                    try:
+                        _validate_mcp_config_servers(filtered)
+                    except (ValueError, TypeError, RuntimeError) as exc:
+                        load_errors.append((path, str(exc)))
+                    else:
+                        configs.append(filtered)
+                        used_paths.append(path)
+                if len(kept) != len(servers):
+                    untrusted_paths.append(path)
         untrusted = tuple(untrusted_paths)
 
     if not configs:

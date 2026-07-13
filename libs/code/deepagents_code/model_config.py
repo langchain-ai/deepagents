@@ -3229,6 +3229,14 @@ class McpServerTrustLists:
     continue to apply. Excluded from equality so a failed load still compares
     equal to empty lists for tests that only care about the resolved names."""
 
+    legacy_ignored: frozenset[str] = field(default=frozenset(), compare=False)
+    """Names found in a legacy `[mcp].enabled_project_servers` list that this
+    build no longer honors. Non-empty means the user relied on the removed flat
+    allowlist, so those servers silently stopped loading; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) so
+    non-interactive paths can explain the change. Diagnostic, not resolved
+    policy — excluded from equality like `read_error`."""
+
     def __post_init__(self) -> None:
         """Enforce reject precedence by stripping disabled names from both sets.
 
@@ -3279,6 +3287,11 @@ class McpServerTrustLists:
         Returns:
             `True` when the server is approved and not disabled.
         """
+        if not name.strip():
+            # A blank name can only come from a malformed config. Fail closed
+            # here rather than let `McpProjectServerApproval.create` raise
+            # `ValueError` from its non-empty invariant out of the trust filter.
+            return False
         if name in self.disabled:
             return False
         if name in self.enabled:
@@ -3476,6 +3489,7 @@ def load_mcp_server_trust_lists(
 
     toml_approvals: list[McpProjectServerApproval] = []
     toml_disabled: list[str] = []
+    legacy_ignored: list[str] = []
     read_error: str | None = None
     try:
         if config_path.exists():
@@ -3493,6 +3507,7 @@ def load_mcp_server_trust_lists(
                     config_path=config_path,
                 )
                 if legacy_enabled:
+                    legacy_ignored = legacy_enabled
                     logger.warning(
                         "[mcp].enabled_project_servers in %s is ignored; run "
                         "the project MCP approval prompt again to save "
@@ -3553,6 +3568,7 @@ def load_mcp_server_trust_lists(
         disabled=disabled,
         approvals=approvals,
         read_error=read_error,
+        legacy_ignored=frozenset(legacy_ignored),
     )
 
 

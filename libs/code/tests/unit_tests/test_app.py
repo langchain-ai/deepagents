@@ -1801,25 +1801,15 @@ class TestStartupSequence:
 class TestStartupFocus:
     """Tests for focus selection before the app starts processing input."""
 
-    async def test_auto_focus_targets_chat_input(self) -> None:
-        """Textual's first focus pass should skip the chat scroll container.
-
-        `on_mount` focuses the input independently, so a plain post-startup
-        assertion would pass even without `AUTO_FOCUS`. Clearing focus and
-        re-running the focus pass isolates the `AUTO_FOCUS` selector itself,
-        which is the half that guards startup type-ahead before `on_mount`.
-        """
+    async def test_queued_startup_input_reaches_chat_input(self) -> None:
+        """Keys queued before startup should reach the mounted chat input."""
         app = DeepAgentsApp()
-        async with app.run_test():
-            app.screen.set_focus(None)
-            # `_update_auto_focus` is Textual-private; a rename on a `textual`
-            # bump breaks this even when behavior is correct. Validated against
-            # the pinned `textual>=8.2.7,<9.0.0` (see pyproject.toml); this test
-            # is the safety net for that upgrade.
-            app.screen._update_auto_focus()
+        app.post_message(events.Key("x", "x"))
+        async with app.run_test() as pilot:
+            await pilot.pause()
 
-            assert app.focused is not None
-            assert app.focused.id == "chat-input"
+            chat_input = app.query_one("#input-area", ChatInput)
+            assert chat_input.value == "x"
 
     async def test_modal_uses_first_focusable_widget(self) -> None:
         """Modal keyboard navigation should retain Textual's focus fallback."""

@@ -1924,14 +1924,14 @@ class _MainScreen(Screen[None]):
     """
 
     AUTO_FOCUS = "#chat-input"
-    """Focus the chat text area on this screen's first focus pass.
+    """Focus the chat text area whenever this screen needs a focus target.
 
     Overrides Textual's default `"*"`, which would focus the earlier-composed,
-    still-focusable `_ChatScroll` (`#chat`) instead, sending startup type-ahead
-    to the scroll container. Textual applies this during compose, before the
-    message loop dispatches queued keys; `on_mount` re-focuses the input too
-    (see `DeepAgentsApp.on_mount`), so this is the earlier half of a
-    belt-and-suspenders pair -- don't drop one assuming the other is redundant.
+    still-focusable `_ChatScroll` (`#chat`) instead. The first automatic focus
+    pass runs before the nested chat text area is mounted, so
+    `DeepAgentsApp.on_mount` applies the startup focus synchronously once the
+    input exists. This selector remains the focus target when the screen later
+    resumes without a focused widget.
     """
 
 
@@ -3072,8 +3072,12 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Focus the input immediately so the cursor is visible on first paint
-        self._chat_input.focus_input()
+        # `Widget.focus()` defers the actual focus change by posting a callback.
+        # Terminal keys may already be ahead of that callback in the app queue,
+        # so set focus synchronously while startup is still handling Mount.
+        input_widget = self._chat_input.input_widget
+        if input_widget is not None:
+            self.screen.set_focus(input_widget)
 
         if self._launch_init_requested:
             dependency_screen, dependency_result = (
@@ -14646,15 +14650,16 @@ class DeepAgentsApp(App):
         is either a competing screen binding or default key handling:
 
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
-          priority `ctrl+n -> toggle_names` binding that then wins.
+            priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
-          binding for the key; stepping aside lets it fall through to the
-          console's `key_shift_tab` reverse-focus traversal. Without this the
-          binding fires `action_toggle_auto_approve`, which no-ops under any
-          `ModalScreen`, so the key would be silently swallowed. Note this keys
-          on the action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
-          that (harmless, already a no-op under modals) binding is stepped aside
-          too while the console is open.
+            binding for the key; stepping aside lets it fall through to the
+            console's `key_shift_tab` reverse-focus traversal. Without this the
+            binding fires `action_toggle_auto_approve`, which no-ops under a
+            `ModalScreen` that lacks dedicated `shift+tab` handling (as
+            `DebugConsoleScreen` does), so the key would be silently swallowed.
+            Note this keys on the action, and `toggle_auto_approve` is
+            also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is open.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.

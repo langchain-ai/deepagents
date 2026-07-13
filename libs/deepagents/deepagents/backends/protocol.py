@@ -177,8 +177,12 @@ class GrepMatch(TypedDict):
     """Context lines before the match.
 
     Present (alongside `context_after`) only when a backend was asked for
-    `context_lines > 0`; both keys are set together on every match or on none.
-    An empty list means the requested context ran into the start of the file.
+    `context_lines > 0` (via a backend-specific argument, e.g.
+    `FilesystemBackend.grep`); both keys are set together on every match or on
+    none. An empty list means no context lines were available on that side: the
+    match sits at the file boundary, the adjacent line was itself a match
+    (matches are never repeated as context), or the file could not be re-read
+    (in which case the failure is reported in `GrepResult.error`).
     """
 
     context_after: NotRequired[list[ContextLine]]

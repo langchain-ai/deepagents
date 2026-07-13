@@ -1751,6 +1751,29 @@ class TestFilesystemGrepContext:
         assert "/sample.txt" in result.error
         assert "context" in result.error.lower()
 
+    def test_context_resolver_runtime_error_keeps_matches_and_surfaces_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        resolve_path = backend._resolve_path
+
+        def resolve_with_context_failure(path: str) -> Path:
+            if path == "/sample.txt":
+                msg = "symlink loop"
+                raise RuntimeError(msg)
+            return resolve_path(path)
+
+        # Python 3.11 and 3.12 raise RuntimeError when Path.resolve() encounters
+        # a symlink loop after the initial search but before the context read.
+        monkeypatch.setattr(backend, "_resolve_path", resolve_with_context_failure)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [{"path": "/sample.txt", "line": 2, "text": "needle", "context_before": [], "context_after": []}]
+        assert result.error is not None
+        assert "/sample.txt" in result.error
+        assert "context" in result.error.lower()
+
     def test_read_grep_context_reports_unreadable_file(self, tmp_path: Path) -> None:
         # A file ripgrep can match but that is not valid strict UTF-8.
         target = tmp_path / "latin1.txt"
@@ -1761,6 +1784,45 @@ class TestFilesystemGrepContext:
 
         assert ok is False
         assert context == {}
+
+    def test_context_error_is_appended_to_existing_partial_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A pre-existing search error (e.g. ripgrep partial failure) must survive
+        # alongside the context-read failure rather than being overwritten.
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        matches: list[GrepMatch] = [{"path": "/a.txt", "line": 1, "text": "needle"}]
+        monkeypatch.setattr(backend, "_add_grep_context", lambda *_args: ["/a.txt"])
+
+        combined = backend._apply_grep_context(matches, 1, "Error: ripgrep partial failure")
+
+        assert combined is not None
+        assert combined.startswith("Error: ripgrep partial failure\n")
+        assert "could not read context" in combined
+        assert "/a.txt" in combined
+
+    def test_context_uses_python_fallback_when_ripgrep_unavailable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Force the Python fallback so context collection is exercised
+        # deterministically regardless of whether ripgrep is installed.
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.error is None
+        assert format_grep_matches(result.matches or [], "content") == "/sample.txt:\n  1- before\n  2: needle\n  3- after"
+
+    def test_content_format_sorts_files_regardless_of_input_order(self) -> None:
+        # `_format_grep_with_context` must sort by path itself; the ordering here
+        # is not guaranteed by the caller when matches are hand-built.
+        matches: list[GrepMatch] = [
+            {"path": "/z.txt", "line": 1, "text": "zeta", "context_before": [], "context_after": []},
+            {"path": "/a.txt", "line": 1, "text": "alpha", "context_before": [], "context_after": []},
+        ]
+
+        output = format_grep_matches(matches, "content")
+
+        assert output == "/a.txt:\n  1: alpha\n/z.txt:\n  1: zeta"
 
 
 class TestGrepPythonFallbackIncludeGlob:

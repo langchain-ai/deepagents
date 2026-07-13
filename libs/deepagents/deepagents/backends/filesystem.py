@@ -739,11 +739,13 @@ class FilesystemBackend(BackendProtocol):
                         break
                     if line_num >= line_ranges[range_index][0]:
                         context[line_num] = raw_line.rstrip("\n")
-        except (OSError, UnicodeDecodeError, ValueError) as e:
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as e:
             # A matched file that cannot be re-read (e.g. non-UTF-8 bytes ripgrep
-            # tolerated, a mid-search deletion, or a path that no longer resolves)
-            # is an anomaly worth surfacing, not routine noise.
-            logger.warning("Could not read grep context for %s: %s", file_path, e, exc_info=True)
+            # tolerated, a symlink loop, a mid-search deletion, or a path that no
+            # longer resolves) is surfaced to the caller via `GrepResult.error`.
+            # Log at debug for diagnostics, matching `_python_search`'s handling
+            # of unreadable files, rather than spamming warnings for benign binaries.
+            logger.debug("Could not read grep context for %s: %s", file_path, e)
             return {}, False
         return context, True
 
@@ -762,7 +764,10 @@ class FilesystemBackend(BackendProtocol):
             if not ok:
                 unreadable.append(file_path)
             match_numbers = {match["line"] for match in file_matches}
-            context_items: list[ContextLine] = [{"line": number, "text": text} for number, text in context.items() if number not in match_numbers]
+            # `bisect_*` below require ascending `context_numbers`; sort here so
+            # correctness never depends on `_read_grep_context`'s insertion order.
+            sorted_context = sorted(context.items())
+            context_items: list[ContextLine] = [{"line": number, "text": text} for number, text in sorted_context if number not in match_numbers]
             context_numbers = [item["line"] for item in context_items]
             for match in file_matches:
                 line_num = match["line"]
@@ -786,6 +791,9 @@ class FilesystemBackend(BackendProtocol):
 
         As in the base `agrep`, the async timeout bounds how long the caller
         waits; it does not stop the worker thread spawned by `asyncio.to_thread`.
+
+        Raises:
+            ValueError: If `context_lines` is negative.
         """
         if context_lines == 0:
             return await super().agrep(pattern, path, glob)

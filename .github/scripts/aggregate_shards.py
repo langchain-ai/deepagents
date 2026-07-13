@@ -6,16 +6,17 @@ of all shard artifacts), groups trials by task, and computes:
 
   - pass@K  the fraction of tasks that passed at least once within K rollouts
             (K = rollouts_per_task; only this single k is reported).
-  - avg@K   passing trials over the EXPECTED trial count (tasks * rollouts), so
-            missing rollouts of a present task count as failures.
+  - avg@K   passing trials (capped at K per task, so duplicated rollouts cannot
+            push a task above 1) over the EXPECTED trial count (tasks * rollouts),
+            so missing rollouts of a present task count as failures.
 
 The summary is flagged ``incomplete`` when a full run cannot be vouched for:
 the matrix job did not fully succeed (``--harbor-result`` != "success"); a
 present task ran a number of trials other than K (missing OR duplicated
 rollouts); a ``result.json`` could not be read; a reward was present but
-non-numeric; or (when ``--expected-shards`` is given) fewer shards reported than
-expected. Legitimately-empty shards (task-filtered slices) no-op successfully
-and are not treated as losses.
+non-numeric; or (when ``--expected-shards`` is given) fewer shards completed than
+expected. Legitimately-empty shards upload ``empty-shard-*`` markers and count as
+completed rather than missing.
 
 A trial is a pass when its verifier reward is >= PASS_THRESHOLD. ``errored`` is
 an independent diagnostic tally: a Harbor result that records ``exception_info``
@@ -27,13 +28,11 @@ dataset (a "category" in the wider harness). If results from more than one model
 are present the script exits with an error rather than silently mixing them;
 per-model aggregation is deferred until multi-model runs are supported.
 
-Blind spot: completeness is measured relative to the tasks that *reported*.
-A whole shard whose artifact never uploaded while the matrix still reported
-success contributes no tasks to either the numerator or the denominator, so it
-cannot be detected from the results alone. Pass ``--expected-shards`` when the
-caller knows the authoritative shard count (a non-task-filtered run) to close
-that gap; a task-filtered run legitimately produces fewer, so it is left off by
-default.
+Completeness is measured relative to the tasks and empty-shard markers that
+reported. A whole shard whose artifact never uploaded contributes neither, so
+pass ``--expected-shards`` when the caller knows the authoritative shard count.
+Successful empty shards remain distinguishable from missing artifacts because
+the workflow uploads one ``empty-shard-*`` marker for each no-op slice.
 
 Outputs two plain files in the output directory:
   - summary.json     dataset-level rollup (no per-task detail)
@@ -72,6 +71,7 @@ class Aggregation(NamedTuple):
 
     models: set[str]
     job_ids: set[str]
+    empty_shards: set[str]
     by_task: dict[str, dict[str, int]]
     skipped_files: int
     malformed_rewards: int
@@ -173,6 +173,7 @@ def aggregate(root: Path) -> Aggregation:
     """
     models: set[str] = set()
     job_ids: set[str] = set()
+    empty_shards = {path.name for path in root.rglob("empty-shard-*") if path.is_file()}
     by_task: dict[str, dict[str, int]] = defaultdict(
         lambda: {"trials": 0, "passed": 0, "errored": 0}
     )
@@ -209,7 +210,14 @@ def aggregate(root: Path) -> Aggregation:
         if reward is not None and reward >= PASS_THRESHOLD:
             stats["passed"] += 1
 
-    return Aggregation(models, job_ids, dict(by_task), skipped_files, malformed_rewards)
+    return Aggregation(
+        models,
+        job_ids,
+        empty_shards,
+        dict(by_task),
+        skipped_files,
+        malformed_rewards,
+    )
 
 
 def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryParts:
@@ -219,12 +227,14 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
     shard cannot inflate the scores:
       - pass@K: fraction of present tasks with at least one observed passing trial
         (a task that ran fewer than K rollouts still passes iff it passed once).
-      - avg@K: passing trials / (present tasks * rollouts) -- the denominator is
-        the EXPECTED trial count, not the number of results that happened to land.
+      - avg@K: passing trials, capped at K per task, divided by
+        (present tasks * rollouts). The denominator is the EXPECTED trial count,
+        and duplicated rollouts cannot inflate the score above 1.
     """
     per_task: list[dict] = []
     passk_sum = 0.0
     total_trials = total_passed = total_errored = 0
+    capped_passed = 0
 
     for task in sorted(by_task):
         n = by_task[task]["trials"]
@@ -232,6 +242,7 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
         errored = by_task[task]["errored"]
         total_trials += n
         total_passed += c
+        capped_passed += min(c, rollouts)
         total_errored += errored
 
         # A task passes @K iff it has >=1 observed pass; missing rollouts can only
@@ -250,10 +261,10 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
 
     n_tasks = len(by_task)
     dataset_passk = round(passk_sum / n_tasks, 6) if n_tasks else None
-    # Denominator is the expected trial count (tasks * rollouts) so missing
-    # rollouts count as failures rather than being dropped from the average.
+    # Missing rollouts count as failures through the expected denominator, while
+    # per-task capping prevents duplicated rollouts from inflating the numerator.
     expected_trials = n_tasks * rollouts
-    avg_at_k = round(total_passed / expected_trials, 6) if expected_trials else None
+    avg_at_k = round(capped_passed / expected_trials, 6) if expected_trials else None
     totals = {
         "tasks": n_tasks,
         "trials": total_trials,
@@ -268,6 +279,7 @@ def make_summary(
     *,
     dataset: str | None,
     model: str | None,
+    category: str | None,
     rollouts: int,
     shards_found: int,
     expected_shards: int | None,
@@ -285,6 +297,7 @@ def make_summary(
     return {
         "dataset": dataset,
         "model": model,
+        "category": category,
         "rollouts_per_task": rollouts,
         "shards_found": shards_found,
         "expected_shards": expected_shards,
@@ -305,7 +318,7 @@ def render_step_summary(summary: dict) -> str:
         f"- Dataset: {summary.get('dataset') or 'n/a'}",
         f"- Model: {summary.get('model') or 'n/a'}",
         f"- Rollouts per task: {summary.get('rollouts_per_task')}",
-        f"- Shards with results: {summary.get('shards_found')}"
+        f"- Shards completed: {summary.get('shards_found')}"
         + (
             f" / {summary['expected_shards']} expected"
             if summary.get("expected_shards")
@@ -315,7 +328,11 @@ def render_step_summary(summary: dict) -> str:
     totals = summary["totals"]
     lines.append(
         f"- Tasks: {totals['tasks']} | Trials: {totals['trials']}"
-        + (f" / {totals['expected_trials']} expected" if totals.get("expected_trials") else "")
+        + (
+            f" / {totals['expected_trials']} expected"
+            if totals.get("expected_trials")
+            else ""
+        )
         + f" | Passed: {totals['passed']} | Errored: {totals['errored']}"
     )
     if summary.get("skipped_files"):
@@ -329,8 +346,12 @@ def render_step_summary(summary: dict) -> str:
     passk = summary.get(f"pass@{k}")
     avgk = summary.get(f"avg@{k}")
     lines.extend(["", "| metric | value |", "|---|---|"])
-    lines.append(f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |")
-    lines.append(f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |")
+    lines.append(
+        f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |"
+    )
+    lines.append(
+        f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -368,7 +389,10 @@ def _incomplete_reason(
     if shard_shortfall:
         reasons.append(f"only {shards_found}/{expected_shards} shards reported")
     if count_mismatch:
-        reasons.append(f"trials {totals['trials']}/{totals['expected_trials']}")
+        reasons.append(
+            "per-task rollout counts differ from K "
+            f"(trials {totals['trials']}/{totals['expected_trials']})"
+        )
     if skipped_files:
         reasons.append(f"{skipped_files} unreadable result file(s)")
     if malformed_rewards:
@@ -391,7 +415,22 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Where to write summary.json and per_task.jsonl (default: root).",
     )
-    parser.add_argument("--dataset", default=None, help="Dataset ref, recorded in the summary.")
+    parser.add_argument(
+        "--dataset", default=None, help="Dataset ref, recorded in the summary."
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=(
+            "Model spec, recorded authoritatively in the summary. Overrides the "
+            "value detected from results, which is null when every trial errored."
+        ),
+    )
+    parser.add_argument(
+        "--category",
+        default=None,
+        help="Eval category (autonomous|conversation|context), recorded in the summary.",
+    )
     parser.add_argument(
         "--harbor-result",
         default=None,
@@ -407,9 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Authoritative shard count for a non-task-filtered run. When set, the "
-            "run is flagged incomplete if fewer shards reported results. Omit for "
-            "task-filtered runs, whose empty shards legitimately produce no output."
+            "Authoritative shard count. When set, the run is flagged incomplete "
+            "if fewer shards reported results or successful empty-shard markers."
         ),
     )
     args = parser.parse_args(argv)
@@ -421,12 +459,14 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out_dir or args.root
     agg = aggregate(args.root)
-    shards_found = len(agg.job_ids)
+    shards_found = len(agg.job_ids) + len(agg.empty_shards)
     # A shard actually failed only if the matrix job did not fully succeed. Empty
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
     shard_failure = args.harbor_result not in (None, "", "success")
     # Fewer shards than the caller declared (only checkable when it passes a count).
-    shard_shortfall = args.expected_shards is not None and shards_found < args.expected_shards
+    shard_shortfall = (
+        args.expected_shards is not None and shards_found < args.expected_shards
+    )
     # Files we found but couldn't trust: a lost result deflates the scores.
     data_loss = agg.skipped_files > 0 or agg.malformed_rewards > 0
 
@@ -434,14 +474,21 @@ def main(argv: list[str] | None = None) -> int:
         incomplete = shard_failure or shard_shortfall or data_loss
         summary = make_summary(
             dataset=args.dataset,
-            model=None,
+            model=args.model,
+            category=args.category,
             rollouts=args.rollouts,
             shards_found=shards_found,
             expected_shards=args.expected_shards,
             skipped_files=agg.skipped_files,
             harbor_result=args.harbor_result,
             incomplete=incomplete,
-            totals={"tasks": 0, "trials": 0, "expected_trials": 0, "passed": 0, "errored": 0},
+            totals={
+                "tasks": 0,
+                "trials": 0,
+                "expected_trials": 0,
+                "passed": 0,
+                "errored": 0,
+            },
             pass_at_k=None,
             avg_at_k=None,
         )
@@ -477,11 +524,14 @@ def main(argv: list[str] | None = None) -> int:
     # Incomplete if a shard job failed, a shard is missing, a present task ran a
     # number of trials other than K (missing OR duplicated rollouts), or a result
     # was unreadable / had a non-numeric reward.
-    count_mismatch = parts.totals["trials"] != parts.totals["expected_trials"]
+    count_mismatch = any(
+        stats["trials"] != args.rollouts for stats in agg.by_task.values()
+    )
     incomplete = shard_failure or shard_shortfall or data_loss or count_mismatch
     summary = make_summary(
         dataset=args.dataset,
-        model=next(iter(agg.models)) if agg.models else None,
+        model=args.model or (next(iter(agg.models)) if agg.models else None),
+        category=args.category,
         rollouts=args.rollouts,
         shards_found=shards_found,
         expected_shards=args.expected_shards,

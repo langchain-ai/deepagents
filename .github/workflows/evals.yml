@@ -847,6 +847,11 @@ jobs:
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest
+    # This job shares eval-assets with unified_evals.yml. Use the same group so
+    # publishers in either workflow cannot race on the branch tip.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
     needs:
       - eval-anthropic
       - eval-baseten
@@ -948,6 +953,11 @@ jobs:
       - name: "🖼️ Publish charts to eval-assets branch"
         id: publish-charts
         if: hashFiles('charts/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded, so a transient git/push failure must not fail an otherwise-
+        # successful aggregate. The "Append charts" step gates on this
+        # outcome == 'success'.
+        continue-on-error: true
         env:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
@@ -973,7 +983,10 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory (light + dark variants).
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
           if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then

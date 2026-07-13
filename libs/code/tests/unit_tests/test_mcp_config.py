@@ -139,7 +139,13 @@ class TestResolveMcpServerEnv:
 
     @pytest.mark.parametrize(
         "value",
-        ["${VAR-default}", "${VAR:default}", "prefix-${VAR"],
+        [
+            "${VAR-default}",
+            "${VAR:default}",
+            "prefix-${VAR",
+            "${A:-foo${BAD}",
+            "${A:-${B}}",
+        ],
     )
     def test_malformed_reference_is_rejected(self, value: str) -> None:
         """An unparseable `${...}` fails instead of being emitted verbatim."""

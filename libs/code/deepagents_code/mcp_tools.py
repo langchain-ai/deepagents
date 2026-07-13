@@ -1111,7 +1111,7 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
     if shutil.which(command) is None:
         msg = (
-            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            f"MCP server '{server_name}': configured command not found on PATH. "
             "Install it or check your MCP config."
         )
         raise RuntimeError(msg)
@@ -1138,13 +1138,13 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
             response = await client.head(url)
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
         msg = (
-            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            f"MCP server '{server_name}': configured URL is unreachable. "
             "Check that the URL is correct and the server is running."
         )
         raise RuntimeError(msg) from exc
     if response.status_code >= 500:  # noqa: PLR2004  # HTTP server-error band
         msg = (
-            f"MCP server '{server_name}': {url} returned HTTP "
+            f"MCP server '{server_name}': configured URL returned HTTP "
             f"{response.status_code}. Server may be down; retry later."
         )
         raise RuntimeError(msg)

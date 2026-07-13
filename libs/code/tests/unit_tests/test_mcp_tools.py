@@ -2216,7 +2216,7 @@ class TestHealthChecks:
             assert server_infos[0].name == "srv"
             assert server_infos[0].status == "error"
             error = server_infos[0].error or ""
-            assert "command 'missing' not found on PATH" in error
+            assert "configured command not found on PATH" in error
             assert manager is not None
         finally:
             if manager is not None:
@@ -2236,6 +2236,63 @@ class TestHealthChecks:
             pytest.raises(RuntimeError, match="unreachable"),
         ):
             await _check_remote_server("srv", {"url": "http://down:9999"})
+
+    async def test_expanded_url_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded URL credentials never reach status or warning text."""
+        secret = "url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        client = AsyncMock()
+        client.head.side_effect = httpx.InvalidURL(f"invalid URL containing {secret}")
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("httpx.AsyncClient", return_value=client):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "not a url?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured URL is unreachable" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_command_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded commands never reach status or warning text."""
+        secret = "command-token-must-not-leak"
+        monkeypatch.setenv("MCP_COMMAND", secret)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("deepagents_code.mcp_tools.shutil.which", return_value=None):
+            tools, manager, infos = await _load_tools_from_config(
+                {"mcpServers": {"stdio": {"command": "${MCP_COMMAND}"}}}
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured command not found on PATH" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
 
 
 class TestToolOrdering:

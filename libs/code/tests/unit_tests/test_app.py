@@ -58,7 +58,7 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
-from deepagents_code.media_utils import ImageData
+from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -1965,6 +1965,8 @@ class TestCtrlDChatInput:
             assert text_area is not None
             text_area.focus()
             await pilot.press("h", "e", "l", "l", "o")
+            # ctrl+a moves the cursor to the start of the line (not select-all),
+            # so delete-right removes the leading "h".
             await pilot.press("ctrl+a")
 
             with patch.object(app, "exit") as exit_mock:
@@ -1973,6 +1975,8 @@ class TestCtrlDChatInput:
 
             assert chat_input.value == "ello"
             exit_mock.assert_not_called()
+            # A draft swallows the quit rather than half-arming the double-tap.
+            assert app._quit_pending is False
 
     async def test_ctrl_d_does_not_quit_at_end_of_non_empty_input(self) -> None:
         """Ctrl+D should be a no-op at the end of a non-empty draft."""
@@ -1989,6 +1993,57 @@ class TestCtrlDChatInput:
                 await pilot.pause()
 
             assert chat_input.value == "hi"
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    @pytest.mark.parametrize("kind", ["image", "video"])
+    async def test_ctrl_d_deletes_bound_media_placeholder_atomically(
+        self, kind: str
+    ) -> None:
+        """Ctrl+D should delete a bound media placeholder as one token."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            if kind == "image":
+                placeholder = app._image_tracker.add_image(
+                    ImageData(base64_data="abc", format="png", placeholder="")
+                )
+            else:
+                placeholder = app._image_tracker.add_video(
+                    VideoData(base64_data="abc", format="mp4", placeholder="")
+                )
+            chat_input.value = placeholder
+            text_area.move_cursor((0, 0))
+            text_area.focus()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            assert app._image_tracker.get_images() == []
+            assert app._image_tracker.get_videos() == []
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_collapsed_paste_placeholder_atomically(self) -> None:
+        """Ctrl+D should preserve collapsed-paste integrity when deleting it."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            chat_input.handle_external_paste("p" * 900)
+            text_area.move_cursor((0, 0))
+            assert chat_input.value == "[Pasted text #1]"
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            assert 1 in chat_input._pasted_contents
             exit_mock.assert_not_called()
 
     async def test_ctrl_d_quits_when_input_is_empty(self) -> None:

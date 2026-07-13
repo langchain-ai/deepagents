@@ -12654,7 +12654,13 @@ class DeepAgentsApp(App):
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
-        """Handle quit action (Ctrl+D)."""
+        """Handle the Ctrl+D binding.
+
+        Delete-confirm screens and the auth/thread selectors keep their own
+        Ctrl+D behavior. Otherwise, when the chat input is focused and holds a
+        draft, Ctrl+D deletes right of the cursor instead of quitting; the app
+        only exits from an empty (or unfocused) prompt.
+        """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
@@ -12680,6 +12686,10 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
+        # Delegate Ctrl+D to the chat input's delete-right when it holds a
+        # draft. Check `self.focused` (the active screen's focused widget), not
+        # `text_area.has_focus`: a draft hidden behind a modal keeps focus but
+        # must not be edited from under it, so Ctrl+D quits in that case.
         chat_input = self._chat_input
         if chat_input is not None:
             text_area = chat_input.input_widget

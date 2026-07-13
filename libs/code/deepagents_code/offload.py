@@ -7,8 +7,10 @@ tested independently of the Textual app.
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import get_buffer_string
@@ -18,6 +20,7 @@ from deepagents_code._session_stats import format_token_count
 from deepagents_code.config import create_model
 
 if TYPE_CHECKING:
+    from deepagents.backends.filesystem import FilesystemBackend
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.summarization import (
         SummarizationEvent,
@@ -118,6 +121,42 @@ def format_offload_limit(
         return f"{percent:.0f}% of context window"
 
     return "current retention threshold"
+
+
+def _offload_fallback_root() -> Path:
+    """Return a writable root directory for offload when no backend is given.
+
+    Prefers the persistent per-user `~/.deepagents` directory so offloaded
+    history survives across sessions and is easy to locate; falls back to a
+    temp directory when the home directory cannot be resolved.
+
+    Returns:
+        A directory path suitable for use as a writable backend root.
+    """
+    try:
+        return Path.home() / ".deepagents"
+    except (RuntimeError, OSError):
+        return Path(tempfile.gettempdir()) / "deepagents"
+
+
+def _fallback_offload_backend() -> FilesystemBackend:
+    """Build a writable local backend for offload when none is provided.
+
+    In server mode the app holds no handle to the agent's routed backend, so
+    `/offload` must persist conversation history through a backend it creates
+    itself. A non-virtual `FilesystemBackend` would resolve the absolute
+    `/conversation_history/...` path against the real filesystem root, which is
+    not writable on normal accounts and fails the persist step. Rooting a
+    virtual-mode backend at `~/.deepagents` keeps the same virtual path while
+    landing the file somewhere writable, and blocks path traversal outside the
+    root.
+
+    Returns:
+        A virtual-mode `FilesystemBackend` rooted at a writable directory.
+    """
+    from deepagents.backends.filesystem import FilesystemBackend
+
+    return FilesystemBackend(root_dir=str(_offload_fallback_root()), virtual_mode=True)
 
 
 async def offload_messages_to_backend(
@@ -305,10 +344,11 @@ async def perform_offload(
     defaults = compute_summarization_defaults(model)
     offload_backend = backend
     if offload_backend is None:
-        from deepagents.backends.filesystem import FilesystemBackend
-
-        offload_backend = FilesystemBackend(virtual_mode=False)
-        logger.info("Using local FilesystemBackend for offload")
+        offload_backend = _fallback_offload_backend()
+        logger.info(
+            "No backend provided for offload; persisting conversation history under %s",
+            _offload_fallback_root(),
+        )
 
     middleware = SummarizationMiddleware(
         model=model,

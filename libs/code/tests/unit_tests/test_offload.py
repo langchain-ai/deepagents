@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,8 @@ from deepagents_code.offload import (
     OffloadModelError,
     OffloadResult,
     OffloadThresholdNotMet,
+    _fallback_offload_backend,
+    _offload_fallback_root,
     format_offload_limit,
     offload_messages_to_backend,
 )
@@ -872,6 +875,60 @@ class TestOffloadMessagesToBackend:
             )
 
         assert result is None
+
+
+class TestFallbackOffloadBackend:
+    """Cover the `backend is None` fallback used by `/offload` in server mode.
+
+    In server mode the app has no handle to the agent's routed backend, so
+    `perform_offload` builds its own. A non-virtual backend would resolve the
+    absolute `/conversation_history/...` path against the real filesystem root
+    (unwritable on normal accounts), silently failing every persist. The
+    fallback must instead be a virtual-mode backend rooted at a writable
+    per-user directory.
+    """
+
+    def test_fallback_root_prefers_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`~/.deepagents` is preferred when the home directory resolves."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert _offload_fallback_root() == tmp_path / ".deepagents"
+
+    def test_fallback_backend_is_virtual(self) -> None:
+        """Fallback backend must use virtual mode so absolute paths stay rooted."""
+        backend = _fallback_offload_backend()
+        # `virtual_mode=False` is the bug: it lets `/conversation_history/...`
+        # escape to the real filesystem root.
+        assert backend.virtual_mode is True
+
+    async def test_fallback_backend_writes_under_writable_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Offloading through the fallback lands the file under the root, not `/`."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        mock_mw = MagicMock()
+        messages = [HumanMessage("hello"), AIMessage("hi back")]
+        mock_mw._filter_summary_messages.return_value = messages
+
+        backend = _fallback_offload_backend()
+        result = await offload_messages_to_backend(
+            messages,
+            mock_mw,
+            thread_id="thread-abc",
+            backend=backend,
+        )
+
+        # The returned/stored path stays the stable virtual path.
+        assert result == "/conversation_history/thread-abc.md"
+        # The bytes actually land under the writable per-user root, kept inside
+        # the virtual root rather than the real filesystem root.
+        on_disk = tmp_path / ".deepagents" / "conversation_history" / "thread-abc.md"
+        assert on_disk.exists()
+        assert "hello" in on_disk.read_text()
 
 
 class TestOffloadRouting:

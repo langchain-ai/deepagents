@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 # --- Canonical typed defaults ----------------------------------------------
-# These are the single source of truth for `[interpreter]` defaults. The
-# `Settings` dataclass references them so the default is defined once.
+# These are single sources of truth for defaults shared across the manifest and
+# their runtime consumers.
 
 INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
@@ -63,6 +63,13 @@ LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 
 Single source of truth shared by the `tracing.langsmith_project` option and
 `config.get_langsmith_project_name`."""
+
+CursorStyle = Literal["block", "underline"]
+"""Visual style for the chat input cursor (a block cell or an underline)."""
+
+CURSOR_STYLE_DEFAULT: CursorStyle = "block"
+VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
+"""Allowlist derived from `CursorStyle` so the two never drift."""
 
 
 class OptionKind(Enum):
@@ -105,6 +112,9 @@ class OptionKind(Enum):
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
 
+    CURSOR_STYLE_DELEGATE = "cursor_style"
+    """Validates the `[ui].cursor_style` display allowlist."""
+
     STARTUP_MODE_DELEGATE = "startup_mode"
     """Delegates to the `[startup].mode` runtime allowlist."""
 
@@ -125,6 +135,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.CURSOR_STYLE_DELEGATE: "str",
     OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
@@ -146,6 +157,7 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.CURSOR_STYLE_DELEGATE: (str,),
     OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
@@ -430,6 +442,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # Resolved upstream in `resolve_scalar` and never reaches here; the raw
         # passthrough is a defensive fallback only.
         return raw
+    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'block' or 'underline')",
+            name,
+            raw,
+        )
+        return _INVALID
     if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
         # Neither kind declares an `env_var`, so the `if option.env_var` guard in
         # `resolve_scalar` means this is unreachable today. If a future option
@@ -497,6 +518,15 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'block' or 'underline')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES
 
@@ -826,6 +856,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.THEME_DELEGATE,
         env_var=_env_vars.THEME,
         toml_keys=("ui", "theme"),
+    ),
+    ConfigOption(
+        key="display.cursor_style",
+        group="Display",
+        summary="Chat input cursor style ('block' or 'underline').",
+        kind=OptionKind.CURSOR_STYLE_DELEGATE,
+        default=CURSOR_STYLE_DEFAULT,
+        env_var=_env_vars.CURSOR_STYLE,
+        toml_keys=("ui", "cursor_style"),
     ),
     ConfigOption(
         key="display.show_header",

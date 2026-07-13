@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 
+from deepagents_code.mcp_config import resolve_mcp_server_env
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
@@ -470,7 +472,7 @@ def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
     """Validate a single server configuration.
 
-    Performs only shape checks — `${VAR}` header interpolation is deferred
+    Performs only shape checks — `${VAR}` config interpolation is deferred
     to activation time so one unset env var only fails its own server
     rather than hiding every other MCP entry in the same file.
 
@@ -849,7 +851,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` header interpolation is deferred to activation time, so no RuntimeError here)
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` config interpolation is deferred to activation time, so no RuntimeError here)
     config = _load_mcp_config_top_level(Path(config_path))
     _validate_mcp_config_servers(config)
 
@@ -1109,7 +1111,7 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
     if shutil.which(command) is None:
         msg = (
-            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            f"MCP server '{server_name}': configured command not found on PATH. "
             "Install it or check your MCP config."
         )
         raise RuntimeError(msg)
@@ -1135,17 +1137,47 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.head(url)
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
+        # Name the failure *class* (e.g. `ConnectTimeout`, `InvalidURL`) so the
+        # failure mode stays diagnosable, but keep the URL redacted: `str(exc)`
+        # echoes the URL (which may carry `${VAR}`-injected credentials), while
+        # the class name never does.
         msg = (
-            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            f"MCP server '{server_name}': configured URL is unreachable "
+            f"({type(exc).__name__}). "
             "Check that the URL is correct and the server is running."
         )
         raise RuntimeError(msg) from exc
     if response.status_code >= 500:  # noqa: PLR2004  # HTTP server-error band
         msg = (
-            f"MCP server '{server_name}': {url} returned HTTP "
+            f"MCP server '{server_name}': configured URL returned HTTP "
             f"{response.status_code}. Server may be down; retry later."
         )
         raise RuntimeError(msg)
+
+
+def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
+    """Return whether a supported config value contains an env reference.
+
+    Exceptions raised after interpolation may include resolved connection
+    values in their messages or traceback. Treat every environment-derived
+    value as potentially sensitive so those failures can be reported without
+    exposing the resolved value.
+
+    Args:
+        server_config: Raw, unresolved MCP server configuration.
+
+    Returns:
+        Whether a supported value contains a `${...}` reference.
+    """
+    scalar_values = [server_config.get("command"), server_config.get("url")]
+    sequence_values = server_config.get("args")
+    if isinstance(sequence_values, list):
+        scalar_values.extend(sequence_values)
+    for field in ("env", "headers"):
+        mapping = server_config.get(field)
+        if isinstance(mapping, dict):
+            scalar_values.extend(mapping.values())
+    return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
 async def _discover_tools(session: ClientSession) -> list[Any]:
@@ -1635,6 +1667,25 @@ async def _load_tools_from_config(
             ready `Connection` otherwise.
         """
         server_type = transports[server_name]
+        # Capture this from the *raw* config, before resolution below rebinds
+        # `server_config` to the expanded copy. Once `${...}` refs are expanded,
+        # a downstream setup error may echo the resolved (secret-bearing) value,
+        # so those messages are redacted; plain configs keep full detail.
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+        # Config env-var resolution is the only step that raises `TypeError`
+        # (non-string field). Keep it in its own `try` so an unexpected
+        # `TypeError` from the connectivity checks below — whose contract is
+        # `RuntimeError` only — surfaces as a real bug instead of being
+        # relabeled as a per-server config skip.
+        try:
+            server_config = resolve_mcp_server_env(server_name, server_config)
+        except (RuntimeError, TypeError) as exc:
+            logger.warning(
+                "MCP server '%s' skipped: config error: %s",
+                server_name,
+                exc,
+            )
+            return ("error", str(exc))
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
@@ -1664,12 +1715,7 @@ async def _load_tools_from_config(
                     )
 
                 if "headers" in server_config:
-                    from deepagents_code.mcp_auth import resolve_headers
-
-                    conn["headers"] = resolve_headers(
-                        server_config["headers"],
-                        server_name=server_name,
-                    )
+                    conn["headers"] = server_config["headers"]
 
                 from deepagents_code.mcp_auth import (
                     FileTokenStorage,
@@ -1719,12 +1765,25 @@ async def _load_tools_from_config(
                 transport="stdio",
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            logger.warning(
-                "MCP server '%s' skipped: config/setup failed: %s",
-                server_name,
-                exc,
-            )
-            return ("error", str(exc))
+            if redact_failure_details:
+                error = (
+                    f"MCP server {server_name!r}: setup failed after "
+                    "resolving environment variables."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed (%s; details "
+                    "redacted because config uses environment interpolation)",
+                    server_name,
+                    exc.__class__.__name__,
+                )
+            else:
+                error = str(exc)
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed",
+                    server_name,
+                    exc_info=exc,
+                )
+            return ("error", error)
 
     # Preflight + connection build runs concurrently across servers (bounded).
     # Results come back in submission order, so `skipped`/`connections` are
@@ -1770,13 +1829,33 @@ async def _load_tools_from_config(
         Returns:
             The server's LangChain tools plus its `MCPServerInfo` entry.
         """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+
+        def _log_caught_exception(
+            level: int,
+            message: str,
+            caught: BaseException,
+        ) -> None:
+            """Log a caught exception without exposing resolved config values."""
+            if redact_failure_details:
+                rendered_message = message % server_name
+                logger.log(
+                    level,
+                    "%s (%s; details redacted because config uses environment "
+                    "interpolation)",
+                    rendered_message,
+                    caught.__class__.__name__,
+                )
+            else:
+                logger.log(level, message, server_name, exc_info=caught)
+
         try:
             async with create_session(connections[server_name]) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate third-party discovery failures per server
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
@@ -1790,17 +1869,17 @@ async def _load_tools_from_config(
                     if transport in _SUPPORTED_REMOTE_TYPES
                     else None
                 )
-            except Exception:
+            except Exception as classify_exc:  # noqa: BLE001 - classification must not abort other servers
                 # Classifying the failure is best-effort. If a classifier
                 # itself raises, degrade this one server to a plain error
                 # rather than letting the exception abort tool loading for
                 # every remaining server.
                 reauth = None
                 challenge_url = None
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s': failed to classify discovery error",
-                    server_name,
-                    exc_info=True,
+                    classify_exc,
                 )
 
             if reauth is not None:
@@ -1810,19 +1889,21 @@ async def _load_tools_from_config(
                 # re-login, and keep the original exception only in debug logs
                 # so expected re-auth skips don't flood non-interactive output.
                 status = "unauthenticated"
-                error = (
-                    f"{reauth} "
-                    "(token refresh failed; the original error is in debug logs)"
+                detail = (
+                    "details redacted because config uses environment interpolation"
+                    if redact_failure_details
+                    else "the original error is in debug logs"
                 )
+                error = f"{reauth} (token refresh failed; {detail})"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
@@ -1840,18 +1921,25 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             else:
                 status = "error"
-                error = str(exc)
-                logger.warning(
+                error = (
+                    (
+                        f"MCP server {server_name!r}: tool discovery failed "
+                        "after resolving environment variables."
+                    )
+                    if redact_failure_details
+                    else str(exc)
+                )
+                _log_caught_exception(
+                    logging.WARNING,
                     "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             return [], MCPServerInfo(
                 name=server_name,
@@ -1938,17 +2026,25 @@ async def _load_tools_from_config(
                 )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
-            logger.warning(
+        except Exception as exc:  # noqa: BLE001 - isolate third-party tool conversion failures per server
+            error = (
+                (
+                    f"MCP server {server_name!r}: tool construction failed "
+                    "after resolving environment variables."
+                )
+                if redact_failure_details
+                else str(exc)
+            )
+            _log_caught_exception(
+                logging.WARNING,
                 "MCP server '%s' skipped: tool construction failed",
-                server_name,
-                exc_info=True,
+                exc,
             )
             return [], MCPServerInfo(
                 name=server_name,
                 transport=transport,
                 status="error",
-                error=str(exc),
+                error=error,
             )
 
         return server_tools, MCPServerInfo(
@@ -2119,8 +2215,8 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed. (Header `${VAR}`
-            interpolation is deferred to activation inside
+        RuntimeError: If the merged MCP config is malformed. (`${VAR}`
+            config interpolation is deferred to activation inside
             `_load_tools_from_config`, which captures such failures into the
             returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
@@ -2217,7 +2313,7 @@ async def resolve_and_load_mcp_tools(
         # here (rather than loading all or none) preserves the SSRF/header-
         # exfiltration gate: a non-allowlisted remote entry from an attacker-
         # controlled .mcp.json never reaches the preflight HEAD probe or the
-        # `${VAR}` header interpolation during the discovery handshake.
+        # `${VAR}` config interpolation during the discovery handshake.
         servers = config["mcpServers"]
         kept: dict[str, Any] = {}
         for name, server in servers.items():

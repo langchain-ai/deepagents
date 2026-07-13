@@ -213,9 +213,7 @@ class TestCollectMcpCatalog:
         assert groups == []
         assert mcp_error is None
         assert unavailable == [
-            UnavailableServer(
-                name="off", status="disabled", detail="turned off via /mcp"
-            ),
+            UnavailableServer(name="off", status="disabled", detail=""),
             UnavailableServer(
                 name="pending",
                 status="awaiting_reconnect",
@@ -271,6 +269,27 @@ class TestSplitMcpServerInfo:
         assert groups == []
         assert unavailable == [
             UnavailableServer(name="broken", status="error", detail="boom")
+        ]
+
+    def test_pending_reenable_guidance_is_preserved(self) -> None:
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="http",
+                status="disabled",
+                error="Re-enabled — press Ctrl+R to load.",
+            ),
+        ]
+
+        groups, unavailable = split_mcp_server_info(servers)
+
+        assert groups == []
+        assert unavailable == [
+            UnavailableServer(
+                name="notion",
+                status="disabled",
+                detail="Re-enabled — press Ctrl+R to load.",
+            )
         ]
 
     def test_ok_server_without_tools_is_dropped(self) -> None:

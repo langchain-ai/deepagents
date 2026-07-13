@@ -11248,7 +11248,10 @@ class TestToolsSlashCommand:
         assert mount.await_count == 2
         rendered = mount.await_args_list[-1].args[0]._content.plain
         assert rendered.count("custom_search") == 1
+        assert "Search custom data" in rendered
         assert rendered.count("search_docs") == 1
+        assert "Search docs" not in rendered
+        assert "MCP tool descriptions are available in /mcp." in rendered
 
     async def test_remote_agent_reports_built_in_enumeration_unsupported(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -11300,6 +11303,37 @@ class TestToolsSlashCommand:
         assert "search_docs" in rendered
         assert "Unavailable MCP servers" not in rendered
 
+    async def test_pending_mcp_reenable_keeps_reconnect_guidance(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="disabled",
+                    error="Disabled by user (F2 to re-enable).",
+                ),
+            ],
+        )
+        app._server_kwargs = {"enable_interpreter": False}
+        app._apply_optimistic_disabled_state("notion", disabled=False)
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "notion" in rendered
+        assert "Re-enabled — press Ctrl+R to load." in rendered
+        assert "disabled by user" not in rendered
+
     def test_render_tool_catalog_reports_unavailable(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
         from deepagents_code.tool_catalog import (
@@ -11311,6 +11345,12 @@ class TestToolsSlashCommand:
             MCPServerInfo(
                 name="broken", transport="http", status="error", error="boom"
             ),
+            MCPServerInfo(
+                name="notion",
+                transport="http",
+                status="disabled",
+                error="Disabled by user (F2 to re-enable).",
+            ),
         ]
         catalog = build_catalog_from_server_info(
             [ToolEntry(name="read_file", description="Read a file")], servers
@@ -11320,6 +11360,10 @@ class TestToolsSlashCommand:
         assert "Unavailable MCP servers" in rendered
         assert "broken" in rendered
         assert "boom" in rendered
+        assert "notion" in rendered
+        assert "disabled by user" in rendered
+        assert "disabled:" not in rendered
+        assert "F2" not in rendered
 
     async def test_forwards_enable_interpreter_true(self) -> None:
         from deepagents_code.tool_catalog import ToolEntry
@@ -11427,6 +11471,8 @@ class TestToolsSlashCommand:
         # Shorter name padded to the widest name in the group so columns align.
         assert f"  {'ls'.ljust(len('read_file'))}  list" in rendered
         assert "  read_file  read" in rendered
+        # No MCP groups → the `/mcp` descriptions pointer must not appear.
+        assert "MCP tool descriptions are available in /mcp." not in rendered
 
     def test_render_unavailable_without_detail_omits_colon(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -11436,14 +11482,23 @@ class TestToolsSlashCommand:
         )
 
         # A non-`ok` server must carry an error, but it may be empty (""), which
-        # yields an empty `detail` — the branch that renders status with no colon.
+        # yields an empty `detail` — the branch that renders status with no
+        # colon. Use a non-`disabled` status: `disabled` takes its own
+        # "disabled by user" branch, so it would not exercise this path.
         catalog = build_catalog_from_server_info(
             [ToolEntry(name="read_file", description="Read a file")],
-            [MCPServerInfo(name="off", transport="http", status="disabled", error="")],
+            [
+                MCPServerInfo(
+                    name="off",
+                    transport="http",
+                    status="awaiting_reconnect",
+                    error="",
+                )
+            ],
         )
         rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "  off  disabled" in rendered
-        assert "disabled:" not in rendered
+        assert "  off  awaiting_reconnect" in rendered
+        assert "awaiting_reconnect:" not in rendered
 
     def test_render_includes_mcp_error(self) -> None:
         from deepagents_code.tool_catalog import (

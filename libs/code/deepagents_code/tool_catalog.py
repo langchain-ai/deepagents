@@ -308,15 +308,25 @@ def split_mcp_server_info(
         elif server.status != "ok":
             # A server that loaded but has no tools *and* is not "ok" is broken,
             # unauthenticated, or disabled — report it so the omission is
-            # explained. `server.error` is discovery's own reason string (the
-            # same text the interactive `/mcp` viewer shows); it is not a stack
-            # trace, but for config-load failures it can include the local
-            # config file path — see `UnavailableServer.detail`.
+            # explained. Disabled servers are labeled by the catalog renderers,
+            # except when a just-re-enabled server still needs a reconnect. That
+            # pending state temporarily retains the disabled status, so its
+            # guidance must survive for the renderer to distinguish it from a
+            # server the user left disabled. Other statuses retain discovery's
+            # reason string. It is not a stack trace, but config-load failures
+            # can include the local config file path — see
+            # `UnavailableServer.detail`.
+            detail = server.error or ""
+            if (
+                server.status == "disabled"
+                and detail != "Re-enabled — press Ctrl+R to load."
+            ):
+                detail = ""
             unavailable.append(
                 UnavailableServer(
                     name=server.name,
                     status=server.status,
-                    detail=server.error or "",
+                    detail=detail,
                 )
             )
     return groups, unavailable

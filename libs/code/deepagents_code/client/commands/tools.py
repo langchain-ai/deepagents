@@ -236,9 +236,21 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
         padded = server.name.ljust(name_width)
         # `status: detail` (ASCII-only, no em-dash) so legacy consoles don't hit
         # an encoding error; detail is discovery's own curated reason string.
-        detail = f": {server.detail}" if server.detail else ""
+        # Disabled servers instead show "disabled by user" (or their reconnect
+        # guidance, if just re-enabled) with no `: detail` suffix; other statuses
+        # keep discovery's reason string.
+        status = (
+            server.detail or "disabled by user"
+            if server.status == "disabled"
+            else server.status
+        )
+        detail = (
+            f": {server.detail}"
+            if server.status != "disabled" and server.detail
+            else ""
+        )
         console.print(
-            f"  {padded}  {server.status}{detail}".rstrip(),
+            f"  {padded}  {status}{detail}".rstrip(),
             style="dim",
             markup=False,
             highlight=False,

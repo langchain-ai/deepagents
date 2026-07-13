@@ -8436,13 +8436,15 @@ class DeepAgentsApp(App):
     def _render_tool_catalog(catalog: ToolCatalog) -> Content:
         """Render a tool catalog as chat `Content`.
 
-        Shows a count header, each group's heading with its aligned
-        `name  description` rows, then any MCP servers that loaded with no tools
-        and a non-`ok` status, and finally a discovery-error notice if the
-        catalog carries one. Every display string — tool names/descriptions and
-        MCP server names/statuses, some of which are external — is added as a
-        plain-text span (via `Content.styled` or a `(text, style)` tuple) that
-        is never parsed as markup.
+        Shows a count header, then each group's heading with its rows:
+        built-in groups render aligned `name  description` rows, while MCP
+        groups render names only — their descriptions are surfaced via `/mcp`,
+        noted by a pointer line whenever any MCP tools are present. Then any MCP
+        servers that loaded with no tools and a non-`ok` status, and finally a
+        discovery-error notice if the catalog carries one. Every display
+        string — tool names/descriptions and MCP server names/statuses, some of
+        which are external — is added as a plain-text span (via `Content.styled`
+        or a `(text, style)` tuple) that is never parsed as markup.
 
         Args:
             catalog: Collected tool groups, unavailable MCP servers, and any
@@ -8468,15 +8470,30 @@ class DeepAgentsApp(App):
                 row = f"  {label.ljust(width)}  {detail}".rstrip()
                 parts.extend(("\n", (row, "dim")))
 
+        has_mcp_tools = False
         for group in catalog.groups:
-            _section(group.label, [(e.name, e.description) for e in group.tools])
+            if group.source == "mcp":
+                has_mcp_tools = has_mcp_tools or bool(group.tools)
+                rows = [(entry.name, "") for entry in group.tools]
+            else:
+                rows = [(entry.name, entry.description) for entry in group.tools]
+            _section(group.label, rows)
+
+        if has_mcp_tools:
+            parts.extend(
+                ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
+            )
 
         _section(
             "Unavailable MCP servers",
             [
-                (server.name, f"{server.status}: {server.detail}")
-                if server.detail
-                else (server.name, server.status)
+                (server.name, server.detail or "disabled by user")
+                if server.status == "disabled"
+                else (
+                    (server.name, f"{server.status}: {server.detail}")
+                    if server.detail
+                    else (server.name, server.status)
+                )
                 for server in catalog.unavailable
             ],
         )

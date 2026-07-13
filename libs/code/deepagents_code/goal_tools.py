@@ -46,6 +46,7 @@ GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
 complete.
 When a goal is active, use `get_goal` to inspect the objective and current status.
+A paused goal is persisted for later but must not drive work until the user resumes it.
 Use `update_goal` only when you have evidence that the goal is complete or blocked."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
@@ -93,9 +94,9 @@ class GoalSnapshot(TypedDict):
     active: bool
     """Whether the goal is unfinished.
 
-    Derived from `status`: a set goal is active until it is `complete`. `False`
-    when no goal is set (the `objective is None` branch), where `status` is also
-    `None`.
+    Derived from `status`: `active` and `blocked` goals are actionable, while
+    `paused` and `complete` goals are not. `False` when no goal is set (the
+    `objective is None` branch), where `status` is also `None`.
     """
 
     objective: str | None
@@ -209,9 +210,9 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
     note = _clean_state_text(state, "_goal_status_note")
     return {
-        # A goal is active until it is complete; `blocked` is still unfinished.
-        # Derive `active` from `status` so the two never disagree.
-        "active": status != "complete",
+        # Blocked goals remain actionable, while paused and complete goals do not
+        # drive work until the user changes their state.
+        "active": status in {"active", "blocked"},
         "objective": objective,
         "status": status,
         "criteria": rubric["criteria"],
@@ -258,6 +259,20 @@ def _update_goal_command(
                         tool_call_id=tool_call_id,
                     )
                 ]
+            }
+        )
+    goal_status = coerce_goal_status(state.get("_goal_status")) or "active"
+    if goal_status in {"paused", "complete"}:
+        if goal_status == "paused":
+            message = (
+                "The goal is paused. The user must run `/goal resume` before its "
+                "status can be updated."
+            )
+        else:
+            message = "The goal is already complete and cannot be updated."
+        return Command(
+            update={
+                "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)]
             }
         )
     clean_note = note.strip()

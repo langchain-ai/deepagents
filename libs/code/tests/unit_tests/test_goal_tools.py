@@ -102,6 +102,25 @@ def test_goal_snapshot_with_active_goal() -> None:
     }
 
 
+def test_goal_snapshot_paused_goal_is_inactive_but_persisted() -> None:
+    """A paused goal remains readable without being actionable."""
+    snapshot = _goal_snapshot(
+        {
+            "_goal_objective": "add refresh tokens",
+            "_goal_status": "paused",
+            "_goal_rubric": "- tests pass",
+        }
+    )
+
+    assert snapshot == {
+        "active": False,
+        "objective": "add refresh tokens",
+        "status": "paused",
+        "criteria": "- tests pass",
+        "note": None,
+    }
+
+
 def test_goal_snapshot_complete_goal_is_inactive() -> None:
     """A completed goal must report `active=False` (status drives the flag)."""
     snapshot = _goal_snapshot(
@@ -199,6 +218,40 @@ def test_update_goal_marks_blocked_with_note() -> None:
         command.update["messages"][0].content
         == "Goal marked blocked. waiting on API docs"
     )
+
+
+def test_update_goal_rejects_status_change_while_paused() -> None:
+    """The model cannot resume or complete a user-paused goal."""
+    command = _update_goal_command(
+        status="complete",
+        note="tests pass",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "add refresh tokens",
+            "_goal_status": "paused",
+        },
+    )
+
+    assert command.update is not None
+    assert set(command.update) == {"messages"}
+    assert "`/goal resume`" in command.update["messages"][0].content
+
+
+def test_update_goal_rejects_status_change_after_completion() -> None:
+    """A completed goal remains terminal on later agent turns."""
+    command = _update_goal_command(
+        status="blocked",
+        note="new blocker",
+        tool_call_id="call-1",
+        state={
+            "_goal_objective": "add refresh tokens",
+            "_goal_status": "complete",
+        },
+    )
+
+    assert command.update is not None
+    assert set(command.update) == {"messages"}
+    assert "already complete" in command.update["messages"][0].content
 
 
 def test_update_goal_rejects_empty_note() -> None:

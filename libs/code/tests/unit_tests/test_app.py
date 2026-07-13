@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.resume_state import GoalStatus
     from deepagents_code.sessions import ThreadInfo
     from deepagents_code.tui.widgets.messages import ToolCallMessage
 
@@ -39,6 +40,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
@@ -53,6 +55,7 @@ from deepagents_code.app import (
     _ChatScroll,
     _display_model_label,
     _extra_is_ready,
+    _GoalApplication,
     _parse_rubric_max_iterations,
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
@@ -62,6 +65,7 @@ from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
@@ -264,6 +268,7 @@ class TestInitialPromptOnMount:
         chat = MagicMock()
         chat.styles = SimpleNamespace(scrollbar_size_vertical=None)
         status_bar = MagicMock(spec=StatusBar)
+        goal_status_panel = MagicMock(spec=GoalStatusPanel)
         chat_input = MagicMock(spec=ChatInput)
         chat_input.input_widget = None
 
@@ -272,6 +277,8 @@ class TestInitialPromptOnMount:
                 return chat
             if selector == "#status-bar":
                 return status_bar
+            if selector == "#goal-status-panel":
+                return goal_status_panel
             if selector == "#input-area":
                 return chat_input
             raise NoMatches(str(selector))
@@ -5491,7 +5498,7 @@ class TestWarnDiscardedGoalChannels:
     ) -> None:
         """An unrecognized status string is discarded and surfaced at WARNING."""
         with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
-            discarded = _warn_discarded_goal_channels({"_goal_status": "paused"})
+            discarded = _warn_discarded_goal_channels({"_goal_status": "deleted"})
 
         assert discarded == ["_goal_status"]
         assert any(record.levelno == logging.WARNING for record in caplog.records)
@@ -5514,6 +5521,309 @@ class TestGoalCommand:
         )
         future.set_result(result)
         return future
+
+    @pytest.mark.parametrize(
+        ("status", "label"),
+        [
+            ("active", "active"),
+            ("paused", "paused"),
+            ("blocked", "blocked"),
+            ("complete", "completed"),
+        ],
+    )
+    async def test_goal_panel_keeps_current_state_visible(
+        self,
+        status: GoalStatus,
+        label: str,
+    ) -> None:
+        """The persistent panel should display every goal lifecycle state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship interactive goals"
+            app._goal_status = status
+            app._goal_status_note = "waiting for input" if status == "blocked" else None
+
+            app._sync_status_rubric()
+
+            panel = app.query_one("#goal-status-panel", GoalStatusPanel)
+            assert panel.display is True
+            assert label in str(panel.content)
+            assert "ship interactive goals" in str(panel.content)
+
+    async def test_goal_amend_applies_objective_and_criteria_after_review(
+        self,
+    ) -> None:
+        """An approved amendment should replace both canonical goal fields."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works\n- keep API stable"
+            review = AsyncMock(
+                return_value=self._goal_review_future({"type": "accepted"})
+            )
+            continuation = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_generate_goal_amendment",
+                    return_value=(
+                        "ship login with passkeys",
+                        "- password login works\n- passkeys work\n- keep API stable",
+                    ),
+                ),
+                patch.object(app, "_request_goal_review", review),
+                patch.object(app, "_continue_goal_work", continuation),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._handle_command("/goal amend add passkey support")
+                for _ in range(20):
+                    await pilot.pause()
+                    if app._active_goal == "ship login with passkeys":
+                        break
+
+            assert app._active_goal == "ship login with passkeys"
+            assert app._active_rubric == (
+                "- password login works\n- passkeys work\n- keep API stable"
+            )
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_kind is None
+            review.assert_awaited_once_with(
+                "ship login with passkeys",
+                "- password login works\n- passkeys work\n- keep API stable",
+                amendment=True,
+            )
+            continuation.assert_awaited_once_with("amended")
+
+    async def test_rejecting_goal_amendment_keeps_current_goal(self) -> None:
+        """Review feedback must not apply a proposed amendment prematurely."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            future = self._goal_review_future(
+                {"type": "rejected", "message": "keep password login too"}
+            )
+            with patch.object(
+                app,
+                "_propose_goal_amendment",
+                new_callable=AsyncMock,
+            ) as propose:
+                await app._finish_pending_goal_rubric_review(future)
+                await pilot.pause()
+
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- password login works"
+            propose.assert_awaited_once_with(
+                "keep password login too",
+                objective="ship login with passkeys",
+                criteria="- passkeys work",
+            )
+
+    async def test_goal_amend_without_active_goal_shows_guidance(self) -> None:
+        """Amending without a goal should explain how to create one."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/goal amend add passkeys")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No active goal to amend" in rendered
+            assert "/goal <objective>" in rendered
+
+    async def test_paused_goal_suppresses_rubric_for_next_turn(self) -> None:
+        """Paused goals should remain saved without invoking rubric grading."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            await app._pause_goal()
+
+            assert app._goal_status == "paused"
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            assert app._goal_state_update()["rubric"] is None
+            execute = AsyncMock(return_value=SessionStats())
+            with (
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    execute,
+                ),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+            ):
+                await app._run_agent_task("answer an unrelated question")
+
+            assert execute.await_args is not None
+            assert execute.await_args.kwargs["rubric"] is None
+
+    async def test_completed_goal_suppresses_rubric_for_later_turns(self) -> None:
+        """A completed goal remains terminal and does not keep grading."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "complete"
+            app._active_rubric = "- tests pass"
+
+            assert app._goal_state_update()["rubric"] is None
+            execute = AsyncMock(return_value=SessionStats())
+            with (
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    execute,
+                ),
+                patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
+            ):
+                await app._run_agent_task("start a separate task")
+
+            assert execute.await_args is not None
+            assert execute.await_args.kwargs["rubric"] is None
+
+    async def test_goal_resume_preserves_state_without_replaying_objective(
+        self,
+    ) -> None:
+        """Resume should continue through hidden control context, not task replay."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "paused"
+            app._active_rubric = "- tests pass"
+            send = AsyncMock()
+            with patch.object(app, "_send_to_agent", send):
+                await app._resume_goal()
+
+            assert app._goal_status == "active"
+            assert app._active_goal == "ship login"
+            assert app._active_rubric == "- tests pass"
+            send.assert_awaited_once()
+            assert send.await_args is not None
+            control_message = send.await_args.args[0]
+            assert control_message.startswith(SYSTEM_MESSAGE_PREFIX)
+            assert "ship login" not in control_message
+            assert "Do not repeat completed work" in control_message
+
+    async def test_inflight_amendment_applies_after_reconciliation(self) -> None:
+        """An accepted in-flight amendment waits for the checkpoint boundary."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            app._agent_running = True
+            persist = AsyncMock(return_value=True)
+            sync = AsyncMock()
+            continuation = AsyncMock()
+            with (
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(app, "_sync_goal_rubric_state_from_thread", sync),
+                patch.object(app, "_continue_goal_work", continuation),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._accept_goal_rubric("- passkeys work")
+                persist.assert_not_awaited()
+                assert app._active_goal == "ship login"
+
+                await app._cleanup_agent_task()
+
+            sync.assert_awaited_once()
+            persist.assert_awaited_once()
+            assert app._active_goal == "ship login with passkeys"
+            assert app._active_rubric == "- passkeys work"
+            continuation.assert_awaited_once_with("amended")
+
+    async def test_inflight_amendment_preserves_queued_message_order(self) -> None:
+        """Queued steering should run instead of an extra synthetic continuation."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            app._agent_running = True
+            app._pending_messages.append(
+                QueuedMessage("steer toward passkeys", "normal")
+            )
+            process = AsyncMock()
+            continuation = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(app, "_continue_goal_work", continuation),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", process),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._accept_goal_rubric("- passkeys work")
+                await app._cleanup_agent_task()
+
+            process.assert_awaited_once()
+            continuation.assert_not_awaited()
+            assert app._active_goal == "ship login with passkeys"
+            assert app._active_rubric == "- passkeys work"
+
+    async def test_repeated_amendments_do_not_add_status_transcript_messages(
+        self,
+    ) -> None:
+        """The persistent panel should replace per-amendment status messages."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- login works"
+            with patch.object(
+                app,
+                "_persist_goal_rubric_state",
+                new=AsyncMock(return_value=True),
+            ):
+                await app._apply_goal_application(
+                    _GoalApplication("ship login safely", "- security tests", "amend"),
+                    continue_work=False,
+                )
+                await app._apply_goal_application(
+                    _GoalApplication(
+                        "ship login safely and accessibly",
+                        "- security tests\n- accessibility tests",
+                        "amend",
+                    ),
+                    continue_work=False,
+                )
+
+            assert not any(
+                "Goal amended" in str(w._content) for w in app.query(AppMessage)
+            )
+            panel = app.query_one("#goal-status-panel", GoalStatusPanel)
+            assert "ship login safely and accessibly" in str(panel.content)
 
     def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
         """Goal help should explain drafting and that a goal persists once set."""
@@ -6081,6 +6391,7 @@ class TestGoalCommand:
                     "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
+                    "_pending_goal_kind": None,
                 },
             )
 
@@ -6698,11 +7009,12 @@ class TestGoalCommand:
             assert "Goal:\nmake the app start faster" in rendered
             assert "Status:\nactive" in rendered
             assert "Criteria:\n- measure baseline\n- improve startup" in rendered
-            assert "Goal is active for this thread until completed" in rendered
+            assert "Goal is active for this thread until paused, completed" in rendered
             assert (
                 "Follow-up prompts will continue working toward this goal." in rendered
             )
-            assert "Commands:\n/goal clear\n/goal show" in rendered
+            assert "Commands:\n/goal amend <feedback>\n/goal pause" in rendered
+            assert "/goal clear\n/goal show" in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
 
@@ -6811,7 +7123,9 @@ class TestGoalCommand:
                 str(w._content) == "Goal cleared." for w in app.query(AppMessage)
             )
 
-    @pytest.mark.parametrize("verb", ["show", "status", "accept", "edit", "clear"])
+    @pytest.mark.parametrize(
+        "verb", ["show", "status", "accept", "edit", "clear", "pause", "resume"]
+    )
     async def test_goal_reserved_word_objective_drafts_goal(self, verb: str) -> None:
         """Reserved words only act as `/goal` subcommands when used alone."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -7188,6 +7502,7 @@ class TestRubricCommand:
                     "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
+                    "_pending_goal_kind": None,
                 },
             )
 
@@ -7200,6 +7515,7 @@ class TestRubricCommand:
             app._active_rubric = "tests pass"
             app._goal_status = "active"
             app._goal_status_note = None
+            app._sync_status_rubric()
             started = asyncio.Event()
 
             def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
@@ -7216,10 +7532,14 @@ class TestRubricCommand:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["user_input"] == "keep going"
             assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
-            assert any(
-                str(w._content) == "Continuing active goal: add refresh tokens"
+            assert not any(
+                str(w._content).startswith("Continuing active goal")
                 for w in app.query(AppMessage)
             )
+            panel = app.query_one("#goal-status-panel", GoalStatusPanel)
+            assert panel.display is True
+            assert "active" in str(panel.content)
+            assert "add refresh tokens" in str(panel.content)
             assert app._goal_status == "active"
 
     async def test_resume_notice_wording_when_goal_was_blocked(self) -> None:
@@ -7443,6 +7763,7 @@ class TestRubricCommand:
                 "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
             updater.aupdate_state.assert_awaited_once_with(config, state_update)
@@ -7512,6 +7833,7 @@ class TestRubricCommand:
                 "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
+                "_pending_goal_kind": None,
             }
             config = {"configurable": {"thread_id": "thread-1"}}
             updater.aupdate_state.assert_has_awaits(

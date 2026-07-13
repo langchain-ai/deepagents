@@ -307,12 +307,13 @@ class AskUserMenu(Container):
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         """Keep the active-question highlight in sync with focus.
 
-        A mouse click moves focus into another question's input or choice list
-        without going through `_set_active_question`, which would otherwise
-        leave the highlight on the previously active question. Sync the
-        highlight to the focused question so exactly one question is ever
-        active. Focus is not moved here, so the widget the user clicked keeps
-        focus.
+        A mouse click moves focus into another question's text input, or onto
+        the question container itself for multiple-choice (whose choices are
+        not individually focusable), without going through
+        `_set_active_question`, which would otherwise leave the highlight on
+        the previously active question. Sync the highlight to the focused
+        question so exactly one question is ever active. Focus is not moved
+        here, so the widget the user clicked keeps focus.
         """
         node: Any = event.widget
         while node is not None and not isinstance(node, _QuestionWidget):

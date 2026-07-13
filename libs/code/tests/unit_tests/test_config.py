@@ -4549,6 +4549,79 @@ class TestCreateModelEdgeCaseParsing:
         assert mock_init_chat_model.call_args.args == (model_id,)
         assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
 
+    @patch("langchain.chat_models.init_chat_model")
+    def test_versioned_bedrock_vendor_id_not_misparsed(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock vendor namespace is not split on its `:version` suffix.
+
+        Regression: `mistral.` collides with the bare `mistral` prefix, so
+        without dotted-namespace detection this ID parses to the garbage pair
+        `provider='mistral.mistral-large-2402-v1', model='0'`.
+        """
+        model_id = "mistral.mistral-large-2402-v1:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cross_region_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A cross-region inference-profile ID resolves to Bedrock intact."""
+        model_id = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_non_versioned_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock ID without a `:version` suffix still routes to Bedrock."""
+        model_id = "amazon.titan-text-express-v1"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_provider_not_hijacked_by_bedrock(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """An explicit `provider:model` spec wins over Bedrock inference.
+
+        `anthropic.` (dot) is a Bedrock namespace, but `anthropic:` (colon) is
+        the explicit-provider syntax and must resolve to Anthropic, not Bedrock.
+        """
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.provider == "anthropic"
+        assert result.model_name == "claude-sonnet-4-5"
+
     def test_trailing_colon_raises_error(self) -> None:
         """Trailing colon (e.g., 'anthropic:') raises ModelConfigError."""
         with pytest.raises(ModelConfigError, match="model name is required"):
@@ -4803,6 +4876,24 @@ class TestDetectProvider:
             ("amazon.titan-text-express-v1", "bedrock"),
             ("anthropic.claude-3-sonnet", "bedrock"),
             ("meta.llama3-70b-instruct-v1:0", "bedrock"),
+            # Bedrock vendor namespaces that collide with the bare direct-API
+            # prefixes below: the dotted form must win so the `:version` suffix
+            # is not misparsed as a `provider:model` separator.
+            ("mistral.mistral-large-2402-v1:0", "bedrock"),
+            ("deepseek.r1-v1:0", "bedrock"),
+            ("cohere.command-r-v1:0", "bedrock"),
+            ("ai21.jamba-1-5-large-v1:0", "bedrock"),
+            ("writer.palmyra-x5-v1:0", "bedrock"),
+            # Structural detection covers vendors with no hardcoded entry.
+            ("qwen.qwen3-32b-v1:0", "bedrock"),
+            ("google.gemma-3-27b-v1:0", "bedrock"),
+            # Cross-region inference-profile IDs front the vendor with a region.
+            ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("eu.meta.llama3-2-3b-instruct-v1:0", "bedrock"),
+            ("apac.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("US.Anthropic.Claude-3-5-Sonnet-20241022-v2:0", "bedrock"),
+            # A bare name that merely starts with a region token is not Bedrock.
+            ("useful-model", None),
             ("mistral-large", "mistralai"),
             ("mixtral-8x7b-instruct", "mistralai"),
             ("deepseek-chat", "deepseek"),

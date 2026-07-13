@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
 
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
@@ -107,16 +108,21 @@ class _NoTodoListMiddleware(AgentMiddleware):
     """No-op stand-in that drops the SDK's `TodoListMiddleware` by name.
 
     `create_deep_agent` always injects `TodoListMiddleware` and exposes no
-    parameter to disable it. Its `_apply_custom_middleware` merge replaces a
-    default middleware in place when a caller-supplied middleware shares its
-    `.name`, so threading this tool-less stand-in (which matches
-    `TodoListMiddleware.name`) into the agent and subagent middleware lists
-    removes the real middleware — and its `write_todos` tool — without touching
-    the SDK. Gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`; see
-    `_todo_list_middleware_override`.
+    per-call parameter to disable it (only a globally registered
+    `HarnessProfile.excluded_middleware` can strip it, which dcode does not use
+    here). Its `_apply_custom_middleware` merge replaces a default middleware in
+    place when a caller-supplied middleware shares its `.name`, so threading
+    this tool-less stand-in into the agent and subagent middleware lists removes
+    the real middleware — and its `write_todos` tool — without touching the SDK.
+
+    `name` is derived from `TodoListMiddleware.__name__` rather than hard-coded,
+    so a rename of the SDK class trips an `ImportError`/attribute error here
+    instead of silently turning the override into a no-op. The behavioral guard
+    against a `.name` override lives in `test_agent.py`. Gated behind
+    `DEEPAGENTS_CODE_EXPERIMENTAL`; see `_todo_list_middleware_override`.
     """
 
-    name = "TodoListMiddleware"
+    name: str = TodoListMiddleware.__name__
 
 
 def _todo_list_middleware_override() -> list[AgentMiddleware]:
@@ -128,6 +134,10 @@ def _todo_list_middleware_override() -> list[AgentMiddleware]:
     name-based merge drops the real `TodoListMiddleware`.
     """
     if is_env_truthy(EXPERIMENTAL):
+        logger.debug(
+            "%s set: dropping TodoListMiddleware / write_todos from this stack",
+            EXPERIMENTAL,
+        )
         return [_NoTodoListMiddleware()]
     return []
 
@@ -856,7 +866,11 @@ def get_system_prompt(
         ... {CONDITIONAL SECTIONS} ...
         ```
     """
-    template = (Path(__file__).parent / "system_prompt.md").read_text()
+    prompt_dir = Path(__file__).parent
+    template = (prompt_dir / "system_prompt.md").read_text()
+    todo_list_section = ""
+    if not is_env_truthy(EXPERIMENTAL):
+        todo_list_section = (prompt_dir / "todo_list_prompt.md").read_text().rstrip()
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 
@@ -968,6 +982,7 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{todo_list_section}", todo_list_section)
         .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)

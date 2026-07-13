@@ -90,6 +90,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openai:gpt-5.4-pro": "GPT-5.4 Pro",
     "openai:gpt-5.5": "GPT-5.5",
     "openai:gpt-5.5-pro": "GPT-5.5 Pro",
+    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai:gpt-5.6-terra": "GPT-5.6 Terra",
     "openai_codex:gpt-5.2": "GPT-5.2",

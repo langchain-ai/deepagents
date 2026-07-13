@@ -2476,6 +2476,7 @@ class TestGetModelDisplayName:
         [
             ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
             ("meta:muse-spark-1.1", "Muse Spark 1.1"),
+            ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -2491,6 +2492,12 @@ class TestGetModelDisplayName:
         screen._profiles = {}
         assert spec in model_selector._RECOMMENDED_MODELS
         assert screen._get_model_display_name(spec) == name
+
+    def test_luna_is_not_recommended_for_codex(self) -> None:
+        from deepagents_code.tui.widgets import model_selector
+
+        assert "openai:gpt-5.6-luna" in model_selector._RECOMMENDED_MODELS
+        assert "openai_codex:gpt-5.6-luna" not in model_selector._RECOMMENDED_MODELS
 
     def test_profile_name_wins_over_recommended_name(self) -> None:
         """A loaded profile's `name` takes precedence over the hardcoded one."""

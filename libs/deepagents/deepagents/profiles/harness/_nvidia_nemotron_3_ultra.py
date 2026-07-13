@@ -138,7 +138,14 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
 
     @staticmethod
     def _is_numbered_read_file_row(row: str) -> bool:
-        """Return whether `row` looks like a formatted `read_file` source line."""
+        """Return whether `row` looks like a formatted `read_file` source line.
+
+        Matches a primary source marker (`N`) followed by the current two-space
+        separator (`format_content_with_line_numbers`) or the legacy `cat -n`
+        tab. Continuation rows (`N.M`) fail — the `.` follows the digits, so
+        they are not counted toward the source-line limit. Kept in sync with the
+        separator emitted by `format_content_with_line_numbers`.
+        """
         return re.match(r"^\s*\d+(?:\t|\s{2,})", row) is not None
 
     @staticmethod

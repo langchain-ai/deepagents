@@ -12,7 +12,7 @@ Use focused snapshots for individual prompt/tool features, and add combination s
 | --- | --- | --- |
 | `system_prompt_with_execute.md` | Yes | Full system prompt for a local shell backend. |
 | `system_prompt_with_execute_tools.json` | Yes | Tool schemas for the local shell backend, including `execute`. |
-| `system_prompt_with_media_extra_tools.json` | Yes | Tool schemas when the optional media/video extra is enabled; this mainly covers the video-aware `read_file` description and schema. |
+| `system_prompt_with_media_extra_tools.json` | Yes | Tool schemas when the optional `[video]` extra is enabled; this mainly covers the video-aware `read_file` description and schema. |
 | `system_prompt_without_execute.md` | No | Full system prompt for a filesystem-only backend. |
 | `system_prompt_without_execute_tools.json` | No | Tool schemas for the filesystem-only backend, without `execute`. |
 | `custom_system_message.md` | No | Full prompt when the caller passes a custom `system_prompt`. |

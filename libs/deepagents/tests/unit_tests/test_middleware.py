@@ -1264,6 +1264,17 @@ class TestFilesystemMiddleware:
         assert format_content_with_line_numbers([]) == ""
         assert format_content_with_line_numbers(["only"]) == "1  only"
 
+    def test_format_content_with_line_numbers_blank_line_in_middle(self):
+        """A blank source line keeps its own gutter row, ending at the separator.
+
+        The row is `marker + "  "` with empty content — trailing whitespace that
+        a careless refactor could strip or drop entirely. Exact equality guards
+        the row's presence and shape.
+        """
+        result = format_content_with_line_numbers(["code", "", "more"], start_line=1)
+
+        assert result.split("\n") == ["1  code", "2  ", "3  more"]
+
     def test_format_content_with_line_numbers_aligns_across_magnitude(self):
         """Markers right-justify to a shared width when line counts cross 9->10.
 
@@ -1320,18 +1331,18 @@ class TestFilesystemMiddleware:
 
         lines = result.split("\n")
         assert len(lines) == 7  # 1 short + 5 continuation (2, 2.1, 2.2, 2.3, 2.4) + 1 short
-        assert "  1  short line" in lines[0]
-        assert "  2  " in lines[1]
+        assert lines[0] == "  1  short line"
+        assert lines[1].startswith("  2  ")
         assert lines[1].count("a") == 5000
-        assert "2.1  " in lines[2]
+        assert lines[2].startswith("2.1  ")
         assert lines[2].count("a") == 5000
-        assert "2.2  " in lines[3]
+        assert lines[3].startswith("2.2  ")
         assert lines[3].count("a") == 5000
-        assert "2.3  " in lines[4]
+        assert lines[4].startswith("2.3  ")
         assert lines[4].count("a") == 5000
-        assert "2.4  " in lines[5]
+        assert lines[5].startswith("2.4  ")
         assert lines[5].count("a") == 5000
-        assert "  3  another short line" in lines[6]
+        assert lines[6] == "  3  another short line"
 
     def test_format_content_with_line_numbers_multiple_long_lines(self):
         """Test multiple long lines in sequence with proper line numbering."""
@@ -1341,18 +1352,18 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(content, start_line=5)
         lines = result.split("\n")
         assert len(lines) == 7  # 3 (line 5, 5.1, 5.2) + 1 middle + 3 (line 7, 7.1, 7.2)
-        assert "  5  " in lines[0]
+        assert lines[0].startswith("  5  ")
         assert lines[0].count("x") == 5000
-        assert "5.1  " in lines[1]
+        assert lines[1].startswith("5.1  ")
         assert lines[1].count("x") == 5000
-        assert "5.2  " in lines[2]
+        assert lines[2].startswith("5.2  ")
         assert lines[2].count("x") == 5000
-        assert "  6  middle" in lines[3]
-        assert "  7  " in lines[4]
+        assert lines[3] == "  6  middle"
+        assert lines[4].startswith("  7  ")
         assert lines[4].count("y") == 5000
-        assert "7.1  " in lines[5]
+        assert lines[5].startswith("7.1  ")
         assert lines[5].count("y") == 5000
-        assert "7.2  " in lines[6]
+        assert lines[6].startswith("7.2  ")
         assert lines[6].count("y") == 5000
 
     def test_format_content_with_line_numbers_exact_limit(self):
@@ -1376,14 +1387,14 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(sliced, start_line=1)
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
-        assert "  1  first line" in lines[0]
-        assert "  2  " in lines[1]
+        assert lines[0] == "  1  first line"
+        assert lines[1].startswith("  2  ")
         assert lines[1].count("z") == 5000
-        assert "2.1  " in lines[2]
+        assert lines[2].startswith("2.1  ")
         assert lines[2].count("z") == 5000
-        assert "2.2  " in lines[3]
+        assert lines[3].startswith("2.2  ")
         assert lines[3].count("z") == 5000
-        assert "  3  third line" in lines[4]
+        assert lines[4] == "  3  third line"
 
     def test_read_file_with_offset_and_long_lines(self):
         """Test that read_file with offset handles long lines correctly."""
@@ -1395,13 +1406,13 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(sliced, start_line=3)
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
-        assert "  3  " in lines[0]
+        assert lines[0].startswith("  3  ")
         assert lines[0].count("m") == 5000
-        assert "3.1  " in lines[1]
+        assert lines[1].startswith("3.1  ")
         assert lines[1].count("m") == 5000
-        assert "3.2  " in lines[2]
+        assert lines[2].startswith("3.2  ")
         assert lines[2].count("m") == 2000
-        assert "  4  line4" in lines[3]
+        assert lines[3] == "  4  line4"
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""

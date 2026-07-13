@@ -152,6 +152,25 @@ def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
     assert result.content == content
 
 
+def test_is_numbered_read_file_row_contract() -> None:
+    """Pin which rows count as source lines for the continuation heuristic.
+
+    Primary markers with the current two-space separator or the legacy `cat -n`
+    tab count; padded markers count; continuation (`N.M`) rows and plain text do
+    not. Kept in sync with `format_content_with_line_numbers`' separator.
+    """
+    is_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
+
+    # Source rows: current two-space, right-justify padding, and legacy tab.
+    assert is_row("1  source")
+    assert is_row(" 10  source")
+    assert is_row("1\tsource")
+    # Continuation rows and non-gutter text are not source lines.
+    assert not is_row("1.1  wrapped")
+    assert not is_row("plain text with no gutter")
+    assert not is_row("")
+
+
 def test_read_file_continuation_notice_uses_shim_default_limit() -> None:
     """The continuation notice should describe the same limit sent to `read_file`."""
     shim = NemotronToolCallShim()

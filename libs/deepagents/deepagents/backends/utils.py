@@ -241,6 +241,10 @@ def format_content_with_line_numbers(
                 rows.append((marker, chunk))
                 marker_width = max(marker_width, len(marker))
 
+    # The two-space marker/source separator is a load-bearing contract:
+    # `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row` counts
+    # source rows by matching it. Changing the separator here without updating
+    # that regex silently breaks the continuation notice.
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 

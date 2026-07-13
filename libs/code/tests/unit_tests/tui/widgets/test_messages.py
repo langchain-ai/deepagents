@@ -2794,14 +2794,14 @@ class TestToolCallMessageFileOutput:
 
         assert result.truncation == "2 more lines"
 
-    def test_format_output_compacts_line_number_gutter(self) -> None:
-        r"""Line-number gutters are tightened, all rows aligned to one column.
+    def test_format_output_compacts_legacy_cat_n_gutter(self) -> None:
+        r"""Legacy `cat -n` gutters are tightened, all rows aligned to one column.
 
-        `read_file` emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — which renders far from the line numbers and (when
-        the first row's padding was stripped) misaligned. The TUI recomputes a
-        compact gutter: numbers right-justified to the widest number present,
-        two spaces, then the original source indentation.
+        Deprecated string backends still emit `f"{line_num:6d}\t{line}"` — a
+        6-wide right-justified number plus a tab — which renders far from the
+        line numbers and (when the first row's padding was stripped) misaligned.
+        The TUI recomputes a compact gutter: numbers right-justified to the
+        widest number present, two spaces, then the original source indentation.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
         # cat -n style: 6-wide right-justified number + tab + source line.
@@ -2811,6 +2811,23 @@ class TestToolCallMessageFileOutput:
         # No tab, no 6-wide pad: `{num}  ` gutter, then the original source
         # indentation (the 4 spaces on line 3) preserved verbatim.
         assert result.content.plain == '1  """doc"""\n2  \n3      indented'
+
+    def test_format_output_leaves_current_two_space_gutter_intact(self) -> None:
+        r"""The current SDK gutter is already compact, so compaction is a no-op.
+
+        `read_file` now emits `f"{marker:>width}  {line}"` — a right-justified
+        marker, two spaces, then source. Re-justifying to the widest marker
+        reproduces the same string, and crucially a tab-indented source line
+        keeps its leading tab (the two-space separator, not the source tab, is
+        consumed). Regression guard: the old tab-splitting gutter dropped that
+        indentation, re-introducing the ambiguity this format fixes.
+        """
+        msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
+        # Two-digit max marker => width 2; line 2 is tab-indented source.
+        output = " 9  def build_config():\n10  \treturn {}"
+        result = msg._format_output(output, is_preview=False)
+
+        assert result.content.plain == " 9  def build_config():\n10  \treturn {}"
 
     def test_compact_line_gutter_right_justifies_to_widest_number(self) -> None:
         r"""Multi-digit line numbers set a uniform, right-justified gutter."""
@@ -2832,16 +2849,29 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == "  1  first\n1.1  wrapped"
 
-    def test_compact_line_gutter_preserves_source_tabs(self) -> None:
-        r"""Only the first (gutter) tab is consumed; source tabs stay put.
+    def test_compact_line_gutter_preserves_source_tabs_legacy(self) -> None:
+        r"""Only the gutter tab is consumed; a legacy row's source tab stays put.
 
-        Tab-indented source means a tab immediately after the gutter tab.
-        `partition` splits on the first tab only, so the source tab survives.
+        Tab-indented source means a tab immediately after the gutter tab. The
+        gutter regex consumes only the separator, so the source tab survives.
         """
         output = "     1\t\tdef foo():"
         compacted = ToolCallMessage._compact_line_gutter(output)
 
         assert compacted == "1  \tdef foo():"
+
+    def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
+        r"""A current-format row's leading source tab survives compaction.
+
+        The current gutter separator is two spaces, so a tab-indented source
+        line reads as `"N  \tsource"`. Only the two spaces are consumed; the
+        source tab must remain. This is the regression guard for the tab-
+        splitting gutter that used to drop it.
+        """
+        output = "1  def foo():\n2  \treturn 1"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  def foo():\n2  \treturn 1"
 
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a cat -n gutter is returned unchanged."""

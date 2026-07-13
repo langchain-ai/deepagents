@@ -1983,17 +1983,18 @@ class ToolCallMessage(Vertical):
 
     @staticmethod
     def _compact_line_gutter(output: str) -> str:
-        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+        r"""Tighten `read_file`'s line-number gutter for display.
 
-        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — so even single-digit line numbers carry five
-        leading spaces and the tab pushes content to a distant tab stop. The
-        model needs that raw format for edits, but the TUI renders a compact
-        gutter instead: numbers right-justified to the widest number actually
-        present, then two spaces, mirroring how grep/glob results sit flush
-        left. Source indentation after the gutter is preserved untouched.
+        `read_file` prefixes each row with a right-justified line marker — `N`,
+        or `N.M` for a wrapped-line continuation — then two spaces, then the
+        original source content. (Deprecated string backends may still emit the
+        older `cat -n` gutter: a wide right-justified number and a tab.) The
+        model needs the raw gutter for edits, but the TUI re-justifies markers
+        to the widest marker actually present, then two spaces, mirroring how
+        grep/glob results sit flush left. Source indentation after the gutter is
+        preserved untouched.
 
-        Lines that don't match the cat -n shape (e.g. test fixtures or
+        Lines that don't match a gutter shape (e.g. test fixtures or
         non-numbered output) are passed through unchanged.
 
         Returns:
@@ -2001,20 +2002,21 @@ class ToolCallMessage(Vertical):
                 line-numbered content was found.
         """
         lines = output.split("\n")
-        # Split each line on its gutter tab into (number, source). The gutter
-        # tab is always the first one; any tabs in `text` are real source
-        # indentation and stay put. The head must be a bare `N` or `N.M` (the
-        # latter is a wrapped-line continuation marker) — both sides of the dot
-        # are required, so a stray `.5` head marks a non-gutter line.
+        # Strip a leading gutter into (marker, source). The marker is a bare `N`
+        # or `N.M` (the latter a wrapped-line continuation) — both sides of the
+        # dot required, so a stray `.5` head is not a gutter. The separator is
+        # exactly two spaces (current format) or a single tab (legacy cat -n).
+        # Only the separator is consumed, and padding is spaces-only, so source
+        # indentation — including leading tabs — after the gutter stays put.
+        gutter = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
         parsed: list[tuple[str, str] | None] = []
         width = 0
         for line in lines:
-            head, tab, text = line.partition("\t")
-            num = head.strip()
-            whole, dot, frac = num.partition(".")
-            if tab and whole.isdigit() and (not dot or frac.isdigit()):
-                parsed.append((num, text))
-                width = max(width, len(num))
+            match = gutter.match(line)
+            if match:
+                marker = match.group(1)
+                parsed.append((marker, match.group(2)))
+                width = max(width, len(marker))
             else:
                 parsed.append(None)
 

@@ -440,7 +440,7 @@ jobs:
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
 
-  # Run CodSpeed benchmarks on SDK changes
+  # Run advisory CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
     needs: changes
@@ -448,9 +448,10 @@ jobs:
     uses: ./.github/workflows/_benchmark.yml
     with:
       working-directory: "libs/deepagents"
+      advisory: true
     secrets: inherit
 
-  # Run CodSpeed benchmarks on code changes
+  # Run advisory CodSpeed benchmarks on code changes
   benchmark-code:
     name: "⏱️ Benchmark code"
     needs: changes
@@ -458,6 +459,7 @@ jobs:
     uses: ./.github/workflows/_benchmark.yml
     with:
       working-directory: "libs/code"
+      advisory: true
     secrets: inherit
 
   # # TODO(hntrl): re-enable when bench flakiness is under control
@@ -469,6 +471,7 @@ jobs:
   #   with:
   #     working-directory: "libs/partners/quickjs"
   #     has-memory-benchmarks: true
+  #     advisory: true
   #   secrets: inherit
 
   # Validates every helper script under .github/scripts/test_*.py. Job id/name

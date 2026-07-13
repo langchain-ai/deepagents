@@ -542,6 +542,17 @@ class TestModelLabelPrefixStripping:
             assert "fireworks:kimi-k2p6" in rendered
             assert "accounts/fireworks/models/" not in rendered
 
+    async def test_fireworks_routers_prefix_stripped(self) -> None:
+        """The fireworks routers prefix is stripped before rendering."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/routers/glm-5p1-fast"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "fireworks:glm-5p1-fast" in rendered
+            assert "accounts/fireworks/routers/" not in rendered
+
     async def test_get_content_width_uses_stripped_name(self) -> None:
         """`get_content_width` sizes to the stripped name, not the raw model."""
         async with StatusBarApp().run_test() as pilot:

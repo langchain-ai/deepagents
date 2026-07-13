@@ -1464,7 +1464,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help=(
-            "Agent to use (e.g., coder, researcher). "
+            "Agent to use. "
             "If omitted, falls back to [agents].default, then "
             "[agents].recent, then "
             f"the '{DEFAULT_AGENT_NAME}' built-in default."
@@ -1533,6 +1533,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-s",
         "--skill",
         dest="initial_skill",
         metavar="NAME",

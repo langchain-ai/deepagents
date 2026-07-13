@@ -366,6 +366,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
     from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
+    from deepagents_code.tui.widgets.debug_console import SnapshotField
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
@@ -1964,6 +1965,16 @@ class DeepAgentsApp(App):
             "ctrl+n",
             "open_notifications",
             "Notifications",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            # Mirrors DEBUG_TOGGLE_KEY in tui.widgets.debug_console; the literal
+            # is repeated here to avoid an eager import at class-body scope (see
+            # the startup-performance rules in AGENTS.md).
+            "ctrl+backslash",
+            "toggle_debug_console",
+            "Debug Console",
             show=False,
             priority=True,
         ),
@@ -9681,6 +9692,7 @@ class DeepAgentsApp(App):
                 f"  {newline_shortcut():<15} Insert newline\n"
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -10102,6 +10114,8 @@ class DeepAgentsApp(App):
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
+        elif cmd == "/debug":
+            self._open_debug_console()
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -14417,6 +14431,93 @@ class DeepAgentsApp(App):
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()
+
+    def action_toggle_debug_console(self) -> None:
+        """Toggle the Debug Console overlay via keybind or the `/debug` command."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        if isinstance(self.screen, DebugConsoleScreen):
+            self.pop_screen()
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+        self._open_debug_console()
+
+    def _open_debug_console(self) -> None:
+        """Push the read-only Debug Console modal."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        def handle_result(_: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(
+            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+        )
+
+    def _build_debug_snapshot(self) -> list[SnapshotField]:
+        """Capture a point-in-time session/runtime snapshot for the console.
+
+        Each field is captured defensively: a subsystem that raises degrades to
+        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        because a diagnostic tool must still open when the app is misbehaving.
+
+        Returns:
+            Ordered ``(label, value)`` fields for the console header.
+        """
+        from deepagents_code._debug import installed_debug_log_path
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._version import __version__
+        from deepagents_code.tui.widgets.debug_console import SnapshotField
+
+        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+            try:
+                return SnapshotField(label=label, value=fn())
+            except Exception as exc:  # a diagnostic must still open on a bad field
+                # WARNING (not DEBUG) so the traceback lands in the always-on
+                # in-memory buffer and is visible in the console itself; the
+                # package logger sits at INFO by default, which drops DEBUG.
+                logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                return SnapshotField(
+                    label=label, value=f"(unavailable: {type(exc).__name__})"
+                )
+
+        def _mcp() -> str:
+            servers = self._mcp_server_info or []
+            if not servers:
+                return "none"
+            return ", ".join(f"{s.name} ({s.status})" for s in servers)
+
+        def _tokens() -> str:
+            stats = self._session_stats
+            return (
+                f"{stats.input_tokens} in / {stats.output_tokens} out "
+                f"/ {stats.request_count} req"
+            )
+
+        def _log_path() -> str:
+            path = installed_debug_log_path()
+            if path:
+                return str(path)
+            # DEEPAGENTS_CODE_DEBUG can read truthy with no handler installed —
+            # e.g. a bad path, or the var set after import via .env. Distinguish
+            # that from the plain no-file-logging case so the console does not
+            # imply a file exists (and hint that a request went unfulfilled).
+            if is_env_truthy(DEBUG):
+                return "in-memory only (file logging requested but unavailable)"
+            return "in-memory only"
+
+        return [
+            _safe("Version", lambda: __version__),
+            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _safe("CWD", lambda: self._cwd),
+            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Sandbox", lambda: self._sandbox_type or "local"),
+            _safe("MCP servers", _mcp),
+            _safe("Tokens", _tokens),
+            _safe("Debug log", _log_path),
+        ]
 
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""

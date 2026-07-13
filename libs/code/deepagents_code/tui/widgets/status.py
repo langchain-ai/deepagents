@@ -70,8 +70,10 @@ class ModelLabel(Widget):
         name = self.model
         if not name or not self.provider:
             return name
+        # Match on normalized text but slice the original to preserve its casing.
+        name_lower = name.lower()
         for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
-            if name.startswith(prefix):
+            if name_lower.startswith(prefix):
                 return name[len(prefix) :]
         return name
 

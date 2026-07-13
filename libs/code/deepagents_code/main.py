@@ -17,6 +17,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -39,6 +40,34 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
+    """Unwind dcode on a terminating signal so owned resources are cleaned up.
+
+    Args:
+        signum: Received signal number.
+        _frame: Interrupted stack frame, unused.
+
+    Raises:
+        SystemExit: Always, using the conventional signal-derived exit code.
+
+    Note:
+        The `SystemExit` is raised at an arbitrary point in the main thread, so
+        it can interrupt server teardown mid-escalation (e.g. between SIGTERM and
+        SIGKILL). This is safe because teardown is re-entrant: the process-group
+        `except` clauses catch only `ProcessLookupError`/`OSError` (never a
+        `BaseException` like `SystemExit`), and the app's cleanup `finally` block
+        re-invokes `stop()` as the exception unwinds, resuming the teardown.
+    """
+    raise SystemExit(128 + signum)
+
+
+def _install_termination_signal_handlers() -> None:
+    """Install graceful terminating-signal handling on POSIX."""
+    if sys.platform != "win32":
+        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
+            signal.signal(signum, _handle_termination_signal)
 
 
 def _tail_log_command(log_path: Path | str) -> str:
@@ -2623,6 +2652,12 @@ def cli_main() -> None:
     # the flag is present in raw argv.
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
+
+    # The app-owned server runs in a detached session so terminal job-control
+    # signals do not suspend or kill it. Replace terminating signals' immediate
+    # default behavior with an exception so the app/server cleanup finally
+    # blocks run when dcode's process group is stopped.
+    _install_termination_signal_handlers()
 
     try:
         args = parse_args()

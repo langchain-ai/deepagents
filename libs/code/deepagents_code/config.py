@@ -1699,7 +1699,7 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    from deepagents_code._env_vars import USER_ID
+    from deepagents_code._env_vars import EXPERIMENTAL, USER_ID
 
     metadata: dict[str, Any] = build_coding_agent_metadata(
         thread_id=thread_id,
@@ -1713,6 +1713,8 @@ def build_stream_config(
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
+    if is_env_truthy(EXPERIMENTAL):
+        metadata["dcode_experimental"] = True
     metadata["lc_versions"] = {
         "deepagents-code": _format_lc_version(
             __version__, editable=_is_editable_install()

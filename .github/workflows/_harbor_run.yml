@@ -473,8 +473,10 @@ jobs:
             mapfile -t shard_tasks < shard_tasks.txt
             if [ "${#shard_tasks[@]}" -eq 0 ]; then
               # Fewer selected tasks than shards (e.g. n_tasks < n_shards): this
-              # shard's slice is legitimately empty. No-op successfully — the other
-              # shards cover the full selection — instead of failing the workflow.
+              # shard's slice is legitimately empty. Upload a marker so aggregation
+              # can distinguish this successful no-op from a missing shard artifact.
+              mkdir -p harbor-jobs/terminal-bench
+              touch "harbor-jobs/terminal-bench/empty-shard-$HARBOR_SHARD_INDEX"
               echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
               echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
               exit 0
@@ -700,9 +702,8 @@ jobs:
       # filtered run is not falsely reported as incomplete.
       HARBOR_RESULT: ${{ needs.harbor.result }}
       # Authoritative effective count after prep caps shards to selectable work.
-      # Filtered direct runs can legitimately have empty slices, so only enforce
-      # the count when every emitted shard is expected to contain work.
-      EXPECTED_SHARDS: ${{ inputs.n_tasks == '0' && inputs.include_tasks == '' && needs.prep.outputs.n_shards || '' }}
+      # Successful empty slices upload markers, so every emitted shard is countable.
+      EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

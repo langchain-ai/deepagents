@@ -294,15 +294,16 @@ def test_combined_diagnostics_upload_after_aggregation_failure() -> None:
 
 
 def test_leaf_aggregation_requires_every_expected_shard() -> None:
-    """Use prep's effective shard count to detect a missing artifact."""
+    """Count successful empty shards while detecting missing artifacts."""
     workflow = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(workflow, "  harbor:")
     aggregate = _indented_block(workflow, "  aggregate:")
 
-    assert "    needs: [prep, harbor]" in aggregate
     assert (
-        "inputs.n_tasks == '0' && inputs.include_tasks == '' "
-        "&& needs.prep.outputs.n_shards || ''" in aggregate
+        'touch "harbor-jobs/terminal-bench/empty-shard-$HARBOR_SHARD_INDEX"' in harbor
     )
+    assert "    needs: [prep, harbor]" in aggregate
+    assert "EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards }}" in aggregate
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
     assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
     assert '"${expected_shards_args[@]}"' in compute

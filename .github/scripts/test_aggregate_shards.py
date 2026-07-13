@@ -65,6 +65,7 @@ def test_aggregate_and_summary(tmp_path: Path):
     assert by_task["taskC"] == {"trials": 3, "passed": 3, "errored": 0}
     assert result.models == {"m1"}
     assert result.job_ids == {"job1"}
+    assert result.empty_shards == set()
     assert result.skipped_files == 0
     assert result.malformed_rewards == 0
 
@@ -385,6 +386,36 @@ def test_expected_shards_shortfall_flags_incomplete(tmp_path: Path):
     assert summary["shards_found"] == 1
     assert summary["expected_shards"] == 3
     assert summary["incomplete"] is True  # 1 shard reported, 3 expected
+
+
+def test_successful_empty_shards_satisfy_expected_count(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0, job_id="job1")
+    _write_trial(tmp_path / "b__0", "taskB", reward=1.0, job_id="job2")
+    empty_marker = tmp_path / "shard-2" / "empty-shard-2"
+    empty_marker.parent.mkdir()
+    empty_marker.touch()
+    out = tmp_path / "out"
+
+    agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--expected-shards",
+            "3",
+            "--harbor-result",
+            "success",
+            "--out-dir",
+            str(out),
+        ]
+    )
+
+    result = agg.aggregate(tmp_path)
+    assert result.empty_shards == {"empty-shard-2"}
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["shards_found"] == 3
+    assert summary["expected_shards"] == 3
+    assert summary["incomplete"] is False
 
 
 def test_writes_github_step_summary(tmp_path: Path):

@@ -14,9 +14,9 @@ The summary is flagged ``incomplete`` when a full run cannot be vouched for:
 the matrix job did not fully succeed (``--harbor-result`` != "success"); a
 present task ran a number of trials other than K (missing OR duplicated
 rollouts); a ``result.json`` could not be read; a reward was present but
-non-numeric; or (when ``--expected-shards`` is given) fewer shards reported than
-expected. Legitimately-empty shards (task-filtered slices) no-op successfully
-and are not treated as losses.
+non-numeric; or (when ``--expected-shards`` is given) fewer shards completed than
+expected. Legitimately-empty shards upload ``empty-shard-*`` markers and count as
+completed rather than missing.
 
 A trial is a pass when its verifier reward is >= PASS_THRESHOLD. ``errored`` is
 an independent diagnostic tally: a Harbor result that records ``exception_info``
@@ -28,13 +28,11 @@ dataset (a "category" in the wider harness). If results from more than one model
 are present the script exits with an error rather than silently mixing them;
 per-model aggregation is deferred until multi-model runs are supported.
 
-Blind spot: completeness is measured relative to the tasks that *reported*.
-A whole shard whose artifact never uploaded while the matrix still reported
-success contributes no tasks to either the numerator or the denominator, so it
-cannot be detected from the results alone. Pass ``--expected-shards`` when the
-caller knows the authoritative shard count (a non-task-filtered run) to close
-that gap; a task-filtered run legitimately produces fewer, so it is left off by
-default.
+Completeness is measured relative to the tasks and empty-shard markers that
+reported. A whole shard whose artifact never uploaded contributes neither, so
+pass ``--expected-shards`` when the caller knows the authoritative shard count.
+Successful empty shards remain distinguishable from missing artifacts because
+the workflow uploads one ``empty-shard-*`` marker for each no-op slice.
 
 Outputs two plain files in the output directory:
   - summary.json     dataset-level rollup (no per-task detail)
@@ -73,6 +71,7 @@ class Aggregation(NamedTuple):
 
     models: set[str]
     job_ids: set[str]
+    empty_shards: set[str]
     by_task: dict[str, dict[str, int]]
     skipped_files: int
     malformed_rewards: int
@@ -174,6 +173,7 @@ def aggregate(root: Path) -> Aggregation:
     """
     models: set[str] = set()
     job_ids: set[str] = set()
+    empty_shards = {path.name for path in root.rglob("empty-shard-*") if path.is_file()}
     by_task: dict[str, dict[str, int]] = defaultdict(
         lambda: {"trials": 0, "passed": 0, "errored": 0}
     )
@@ -210,7 +210,14 @@ def aggregate(root: Path) -> Aggregation:
         if reward is not None and reward >= PASS_THRESHOLD:
             stats["passed"] += 1
 
-    return Aggregation(models, job_ids, dict(by_task), skipped_files, malformed_rewards)
+    return Aggregation(
+        models,
+        job_ids,
+        empty_shards,
+        dict(by_task),
+        skipped_files,
+        malformed_rewards,
+    )
 
 
 def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryParts:
@@ -311,7 +318,7 @@ def render_step_summary(summary: dict) -> str:
         f"- Dataset: {summary.get('dataset') or 'n/a'}",
         f"- Model: {summary.get('model') or 'n/a'}",
         f"- Rollouts per task: {summary.get('rollouts_per_task')}",
-        f"- Shards with results: {summary.get('shards_found')}"
+        f"- Shards completed: {summary.get('shards_found')}"
         + (
             f" / {summary['expected_shards']} expected"
             if summary.get("expected_shards")
@@ -439,9 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help=(
-            "Authoritative shard count for a non-task-filtered run. When set, the "
-            "run is flagged incomplete if fewer shards reported results. Omit for "
-            "task-filtered runs, whose empty shards legitimately produce no output."
+            "Authoritative shard count. When set, the run is flagged incomplete "
+            "if fewer shards reported results or successful empty-shard markers."
         ),
     )
     args = parser.parse_args(argv)
@@ -453,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.out_dir or args.root
     agg = aggregate(args.root)
-    shards_found = len(agg.job_ids)
+    shards_found = len(agg.job_ids) + len(agg.empty_shards)
     # A shard actually failed only if the matrix job did not fully succeed. Empty
     # shards (filtered-out task slices) no-op successfully, so they are NOT losses.
     shard_failure = args.harbor_result not in (None, "", "success")

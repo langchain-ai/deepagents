@@ -21722,10 +21722,12 @@ class TestResumeThreadCwdSwitch:
     ) -> None:
         """An accepted server-backed switch that fails to restart returns `abort`.
 
-        With `abort="switch"` set, the two abort sources (user-declined and
-        switch-failed) can both occur in one call. This pins the switch-failed
-        source end-to-end through the real method, where the other abort tests
-        either use `restart_server=False` or mock the whole method out.
+        With `abort="thread_switch"` set, both abort sources (user-declined and
+        switch-failed) are reachable for a single call configuration -- not
+        concurrently, but the return value alone cannot say which fired. This
+        pins the switch-failed source end-to-end through the real method (the
+        other abort tests either use `restart_server=False` or mock the whole
+        method out) and checks it leaves a persistent in-chat record.
         """
         current = tmp_path / "current"
         target = tmp_path / "target"
@@ -21741,14 +21743,59 @@ class TestResumeThreadCwdSwitch:
         )
         replace = AsyncMock(return_value="abort")
         app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+        mount = AsyncMock()
+        app._mount_message = mount  # ty: ignore[invalid-assignment]
 
         with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
             outcome = await app._offer_thread_cwd_switch(
-                "thread-1", restart_server=True, abort="switch"
+                "thread-1", restart_server=True, abort="thread_switch"
             )
 
         assert outcome == "abort"
         replace.assert_awaited_once()
+        # The failed switch must be surfaced as a durable message, distinct from
+        # the transient toast `_replace_server_after_cwd_switch` already raised.
+        mount.assert_awaited_once()
+        assert mount.await_args is not None
+        assert "Could not switch" in str(
+            getattr(mount.await_args.args[0], "_content", "")
+        )
+
+    async def test_offer_user_declined_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user-declined abort returns `abort` without attempting a switch.
+
+        Complements `test_offer_switch_failure_returns_abort`: that pins the
+        switch-failed abort source through the real method; this pins the
+        user-declined source (the `choice == "abort"` early return), which every
+        other abort test reaches only by mocking `_offer_thread_cwd_switch` out.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="abort")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="continue")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        # A declined abort must not touch the server.
+        replace.assert_not_awaited()
 
     async def test_no_prompt_when_thread_cwd_matches_current(
         self,
@@ -21838,7 +21885,7 @@ class TestResumeThreadCwdSwitch:
         await app._resume_thread("new-thread")
 
         assert offer.await_args is not None
-        assert offer.await_args.kwargs["abort"] == "switch"
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
         # Aborting must not switch threads or load history.
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
@@ -21866,7 +21913,7 @@ class TestResumeThreadCwdSwitch:
         await app._resume_thread("thread-1")
 
         assert offer.await_args is not None
-        assert offer.await_args.kwargs["abort"] == "switch"
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
         mount.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---

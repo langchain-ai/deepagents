@@ -24,13 +24,14 @@ CwdSwitchChoice = Literal["switch", "stay", "abort"]
 its meaning depends on that mode (see `CwdSwitchAbortMode`).
 """
 
-CwdSwitchAbortMode = Literal["resume", "switch"]
+CwdSwitchAbortMode = Literal["resume", "thread_switch"]
 """Which flow opened an abort-capable prompt, selecting the abort wording.
 
 Passed as the prompt's `abort` argument; `None` there means abort is not
 offered. `"resume"` is the launch-time `-r` resume (abort starts a new
-session); `"switch"` is the in-session `/threads` switcher (abort cancels
-the switch).
+session); `"thread_switch"` is the in-session `/threads` switcher (abort keeps
+the current thread). Its members are deliberately disjoint from
+`CwdSwitchChoice` so the input mode and the outcome never share a token.
 """
 
 
@@ -104,6 +105,17 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         self._project_settings_change_detected = project_settings_change_detected
         self._abort: CwdSwitchAbortMode | None = abort
 
+    def _title_text(self) -> str:
+        """Return the title, phrased for the flow that opened the prompt.
+
+        The in-session `/threads` switcher (`"thread_switch"`) asks about
+        switching; every other flow (launch-time resume, or no abort mode) asks
+        about resuming.
+        """
+        if self._abort == "thread_switch":
+            return "Switch to the thread's original directory?"
+        return "Resume from the thread's original directory?"
+
     def _body_text(self) -> str:
         """Return the prompt body text."""
         current = format_path(self._current_cwd)
@@ -118,7 +130,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             abort_note = ""
         elif self._abort == "resume":
             abort_note = "\n\nOr abort to start a new session instead of resuming."
-        elif self._abort == "switch":
+        elif self._abort == "thread_switch":
             abort_note = (
                 "\n\nOr abort to keep your current thread instead of switching."
             )
@@ -142,7 +154,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             return help_text
         if self._abort == "resume":
             abort_help = "A: don't resume"
-        elif self._abort == "switch":
+        elif self._abort == "thread_switch":
             abort_help = "A: don't switch"
         else:
             assert_never(self._abort)
@@ -156,7 +168,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """
         with Vertical():
             yield Static(
-                "Resume from the thread's original directory?",
+                self._title_text(),
                 classes="cwd-switch-title",
                 markup=False,
             )
@@ -182,9 +194,11 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     ) -> bool | None:
         """Disable the `abort` binding unless the prompt was opened for it.
 
-        Makes the disabled state first-class: when `abort` is None the `a` key
-        is not bound to anything (it passes through) rather than firing a no-op
-        action.
+        Makes the disabled state first-class: when `abort` is None, returning
+        `False` marks the `a` binding disabled so Textual consumes the key as an
+        unavailable no-op rather than dispatching `action_abort` to decline it.
+        (Returning `None` would instead let the key fall through unhandled; we
+        want it owned-but-inert here.)
 
         Returns:
             `self._abort is not None` for the `abort` action, so the binding is

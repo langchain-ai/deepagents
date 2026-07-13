@@ -121,7 +121,7 @@ class TestCwdSwitchAbortOption:
             return screen.check_action("abort", ())
 
         assert abort_enabled("resume") is True
-        assert abort_enabled("switch") is True
+        assert abort_enabled("thread_switch") is True
         assert abort_enabled(None) is False
 
         # Non-abort actions are always allowed, regardless of mode.
@@ -143,13 +143,25 @@ class TestCwdSwitchAbortOption:
         switch = CwdSwitchPromptScreen(
             current_cwd="/a",
             thread_cwd="/b",
-            abort="switch",
+            abort="thread_switch",
         )
 
         body = switch._body_text()
         assert "new session" not in body
         assert "instead of switching" in body
         assert "keep your current thread" in body
+
+    def test_title_reflects_flow(self) -> None:
+        """The title asks about switching for `/threads`, resuming otherwise."""
+
+        def title(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._title_text()
+
+        assert title("thread_switch") == "Switch to the thread's original directory?"
+        assert title("resume") == "Resume from the thread's original directory?"
+        assert title(None) == "Resume from the thread's original directory?"
 
     def test_help_text_names_mode_specific_abort_action(self) -> None:
         """The help line shows the mode's abort wording, or omits it entirely."""
@@ -162,7 +174,7 @@ class TestCwdSwitchAbortOption:
         assert help_line("resume") == (
             "Enter: switch · Esc: stay here · A: don't resume"
         )
-        assert help_line("switch") == (
+        assert help_line("thread_switch") == (
             "Enter: switch · Esc: stay here · A: don't switch"
         )
         assert help_line(None) == "Enter: switch · Esc: stay here"

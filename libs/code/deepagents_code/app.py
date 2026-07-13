@@ -16747,7 +16747,21 @@ class DeepAgentsApp(App):
             return "abort"
         if choice == "switch":
             if restart_server:
-                return await self._replace_server_after_cwd_switch(target)
+                outcome = await self._replace_server_after_cwd_switch(target)
+                if outcome == "abort":
+                    # A failed restart returns "abort" just like a user-declined
+                    # abort, so the caller cannot tell them apart.
+                    # `_replace_server_after_cwd_switch` already rolled back and
+                    # notified, but that toast is transient -- leave a persistent
+                    # in-chat record so a failed switch is not mistaken for a
+                    # deliberate cancel.
+                    await self._mount_message(
+                        AppMessage(
+                            "Could not switch to the thread's directory; staying "
+                            "on the current thread and directory.",
+                        )
+                    )
+                return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
             return "continue"
@@ -16844,7 +16858,7 @@ class DeepAgentsApp(App):
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
                 restart_server=True,
-                abort="switch",
+                abort="thread_switch",
             )
             if cwd_choice == "abort":
                 return
@@ -16868,7 +16882,7 @@ class DeepAgentsApp(App):
         cwd_choice = await self._offer_thread_cwd_switch(
             thread_id,
             restart_server=True,
-            abort="switch",
+            abort="thread_switch",
         )
         if cwd_choice == "abort":
             return

@@ -13,6 +13,7 @@ from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -228,10 +229,15 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # Prompt caching is a billing/latency optimization only: it inserts
+    # cache_control markers the model never sees and no-ops for non-Anthropic
+    # models, so the agent stays behaviorally minimal (no prompt, execute only)
+    # while remaining affordable on Claude.
     return create_agent(
         model=model,
         tools=[_make_execute_tool(backend)],
         system_prompt=None,
+        middleware=[AnthropicPromptCachingMiddleware()],
     )
 
 

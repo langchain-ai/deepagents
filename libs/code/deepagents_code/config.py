@@ -3796,14 +3796,31 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai,
-            nvidia, fireworks) or `None` if the provider cannot be determined
-            from the name alone.
+        Provider name inferred from the model name, or `None` if the provider
+            cannot be determined from the name alone.
     """
     model_lower = model_name.lower()
 
-    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-davinci")):
         return "openai"
+
+    if model_lower.startswith("command"):
+        return "cohere"
+
+    if model_lower.startswith(("amazon.", "anthropic.", "meta.")):
+        return "bedrock"
+
+    if model_lower.startswith(("mistral", "mixtral")):
+        return "mistralai"
+
+    if model_lower.startswith("deepseek"):
+        return "deepseek"
+
+    if model_lower.startswith("grok"):
+        return "xai"
+
+    if model_lower.startswith("sonar"):
+        return "perplexity"
 
     if model_lower.startswith("claude"):
         s = _get_settings()

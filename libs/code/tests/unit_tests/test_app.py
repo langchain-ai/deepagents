@@ -9001,6 +9001,7 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             # Shrink the window so a small load archives messages above the
             # visible range, mirroring a long thread scrolled to the bottom.
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)

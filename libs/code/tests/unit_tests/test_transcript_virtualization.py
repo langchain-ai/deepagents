@@ -201,6 +201,7 @@ class TestScrollDrivenHydration:
             # has scrolled up and older history was mounted in their place).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            monkeypatch.setattr(app, "_check_hydration_needed", lambda: None)
             messages = app.query_one("#messages", Container)
             await app._prune_messages_below_window(messages)
             await pilot.pause()

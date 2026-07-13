@@ -705,6 +705,17 @@ class TestDiffMessageCredentialRedaction:
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
+    def test_empty_file_path_renders_diff(self) -> None:
+        """An unknown (empty) path renders normally rather than falsely hiding.
+
+        Callers always populate `file_path`, so a blank path means "unknown",
+        not "credential"; it must not surface the redaction notice.
+        """
+        diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
+        texts = self._texts(DiffMessage(diff, file_path=""))
+        assert all("may contain credentials" not in text for text in texts)
+        assert any("print('b')" in text for text in texts)
+
 
 class TestToolCallMessageDuration:
     """Tests for the post-run duration shown on `execute` tool calls."""

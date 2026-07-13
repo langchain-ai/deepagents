@@ -158,7 +158,11 @@ _SENSITIVE_FILE_NAMES = frozenset(
         ".npmrc",
         ".pypirc",
         ".htpasswd",
+        ".git-credentials",
         "credentials",
+        "credentials.json",
+        "token.json",
+        "auth.json",
         "id_rsa",
         "id_dsa",
         "id_ecdsa",
@@ -181,20 +185,33 @@ _SENSITIVE_FILE_SUFFIXES = (
 def is_sensitive_file_path(path_str: str | None) -> bool:
     """Return whether a path points at a credential/secret file.
 
-    The check is filename-based and case-insensitive. It matches `.env` and
-    its variants (e.g. `.env.local`), well-known credential filenames, and
-    private-key/keystore suffixes. Used to suppress diff/content rendering so
-    secrets never reach the terminal UI or scrollback.
+    Best-effort, filename-based, case-insensitive heuristic. It matches `.env`
+    and its variants (e.g. `.env.local`), well-known credential filenames, and
+    private-key/keystore suffixes, and is used to suppress diff/content
+    rendering for those files so their contents are not shown in the terminal
+    UI or scrollback. It classifies by name only, not content, so
+    secret-bearing files with unrecognized names still render.
+
+    Args:
+        path_str: Filesystem path to classify (a display or absolute path).
+            May be ``None`` or empty.
 
     Returns:
-        True if the file should be treated as sensitive.
+        ``True`` if the basename matches a known credential pattern. A falsy
+        path returns ``False`` (nothing to classify). An unparseable path
+        returns ``True`` and logs a warning, so the redaction gate fails
+        closed on unexpected input rather than leaking.
     """
     if not path_str:
         return False
     try:
         name = Path(path_str).name.lower()
-    except (OSError, ValueError):
-        return False
+    except (OSError, ValueError, TypeError):
+        logger.warning(
+            "is_sensitive_file_path: could not parse %r; treating as sensitive",
+            path_str,
+        )
+        return True
     if not name:
         return False
     if name == ".env" or name.startswith(".env."):

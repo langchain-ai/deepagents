@@ -51,6 +51,18 @@ Charset-dependent characters and animations have **single sources of truth**. Re
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+### UI component organization
+
+Apply these rules to new UI; do not treat them as a mandate to refactor existing code.
+
+- Put root abstractions under `tui/screens/` and `tui/modals/`, and reusable components under `tui/widgets/`.
+- Give a large component its own `snake_case/` directory. Export its PascalCase root class from `__init__.py` (prefer implementing it there); give large subcomponents nested directories with the same pattern, while small subcomponents stay as sibling modules.
+- Keep single-use constants, helpers, business logic, and UI logic beside the component that owns them. If a helper gains a second caller, consider hoisting it to their nearest shared directory; by the third caller, extract it to a shared utility module.
+- Keep components focused; UI component modules should rarely exceed 200 lines.
+- Co-locate a screen's `.tcss` file with its root component and set `CSS_PATH` relative to that module. Its styles may target sibling and small nested components, but a large nested component should generally own its own stylesheet.
+- Widgets cannot use `CSS_PATH`; put intrinsic, auto-scoped defaults in `DEFAULT_CSS`. The mounting screen owns the widget's sizing and placement.
+- Children must not import parent components. They may import shared utilities and data models; send events up and pass state/data down.
+
 ### Testing Textual apps
 
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)

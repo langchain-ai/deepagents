@@ -12,6 +12,7 @@ record to a bounded `deque`, so the buffer is cheap enough to keep always on.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 from collections import deque
@@ -113,7 +114,8 @@ class InMemoryLogBuffer(logging.Handler):
             return list(self._records)
         if offset >= len(self._records):
             return []
-        return list(self._records)[offset:]
+        # islice avoids materializing the full deque just to slice off the tail.
+        return list(itertools.islice(self._records, offset, None))
 
     @staticmethod
     def _make_record(record: logging.LogRecord) -> InMemoryLogRecord:
@@ -148,12 +150,15 @@ def install_log_buffer(
     """Attach the in-memory buffer handler to *target* (idempotent).
 
     Lowers *target*'s level to at most `INFO` so the console shows a useful tail
-    even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level, so a
-    lower level set by `configure_debug_logging` is preserved. When installed
-    after `configure_debug_logging` (as in `__init__.py`), an explicit
-    `DEEPAGENTS_CODE_LOG_LEVEL` is also preserved. The `NOTSET` branch does not
-    consult `DEEPAGENTS_CODE_LOG_LEVEL`, so calling this on a fresh unconfigured
-    logger would force `INFO` regardless of that variable.
+    even when `DEEPAGENTS_CODE_DEBUG` is off; never raises the level. In
+    `__init__.py` this runs *before* `configure_debug_logging`, which then sets
+    the final level (honoring `DEEPAGENTS_CODE_DEBUG` and
+    `DEEPAGENTS_CODE_LOG_LEVEL`) over this `INFO` floor — so any startup warnings
+    `configure_debug_logging` emits are captured by the already-installed buffer.
+    On a fresh `NOTSET` logger the `NOTSET` branch forces `INFO` without
+    consulting `DEEPAGENTS_CODE_LOG_LEVEL`; the `> INFO and no env` branch only
+    matters on reconfiguration (e.g. an `importlib.reload`), where it preserves
+    an explicit `DEEPAGENTS_CODE_LOG_LEVEL` rather than clobbering it with `INFO`.
 
     Lowering the level does not spill log output onto the terminal: because this
     handler is present in the propagation chain, `Logger.callHandlers` finds a

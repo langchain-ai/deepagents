@@ -24,6 +24,32 @@ class TestResolveLogLevel:
         with patch.dict(os.environ, {}, clear=True):
             assert resolve_log_level(debug_enabled=False) == logging.INFO
 
+    def test_empty_value_falls_back(self) -> None:
+        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": ""}, clear=True):
+            assert resolve_log_level(debug_enabled=False) == logging.INFO
+
+    def test_whitespace_value_falls_back(self) -> None:
+        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "   "}, clear=True):
+            assert resolve_log_level(debug_enabled=True) == logging.DEBUG
+
+    def test_value_is_case_insensitive(self) -> None:
+        with patch.dict(
+            os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "warning"}, clear=True
+        ):
+            assert resolve_log_level(debug_enabled=False) == logging.WARNING
+
+    def test_explicit_level_overrides_debug_fallback(self) -> None:
+        """An explicit level wins over the debug-derived default."""
+        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "ERROR"}, clear=True):
+            assert resolve_log_level(debug_enabled=True) == logging.ERROR
+
+    def test_reads_debug_env_when_flag_omitted(self) -> None:
+        """With no explicit flag, the truthiness of the env var decides."""
+        with patch.dict(os.environ, {"DEEPAGENTS_CODE_DEBUG": "1"}, clear=True):
+            assert resolve_log_level() == logging.DEBUG
+        with patch.dict(os.environ, {}, clear=True):
+            assert resolve_log_level() == logging.INFO
+
 
 class TestConfigureDebugLogging:
     def test_noop_when_env_unset(self) -> None:

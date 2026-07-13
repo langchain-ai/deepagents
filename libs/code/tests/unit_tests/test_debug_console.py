@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
@@ -24,6 +24,8 @@ from deepagents_code.tui.widgets.debug_console import (
 
 if TYPE_CHECKING:
     import pytest
+
+    from deepagents_code.tui.widgets.debug_console import FilterValue
 
 logger = logging.getLogger("deepagents_code._test_console")
 
@@ -82,6 +84,25 @@ class TestDebugConsoleScreen:
             await pilot.pause()
             log = screen.query_one("#debug-log", _DebugLogView)
             assert log.line_count > 0
+
+    async def test_no_color_renders_every_segment_with_a_style(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Monochrome filtering must never receive an unstyled Rich segment."""
+        monkeypatch.setenv("NO_COLOR", "1")
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(_snapshot())
+            app.push_screen(screen)
+            await pilot.pause()
+            log = screen.query_one("#debug-log", _DebugLogView)
+            log.set_records([_log_record("unstyled message")])
+            await pilot.pause()
+
+            strip = log.render_line(0)
+
+        assert strip._segments
+        assert all(segment.style is not None for segment in strip._segments)
 
     async def test_live_tail_appends_new_records_incrementally(self) -> None:
         app = _Harness()
@@ -682,6 +703,13 @@ class TestRecordMatchesFilter:
         notice = _log_record("n", level="NOTICE", levelno=25)
         assert _record_matches_filter(notice, "min:INFO")
         assert not _record_matches_filter(notice, "min:WARNING")
+
+    def test_unknown_threshold_level_shows_record(self) -> None:
+        # Unreachable via FilterValue, but a diagnostic must not hide records
+        # (or raise KeyError on the poll timer) if a bad filter ever slips
+        # through: an unrecognized threshold level matches everything.
+        record = _log_record("x", level="INFO", levelno=logging.INFO)
+        assert _record_matches_filter(record, cast("FilterValue", "min:BOGUS"))
 
 
 class TestDebugConsoleToggle:

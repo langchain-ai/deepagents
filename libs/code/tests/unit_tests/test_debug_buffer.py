@@ -102,6 +102,32 @@ class TestInMemoryLogBuffer:
         assert "boom-detail" in message
         assert "\n" in message
 
+    def test_emit_never_raises_on_malformed_record(self) -> None:
+        """A record that can't be formatted is dropped, not propagated.
+
+        `emit` upholds logging's "never crash the caller" contract: a bad
+        printf-style record routes to `handleError` instead of raising, and the
+        dropped record must not inflate `total_emitted` (the `+= 1` sits after
+        the append that raised).
+        """
+        buffer = InMemoryLogBuffer()
+        bad = logging.LogRecord(
+            name="deepagents_code.x",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="%d",  # %-format expects an int; the str arg raises in getMessage
+            args=("not-an-int",),
+            exc_info=None,
+        )
+        with patch.object(buffer, "handleError") as handle_error:
+            buffer.emit(bad)  # must not raise
+        handle_error.assert_called_once_with(bad)
+        records, total = buffer.snapshot_records_since(0)
+        assert records == []
+        assert total == 0
+        assert buffer.total_emitted == 0
+
     def test_is_bounded_dropping_oldest(self) -> None:
         buffer = InMemoryLogBuffer(capacity=3)
         for i in range(5):

@@ -162,12 +162,6 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
-LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
-"""Minimum level for `deepagents_code` runtime logging.
-
-Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
-"""
-
 KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
 
@@ -187,6 +181,12 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

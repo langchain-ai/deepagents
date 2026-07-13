@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import bisect
 import logging
-from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, cast, get_args
 
 from rich.segment import Segment
 from rich.style import Style as RichStyle
@@ -96,6 +96,9 @@ _DEBUG_FILTER_OPTIONS: tuple[tuple[str, FilterValue], ...] = (
     ("DEBUG", "min:DEBUG"),
     ("Only DEBUG", "only:DEBUG"),
 )
+_VALID_FILTER_VALUES: frozenset[str] = frozenset(get_args(FilterValue))
+"""Every legal `FilterValue`, used to validate values crossing the Select
+boundary before they are trusted as a `FilterValue`."""
 _LEVEL_STYLES = {
     "DEBUG": "dim",
     "INFO": "cyan",
@@ -103,7 +106,7 @@ _LEVEL_STYLES = {
     "ERROR": "red",
     "CRITICAL": "bold red",
 }
-_EMPTY_STYLE = None
+_EMPTY_STYLE = RichStyle()
 
 
 def _sanitize_display_text(text: str, *, keep_newlines: bool = False) -> str:
@@ -138,7 +141,13 @@ def _record_matches_filter(
     mode, selected_level = level_filter.split(":", maxsplit=1)
     if mode == "only":
         return record.level == selected_level
-    return record.levelno >= LOG_LEVELS[selected_level]
+    threshold = LOG_LEVELS.get(selected_level)
+    if threshold is None:
+        # An unrecognized level should never reach here (FilterValue enumerates
+        # only LOG_LEVELS keys), but a diagnostic must not hide records on a bad
+        # filter: show everything rather than raise on the poll timer.
+        return True
+    return record.levelno >= threshold
 
 
 def _record_to_content(record: InMemoryLogRecord) -> Content:
@@ -271,6 +280,12 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._contents.extend(_record_to_content(record) for record in records)
         width = self._cached_width or self.size.width
         if width <= 0:
+            # Not yet sized (e.g. first poll before layout). Assume one visual
+            # line per new content so `_wrap_counts` stays 1:1 with `_contents`;
+            # the first `on_resize` reflow recomputes real counts. Skipping this
+            # would leave the new records out of `_wrap_prefix`/`_total_visual`
+            # and invisible until that resize.
+            self._wrap_counts.extend(1 for _ in self._contents[start:])
             self._recompute_prefix()
             self.refresh()
             return
@@ -547,8 +562,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         # has no `c` binding, so it still bubbles up to this copy action.
         Binding("c", "copy", "Copy", show=False),
     ]
-    """Close and clear-view are `priority`; copy bubbles so it never steals keys
-    from the level dropdown's type-to-search."""
+    """The toggle-key close (`ctrl+backslash`) and `ctrl+l` clear-view are
+    `priority`. Escape close and `c` copy are deliberately *not* `priority`:
+    Escape must reach the open level dropdown's overlay first so it closes only
+    the menu (a priority Escape would tear down the whole console instead), and
+    `c` must not pre-empt the dropdown's type-to-search."""
 
     CSS = """
     DebugConsoleScreen {
@@ -683,6 +701,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         value = str(event.value)
         if value == self._level_filter:
             return
+        if value not in _VALID_FILTER_VALUES:
+            # The Select only offers known options, so this is unreachable in
+            # practice; validate anyway so an unexpected value degrades to the
+            # current filter instead of being trusted as a FilterValue.
+            logger.warning("Ignoring unknown debug level filter %r", value)
+            return
         self._level_filter = cast("FilterValue", value)
         self._refresh_log_view(scroll_end=True)
 
@@ -719,21 +743,26 @@ class DebugConsoleScreen(ModalScreen[None]):
         Runs on a repeating `set_interval` timer, so an unhandled exception here
         would propagate out of the callback and tear down the whole host app.
         A diagnostic overlay must degrade instead: a tick that races teardown
-        (`NoMatches`) is a no-op, and any other failure degrades the tail to a
-        notice rather than crashing the app it exists to inspect.
+        (`NoMatches`) is logged at DEBUG and skipped, and any other failure
+        degrades the tail to a notice rather than crashing the app it exists to
+        inspect.
         """
         from textual.css.query import NoMatches
 
         try:
             self._poll_logs_once()
         except NoMatches:
-            # A queued tick fired after the console was dismissed; nothing to do.
+            # Expected when a queued tick races console teardown: the log widget
+            # is already gone. Logged at DEBUG (not swallowed outright) so a
+            # genuine missing/mis-typed-widget bug still leaves a breadcrumb in
+            # the buffer instead of silently rendering nothing forever.
+            logger.debug("Debug console poll skipped (widget unavailable)")
             return
         except Exception:  # a diagnostic must never crash the app it inspects
             logger.warning("Debug console log poll failed", exc_info=True)
             try:
                 self.query_one("#debug-log", _DebugLogView).show_notice(
-                    "(log tail unavailable; see debug log)"
+                    "(log tail unavailable)"
                 )
             except Exception:  # best-effort notice; never re-raise from here
                 logger.debug("Debug console poll-error notice failed", exc_info=True)
@@ -751,15 +780,10 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._records.extend(records)
         pruned = self._prune_records()
         self._rendered_upto = total
-        visible_records = [
-            record
-            for record in records
-            if _record_matches_filter(record, self._level_filter)
-        ]
         if pruned:
             self._refresh_log_view(scroll_end=log.is_vertical_scroll_end)
             return
-        log.append_records(visible_records)
+        log.append_records(self._visible_records(records))
 
     def _prune_records(self) -> bool:
         """Trim retained records to the in-memory ring buffer capacity.
@@ -773,15 +797,20 @@ class DebugConsoleScreen(ModalScreen[None]):
         del self._records[:overflow]
         return True
 
-    def _refresh_log_view(self, *, scroll_end: bool) -> None:
-        """Rebuild the log view using the current filter."""
-        visible_records = [
+    def _visible_records(
+        self, records: Sequence[InMemoryLogRecord]
+    ) -> list[InMemoryLogRecord]:
+        """Return the subset of *records* matching the current level filter."""
+        return [
             record
-            for record in self._records
+            for record in records
             if _record_matches_filter(record, self._level_filter)
         ]
+
+    def _refresh_log_view(self, *, scroll_end: bool) -> None:
+        """Rebuild the log view using the current filter."""
         self.query_one("#debug-log", _DebugLogView).set_records(
-            visible_records, scroll_end=scroll_end
+            self._visible_records(self._records), scroll_end=scroll_end
         )
 
     def action_clear_view(self) -> None:
@@ -794,11 +823,7 @@ class DebugConsoleScreen(ModalScreen[None]):
 
     def action_copy(self) -> None:
         """Copy visible retained log records since the last clear to the clipboard."""
-        lines = [
-            record.plain_line
-            for record in self._records
-            if _record_matches_filter(record, self._level_filter)
-        ]
+        lines = [record.plain_line for record in self._visible_records(self._records)]
         self._copy_lines(lines, empty_message="No visible log lines to copy")
 
     def _copy_record(self, record: InMemoryLogRecord) -> None:

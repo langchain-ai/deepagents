@@ -14373,6 +14373,7 @@ class DeepAgentsApp(App):
             Ordered ``(label, value)`` fields for the console header.
         """
         from deepagents_code._debug import installed_debug_log_path
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
@@ -14403,7 +14404,15 @@ class DeepAgentsApp(App):
 
         def _log_path() -> str:
             path = installed_debug_log_path()
-            return str(path) if path else "in-memory only"
+            if path:
+                return str(path)
+            # DEEPAGENTS_CODE_DEBUG can read truthy with no handler installed —
+            # e.g. a bad path, or the var set after import via .env. Distinguish
+            # that from the plain no-file-logging case so the console does not
+            # imply a file exists (and hint that a request went unfulfilled).
+            if is_env_truthy(DEBUG):
+                return "in-memory only (file logging requested but unavailable)"
+            return "in-memory only"
 
         return [
             _safe("Version", lambda: __version__),

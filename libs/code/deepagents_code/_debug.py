@@ -21,6 +21,8 @@ from deepagents_code._env_vars import (
     is_env_truthy,
 )
 
+logger = logging.getLogger(__name__)
+
 _DEBUG_HANDLER_ATTR = "_deepagents_code_debug_handler"
 LOG_LEVELS = {
     "DEBUG": logging.DEBUG,
@@ -58,10 +60,12 @@ def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
     if level is not None:
         return level
     valid = ", ".join(LOG_LEVELS)
-    print(  # noqa: T201
-        f"Warning: ignoring invalid {LOG_LEVEL}={raw!r}; expected one of {valid}",
-        file=sys.stderr,
-    )
+    message = f"ignoring invalid {LOG_LEVEL}={raw!r}; expected one of {valid}"
+    # stderr for headless / pre-TUI visibility; the logger so it also lands in
+    # the always-on in-memory buffer and surfaces in the Debug Console (the
+    # buffer is installed before this runs; see __init__.py).
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
     return fallback
 
 
@@ -80,9 +84,9 @@ def configure_debug_logging(target: logging.Logger) -> None:
     file defaults to `DEFAULT_DEBUG_FILE` but can be overridden with
     `DEEPAGENTS_CODE_DEBUG_FILE`. The handler appends (`mode='a'`) so logs are
     preserved across separate process runs. Calling this again with the same
-    resolved path is a no-op: the existing tagged handler is reused rather than
-    stacking duplicates. If the resolved path changes, the stale handler is
-    closed and replaced.
+    resolved path does not stack duplicate handlers: the existing tagged handler
+    is reused and its level re-applied. If the resolved path changes, the stale
+    handler is closed and replaced.
 
     Args:
         target: Logger to configure.
@@ -112,10 +116,11 @@ def configure_debug_logging(target: logging.Logger) -> None:
     try:
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:
-        print(  # noqa: T201
-            f"Warning: could not open debug log file {debug_path}: {exc}",
-            file=sys.stderr,
-        )
+        message = f"could not open debug log file {debug_path}: {exc}"
+        # stderr for headless / pre-TUI visibility; the logger so it also lands
+        # in the always-on in-memory buffer and surfaces in the Debug Console.
+        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+        logger.warning("%s", message)
         return
     setattr(handler, _DEBUG_HANDLER_ATTR, True)
     handler.setLevel(level)

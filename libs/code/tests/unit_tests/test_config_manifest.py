@@ -81,6 +81,66 @@ def test_option_keys_unique() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
+    """The effective log level follows debug mode when no level is explicit."""
+    option = get_option("debug.log_level")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.LOG_LEVEL, raising=False)
+
+    monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    assert resolve_scalar(option, toml_data={}) == ("INFO", "default")
+
+    monkeypatch.setenv(_env_vars.DEBUG, "true")
+    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+
+
+def test_debug_log_level_validates_explicit_value(monkeypatch) -> None:
+    """Explicit log levels are normalized and invalid values use the runtime default."""
+    option = get_option("debug.log_level")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.DEBUG, "true")
+
+    monkeypatch.setenv(_env_vars.LOG_LEVEL, " warning ")
+    assert resolve_scalar(option, toml_data={}) == (
+        "WARNING",
+        f"env ({_env_vars.LOG_LEVEL})",
+    )
+
+    monkeypatch.setenv(_env_vars.LOG_LEVEL, "TRACE")
+    assert resolve_scalar(option, toml_data={}) == ("DEBUG", "default")
+
+
+@pytest.mark.parametrize(("debug", "expected"), [(None, "INFO"), ("1", "DEBUG")])
+def test_config_get_and_show_report_dynamic_log_level(
+    monkeypatch, capsys, debug: str | None, expected: str
+) -> None:
+    """Both config command paths report the runtime's effective default."""
+    import json
+
+    monkeypatch.delenv(_env_vars.LOG_LEVEL, raising=False)
+    if debug is None:
+        monkeypatch.delenv(_env_vars.DEBUG, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.DEBUG, debug)
+
+    get_args = argparse.Namespace(
+        config_command="get",
+        key="debug.log_level",
+        output_format="json",
+    )
+    assert run_config_command(get_args) == 0
+    get_payload = json.loads(capsys.readouterr().out)
+    assert get_payload["data"]["value"] == expected
+
+    show_args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(show_args) == 0
+    show_payload = json.loads(capsys.readouterr().out)
+    row = next(
+        item for item in show_payload["data"] if item["key"] == "debug.log_level"
+    )
+    assert row["value"] == expected
+
+
 # --- Provider install helpers ----------------------------------------------
 
 

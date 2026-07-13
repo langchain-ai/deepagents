@@ -519,10 +519,13 @@ def _quiet_sdk_tracing_logging() -> None:
     stay off the terminal.
     """
     from deepagents_code._debug import configure_debug_logging
+    from deepagents_code._env_vars import DEBUG, is_env_truthy
 
+    debug_enabled = is_env_truthy(DEBUG)
     for name in ("langsmith", "langchain"):
         sdk_logger = logging.getLogger(name)
-        configure_debug_logging(sdk_logger)
+        if debug_enabled:
+            configure_debug_logging(sdk_logger)
         if not sdk_logger.handlers:
             sdk_logger.addHandler(logging.NullHandler())
 

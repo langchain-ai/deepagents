@@ -72,6 +72,45 @@ def test_build_provider_matrices_cross_products_models_and_categories():
     assert entry["n_shards"] == 3
 
 
+def test_dcode_impl_override_swaps_code_categories_only():
+    # `dcode_impl` replaces the harness for the code categories (autonomous,
+    # context) but must leave the conversation category on tau3.
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous", "conversation", "context"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10, "conversation": 3, "context": 3},
+        dcode_impl="bare",
+    )
+    impls = {e["category"]: e["agent_impl"] for e in mats["openai"]}
+    assert impls == {
+        "autonomous": "bare",
+        "conversation": "tau3",
+        "context": "bare",
+    }
+
+
+def test_dcode_impl_defaults_to_dcode():
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous", "context"],
+        shard_parallel=10,
+        n_shards_by_cat={"autonomous": 10, "context": 3},
+    )
+    assert {e["agent_impl"] for e in mats["openai"]} == {"dcode"}
+
+
+def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "deepagent")
+    with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_IMPL must be one of"):
+        up.main()
+
+
 def test_langsmith_dataset_is_collision_resistant():
     # slugify is lossy: these two distinct specs slugify to the same string, so
     # the hash suffix must keep their langsmith_dataset names distinct.

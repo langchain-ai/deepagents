@@ -11,6 +11,13 @@ on:
         description: "Comma list"
         type: string
         default: "autonomous,conversation,context"
+      agent_impl:
+        description: "Harness for the code categories (autonomous, context): 'dcode' (Deep Agents Code CLI) or 'bare' (bare create_deep_agent). Conversation always uses tau3."
+        type: choice
+        default: "dcode"
+        options:
+          - dcode
+          - bare
       rollouts:
         type: string
         default: "3"
@@ -91,6 +98,7 @@ jobs:
         env:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
+          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
           UNIFIED_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}

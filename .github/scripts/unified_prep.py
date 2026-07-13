@@ -61,6 +61,10 @@ CATEGORY_MAP: dict[str, dict] = {
 
 DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
 
+# Harnesses selectable for the code categories (autonomous, context) via the
+# `agent_impl` input. Conversation is always tau3 and is never overridden.
+CODE_AGENT_IMPLS = {"dcode", "bare"}
+
 
 def parse_int_input(
     name: str,
@@ -125,19 +129,23 @@ def build_provider_matrices(
     categories: list[str],
     shard_parallel: int,
     n_shards_by_cat: dict[str, int],
+    dcode_impl: str = "dcode",
 ) -> dict[str, list[dict]]:
     matrices: dict[str, list[dict]] = {}
     for spec in models_list:
         prov = provider_of(spec)
         for cat in categories:
             cm = CATEGORY_MAP[cat]
+            # `dcode_impl` swaps the harness for the code categories only; the
+            # conversation category's tau3 harness is left untouched.
+            agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
             entry = {
                 "model": spec,
                 "provider": prov,
                 "category": cat,
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
-                "agent_impl": cm["agent_impl"],
+                "agent_impl": agent_impl,
                 # Per-model datasets isolate runs; unified_summary is the
                 # cross-model comparison surface.
                 "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
@@ -194,6 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         for category, default in DEFAULT_N_SHARDS.items()
     }
 
+    # Empty defaults to "dcode" (the historical per-category default).
+    dcode_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or "dcode"
+    if dcode_impl not in CODE_AGENT_IMPLS:
+        raise SystemExit(
+            f"UNIFIED_AGENT_IMPL must be one of {sorted(CODE_AGENT_IMPLS)}, "
+            f"got {dcode_impl!r}"
+        )
+
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
@@ -223,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     assert len(providers_present) * shard_parallel <= MAX_RUNNERS
 
     matrices = build_provider_matrices(
-        model_specs, categories, shard_parallel, n_shards_by_cat
+        model_specs, categories, shard_parallel, n_shards_by_cat, dcode_impl
     )
 
     outputs: dict[str, object] = {

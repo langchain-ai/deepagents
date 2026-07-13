@@ -8,7 +8,6 @@ from deepagents.graph import (
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
-from deepagents.middleware.fireworks import FireworksPromptCachingMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import (
@@ -34,7 +33,6 @@ __all__ = [
     "DeepAgentState",
     "FilesystemMiddleware",
     "FilesystemPermission",
-    "FireworksPromptCachingMiddleware",
     "FsToolName",
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",

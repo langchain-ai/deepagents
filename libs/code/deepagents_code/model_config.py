@@ -535,6 +535,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
+    "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -562,9 +563,18 @@ Storing a key for this service via `/auth` also enables tracing at startup
 name, so it gets special handling beyond a plain key copy.
 """
 
+TAVILY_SERVICE = "tavily"
+"""Service name for Tavily web search in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` gates the spawn-time `web_search`
+tool (see `server_graph._build_tools`), so a key added to a running server
+takes effect only after a respawn — the app offers that restart, and this
+constant is the single name its `/auth` handling compares against.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
     LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
-    "tavily": "TAVILY_API_KEY",
+    TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
@@ -585,6 +595,9 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -612,6 +625,7 @@ RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "google_vertexai": "max_retries",
     "groq": "max_retries",
     "litellm": "max_retries",
+    "meta": "max_retries",
     "mistralai": "max_retries",
     "openai": "max_retries",
     "openrouter": "max_retries",
@@ -657,6 +671,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   huggingface   the integration and huggingface_hub both read
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   meta          ChatMetaModel reads MODEL_API_BASE.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
     #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
@@ -690,6 +705,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
+    "meta": ("MODEL_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
@@ -2336,8 +2352,9 @@ class ModelConfig:
 
         Returns:
             Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, or contains
-                invalid TOML syntax.
+                Returns empty config if file is missing, unreadable, contains
+                invalid TOML syntax, or is structurally invalid (valid TOML of
+                the wrong shape, e.g. a scalar `[models]`).
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2356,6 +2373,12 @@ class ModelConfig:
         try:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
+            models_section = data.get("models", {})
+            config = cls(
+                default_model=models_section.get("default"),
+                recent_model=models_section.get("recent"),
+                providers=models_section.get("providers", {}),
+            )
         except tomllib.TOMLDecodeError as e:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
@@ -2363,23 +2386,24 @@ class ModelConfig:
                 config_path,
                 e,
             )
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+            config = cls()
         except (PermissionError, OSError) as e:
             logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-
-        models_section = data.get("models", {})
-        config = cls(
-            default_model=models_section.get("default"),
-            recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
-        )
+            config = cls()
+        except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape — a scalar
+            # `[models]`, a non-table `providers` — which surfaces here as an
+            # AttributeError from `.get(...)` or a TypeError from the dataclass
+            # constructor. Treat it like any other unreadable config rather than
+            # letting it crash callers (e.g. the /auth modal on Ctrl+R) that
+            # assume load() is total and never raises.
+            logger.warning(
+                "Config file %s is structurally invalid: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
+                e,
+            )
+            config = cls()
 
         # Validate config consistency
         config._validate()
@@ -3046,6 +3070,249 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class McpServerTrustLists:
+    """User-level allow/deny lists for project MCP servers, by server name.
+
+    Sourced only from the user's own configuration — the home `config.toml`, the
+    global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
+    committed `.mcp.json` cannot self-approve. A committed *project* `.env` is
+    specifically prevented from setting the env forms of these lists (see
+    `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). See `load_mcp_server_trust_lists`.
+
+    The "reject wins" invariant — a name in both lists is only rejected — is
+    enforced in `__post_init__`, so every instance is disjoint no matter how it
+    was constructed; callers need not pre-subtract.
+    """
+
+    enabled: frozenset[str]
+    """Server names pre-approved to load from an untrusted project config."""
+
+    disabled: frozenset[str]
+    """Server names always rejected; reject wins over `enabled` and over trust."""
+
+    read_error: str | None = field(default=None, compare=False)
+    """Non-`None` when the user's `config.toml` existed but its trust policy
+    could not be fully read: the file was unreadable/unparseable, its `[mcp]`
+    value was not a table, or its `disabled_project_servers` was a wrong type
+    that could not be interpreted as a deny list. Callers must treat this as
+    fail-closed (do not grant whole-config project trust) and surface it, rather
+    than proceeding with a deny list that may not have loaded — use `load_failed`
+    for that check. Note the resolved `enabled`/`disabled` sets are not
+    necessarily empty here: names from a still-readable source (the env vars)
+    continue to apply. Excluded from equality so a failed load still compares
+    equal to empty lists for tests that only care about the resolved names."""
+
+    def __post_init__(self) -> None:
+        """Enforce reject precedence by removing disabled names from enabled.
+
+        A rejected name must never survive in `enabled`, whatever the caller
+        passed, so a future allow-first consumer can't be tricked into loading
+        a denied server. Frozen dataclass, so assign via `object.__setattr__`.
+        """
+        if self.enabled & self.disabled:
+            object.__setattr__(self, "enabled", self.enabled - self.disabled)
+
+    @property
+    def load_failed(self) -> bool:
+        """Whether the user's trust policy failed to load (see `read_error`).
+
+        Callers gating on trust MUST check this and fail closed: a failed load
+        means a configured deny may be missing, so whole-config project trust
+        must not be honored. Named so the fail-closed contract is discoverable
+        rather than resting on every caller remembering the `read_error`
+        sentinel.
+        """
+        return self.read_error is not None
+
+
+def _parse_csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated env var into a list of trimmed, non-empty names.
+
+    Returns:
+        The parsed list when the variable is set (possibly empty after
+            trimming), or `None` when the variable is unset so callers can
+            distinguish "unset, fall back to TOML" from "set but empty".
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _toml_str_list(
+    value: object, *, key: str, config_path: Path
+) -> tuple[list[str], bool]:
+    """Coerce a raw TOML value into a list of trimmed, non-empty server names.
+
+    A bare string is *split on commas* (e.g. `disabled_project_servers = "a, b"`
+    yields `["a", "b"]`), so a scalar written in the TOML parses identically to
+    the comma-separated env form in `_parse_csv_env` — the two forms can never
+    silently diverge into one bogus `"a, b"` token that matches no server. Non-
+    string list elements are dropped (with a log) while the surrounding valid
+    names survive. A genuinely wrong type (number, table, bool) cannot be
+    interpreted as names at all: it yields an empty list *and* flags `malformed`,
+    so a caller enforcing a deny list can fail closed rather than silently drop
+    the rejection.
+
+    Args:
+        value: The raw value read from the `[mcp]` table (or `None` when the
+            key is absent).
+        key: The TOML key name, used only for log context.
+        config_path: The config file the value came from, for log context.
+
+    Returns:
+        `(names, malformed)`. `names` are the trimmed, non-empty server names.
+            `malformed` is `True` only when `value` is present but neither a
+            string nor a list (so it could not be read as names); it is `False`
+            for an absent value, a string, or any list — even one whose non-
+            string elements were dropped.
+    """
+    if value is None:
+        return [], False
+    if isinstance(value, str):
+        # Split on commas so a bare string parses exactly like the env form; a
+        # single name with no comma still yields a one-element list.
+        return [item.strip() for item in value.split(",") if item.strip()], False
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].%s in %s should be a list of strings, got %s; ignoring it",
+            key,
+            config_path,
+            type(value).__name__,
+        )
+        return [], True
+    result: list[str] = []
+    discarded = 0
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        else:
+            discarded += 1
+    if discarded:
+        logger.warning(
+            "[mcp].%s in %s: ignored %d non-string or empty entr%s",
+            key,
+            config_path,
+            discarded,
+            "y" if discarded == 1 else "ies",
+        )
+    return result, False
+
+
+def load_mcp_server_trust_lists(
+    config_path: Path | None = None,
+) -> McpServerTrustLists:
+    """Load per-server project MCP allow/deny lists from user-level config.
+
+    Security boundary: this reads the `[mcp]` table only from the user-level
+    `config.toml` (`DEFAULT_CONFIG_PATH`, i.e. `~/.deepagents/config.toml`) and
+    the `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` /
+    `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS` process env vars — never from
+    a project's `.mcp.json` or any repo-committed file. There is no
+    project-level `config.toml` discovery, so an attacker who commits a
+    malicious `.mcp.json` plus an in-repo config cannot pre-approve their own
+    servers; the approval must live in the user's home config. This mirrors
+    Claude Code's "untrusted folder → only non-checked-in settings" rule.
+
+    Source resolution differs by list, matching each one's security direction:
+
+    - `enabled` (permissive): the env var, when set, *replaces* the TOML list
+        (env-beats-config, as elsewhere). Clearing it via an empty env value is
+        fail-closed — it only ever pre-approves fewer servers.
+    - `disabled` (restrictive): the env var *unions* with the TOML list — denies
+        accumulate and a lower-effort source can never silently empty a deny
+        entry set in the other, which would be a fail-open. There is
+        deliberately no way to *remove* a configured deny via env.
+
+    Rejection wins: a name appearing in both the enabled and disabled result is
+    reported only in `disabled`.
+
+    Args:
+        config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
+            callers should not point this at a project path — doing so would
+            defeat the boundary above.
+
+    Returns:
+        The resolved `McpServerTrustLists`. A missing file yields empty lists
+            (the normal "unset" case). `read_error` is set (so callers can fail
+            closed instead of treating a broken config as "nothing denied") when
+            the file exists but cannot be read/parsed, when `[mcp]` is not a
+            table, or when `disabled_project_servers` is a wrong type that cannot
+            be read as a deny list; env-sourced names still apply in that case.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    toml_enabled: list[str] = []
+    toml_disabled: list[str] = []
+    read_error: str | None = None
+    try:
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+            mcp_section = data.get("mcp", {})
+            if isinstance(mcp_section, dict):
+                # A wrong-typed `enabled` value degrades to an empty allowlist:
+                # approving nothing extra is already fail-closed, so the
+                # `malformed` flag is intentionally ignored here.
+                toml_enabled, _ = _toml_str_list(
+                    mcp_section.get("enabled_project_servers"),
+                    key="enabled_project_servers",
+                    config_path=config_path,
+                )
+                toml_disabled, disabled_malformed = _toml_str_list(
+                    mcp_section.get("disabled_project_servers"),
+                    key="disabled_project_servers",
+                    config_path=config_path,
+                )
+                if disabled_malformed:
+                    # A wrong-typed deny list cannot be read, so proceeding as
+                    # if nothing were denied would be a fail-open. Surface it and
+                    # fail closed, mirroring the unreadable-file path below.
+                    read_error = (
+                        f"[mcp].disabled_project_servers in {config_path} must be "
+                        "a list of strings; refusing to proceed with an "
+                        "unenforced deny list"
+                    )
+            else:
+                # An `[mcp]` value that is not a table means the deny list is
+                # unreadable too; fail closed rather than leave it unenforced.
+                read_error = (
+                    f"[mcp] in {config_path} must be a table, got "
+                    f"{type(mcp_section).__name__}"
+                )
+                logger.warning(
+                    "[mcp] in %s should be a table, got %s; treating project "
+                    "configs as untrusted",
+                    config_path,
+                    type(mcp_section).__name__,
+                )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        # The file exists but is unreadable/unparseable. Record it so callers
+        # fail closed rather than silently proceeding with an empty deny list.
+        read_error = f"Could not read MCP trust lists from {config_path}: {exc}"
+        logger.warning(
+            "Could not read %s for MCP server trust lists; treating project "
+            "configs as untrusted",
+            config_path,
+            exc_info=True,
+        )
+
+    env_enabled = _parse_csv_env(_env_vars.ENABLED_PROJECT_MCP_SERVERS)
+    env_disabled = _parse_csv_env(_env_vars.DISABLED_PROJECT_MCP_SERVERS)
+
+    # Enabled: env replaces TOML. Disabled: env unions with TOML (denies
+    # accumulate; env can add a deny but never clear a configured one).
+    enabled = frozenset(env_enabled if env_enabled is not None else toml_enabled)
+    disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
+    # Reject precedence (a name in both lists ends up only in `disabled`) is
+    # enforced by `McpServerTrustLists.__post_init__`, so no subtraction here.
+    return McpServerTrustLists(
+        enabled=enabled, disabled=disabled, read_error=read_error
+    )
+
+
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
     "messages": True,
@@ -3309,6 +3576,57 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read thread sort_order config", exc_info=True)
     return "updated_at"
+
+
+STARTUP_MODE_MANUAL = "manual"
+"""Startup approval mode that keeps human-in-the-loop approvals enabled."""
+
+STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
+"""Startup approval mode that auto-approves gated tool calls at launch."""
+
+VALID_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_DANGEROUSLY_AUTO})
+"""Accepted values for the `[startup].mode` config option."""
+
+DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
+"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+
+
+def load_startup_mode(config_path: Path | None = None) -> str:
+    """Load the default startup approval mode from config.toml.
+
+    Reads `[startup].mode`, which controls whether the interactive TUI launches
+    with human-in-the-loop approvals enabled (`manual`) or auto-approved
+    (`dangerously-auto`). The explicit `-y`/`--auto-approve` flag overrides this.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        `"manual"` or `"dangerously-auto"`; falls back to `"manual"` when unset,
+        unreadable, or invalid.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return DEFAULT_STARTUP_MODE
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        startup = data.get("startup")
+        value = startup.get("mode") if isinstance(startup, dict) else None
+        # `value` may be any TOML type; guard against non-strings (e.g. an
+        # array or table) before the frozenset membership test, which would
+        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
+            return value
+        if value is not None:
+            logger.warning(
+                "Ignoring [startup].mode=%r (expected 'manual' or 'dangerously-auto')",
+                value,
+            )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read startup mode config", exc_info=True)
+    return DEFAULT_STARTUP_MODE
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:

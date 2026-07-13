@@ -44,6 +44,13 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
+"""Chat input cursor style (`block` or `underline`).
+
+Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
+through to the config file and then the default block cursor.
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -93,6 +100,42 @@ real PyPI release.
 Any non-empty value enables the flag (including `"0"` or `"false"`).
 """
 
+DISABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS"
+"""Comma-separated project MCP server names to always reject by name.
+
+A user-level equivalent of `[mcp].disabled_project_servers`.
+
+Rejection wins over approval: a name listed here is dropped even when it also
+appears in `ENABLED_PROJECT_MCP_SERVERS` (or `[mcp].enabled_project_servers`)
+and even when the project config is otherwise trusted. Unlike the enabled list,
+this env var *unions* with (rather than replaces)
+`[mcp].disabled_project_servers` — denies accumulate across sources, so neither
+can silently empty a deny set in the other. This is process env the user
+controls, not a repo file, so it does not weaken the user-level-only
+trust boundary: a committed *project* `.env` is blocked from setting it
+(see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's shell,
+launch env, or global `~/.deepagents/.env` can.
+"""
+
+ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
+"""Comma-separated project MCP server names to pre-approve by name.
+
+A user-level equivalent of `[mcp].enabled_project_servers`.
+
+Servers named here load from an otherwise-untrusted project `.mcp.json` without
+prompting (they are omitted from the interactive approval prompt), while
+non-listed servers stay dropped. Like `DISABLED_PROJECT_MCP_SERVERS`, this is
+user-controlled process env, not a repo file, so it does not weaken
+the user-level-only trust boundary (a committed *project* `.env` cannot set it;
+see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`). This contract is name-based:
+a project command or URL change under the same server name still matches.
+
+When set, this replaces (takes precedence over) the
+`[mcp].enabled_project_servers` TOML list.
+(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
+is never silently emptied.)
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -120,6 +163,9 @@ HIDE_GIT_BRANCH = "DEEPAGENTS_CODE_HIDE_GIT_BRANCH"
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CODE_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
+"""Hide the startup tip shown above the chat input when enabled."""
+
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
@@ -142,6 +188,12 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

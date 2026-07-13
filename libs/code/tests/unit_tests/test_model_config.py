@@ -12,12 +12,16 @@ import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
+    DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
+    STARTUP_MODE_DANGEROUSLY_AUTO,
+    STARTUP_MODE_MANUAL,
     THREAD_COLUMN_DEFAULTS,
+    McpServerTrustLists,
     ModelConfig,
     ModelConfigError,
     ModelProfileEntry,
@@ -39,8 +43,10 @@ from deepagents_code.model_config import (
     has_provider_credentials,
     is_warning_suppressed,
     load_default_agent,
+    load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
+    load_startup_mode,
     load_thread_columns,
     save_default_agent,
     save_recent_agent,
@@ -77,6 +83,7 @@ class TestRetryParamByProvider:
         """Major retry-enabled providers use `max_retries`."""
         assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
@@ -1437,6 +1444,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1456,6 +1464,10 @@ class TestProviderBaseUrlEnv:
             "BASETEN_API_BASE",
         )
 
+    def test_meta_matches_langchain_meta(self) -> None:
+        """Meta reads its dedicated model API base URL variable."""
+        assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
+
 
 class TestModelConfigLoad:
     """Tests for ModelConfig.load() method."""
@@ -1467,6 +1479,40 @@ class TestModelConfigLoad:
 
         assert config.default_model is None
         assert config.providers == {}
+
+    def test_returns_empty_config_when_models_section_is_not_a_table(
+        self, tmp_path, caplog
+    ):
+        """Valid TOML with a scalar `models` falls back instead of raising.
+
+        `load()` must be total: a structurally wrong config surfaces as an
+        AttributeError from `.get(...)` after a clean parse, which callers like
+        the /auth modal do not guard against.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('models = "oops"\n')
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
+
+    def test_returns_empty_config_when_providers_is_not_a_table(self, tmp_path, caplog):
+        """Valid TOML with a non-table `providers` falls back instead of raising.
+
+        This shape raises a TypeError from the dataclass constructor
+        (`MappingProxyType(5)`), the other post-parse failure mode.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nproviders = 5\n")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""
@@ -2964,7 +3010,7 @@ class TestFetchOllamaInstalledModelProfiles:
         """Unexpected capability shape does not produce false flags."""
         payload = {"model_info": {}, "capabilities": "tools"}
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             profile = model_config._profile_from_ollama_show_payload(payload)
 
         assert profile == {}
@@ -5214,6 +5260,327 @@ class TestUnsuppressWarning:
         assert not is_warning_suppressed("tavily", config_path)
 
 
+class TestMcpServerTrustLists:
+    """Tests for the McpServerTrustLists value object itself."""
+
+    def test_post_init_enforces_disjointness_on_direct_construction(self) -> None:
+        """A name in both lists is dropped from enabled, however constructed.
+
+        The docstring promises the invariant holds "no matter how it was
+        constructed; callers need not pre-subtract" — pin that at the type level,
+        independent of the loader.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset({"keep", "both"}),
+            disabled=frozenset({"both"}),
+        )
+
+        assert lists.enabled == frozenset({"keep"})
+        assert lists.disabled == frozenset({"both"})
+
+    def test_read_error_excluded_from_equality(self) -> None:
+        """`read_error` is diagnostic only and does not affect equality."""
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ) == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_load_failed_tracks_read_error(self) -> None:
+        """`load_failed` names the fail-closed contract for `read_error`."""
+        assert not McpServerTrustLists(frozenset(), frozenset()).load_failed
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ).load_failed
+
+
+class TestLoadMcpServerTrustLists:
+    """Tests for load_mcp_server_trust_lists()."""
+
+    def test_reads_both_lists_from_toml(self, tmp_path: Path) -> None:
+        """Parses enabled and disabled lists from the [mcp] table."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "reference"]\n'
+            'disabled_project_servers = ["blocked"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(
+            enabled=frozenset({"docs", "reference"}),
+            disabled=frozenset({"blocked"}),
+        )
+
+    def test_reject_precedence_removes_from_enabled(self, tmp_path: Path) -> None:
+        """A name in both lists is reported only as disabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "both"]\n'
+            'disabled_project_servers = ["both"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset({"docs"})
+        assert result.disabled == frozenset({"both"})
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        """A missing config file yields empty lists, not an error.
+
+        A missing file is the normal "unset" case and must NOT set `read_error`
+        (that is reserved for a file that exists but cannot be read/parsed), so
+        callers do not fail closed just because the user has no config.toml.
+        """
+        result = load_mcp_server_trust_lists(tmp_path / "nonexistent.toml")
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is None
+
+    def test_env_deny_beats_toml_allow_same_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject wins across sources: env-disabled beats TOML-enabled by name.
+
+        Proves the disjointness invariant runs on the final merged frozensets
+        (after env/TOML resolution), not merely within a single source.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["srv"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "srv")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.disabled == frozenset({"srv"})
+
+    def test_missing_mcp_section_returns_empty(self, tmp_path: Path) -> None:
+        """A config without an [mcp] table yields empty lists."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_corrupt_toml_falls_back_to_empty_and_sets_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Malformed TOML degrades to empty lists but records a read error.
+
+        The empty lists compare equal to a clean empty result (`read_error` is
+        excluded from equality), but `read_error` is set so callers can fail
+        closed instead of treating a broken config as "nothing denied."
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is not None
+        assert str(config_path) in result.read_error
+
+    def test_scalar_coerced_and_mixed_elements_dropped(self, tmp_path: Path) -> None:
+        """A bare string is one name; non-string list elements are dropped."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = "docs"\n'  # bare string -> single name
+            'disabled_project_servers = [1, "blocked", true]\n'  # mixed types
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset({"docs"})
+        assert result.disabled == frozenset({"blocked"})
+
+    def test_env_overrides_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Env lists replace their TOML counterparts, independently per list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS,
+            "env-enabled, env-two",
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # Enabled comes from env; disabled falls back to the TOML value.
+        assert result.enabled == frozenset({"env-enabled", "env-two"})
+        assert result.disabled == frozenset({"toml-disabled"})
+
+    def test_empty_env_clears_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty env var overrides (clears) the TOML list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["toml-enabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+
+    def test_defaults_to_user_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no argument, the loader reads the user-level config path only."""
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        result = load_mcp_server_trust_lists()
+
+        assert result.enabled == frozenset({"docs"})
+
+    def test_disabled_env_honored_without_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deny list can be set purely from the env var."""
+        config_path = tmp_path / "config.toml"  # no [mcp] table
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "blocked, other"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"blocked", "other"})
+
+    def test_disabled_env_unions_with_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The disabled env list UNIONS with the TOML deny list (denies accrue).
+
+        Unlike the enabled list (env replaces TOML), a deny must never be
+        silently dropped by the other source, so both contribute.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "env-disabled"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"toml-disabled", "env-disabled"})
+        assert result.enabled == frozenset({"toml-enabled"})
+
+    def test_empty_disabled_env_preserves_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty disabled env var cannot clear the TOML deny list.
+
+        Because disabled unions across sources, an empty env value contributes
+        nothing and the configured deny survives — closing the fail-open where
+        `DISABLED=""` (e.g. from an attacker-adjacent source) would silently
+        neutralize the user's deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = ["toml-disabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"toml-disabled"})
+
+    def test_toml_entries_are_trimmed(self, tmp_path: Path) -> None:
+        """TOML names are stripped, matching env parsing (no whitespace mismatch)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = [" docs ", "  "]\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # " docs " -> "docs"; the whitespace-only "  " entry is dropped.
+        assert result.enabled == frozenset({"docs"})
+
+    def test_bare_string_disabled_is_coerced_to_single_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare-string deny list is one server name, not a dropped-to-empty typo.
+
+        Coercing (rather than silently dropping) is the safe direction for the
+        deny list: it keeps enforcing the user's rejection instead of failing
+        open on a scalar-instead-of-list mistake.
+        """
+        config_path = tmp_path / "config.toml"
+        # Valid TOML, but a string rather than a list — the [mcp] table is still
+        # a dict, so the "should be a table" branch does not fire.
+        config_path.write_text('[mcp]\ndisabled_project_servers = "blocked"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"blocked"})
+
+    def test_bare_string_disabled_splits_on_commas(self, tmp_path: Path) -> None:
+        """A comma-separated bare-string deny list parses like the env form.
+
+        Without splitting, `"a, b"` would become one bogus token matching no
+        server and silently enforce nothing — a fail-open for the deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = "evil, backdoor"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"evil", "backdoor"})
+        assert result.read_error is None
+
+    def test_wrong_typed_disabled_fails_closed_with_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed deny list sets `read_error` instead of silently emptying.
+
+        Emptying the deny on a malformed value would be a fail-open (the user's
+        rejection stops being enforced). Surfacing `read_error` lets callers fail
+        closed, matching the corrupt-file path.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\ndisabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset()
+        assert result.load_failed
+        assert "disabled_project_servers" in (result.read_error or "")
+
+    def test_wrong_typed_enabled_stays_empty_without_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed allow list degrades to empty (already fail-closed).
+
+        Unlike the deny list, an unreadable allow list approves nothing extra, so
+        it must NOT set `read_error` (which would block even trusted configs).
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\nenabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.read_error is None
+
+    def test_non_table_mcp_sets_read_error(self, tmp_path: Path) -> None:
+        """An `[mcp]` value that is not a table fails closed (deny unreadable)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('mcp = "oops"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.load_failed
+
+
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
@@ -5454,6 +5821,13 @@ class TestCodexProviderMirror:
     `openai_codex`; other openai models are not mirrored.
     """
 
+    def test_gpt_56_models_are_allowlisted(self) -> None:
+        assert {
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        } <= model_config.CODEX_MODELS
+
     def test_available_models_mirror_codex_allowlist(self) -> None:
         model_config.clear_caches()
         available = model_config.get_available_models()
@@ -5558,3 +5932,66 @@ enabled = false
         assert not any(
             spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
         )
+
+
+class TestLoadStartupMode:
+    """Tests for `load_startup_mode` reading `[startup].mode` from config.toml."""
+
+    def test_missing_file_returns_default(self, tmp_path: Path) -> None:
+        """A nonexistent config file falls back to the default mode."""
+        assert load_startup_mode(tmp_path / "missing.toml") == DEFAULT_STARTUP_MODE
+        assert DEFAULT_STARTUP_MODE == STARTUP_MODE_MANUAL
+
+    def test_unset_option_returns_default(self, tmp_path: Path) -> None:
+        """A config file without `[startup].mode` falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[threads]\nsort_order = 'created_at'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_manual(self, tmp_path: Path) -> None:
+        """`mode = 'manual'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'manual'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_dangerously_auto(self, tmp_path: Path) -> None:
+        """`mode = 'dangerously-auto'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'dangerously-auto'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_DANGEROUSLY_AUTO
+
+    def test_invalid_value_returns_default(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unrecognized mode logs a warning and falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'yolo'\n")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        assert any("startup" in r.getMessage().lower() for r in caplog.records)
+
+    def test_malformed_startup_table_returns_default(self, tmp_path: Path) -> None:
+        """A non-table `startup` value does not crash and falls back."""
+        config = tmp_path / "config.toml"
+        config.write_text("startup = 'oops'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_non_scalar_mode_returns_default(self, tmp_path: Path) -> None:
+        """A non-string `mode` (e.g. array) falls back instead of raising.
+
+        `value in VALID_STARTUP_MODES` (a frozenset) would raise `TypeError:
+        unhashable type` on a list/dict; the isinstance guard must prevent that.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = ['dangerously-auto']\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_unparseable_file_returns_default(self, tmp_path: Path) -> None:
+        """Syntactically invalid TOML is swallowed and falls back to default.
+
+        Exercises the `except (OSError, tomllib.TOMLDecodeError)` branch, which
+        must fail closed (to `manual`) rather than propagate and abort startup.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("this is not valid toml [[[\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL

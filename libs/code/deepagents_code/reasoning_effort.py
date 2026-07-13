@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ type-checked against this alias, so update them in lockstep when it changes.
 """
 
 ReasoningProvider: TypeAlias = Literal[
-    "anthropic", "fireworks", "google_genai", "openai", "openai_codex"
+    "anthropic", "fireworks", "google_genai", "openai", "openai_codex", "xai"
 ]
 """Provider identifiers that support model-specific reasoning effort controls.
 
@@ -53,10 +54,13 @@ class ReasoningProviderConfig(NamedTuple):
 
 
 OPENAI_EFFORTS: tuple[EffortLabel, ...] = ("none", "low", "medium", "high", "xhigh")
-"""OpenAI GPT-5 effort labels for `reasoning.effort`.
+"""OpenAI GPT-5 effort labels before GPT-5.6 for `reasoning.effort`.
 
 See https://platform.openai.com/docs/guides/reasoning.
 """
+
+OPENAI_56_EFFORTS: tuple[EffortLabel, ...] = (*OPENAI_EFFORTS, "max")
+"""OpenAI GPT-5.6 effort labels for `reasoning.effort`."""
 
 ANTHROPIC_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high", "xhigh", "max")
 """Anthropic `output_config.effort` labels for Opus 4.7+ and Sonnet 5.
@@ -112,9 +116,16 @@ FIREWORKS_GLM_EFFORTS: tuple[EffortLabel, ...] = ("none", "high", "max")
 See https://docs.fireworks.ai/guides/reasoning.
 """
 
+XAI_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
+"""xAI `reasoning_effort` labels for Grok 4.5.
+
+See https://docs.x.ai/developers/model-capabilities/text/reasoning.
+"""
+
 _REASONING_KEYS: frozenset[str] = frozenset(
     {
         "effort",
+        "extra_body",
         "output_config",
         "reasoning",
         "reasoning_effort",
@@ -125,17 +136,16 @@ _REASONING_KEYS: frozenset[str] = frozenset(
 """Runtime config keys that may already carry provider reasoning settings."""
 
 
-def _openai_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
+def _openai_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
     """Return OpenAI reasoning effort levels."""
-    return OPENAI_EFFORTS
+    return OPENAI_56_EFFORTS if _has_version(model, "gpt-5.6") else OPENAI_EFFORTS
 
 
 def _openai_default_effort(model: str) -> EffortLabel | None:
     """Return the OpenAI default reasoning effort when known."""
-    # Only gpt-5.5 documents `medium` as its default; other/newer gpt-5 variants
-    # fall through to `None` until their default is confirmed against
-    # https://platform.openai.com/docs/guides/reasoning.
-    return "medium" if model.startswith("gpt-5.5") else None
+    if _has_version(model, "gpt-5.5") or _has_version(model, "gpt-5.6"):
+        return "medium"
+    return None
 
 
 def _openai_model_params(effort: str) -> dict[str, Any]:
@@ -341,6 +351,44 @@ def _fireworks_current_effort(model_params: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_xai_grok_45(model: str) -> bool:
+    """Return whether `model` is Grok 4.5 or a documented alias."""
+    return model in {"grok-4.5", "grok-4.5-latest", "grok-build-latest"}
+
+
+def _xai_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
+    """Return xAI reasoning effort levels for a model."""
+    return XAI_EFFORTS if _is_xai_grok_45(model) else ()
+
+
+def _xai_default_effort(model: str) -> EffortLabel | None:
+    """Return the xAI default reasoning effort when known."""
+    return "high" if _is_xai_grok_45(model) else None
+
+
+def _xai_model_params(effort: str) -> dict[str, Any]:
+    """Return xAI reasoning params for an effort label."""
+    return {"extra_body": {"reasoning_effort": effort}}
+
+
+def _xai_current_effort(model_params: dict[str, Any]) -> str | None:
+    """Read the xAI reasoning effort from model params.
+
+    Returns:
+        The configured effort label, or `None` when unset.
+    """
+    extra = model_params.get("extra_body")
+    if isinstance(extra, dict):
+        value = extra.get("reasoning_effort")
+        if value is not None and not isinstance(value, str):
+            logger.warning(
+                "Ignoring non-str xAI extra_body.reasoning_effort of type %s",
+                type(value).__name__,
+            )
+        return value if isinstance(value, str) else None
+    return None
+
+
 _OPENAI_CONFIG = ReasoningProviderConfig(
     supported_efforts=_openai_supported_efforts,
     default_effort=_openai_default_effort,
@@ -374,6 +422,12 @@ _PROVIDER_CONFIGS: dict[ReasoningProvider, ReasoningProviderConfig] = {
         model_params=_fireworks_model_params,
         current_effort=_fireworks_current_effort,
     ),
+    "xai": ReasoningProviderConfig(
+        supported_efforts=_xai_supported_efforts,
+        default_effort=_xai_default_effort,
+        model_params=_xai_model_params,
+        current_effort=_xai_current_effort,
+    ),
 }
 """Provider-specific reasoning effort behavior keyed by `ModelSpec` provider."""
 
@@ -403,8 +457,10 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
         return "anthropic"
     if provider == "google_genai" and model_lower.startswith("gemini-3"):
         return "google_genai"
-    if provider == "fireworks" and model_lower.startswith("accounts/fireworks/models/"):
+    if provider == "fireworks" and model_lower.startswith(FIREWORKS_MODEL_ID_PREFIXES):
         return "fireworks"
+    if provider == "xai" and _is_xai_grok_45(model_lower):
+        return "xai"
     return None
 
 
@@ -526,7 +582,9 @@ def merge_effort_model_params(
     """
     merged = dict(existing) if existing else {}
     for key, value in effort_params.items():
-        if key in {"model_kwargs", "output_config"} and isinstance(value, dict):
+        if key in {"extra_body", "model_kwargs", "output_config"} and isinstance(
+            value, dict
+        ):
             current = merged.get(key)
             base = dict(current) if isinstance(current, dict) else {}
             base.update(value)
@@ -556,7 +614,8 @@ def without_effort_model_params(
     cleaned = {
         key: (dict(value) if isinstance(value, dict) else value)
         for key, value in existing.items()
-        if key not in _REASONING_KEYS and key not in {"model_kwargs", "output_config"}
+        if key not in _REASONING_KEYS
+        and key not in {"extra_body", "model_kwargs", "output_config"}
     }
     kwargs = existing.get("model_kwargs")
     if isinstance(kwargs, dict):
@@ -572,4 +631,11 @@ def without_effort_model_params(
             cleaned["output_config"] = output_config_params
     elif output_config is not None:
         cleaned["output_config"] = output_config
+    extra = existing.get("extra_body")
+    if isinstance(extra, dict):
+        extra_params = {k: v for k, v in extra.items() if k != "reasoning_effort"}
+        if extra_params:
+            cleaned["extra_body"] = extra_params
+    elif extra is not None:
+        cleaned["extra_body"] = extra
     return cleaned or None

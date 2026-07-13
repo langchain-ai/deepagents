@@ -58,6 +58,12 @@ class TestInitialSkillArg:
             args = parse_args()
         assert args.initial_skill == "code-review"
 
+    def test_short_flag_sets_initial_skill(self) -> None:
+        """Verify `-s` is an alias for `--skill`."""
+        with patch.object(sys, "argv", ["deepagents", "-s", "code-review"]):
+            args = parse_args()
+        assert args.initial_skill == "code-review"
+
     def test_with_message(self) -> None:
         """Verify `--skill` works alongside `-m`."""
         with patch.object(
@@ -495,7 +501,7 @@ class TestConfigCommandDispatch:
                 side_effect=AssertionError("config command read stdin"),
             ) as stdin_mock,
             patch(
-                "deepagents_code.config_commands.run_config_command",
+                "deepagents_code.client.commands.config.run_config_command",
                 return_value=0,
             ) as config_mock,
             pytest.raises(SystemExit) as exc_info,
@@ -533,7 +539,7 @@ class TestMcpCommandDispatch:
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.main.apply_stdin_pipe"),
             patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
+                "deepagents_code.client.commands.mcp.run_mcp_login",
                 new=AsyncMock(return_value=0),
             ) as mock_login,
             pytest.raises(SystemExit) as exc_info,
@@ -568,7 +574,7 @@ class TestMcpCommandDispatch:
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.main.apply_stdin_pipe"),
             patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
+                "deepagents_code.client.commands.mcp.run_mcp_login",
                 new=AsyncMock(return_value=0),
             ) as mock_login,
             pytest.raises(SystemExit) as exc_info,
@@ -625,7 +631,7 @@ class TestMcpCommandDispatch:
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.main.apply_stdin_pipe"),
             patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
+                "deepagents_code.client.commands.mcp.run_mcp_login",
                 new=AsyncMock(return_value=0),
             ) as mock_login,
             pytest.raises(SystemExit) as exc_info,
@@ -687,7 +693,7 @@ class TestMcpCommandDispatch:
         """
         import pathlib
 
-        from deepagents_code.mcp_commands import run_mcp_config
+        from deepagents_code.client.commands.mcp import run_mcp_config
 
         fake_home = pathlib.Path(str(tmp_path)) / "home"
         fake_project = pathlib.Path(str(tmp_path)) / "project"

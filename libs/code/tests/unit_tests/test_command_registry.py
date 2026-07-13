@@ -212,6 +212,22 @@ class TestMCPCommand:
         assert "reconnect" in keywords
 
 
+class TestToolsCommand:
+    """Validate the `/tools` entry specifically."""
+
+    def test_tools_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/tools" in names
+
+    def test_tools_classified_as_queue_bound(self) -> None:
+        assert "/tools" in QUEUE_BOUND
+        assert "/tools" not in HIDDEN_COMMANDS
+
+    def test_tools_hidden_keywords_cover_mcp(self) -> None:
+        tools_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/tools")
+        assert "mcp" in tools_cmd.hidden_keywords.split()
+
+
 class TestGoalCommand:
     """Validate the `/goal` entry specifically.
 

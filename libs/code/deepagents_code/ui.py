@@ -125,7 +125,7 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
-    console.print("  -a, --agent NAME           Agent to use (e.g., coder, researcher)")
+    console.print("  -a, --agent NAME           Agent to use")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
@@ -135,12 +135,12 @@ def show_help() -> None:
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
-    console.print("  --skill NAME               Invoke a skill when the session starts")
+    console.print("  -s, --skill NAME           Invoke a skill when the session starts")
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(
-        "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
+        "  -y, --auto-approve         Auto-approve all tool calls in interactive mode (toggle: Shift+Tab)"  # noqa: E501
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -301,8 +301,8 @@ def show_agents_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode agents list")
-    console.print("  dcode agents reset --agent coder")
-    console.print("  dcode agents reset --agent coder --target researcher")
+    console.print("  dcode agents reset --agent NAME")
+    console.print("  dcode agents reset --agent NAME --target SOURCE")
     console.print()
 
 
@@ -329,9 +329,9 @@ def show_reset_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode reset --agent coder")
-    console.print("  dcode reset --agent coder --target researcher")
-    console.print("  dcode reset --agent coder --dry-run")
+    console.print("  dcode reset --agent NAME")
+    console.print("  dcode reset --agent NAME --target SOURCE")
+    console.print("  dcode reset --agent NAME --dry-run")
     console.print()
 
 
@@ -350,6 +350,7 @@ def show_skills_help() -> None:
     console.print("  create <name>     Create a new skill")
     console.print("  info <name>       Show detailed information about a skill")
     console.print("  delete <name>     Delete a skill")
+    console.print("  trust             Manage trusted skill directories")
     console.print()
     _print_option_section(
         "  --agent <name>    Specify agent identifier (default: agent)",
@@ -455,6 +456,30 @@ def show_skills_delete_help() -> None:
     console.print()
 
 
+def show_skills_trust_help() -> None:
+    """Show help information for the `skills trust` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills trust <command>")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls           List trusted skill directories")
+    console.print("  revoke <dir>      Revoke trust for a directory")
+    console.print("  clear             Remove all trusted skill directories")
+    console.print()
+    console.print(
+        "Directories are trusted when you approve a skill that resolves "
+        "outside the standard skill roots (for example, a symlink target). "
+        "Trust is stored in ~/.deepagents/.state/skill_trust.json."
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode skills trust list")
+    console.print("  dcode skills trust revoke /shared/skills/my-skill")
+    console.print("  dcode skills trust clear")
+    console.print()
+
+
 def show_update_help() -> None:
     """Show help information for the `update` subcommand."""
     console.print()
@@ -520,12 +545,36 @@ def show_tools_help() -> None:
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  install           Install or repair the managed ripgrep binary")
+    console.print("  list              List the tools available to the agent")
     console.print()
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode tools install")
     console.print("  dcode tools install --json")
+    console.print("  dcode tools list")
+    console.print("  dcode tools list --json")
+    console.print()
+
+
+def show_tools_list_help() -> None:
+    """Show help information for the `tools list` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools list [options]")
+    console.print()
+    console.print(
+        "List the tools available to the agent, grouped by source: built-in",
+    )
+    console.print(
+        "tools first, then the tools exposed by each configured MCP server.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode tools list")
+    console.print("  dcode tools list --json")
     console.print()
 
 

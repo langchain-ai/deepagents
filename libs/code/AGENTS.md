@@ -43,7 +43,7 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 Charset-dependent characters and animations have **single sources of truth**. Reuse them instead of hand-rolling new ones — copies drift, and (more subtly) a hardcoded Unicode literal won't degrade to ASCII on terminals that need it.
 
 - **Glyphs** (checkmarks, arrows, ellipsis, cursor, box-drawing, branch icon, etc.): pull from `get_glyphs()` (`config.Glyphs`). Each glyph has a Unicode and an ASCII variant; `get_glyphs()` returns the right set for the active terminal. Never inline `"✓"`, `"…"`, `"›"`, and friends.
-- **Animated spinners**: reuse the `Spinner` class in `widgets/loading.py`, which wraps `get_glyphs().spinner_frames` (braille on Unicode, `(-) (\) (|) (/)` on ASCII) and exposes `next_frame()`/`current_frame()`. Do **not** define your own frame tuples or interval constants for a spinner — drive a `Spinner` on a `set_interval`. The status-bar reconnect indicator (`widgets/status.py`) is the reference example; it ticks at the same 0.1s cadence as `LoadingWidget`. All connection/queue progress lives in the status bar — the welcome banner deliberately stays out of it, so there are currently no bespoke spinners to carve an exception for.
+- **Animated spinners**: reuse the `Spinner` class in `tui/widgets/loading.py`, which wraps `get_glyphs().spinner_frames` (braille on Unicode, `(-) (\) (|) (/)` on ASCII) and exposes `next_frame()`/`current_frame()`. Do **not** define your own frame tuples or interval constants for a spinner — drive a `Spinner` on a `set_interval`. The status-bar reconnect indicator (`tui/widgets/status.py`) is the reference example; it ticks at the same 0.1s cadence as `LoadingWidget`. All connection/queue progress lives in the status bar — the welcome banner deliberately stays out of it, so there are currently no bespoke spinners to carve an exception for.
 
 ### Textual patterns used in this codebase
 
@@ -91,7 +91,8 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 
 - Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
-- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
+- The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; that path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
+- Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
 ## CLI help screen
 
@@ -99,7 +100,7 @@ The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, sepa
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
 
 ## Slash commands
 
@@ -115,7 +116,7 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
 3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
 4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
-5. `deepagents_code/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
+5. `deepagents_code/tui/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
 6. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
 
 ### `PROVIDER_BASE_URL_ENV` guidelines

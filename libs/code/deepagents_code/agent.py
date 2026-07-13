@@ -1348,8 +1348,18 @@ def create_cli_agent(
             Used for system prompt generation.
         system_prompt: Override the default system prompt.
 
-            If `None`, generates one based on `sandbox_type`, `assistant_id`,
-            and `interactive`.
+            If `None`, a system prompt is auto-generated with dynamic context
+            interpolated in (model identity, working directory, sandbox vs.
+            local execution mode, skills path, and interactive-vs-headless
+            guidance).
+
+            !!! warning
+
+                Passing a value here replaces that auto-generated prompt
+                entirely — none of the dynamic context above is added, and
+                `sandbox_type` and `interactive` no longer influence the
+                prompt. Only pass an explicit prompt when you intend to take
+                full ownership of the system prompt's content.
         interactive: When `False`, the auto-generated system prompt is
             tailored for headless non-interactive execution. Ignored when
             `system_prompt` is provided explicitly.
@@ -1703,6 +1713,9 @@ def create_cli_agent(
             )
             raise ValueError(msg)
         # Lazy import keeps `dcode -v` fast — see AGENTS.md startup-perf rule.
+        from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
+            suppress_langchain_beta_warning,
+        )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
         ptc_names = _resolve_ptc_option(
@@ -1714,16 +1727,20 @@ def create_cli_agent(
         ptc_option: PTCOption | None = (
             cast("PTCOption", list(ptc_names)) if ptc_names is not None else None
         )
-        agent_middleware.append(
-            CodeInterpreterMiddleware(
-                tool_name="js_eval",
-                timeout=settings.interpreter_timeout_seconds,
-                memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                max_ptc_calls=settings.interpreter_max_ptc_calls,
-                max_result_chars=settings.interpreter_max_result_chars,
-                ptc=ptc_option,
+        # `CodeInterpreterMiddleware` is decorated `@beta()`, which emits a
+        # `LangChainBetaWarning` on every instantiation. We intentionally use it
+        # and the warning is not actionable for users, so suppress it.
+        with suppress_langchain_beta_warning():
+            agent_middleware.append(
+                CodeInterpreterMiddleware(
+                    tool_name="js_eval",
+                    timeout=settings.interpreter_timeout_seconds,
+                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=settings.interpreter_max_ptc_calls,
+                    max_result_chars=settings.interpreter_max_result_chars,
+                    ptc=ptc_option,
+                )
             )
-        )
 
     # Local context middleware (git info, directory tree, etc.).
     if isinstance(backend, (_ExecutableBackend, _AsyncExecutableBackend)):

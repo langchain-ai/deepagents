@@ -10,6 +10,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,8 +39,9 @@ from deepagents_talon.interfaces import (
 from deepagents_talon.observability import log_event, stable_log_ref
 
 if TYPE_CHECKING:
-    from deepagents import AsyncSubAgent, CompiledSubAgent, SubAgent
     from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.async_subagents import AsyncSubAgent
+    from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
@@ -54,6 +56,9 @@ DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
+_ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
+    {"start_async_task", "update_async_task", "cancel_async_task"}
+)
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -151,6 +156,7 @@ _CRON_AUTO_DENY_MESSAGE = (
 _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
+_LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -257,6 +263,7 @@ class DeepAgentRuntime:
         self.tools = tuple(tools)
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
+        self._has_async_subagents = _has_async_subagents(self.subagents)
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -284,11 +291,14 @@ class DeepAgentRuntime:
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=list(self.subagents) if self.subagents is not None else None,
+            subagents=self._resolve_subagents(),
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
-            interrupt_on=self.interrupt_on,
+            interrupt_on=_interrupt_on_with_async_subagents(
+                self.interrupt_on,
+                has_async_subagents=self._has_async_subagents,
+            ),
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
@@ -486,6 +496,14 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+        resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+        if self.assistant_dir is not None:
+            resolved.extend(_load_local_subagents(self.assistant_dir))
+        if self.subagents is not None:
+            resolved.extend(self.subagents)
+        return resolved or None
+
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
             return list(self.memory) or None
@@ -682,6 +700,30 @@ def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
     return {name: True for name in (part.strip() for part in raw.split(",")) if name}
 
 
+def _interrupt_on_with_async_subagents(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    has_async_subagents: bool,
+) -> dict[str, bool | InterruptOnConfig] | None:
+    if not has_async_subagents:
+        return dict(interrupt_on) if interrupt_on is not None else None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    for tool_name in _ASYNC_SUBAGENT_TOOL_NAMES:
+        merged.setdefault(tool_name, True)
+    return merged
+
+
+def _has_async_subagents(
+    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None,
+) -> bool:
+    return any(
+        isinstance(subagent, Mapping) and "graph_id" in subagent for subagent in subagents or ()
+    )
+
+
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
@@ -855,6 +897,79 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
             candidate = assistant_dir / candidate
         paths.append(str(candidate))
     return paths
+
+
+def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
+    agents_dir = _local_subagents_dir(assistant_dir)
+    if agents_dir is None:
+        return []
+    subagents: list[SubAgent] = []
+    for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        path = child / "AGENTS.md"
+        if not path.is_file():
+            continue
+        if not _valid_local_subagent_name(child.name):
+            logger.warning(
+                "Skipping Talon subagent prompt from %s: unsafe subagent name %r",
+                path,
+                child.name,
+            )
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
+            continue
+        description, system_prompt, model = _parse_local_subagent_prompt(text, child.name)
+        subagent: SubAgent = {
+            "name": child.name,
+            "description": description,
+            "system_prompt": system_prompt,
+        }
+        if model is not None:
+            subagent["model"] = model
+        subagents.append(subagent)
+    return subagents
+
+
+def _local_subagents_dir(assistant_dir: Path) -> Path | None:
+    local = assistant_dir / "agents"
+    if local.is_dir():
+        return local
+    sibling = assistant_dir.parent / "agents"
+    if sibling.is_dir():
+        return sibling
+    return None
+
+
+def _valid_local_subagent_name(name: str) -> bool:
+    return _LOCAL_SUBAGENT_NAME_PATTERN.fullmatch(name) is not None and name not in {".", ".."}
+
+
+def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
+    if match is None:
+        return _default_subagent_description(name), text, None
+    frontmatter = match.group(1)
+    description = _frontmatter_value(frontmatter, "description") or _default_subagent_description(
+        name
+    )
+    return description, match.group(2).lstrip(), _frontmatter_value(frontmatter, "model_id")
+
+
+def _frontmatter_value(frontmatter: str, field: str) -> str | None:
+    for line in frontmatter.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == field:
+            parsed = value.strip().strip("\"'")
+            return parsed or None
+    return None
+
+
+def _default_subagent_description(name: str) -> str:
+    return f"Use the {name} subagent."
 
 
 def _prepare_memory_path(raw: str) -> str | None:

@@ -3,8 +3,8 @@
 Both execution surfaces reassemble the same streamed tool-call state and fire
 the same `tool.use` / `tool.result` / `tool.error` hook payloads:
 
-- the interactive Textual TUI (`deepagents_code.textual_adapter`), and
-- the headless runner (`deepagents_code.non_interactive`).
+- the interactive Textual TUI (`deepagents_code.tui.textual_adapter`), and
+- the headless runner (`deepagents_code.client.non_interactive`).
 
 This module holds the single implementation of the buffering, argument parsing,
 and payload-shape logic, so the two surfaces cannot drift *in those layers*. The
@@ -102,6 +102,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict
 
@@ -145,6 +146,9 @@ UNRENDERABLE_TOOL_OUTPUT = "<tool output could not be rendered>"
 Lets both surfaces keep the terminal `tool.result` dispatch unconditional
 without re-touching the offending content (whose `__str__`/`__repr__` may itself
 raise), so a hook consumer still sees the result rather than a dropped event."""
+
+MAX_JSON_CONTAINER_DEPTH = sys.getrecursionlimit()
+"""Maximum JSON container nesting accepted for streamed tool-call args."""
 
 
 def normalize_tool_status(raw_status: object, tool_name: str) -> ToolStatus:
@@ -245,6 +249,31 @@ def tool_call_buffer_key(
     if tool_id is not None:
         return tool_id
     return f"unknown-{count}"
+
+
+def _exceeds_json_container_depth(s: str) -> bool:
+    """Return whether `s` exceeds the safe nesting depth for JSON args."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for ch in s:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+            if depth > MAX_JSON_CONTAINER_DEPTH:
+                return True
+        elif ch in "}]":
+            depth -= 1
+    return False
 
 
 def _looks_structurally_complete(s: str) -> bool:
@@ -493,8 +522,17 @@ class ToolCallBuffer:
         # this method. Real provider arg streams are pure JSON, so this shape
         # does not occur in practice; if such a call still executes, its
         # `tool.result` logs the correlation miss.
-        if stripped[0] in "{[" and not stripped.endswith(("}", "]")):
-            return None
+        if stripped[0] in "{[":
+            if not stripped.endswith(("}", "]")):
+                return None
+            if _exceeds_json_container_depth(stripped):
+                if not self.warned:
+                    self.warned = True
+                    logger.warning(
+                        "Tool-call args look complete but failed to parse: %r",
+                        joined[:200],
+                    )
+                return None
         try:
             parsed = json.loads(joined)
         except (json.JSONDecodeError, RecursionError):

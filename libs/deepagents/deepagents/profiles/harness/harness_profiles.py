@@ -812,9 +812,10 @@ def _transition_harness_profile_prompt(
     is expected at the very end of `prompt` behind a blank-line separator,
     mirroring how `_apply_profile_prompt` appends it. When the current suffix
     is present but *not* the exact tail (e.g. another layer appended text after
-    it), removal cannot proceed safely, so it is skipped with a warning rather
-    than silently leaving the stale suffix embedded while also appending the
-    target's.
+    it), removal cannot proceed safely, so it is skipped and a warning is
+    emitted: the stale suffix stays embedded and the target suffix is still
+    appended, so target-profile guidance may be duplicated. The warning is the
+    signal for that known-degraded outcome, not an avoidance of it.
 
     Args:
         prompt: Assembled system prompt for the current model.
@@ -831,10 +832,16 @@ def _transition_harness_profile_prompt(
         if prompt.endswith(marker):
             prompt = prompt.removesuffix(marker)
         elif current.system_prompt_suffix in prompt:
+            # Include the suffix's leading line so the warning is correlatable
+            # to a specific profile in a subprocess log; this function has no
+            # model/spec to name.
+            first_line = current.system_prompt_suffix.splitlines()[0]
             logger.warning(
-                "Current harness profile suffix is present but not at the end "
-                "of the system prompt; leaving it in place to avoid corrupting "
-                "the prompt. Target-profile guidance may be duplicated.",
+                "Current harness profile suffix (starting %r) is present but "
+                "not at the end of the system prompt; leaving it in place to "
+                "avoid corrupting the prompt. Target-profile guidance may be "
+                "duplicated.",
+                first_line,
             )
     if target.system_prompt_suffix is not None:
         suffix = f"\n\n{target.system_prompt_suffix}"
@@ -849,10 +856,13 @@ def _harness_profile_transition_rebuild_fields(
     """Return the graph-compiled fields that differ between two profiles.
 
     `system_prompt_suffix` is deliberately excluded because it is the only
-    field `_transition_harness_profile_prompt` can re-apply at runtime; every
-    other `HarnessProfile` field is baked into the compiled graph. Keep this
-    exclusion in sync with `_transition_harness_profile_prompt`: if a new
-    runtime-safe field is added there, exclude it here too.
+    field `_transition_harness_profile_prompt` can re-apply at runtime. Every
+    other `HarnessProfile` field is fixed at graph-compile time — middleware
+    fields are baked into the compiled graph, and `base_system_prompt` is woven
+    into the assembled prompt by `_apply_profile_prompt` in a way the runtime
+    tail-swap cannot redo — so a difference in any of them needs a restart.
+    Keep this exclusion in sync with `_transition_harness_profile_prompt`: if a
+    new runtime-safe field is added there, exclude it here too.
 
     Args:
         current: Profile used when the agent graph was compiled.
@@ -1392,7 +1402,18 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     from deepagents._models import get_model_identifier, get_model_provider  # noqa: PLC0415
 
     if spec is not None:
-        return _get_harness_profile(spec) or HarnessProfile()
+        profile = _get_harness_profile(spec)
+        if profile is None:
+            # A caller-supplied spec that matches nothing is the most common
+            # "my profile isn't applying" cause (keys are exact and
+            # case-sensitive). Left silent, a swap to/from a profiled model
+            # would drop or retain a suffix with no trace. Debug, not warning:
+            # most models legitimately have no profile.
+            logger.debug(
+                "No harness profile matched spec %r; using defaults.",
+                spec,
+            )
+        return profile or HarnessProfile()
     identifier = get_model_identifier(model)
     provider = get_model_provider(model)
     # Try the canonical `provider:model` key first so user registrations under

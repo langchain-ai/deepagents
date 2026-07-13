@@ -310,6 +310,13 @@ def _build_overrides(
                 "prompt template.",
                 model_result.model_name,
             )
+        # The transition strips the current profile's suffix off the tail of
+        # `patched` and appends the target's. This is tail-anchored, so it only
+        # produces a clean swap while this middleware observes the prompt before
+        # any prompt-appending middleware (e.g. LocalContextMiddleware) mutates
+        # the tail. That holds today because ConfigurableModelMiddleware is the
+        # outermost middleware in the stack; if that ordering changes, the swap
+        # degrades to warn-and-duplicate (see _transition_harness_profile_prompt).
         patched, rebuild_fields = _transition_harness_profile_for_model(
             patched,
             request.model,
@@ -325,6 +332,9 @@ def _build_overrides(
                 model_result.model_name,
                 ", ".join(rebuild_fields),
             )
+        # Compare against the original `prompt`, not the post-identity value:
+        # either the identity substitution or the profile transition may have
+        # changed it, and we only override when the net result actually differs.
         if patched != prompt:
             overrides["system_prompt"] = patched
 

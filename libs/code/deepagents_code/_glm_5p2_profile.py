@@ -1,4 +1,10 @@
-"""GLM-5.2 harness profile, registered by deepagents-code via entry point.
+"""GLM-5.2 harness profile, registered imperatively by deepagents-code.
+
+`create_cli_agent` calls `_ensure_glm_5p2_profile_registered` just before it
+builds the agent, so the profile is registered at agent-construction time
+rather than through the `deepagents.harness_profiles` entry-point group that
+`deepagents` exposes for third-party plugins. Removing that call would silently
+disable the profile — no entry-point declaration backs it.
 
 Why this profile exists: GLM-5.2 is a text-only model — it accepts no image,
 audio, video, or document (e.g. PDF) input, regardless of which provider serves

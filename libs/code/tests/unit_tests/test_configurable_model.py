@@ -1006,6 +1006,51 @@ class TestModelIdentityPatch:
         assert prompt is not None
         assert prompt.count(_SYSTEM_PROMPT_SUFFIX) == 1
 
+    def test_swap_to_glm_applies_real_registered_suffix(self) -> None:
+        """End-to-end: real registration + unmocked lookup + spec computation.
+
+        Every other transition test patches `_harness_profile_for_model`, so
+        the glue that computes `target_spec` and resolves it against the real
+        registry is otherwise untested. Here the profile is genuinely
+        registered and the lookup runs unmocked, so a wrong `target_spec` (or a
+        registration that never matches) would drop the suffix and fail.
+        """
+        from deepagents.profiles.harness import harness_profiles
+
+        from deepagents_code import _glm_5p2_profile
+
+        saved = dict(harness_profiles._HARNESS_PROFILES)
+        saved_flag = _glm_5p2_profile._registered
+        _glm_5p2_profile._registered = False
+        try:
+            _glm_5p2_profile._ensure_glm_5p2_profile_registered()
+            override = _make_model("zai-org/GLM-5.2")
+            result = _make_model_result(
+                override,
+                model_name="zai-org/GLM-5.2",
+                provider="baseten",
+            )
+            request = _make_request(
+                _make_model("claude-opus-4-6"),
+                context=CLIContext(model="baseten:zai-org/GLM-5.2"),
+                system_prompt=self._OLD_PROMPT,
+            )
+            captured: list[ModelRequest] = []
+            # NOTE: _PATCH_HARNESS_PROFILE is deliberately NOT patched here.
+            with patch(_PATCH_CREATE, return_value=result):
+                _mw.wrap_model_call(
+                    request, lambda r: (captured.append(r), _make_response())[1]
+                )
+        finally:
+            harness_profiles._HARNESS_PROFILES.clear()
+            harness_profiles._HARNESS_PROFILES.update(saved)
+            _glm_5p2_profile._registered = saved_flag
+
+        prompt = captured[0].system_prompt
+        assert prompt is not None
+        assert prompt.endswith(_SYSTEM_PROMPT_SUFFIX)
+        assert prompt.count(_SYSTEM_PROMPT_SUFFIX) == 1
+
     def test_structural_profile_change_warns_restart_required(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

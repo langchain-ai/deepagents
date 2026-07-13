@@ -8362,7 +8362,6 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
 
         server_info = self._mcp_server_info_for_tools()
-        has_mcp_tools = any(server.tools for server in server_info)
 
         built_in = []
         # Set to a human-readable reason when built-in tools cannot be listed:
@@ -8409,10 +8408,14 @@ class DeepAgentsApp(App):
                 logger.exception("Failed to enumerate built-in tools for /tools")
                 enumeration_failed_reason = "Could not enumerate built-in tools"
 
-        if enumeration_failed_reason and not has_mcp_tools:
-            # No MCP tools to fall back on: rendering "0 tools available" would
-            # wrongly imply the agent has no tools at all, when in fact only the
-            # listing failed. Surface the reason on its own and skip the catalog.
+        catalog = build_catalog_from_server_info(built_in, server_info)
+        has_mcp_info = any(group.source == "mcp" for group in catalog.groups) or bool(
+            catalog.unavailable
+        )
+        if enumeration_failed_reason and not has_mcp_info:
+            # No MCP tools or unavailable-server statuses to show: rendering "0
+            # tools available" would wrongly imply the agent has no tools at all,
+            # when in fact only the listing failed. Surface the reason on its own.
             await self._mount_message(
                 AppMessage(
                     f"{enumeration_failed_reason}. The agent still has its "
@@ -8422,10 +8425,11 @@ class DeepAgentsApp(App):
             return
         if enumeration_failed_reason:
             await self._mount_message(
-                AppMessage(f"{enumeration_failed_reason}; showing MCP tools only."),
+                AppMessage(
+                    f"{enumeration_failed_reason}; showing MCP information only."
+                ),
             )
 
-        catalog = build_catalog_from_server_info(built_in, server_info)
         await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
 
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:

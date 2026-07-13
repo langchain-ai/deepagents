@@ -53,13 +53,16 @@ on:
         type: string
         default: "1.0"
       env_build_timeout_multiplier:
-        # Scales each task's environment.build_timeout_sec. Heavy first-time
-        # (cold) snapshot builds — e.g. harbor-index bix* (big base image + HF
-        # capsule download) — exceed the default and hit EnvironmentStartTimeoutError.
-        # Raise this for a one-time cold build; the content-addressed snapshot then
-        # persists so later runs cache-hit at 1.0.
+        # Scales each task's environment.build_timeout_sec (harbor's client-side
+        # wait). Note: it does NOT extend the LangSmith build service's own limit.
         type: string
         default: "1.0"
+      override_storage_mb:
+        # Raises the sandbox snapshot filesystem above harbor's 32 GiB floor.
+        # Heavy harbor-index images (big base + layer copies) exhaust 32 GiB and
+        # fail the LangSmith snapshot build; e.g. 65536 = 64 GiB. 0 = don't override.
+        type: string
+        default: "0"
       disable_verification:
         type: boolean
         default: false
@@ -136,6 +139,7 @@ jobs:
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
+      HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
@@ -374,6 +378,15 @@ jobs:
           if ! [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid env_build_timeout_multiplier (must be a positive decimal): $HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER"
             exit 1
+          fi
+          # Non-negative integer; 0 means "don't override" (use the task's default).
+          if ! [[ "$HARBOR_OVERRIDE_STORAGE_MB" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid override_storage_mb (must be a non-negative integer): $HARBOR_OVERRIDE_STORAGE_MB"
+            exit 1
+          fi
+          storage_flag=()
+          if [ "$HARBOR_OVERRIDE_STORAGE_MB" != "0" ]; then
+            storage_flag=(--override-storage-mb "$HARBOR_OVERRIDE_STORAGE_MB")
           fi
           # Allowlist the boolean; only literal true/false accepted.
           verification_flag=()
@@ -632,6 +645,7 @@ jobs:
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             "${force_build_flag[@]}" \
+            "${storage_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

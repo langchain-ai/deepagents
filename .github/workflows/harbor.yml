@@ -165,9 +165,14 @@ on:
         default: "1.0"
         type: string
       env_build_timeout_multiplier:
-        description: "Multiplier for each task's environment build timeout. Raise (e.g. 4) for a one-time cold build of heavy-image tasks (e.g. harbor-index bix*) that otherwise hit EnvironmentStartTimeoutError; the content-addressed snapshot then persists and later runs cache-hit at 1.0."
+        description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
         required: false
         default: "1.0"
+        type: string
+      override_storage_mb:
+        description: "Override the sandbox snapshot filesystem size (MB), raising harbor's 32 GiB floor. Use for heavy harbor-index images that fail the LangSmith snapshot build by exhausting storage (e.g. 65536 = 64 GiB). 0 = don't override."
+        required: false
+        default: "0"
         type: string
       disable_verification:
         description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
@@ -334,6 +339,7 @@ jobs:
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
       env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
+      override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}

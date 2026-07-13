@@ -48,6 +48,11 @@ Emitted verbatim in the `--json` output, so it is a public contract; keep it a
 BUILT_IN_GROUP = "Built-in"
 """Display label for the group of tools bundled with `deepagents-code`."""
 
+# Mirror of the SDK's `FsToolName` literal members, used to identify which
+# enumerated tools the `fs_tools` allowlist governs. Kept as a literal set (the
+# `get_args(FsToolName)` drift guard in `test_tool_catalog` pins it) so a new or
+# renamed SDK filesystem tool fails the test instead of silently escaping the
+# post-filter below.
 _FILESYSTEM_TOOL_NAMES = frozenset(
     {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 )
@@ -206,8 +211,12 @@ def collect_built_in_tools(
             appears when the default agent would bind it. Callers should pass
             the resolved runtime setting (see `_resolve_enable_interpreter`) so
             the list matches the tools the agent actually binds.
-        fs_tools: Filesystem tool allowlist forwarded to the catalog agent so
-            enumeration matches the configured session.
+        fs_tools: Filesystem tool allowlist. Forwarded to the catalog agent for
+            construction parity and then applied as a post-filter below.
+            `FilesystemMiddleware` binds *all* filesystem tools to the node and
+            only hides the disallowed ones from the model at call time, so
+            forwarding alone leaves them in the enumeration; the post-filter is
+            what makes the listing match the configured session.
 
     Returns:
         Built-in tools in bind order.
@@ -239,6 +248,13 @@ def collect_built_in_tools(
     if tools is None:
         msg = "Compiled agent does not expose a LangGraph tool node"
         raise RuntimeError(msg)
+    # Load-bearing, not redundant with the `fs_tools=fs_tools` forwarding above:
+    # `FilesystemMiddleware` registers all filesystem tools on the node and only
+    # hides the disallowed ones from the model at call time (it does not unbind
+    # them), so `collect_tools_from_agent` returns every filesystem tool
+    # regardless of the allowlist. This filter is the only thing that makes the
+    # `/tools` / `dcode tools list` output reflect an explicit allowlist. Do not
+    # remove it. (`"all"` and `None` intentionally skip filtering.)
     if isinstance(fs_tools, list):
         enabled = frozenset(fs_tools)
         return [
@@ -490,7 +506,9 @@ def collect_catalog(
             tools, including any agent-specific subagents.
         enable_interpreter: Whether the default agent binds `js_eval`; forwarded
             to `collect_built_in_tools`.
-        fs_tools: Filesystem tool allowlist forwarded to the catalog agent.
+        fs_tools: Filesystem tool allowlist; forwarded to
+            `collect_built_in_tools`, which filters the built-in enumeration so
+            it matches the configured session.
         include_mcp: When `True`, discover MCP servers and append their groups
             after the built-in group (best-effort). Pass `False` to mirror
             `--no-mcp`.

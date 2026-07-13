@@ -111,6 +111,34 @@ _RUBRIC_GRADER_SYSTEM_PROMPT = (
 )
 
 
+def _get_harness_tool_descriptions(
+    model: str | BaseChatModel,
+) -> dict[str, str]:
+    """Return the SDK harness's tool-description overrides for `model`.
+
+    The CLI supplies its own `FilesystemMiddleware` when filesystem tools are
+    allowlisted. Because that middleware replaces the SDK-created instance,
+    it must carry forward the same model-specific descriptions.
+
+    Args:
+        model: Model spec or resolved chat model used by the agent.
+
+    Returns:
+        Copy of the matching harness profile's tool-description overrides.
+    """
+    # deepagents-code exactly pins the SDK, and these are the same resolution
+    # helpers used by `create_deep_agent` for its filesystem middleware.
+    from deepagents.profiles.harness.harness_profiles import (
+        _get_harness_profile,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+        _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+    )
+
+    if isinstance(model, str):
+        profile = _get_harness_profile(model)
+        return dict(profile.tool_description_overrides) if profile is not None else {}
+    return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+
+
 def _validate_rubric_grader_read_path(file_path: str) -> str | None:
     normalized = file_path.replace("\\", "/")
     if not normalized.startswith(_RUBRIC_GRADER_READ_FILE_PREFIX):
@@ -1316,7 +1344,7 @@ def create_cli_agent(
     auto_approve: bool = False,
     interrupt_shell_only: bool = False,
     shell_allow_list: list[str] | None = None,
-    fs_tools: list[FsToolName] | Literal["all"] | None = None,
+    fs_tools: Literal["all"] | list[FsToolName] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
     enable_skills: bool = True,
@@ -1384,12 +1412,14 @@ def create_cli_agent(
             (which may not be set in the server subprocess environment).
         fs_tools: Allowlist of filesystem tools to expose to the agent, from
             `--allow-fs-tools`. `None` (default) leaves `FilesystemMiddleware`
-            at its SDK default (all tools). `"all"` or an explicit list
-            (which must include `"read_file"`) installs a `FilesystemMiddleware`
-            restricted to those tool names, replacing the SDK's default
-            instance for the main agent and every synchronous subagent
-            (including `general-purpose`), so delegating via `task` cannot
-            bypass the restriction. Async subagents are unaffected.
+            at its SDK default (all tools). `"all"` reinstalls an unrestricted
+            `FilesystemMiddleware` (equivalent to the default); an explicit list
+            (which must include `"read_file"`) installs one restricted to those
+            tool names. In both cases the instance replaces the SDK's default
+            for the main agent and every synchronous subagent (including
+            `general-purpose`), so delegating via `task` cannot bypass the
+            restriction. Async subagents are unaffected (they run on their own
+            remote backend, not the local filesystem).
         enable_ask_user: Enable `AskUserMiddleware` so the agent can ask
             clarifying questions.
 
@@ -1817,22 +1847,39 @@ def create_cli_agent(
         )
 
     if fs_tools is not None:
+        main_tool_descriptions = _get_harness_tool_descriptions(model)
         # Overrides the SDK's default `FilesystemMiddleware` (matched by
         # `.name` in `create_deep_agent`'s custom-middleware merge) for the
-        # main agent.
+        # main agent. Preserve the SDK harness's model-specific tool metadata
+        # on the replacement.
         agent_middleware.append(
-            FilesystemMiddleware(backend=composite_backend, tools=fs_tools)
+            FilesystemMiddleware(
+                backend=composite_backend,
+                tools=fs_tools,
+                custom_tool_descriptions=main_tool_descriptions,
+            )
         )
-        # Sync subagents don't inherit the main agent's `middleware=` (the SDK's
-        # inheritance path is bypassed when an explicit `general-purpose` subagent is
-        # provided). Inject the restriction into each subagent so `task` can't bypass
+        # The SDK auto-inherits the main agent's `middleware=` only into the
+        # *auto-created* `general-purpose` subagent; dcode always supplies its
+        # own subagents (including `general-purpose`), so that inheritance path
+        # never fires and no sync subagent picks up the restriction on its own.
+        # Inject it into each so delegating via `task` can't bypass
         # `--allow-fs-tools`.
         for subagent in cast("list[SubAgent]", custom_subagents):
+            subagent_tool_descriptions = (
+                _get_harness_tool_descriptions(subagent["model"])
+                if "model" in subagent
+                else main_tool_descriptions
+            )
             subagent["middleware"] = cast(
                 "list[AgentMiddleware]",
                 [
                     *subagent.get("middleware", []),
-                    FilesystemMiddleware(backend=composite_backend, tools=fs_tools),
+                    FilesystemMiddleware(
+                        backend=composite_backend,
+                        tools=fs_tools,
+                        custom_tool_descriptions=subagent_tool_descriptions,
+                    ),
                 ],
             )
 

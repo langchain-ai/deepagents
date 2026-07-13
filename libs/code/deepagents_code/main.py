@@ -663,6 +663,11 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+# Mirror of the SDK's `FsToolName` literal members. Hardcoded rather than
+# derived from `deepagents.FsToolName` because `deepagents` must not be imported
+# on the arg-parsing hot path (see AGENTS.md "Startup performance"). The
+# `get_args(FsToolName)` drift guard in `test_main_args` pins this set so a new
+# or renamed SDK filesystem tool fails the test instead of silently diverging.
 _FS_TOOL_NAMES = frozenset(
     {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 )
@@ -682,8 +687,9 @@ def _parse_allow_fs_tools_flag(
         list of trimmed tool names.
 
         Calls `sys.exit(2)` when the value is empty, contains only blank
-        tokens, includes an unknown tool name, or is an explicit list that
-        omits `"read_file"` — `FilesystemMiddleware` requires it.
+        tokens, combines the `"all"` sentinel with other tool names, includes
+        an unknown tool name, or is an explicit list that omits `"read_file"`
+        — `FilesystemMiddleware` requires it.
     """
     if raw is None:
         return None
@@ -702,6 +708,12 @@ def _parse_allow_fs_tools_flag(
         sys.stderr.write(
             "Error: --allow-fs-tools list must contain at least one "
             "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if any(name.lower() == "all" for name in names):
+        sys.stderr.write(
+            "Error: --allow-fs-tools 'all' cannot be combined with other tool "
+            "names; pass 'all' on its own.\n"
         )
         sys.exit(2)
     unknown = [name for name in names if name not in _FS_TOOL_NAMES]

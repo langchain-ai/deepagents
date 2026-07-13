@@ -68,6 +68,15 @@ class TestCollectBuiltInTools:
             assert "\n" not in tool.description
 
     def test_respects_filesystem_allowlist(self) -> None:
+        """The catalog post-filter narrows the listing to the allowlist.
+
+        Scope: this validates `collect_built_in_tools`'s own post-filter (the
+        `/tools` display contract), NOT the runtime `FilesystemMiddleware`
+        enforcement. `FilesystemMiddleware` leaves all filesystem tools bound to
+        the node and only hides them at model-call time, so this list would look
+        the same even without the middleware — the agent-level enforcement is
+        covered in `test_agent.py`.
+        """
         names = {
             tool.name for tool in collect_built_in_tools(fs_tools=["ls", "read_file"])
         }
@@ -83,6 +92,30 @@ class TestCollectBuiltInTools:
             }
             & names
         )
+
+    def test_all_lists_every_filesystem_tool(self) -> None:
+        """`fs_tools="all"` skips filtering, so every filesystem tool is listed."""
+        names = {tool.name for tool in collect_built_in_tools(fs_tools="all")}
+        assert {
+            "ls",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "delete",
+            "glob",
+            "grep",
+            "execute",
+        } <= names
+
+    def test_filesystem_tool_names_match_sdk(self) -> None:
+        """`_FILESYSTEM_TOOL_NAMES` must not drift from the SDK's `FsToolName`."""
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        from deepagents_code.tool_catalog import _FILESYSTEM_TOOL_NAMES
+
+        assert set(get_args(FsToolName)) == _FILESYSTEM_TOOL_NAMES
 
     def test_web_search_present_with_tavily(self) -> None:
         with patch.object(

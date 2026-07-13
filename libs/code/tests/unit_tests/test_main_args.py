@@ -2506,12 +2506,45 @@ class TestParseAllowFsToolsFlag:
             _parse_allow_fs_tools_flag("ls,grep")
         assert exc_info.value.code == 2
 
-    def test_all_inside_list_exits(self) -> None:
+    def test_all_inside_list_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
         with pytest.raises(SystemExit) as exc_info:
             _parse_allow_fs_tools_flag("all,read_file")
         assert exc_info.value.code == 2
+        # A dedicated message, not the generic "unknown tool name" path.
+        assert "cannot be combined" in capsys.readouterr().err
+
+    def test_all_is_case_insensitive(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("ALL") == "all"
+        assert _parse_allow_fs_tools_flag("All") == "all"
+
+    def test_list_trims_and_skips_blank_tokens(self) -> None:
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag(" ls , read_file , ") == ["ls", "read_file"]
+        assert _parse_allow_fs_tools_flag("read_file,") == ["read_file"]
+
+    def test_blank_only_tokens_exit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A non-empty value that splits to zero tokens (e.g. ',') exits."""
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_allow_fs_tools_flag(", ,")
+        assert exc_info.value.code == 2
+        assert "at least one" in capsys.readouterr().err
+
+    def test_fs_tool_names_match_sdk(self) -> None:
+        """`_FS_TOOL_NAMES` must not drift from the SDK's `FsToolName`."""
+        from typing import get_args
+
+        from deepagents import FsToolName
+
+        from deepagents_code.main import _FS_TOOL_NAMES
+
+        assert set(get_args(FsToolName)) == _FS_TOOL_NAMES
 
 
 class TestAllowFsToolsArgument:
@@ -2584,6 +2617,47 @@ class TestAllowFsToolsArgument:
         ):
             cli_main()
         assert mock_run.await_args.kwargs["allow_fs_tools"] is None  # ty: ignore
+
+    def test_forwarded_to_run_textual_cli(self) -> None:
+        """--allow-fs-tools is parsed and forwarded to the TUI launch path."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-m", "hello", "--allow-fs-tools", "ls,read_file"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        assert run_tui.await_args is not None
+        assert run_tui.await_args.kwargs["allow_fs_tools"] == ["ls", "read_file"]
 
 
 class TestInterpreterFlagParsing:

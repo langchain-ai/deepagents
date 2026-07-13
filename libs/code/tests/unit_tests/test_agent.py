@@ -3116,6 +3116,32 @@ class TestCreateCliAgentFsToolsWiring:
         mock_settings.shell_allow_list = None
         return mock_settings
 
+    def test_restricted_middleware_replaces_sdk_default_by_name(self) -> None:
+        """The security guarantee rests on the SDK's replace-by-name merge.
+
+        The other tests in this class assert what `create_cli_agent` *passes*
+        to `create_deep_agent`; they trust the SDK to replace its own default
+        `FilesystemMiddleware` with dcode's restricted one (matched by `.name`)
+        rather than append a second, unrestricted instance that would win. This
+        exercises the real SDK merge so that contract fails loudly here if it
+        ever changes, instead of silently leaving the restriction inert.
+        """
+        from deepagents.graph import _apply_custom_middleware
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        sdk_default = FilesystemMiddleware()  # unrestricted, as the SDK builds it
+        restricted = FilesystemMiddleware(tools=["ls", "read_file"])
+        # The merge key: both instances must share a `.name` or replacement
+        # degrades into appending two middleware.
+        assert restricted.name == sdk_default.name
+
+        merged = _apply_custom_middleware([sdk_default], [restricted])
+
+        fs_middleware = [m for m in merged if isinstance(m, FilesystemMiddleware)]
+        assert len(fs_middleware) == 1
+        assert fs_middleware[0] is restricted
+        assert fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
+
     def test_none_does_not_add_filesystem_middleware(self, tmp_path: Path) -> None:
         """`fs_tools=None` (default) leaves the SDK's own default in place."""
         from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -3231,6 +3257,65 @@ class TestCreateCliAgentFsToolsWiring:
         assert len(fs_middleware) == 1
         assert "read_file" in fs_middleware[0]._enabled_tools
         assert "execute" in fs_middleware[0]._enabled_tools
+
+    def test_all_preserves_harness_descriptions_for_main_and_subagent(
+        self, tmp_path: Path
+    ) -> None:
+        """Allowlisting retains model-specific filesystem tool guidance."""
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="nvidia:nvidia/nemotron-3-ultra-550b-a55b",
+                assistant_id="test",
+                fs_tools="all",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        main_filesystem = next(
+            middleware
+            for middleware in kwargs["middleware"]
+            if isinstance(middleware, FilesystemMiddleware)
+        )
+        general_purpose = next(
+            subagent
+            for subagent in kwargs["subagents"]
+            if subagent["name"] == "general-purpose"
+        )
+        subagent_filesystem = next(
+            middleware
+            for middleware in general_purpose["middleware"]
+            if isinstance(middleware, FilesystemMiddleware)
+        )
+
+        for filesystem in (main_filesystem, subagent_filesystem):
+            read_file = next(
+                tool for tool in filesystem.tools if tool.name == "read_file"
+            )
+            assert (
+                "keep reading paginated chunks until you reach EOF"
+                in read_file.description
+            )
 
     def test_explicit_list_restricts_general_purpose_subagent(
         self, tmp_path: Path

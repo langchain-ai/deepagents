@@ -74,6 +74,36 @@ class TestServerConfigRoundTrip:
 
         assert restored == original
 
+    def test_allow_fs_tools_all_round_trips(self) -> None:
+        """The `"all"` sentinel survives the env round trip as a string."""
+        original = ServerConfig(allow_fs_tools="all")
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.allow_fs_tools == "all"
+
+    def test_from_env_rejects_invalid_allow_fs_tools_shape(self) -> None:
+        """A tampered/skewed ALLOW_FS_TOOLS value fails closed rather than open.
+
+        Well-formed JSON of an unexpected type (a bare string, number, or
+        object) must raise instead of falling through to an unrestricted
+        filesystem — see `_read_env_allow_fs_tools`.
+        """
+        for bad in ('"read_file"', "42", "true", "{}"):
+            with (
+                patch.dict(
+                    os.environ,
+                    {f"{SERVER_ENV_PREFIX}ALLOW_FS_TOOLS": bad},
+                    clear=True,
+                ),
+                pytest.raises(ValueError, match="ALLOW_FS_TOOLS"),
+            ):
+                ServerConfig.from_env()
+
     def test_trust_project_mcp_none_round_trips(self) -> None:
         """None trust_project_mcp should survive a round trip."""
         original = ServerConfig(trust_project_mcp=None)

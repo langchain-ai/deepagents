@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
@@ -68,6 +68,39 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
             f"Value was: {raw[:200]!r}"
         )
         raise ValueError(msg) from exc
+
+
+def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
+    """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
+
+    The parent process writes only `None`, `"all"`, or a list (produced by
+    `main._parse_allow_fs_tools_flag`), but this runs in the server subprocess
+    where the variable could be tampered with or arrive from a skewed
+    serialization format. Because the value is a security control, an
+    unrecognized shape must fail closed (raise) rather than falling through to
+    an unrestricted filesystem: a truthy non-list, non-`"all"` value would
+    otherwise reach `FilesystemMiddleware`, whose `else` branch enables *all*
+    tools. (`_read_env_json` already fails closed on malformed JSON.)
+
+    Returns:
+        `None` (absent), `"all"`, or a list of filesystem tool-name strings.
+
+    Raises:
+        ValueError: If the variable parses to anything other than `None`,
+            `"all"`, or a list of strings. Per-name validity and the
+            `"read_file"` requirement are enforced downstream by
+            `FilesystemMiddleware`.
+    """
+    raw = _read_env_json("ALLOW_FS_TOOLS")
+    if raw is None or raw == "all":
+        return raw
+    if isinstance(raw, list) and all(isinstance(name, str) for name in raw):
+        return cast("list[FsToolName]", raw)
+    msg = (
+        f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: {raw!r}; expected "
+        "'all' or a list of filesystem tool names."
+    )
+    raise ValueError(msg)
 
 
 def _read_env_str(suffix: str) -> str | None:
@@ -432,7 +465,7 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
-            allow_fs_tools=_read_env_json("ALLOW_FS_TOOLS"),
+            allow_fs_tools=_read_env_allow_fs_tools(),
             rubric_model=_read_env_str("RUBRIC_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),

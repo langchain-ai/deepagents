@@ -1689,6 +1689,90 @@ class TestCreateCliAgentMemorySources:
         assert sources == [str(agent_dir / "AGENTS.md")]
 
 
+class TestCreateCliAgentMemoryAutoSave:
+    """Test that `memory_auto_save` selects the memory prompt variant."""
+
+    @staticmethod
+    def _mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        return mock_settings
+
+    def _capture_system_prompt(
+        self, tmp_path: Path, *, memory_auto_save: bool
+    ) -> object:
+        mock_settings = self._mock_settings(tmp_path)
+        captured: list[object] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the system_prompt arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("system_prompt", "__unset__"))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_code.agent.FilesystemBackend"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                memory_auto_save=memory_auto_save,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_auto_save_on_uses_default_prompt(self, tmp_path: Path) -> None:
+        """Default (auto-save on) leaves the middleware's default prompt in place."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=True)
+        # No override passed -> MemoryMiddleware keeps its default persistence prompt.
+        assert system_prompt == "__unset__"
+
+    def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
+        """Auto-save off swaps in the SDK read-only prompt."""
+        from deepagents.middleware import MEMORY_READONLY_SYSTEM_PROMPT
+
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
+        assert system_prompt is MEMORY_READONLY_SYSTEM_PROMPT
+
+
 class TestCreateCliAgentProjectContext:
     """Tests for explicit project context in `create_cli_agent`."""
 

@@ -82,6 +82,43 @@ def test_option_keys_unique() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
+    """`memory.auto_save` resolves to enabled when nothing overrides it."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_memory_auto_save_env_disables(monkeypatch) -> None:
+    """A falsy `DEEPAGENTS_CODE_MEMORY_AUTO_SAVE` disables auto-save."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "0")
+    value, _ = resolve_scalar(option, toml_data={})
+    assert value is False
+
+
+def test_memory_auto_save_toml_disables(monkeypatch) -> None:
+    """`[memory].auto_save = false` in config.toml disables auto-save."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    value, _ = resolve_scalar(option, toml_data={"memory": {"auto_save": False}})
+    assert value is False
+
+
+def test_is_memory_auto_save_enabled_reads_env(monkeypatch) -> None:
+    """The `config.is_memory_auto_save_enabled` helper honors the env override."""
+    from deepagents_code.config import is_memory_auto_save_enabled
+
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    assert is_memory_auto_save_enabled() is True
+
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "false")
+    assert is_memory_auto_save_enabled() is False
+
+
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
     """The effective log level follows debug mode when no level is explicit."""
     option = get_option("debug.log_level")

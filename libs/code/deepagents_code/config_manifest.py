@@ -1076,6 +1076,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="memory.auto_save",
+        group="Tools",
+        summary=(
+            "Let the agent proactively save learnings to memory (AGENTS.md); "
+            "disable to keep loading memory but stop auto-saving."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.MEMORY_AUTO_SAVE,
+        toml_keys=("memory", "auto_save"),
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",

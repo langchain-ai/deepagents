@@ -3073,6 +3073,26 @@ def is_langsmith_redaction_enabled() -> bool:
     return bool(value)
 
 
+def is_memory_auto_save_enabled() -> bool:
+    """Return whether the agent should proactively save learnings to memory.
+
+    Resolves the `memory.auto_save` option from env/`config.toml`, defaulting to
+    enabled. When disabled, memory is still loaded into context but the agent is
+    told not to auto-save.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("memory.auto_save")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def configure_langsmith_secret_redaction() -> bool:
     """Install the LangSmith SDK secret anonymizer for active agent tracing.
 

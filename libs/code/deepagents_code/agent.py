@@ -18,6 +18,7 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
+    MEMORY_READONLY_SYSTEM_PROMPT,
     FilesystemMiddleware,
     MemoryMiddleware,
     RubricMiddleware,
@@ -1318,6 +1319,7 @@ def create_cli_agent(
     shell_allow_list: list[str] | None = None,
     enable_ask_user: bool = True,
     enable_memory: bool = True,
+    memory_auto_save: bool = True,
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
@@ -1386,6 +1388,12 @@ def create_cli_agent(
 
             Disabled in non-interactive mode.
         enable_memory: Enable `MemoryMiddleware` for persistent memory
+        memory_auto_save: When `True` (default), the memory prompt tells the
+            agent to proactively persist learnings to the `AGENTS.md` sources.
+            When `False`, memory is still loaded into context but the read-only
+            prompt is used instead, so the agent does not auto-save; explicit
+            saves (e.g. the `remember` skill) still work. No effect when
+            `enable_memory` is `False`.
         enable_skills: Enable `SkillsMiddleware` for custom agent skills
         enable_shell: Enable shell execution via `LocalShellBackend`
             (only in local mode). When enabled, the `execute` tool is available.
@@ -1596,12 +1604,20 @@ def create_cli_agent(
         )
         memory_sources.extend(str(p) for p in project_agent_md_paths)
 
-        agent_middleware.append(
-            MemoryMiddleware(
+        # Loading memory stays on either way; a read-only prompt drops the
+        # "proactively persist learnings" guidance when auto-save is disabled.
+        if memory_auto_save:
+            memory_middleware = MemoryMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),
                 sources=memory_sources,
             )
-        )
+        else:
+            memory_middleware = MemoryMiddleware(
+                backend=FilesystemBackend(virtual_mode=False),
+                sources=memory_sources,
+                system_prompt=MEMORY_READONLY_SYSTEM_PROMPT,
+            )
+        agent_middleware.append(memory_middleware)
 
         # Protect the machine-managed onboarding-name block in the user
         # AGENTS.md from being rewritten by agent file edits. The block's

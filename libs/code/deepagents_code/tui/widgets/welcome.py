@@ -349,7 +349,9 @@ class WelcomeBanner(Static):
         """Build the banner content.
 
         Returns:
-            Content with the title and version, followed by any applicable rows
+            Content with the title, optional version, and any applicable header
+            tags (`(debug enabled)` when debug is on; `(local)` for editable
+            installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
             resolves), thread ID (debug only), MCP tool count, MCP server

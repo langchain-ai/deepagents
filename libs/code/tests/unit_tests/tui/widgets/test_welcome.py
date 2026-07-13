@@ -35,14 +35,33 @@ _DEBUG_STYLE = "deepagents_code.tui.widgets.welcome._debug_tag_style"
 _LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
 
 
-def _style_covering(content: Content, needle: str) -> TStyle:
+def _raw_style_covering(content: Content, needle: str) -> str | TStyle:
     """Return the style of the single span whose text contains `needle`.
+
+    The style may be a parsed `TStyle` (from a themed style) or a raw `str`
+    (ANSI string markup, which `Content.assemble` preserves verbatim — see
+    `test_debug_tag_uses_ansi_markup_under_ansi_theme`). Use `_style_covering`
+    when the style must be a `TStyle`. Indexes the public `content.plain` and
+    reads the public `Span.style` field; update if Textual's span model changes.
+
+    Args:
+        content: Assembled banner content to inspect.
+        needle: Substring identifying the span whose style to return.
+
+    Returns:
+        The style of the one span covering `needle`.
+    """
+    spans = [s for s in content.spans if needle in content.plain[s.start : s.end]]
+    assert len(spans) == 1, f"expected exactly one span covering {needle!r}"
+    return spans[0].style
+
+
+def _style_covering(content: Content, needle: str) -> TStyle:
+    """Return the `TStyle` of the single span whose text contains `needle`.
 
     Only usable for spans whose style resolves to a `TStyle` (i.e. built from a
     themed `TStyle`, not ANSI string markup, which `Content.assemble` preserves
     as a raw `str` — see `test_debug_tag_uses_ansi_markup_under_ansi_theme`).
-    Reaches into Textual internals (`Content._text` and `Span.style`); update if
-    those change.
 
     Args:
         content: Assembled banner content to inspect.
@@ -51,9 +70,7 @@ def _style_covering(content: Content, needle: str) -> TStyle:
     Returns:
         The `TStyle` of the one span covering `needle`.
     """
-    spans = [s for s in content.spans if needle in content._text[s.start : s.end]]
-    assert len(spans) == 1, f"expected exactly one span covering {needle!r}"
-    style = spans[0].style
+    style = _raw_style_covering(content, needle)
     assert isinstance(style, TStyle)
     return style
 
@@ -224,7 +241,6 @@ class TestDebugTagStyle:
     def test_non_ansi_uses_themed_warning_color(self) -> None:
         """Non-ANSI themes color the tag with the theme's warning color."""
         from textual.color import Color as TColor
-        from textual.style import Style as TStyle
 
         from deepagents_code.theme import DARK_COLORS
 
@@ -268,12 +284,23 @@ class TestTitle:
             plain = _make_banner()._build_banner().plain
         assert "(debug enabled)" not in plain
 
+    def test_no_debug_tag_when_env_falsy(self) -> None:
+        """A present-but-falsy `DEEPAGENTS_CODE_DEBUG` shows no `(debug enabled)` tag.
+
+        Locks the truthy gate (`is_env_truthy`) against a regression to a bare
+        presence check (`DEBUG in os.environ`), which every other test would pass.
+        """
+        with patch(_EDITABLE, return_value=False):
+            plain = _make_banner(env={DEBUG: "0"})._build_banner().plain
+        assert "(debug enabled)" not in plain
+
     def test_marks_debug_enabled_when_env_set(self) -> None:
         """`DEEPAGENTS_CODE_DEBUG` shows a `(debug enabled)` tag."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
         assert f"v{__version__}" in plain
-        assert "(debug enabled)" in plain
+        # Leading space guards the separator from the preceding segment.
+        assert " (debug enabled)" in plain
         assert "(local)" not in plain
         assert plain.index(f"v{__version__}") < plain.index("(debug enabled)")
 
@@ -339,13 +366,7 @@ class TestTitle:
                 content = _make_banner(env={DEBUG: "1"})._build_banner()
         finally:
             app.theme = previous_theme
-        spans = [
-            s
-            for s in content.spans
-            if "(debug enabled)" in content._text[s.start : s.end]
-        ]
-        assert len(spans) == 1, "expected exactly one span covering the debug tag"
-        assert spans[0].style == "bold yellow"
+        assert _raw_style_covering(content, "(debug enabled)") == "bold yellow"
 
 
 class TestModelLine:
@@ -465,7 +486,7 @@ class TestTracingLine:
             s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert any(
-            "dcode-johannes" in content._text[s.start : s.end] for s in linked_spans
+            "dcode-johannes" in content.plain[s.start : s.end] for s in linked_spans
         )
 
     def test_project_name_not_clickable_without_url(self) -> None:
@@ -589,7 +610,7 @@ class TestReplicaTracingLine:
             s for s in content.spans if isinstance(s.style, TStyle) and s.style.link
         ]
         assert any(
-            "dcode-replica" in content._text[s.start : s.end] for s in linked_spans
+            "dcode-replica" in content.plain[s.start : s.end] for s in linked_spans
         )
 
     async def test_fetch_and_update_sets_primary_and_replica_urls(self) -> None:

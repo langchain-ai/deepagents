@@ -1,0 +1,4 @@
+# Task dirs are single-sourced from the HuggingFace datasets-server (never
+# committed) and regenerated via
+# `python -m harbor_adapters.oolong.main --populate <dir>` before a run.
+oolong-synth-*/

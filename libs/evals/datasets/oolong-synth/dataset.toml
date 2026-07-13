@@ -1,0 +1,12 @@
+# Local Harbor dataset for the OOLONG-synth long-context aggregation benchmark.
+# The per-task directories are single-sourced from the HuggingFace
+# datasets-server (git-ignored) and regenerated via
+# `python -m harbor_adapters.oolong.main --populate <dir>` (see .gitignore)
+# before `harbor run --path libs/evals/datasets/oolong-synth`.
+
+[dataset]
+name = "langchain-ai/oolong-synth"
+description = "OOLONG-synth long-context aggregation, generated as a Harbor dataset."
+
+[[files]]
+path = "metric.py"

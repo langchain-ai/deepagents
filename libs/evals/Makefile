@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog oolong-populate
 
 .DEFAULT_GOAL := help
 
@@ -51,6 +51,10 @@ HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench
 HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
+HARBOR_OOLONG_DATASET ?= datasets/oolong-synth
+
+oolong-populate: ## Fetch the OOLONG bucket from HuggingFace and write task dirs (git-ignored)
+	uv run python -m harbor_adapters.oolong.main --populate $(HARBOR_OOLONG_DATASET)
 
 stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sandboxes
 	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners

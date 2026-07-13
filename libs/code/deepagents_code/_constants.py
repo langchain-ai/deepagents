@@ -19,6 +19,15 @@ FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (
 )
 """Fully-qualified prefixes for Fireworks model and router IDs."""
 
+MCP_REENABLED_PENDING_ERROR: Final[str] = "Re-enabled — press Ctrl+R to load."
+"""User-facing reconnect guidance shown for an MCP server that was optimistically
+re-enabled but whose agent has not yet reconnected.
+
+Set as `MCPServerInfo.error` by `app._apply_optimistic_disabled_state` (alongside
+`pending_reconnect=True`, which is what `/tools` actually keys off). Named here
+so the producer and the tests asserting the message share one literal.
+"""
+
 SYSTEM_MESSAGE_PREFIX: Final[str] = "[SYSTEM]"
 """Prefix for synthetic human messages (e.g. interrupt cancellation notices).
 

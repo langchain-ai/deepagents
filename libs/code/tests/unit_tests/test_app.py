@@ -11253,6 +11253,22 @@ class TestToolsSlashCommand:
         assert "Search docs" not in rendered
         assert "MCP tool descriptions are available in /mcp." in rendered
 
+    async def test_tool_less_local_agent_reports_zero_tools(self) -> None:
+        agent = MagicMock()
+        agent.nodes = {"__start__": SimpleNamespace(), "model": SimpleNamespace()}
+        app = DeepAgentsApp(agent=agent)
+        app._server_kwargs = None
+        app._mcp_server_info = []
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 2
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "0 tools available" in rendered
+        assert "cannot be enumerated" not in rendered
+        assert "still has its built-in tools" not in rendered
+
     async def test_remote_agent_reports_built_in_enumeration_unsupported(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 

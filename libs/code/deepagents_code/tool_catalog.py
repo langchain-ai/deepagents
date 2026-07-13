@@ -1,4 +1,7 @@
-"""Enumerate the tools available to the agent for `dcode tools list`.
+"""Enumerate the tools available to the agent.
+
+Backs two entry points: the `dcode tools list` CLI command (`_run_tools_list`)
+and the interactive `/tools` slash command (`app._handle_tools_command`).
 
 The tool set is read from the *real* tool objects the agent binds rather than a
 hand-maintained catalog, so names and descriptions never drift from what the
@@ -9,9 +12,8 @@ tool node; MCP tools are discovered via the same path the app and server use.
 The collection functions here lazily import the heavy agent stack (agent
 compilation, MCP discovery) inside their bodies. Only the fake-model base is
 imported at module top, so importing this module is cheap relative to the agent
-stack — and this module is itself imported lazily inside `_run_tools_list`,
-never on the startup hot path. Those functions must only run on the
-`dcode tools list` command path.
+stack — and this module is itself imported lazily by both entry points
+(`_run_tools_list` and `_handle_tools_command`), never on the startup hot path.
 """
 
 from __future__ import annotations
@@ -94,6 +96,20 @@ class UnavailableServer:
     the same text the interactive `/mcp` viewer shows. See `collect_mcp_catalog`.
     """
 
+    def __post_init__(self) -> None:
+        """Enforce that an unavailable server is never `ok`.
+
+        An `ok` server exposes tools and belongs in a `ToolGroup`, never here;
+        rejecting it at construction keeps the documented non-`ok` invariant
+        from being silently violated by a future producer.
+
+        Raises:
+            ValueError: If `status` is `"ok"`.
+        """
+        if self.status == "ok":
+            msg = "UnavailableServer.status must be a non-'ok' MCPServerStatus"
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True, slots=True)
 class ToolCatalog:
@@ -115,6 +131,28 @@ class ToolCatalog:
     Raw exception detail is logged at debug level, never embedded here, so no
     file paths or stack traces leak into CLI/JSON output.
     """
+
+
+def unavailable_server_display(server: UnavailableServer) -> tuple[str, str]:
+    """Return the `(status_label, detail)` display pair for an unavailable server.
+
+    Shared by the CLI (`client.commands.tools._print_unavailable_servers`) and
+    TUI (`app._render_tool_catalog`) renderers so both describe a server the same
+    way. A disabled server shows its reconnect guidance if present, else the
+    generic "disabled by user", with no separate detail; other statuses show the
+    status token plus discovery's reason string when present.
+
+    Args:
+        server: A server that loaded with no usable tools.
+
+    Returns:
+        `(status_label, detail)`: the primary status text and any secondary
+        detail (`""` when none). Each renderer lays these out itself, e.g. as
+        `status_label: detail`.
+    """
+    if server.status == "disabled":
+        return (server.detail or "disabled by user", "")
+    return (server.status, server.detail)
 
 
 class _CatalogModel(_ToolBindingFakeModel):
@@ -198,23 +236,40 @@ def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
 
     LangGraph does not expose a public tool-enumeration API, so this reaches
     through the compiled graph's conventional `nodes["tools"].bound` shape.
-    Returning `None` distinguishes an unsupported graph (including a remote
-    agent) from a local graph that validly binds zero tools.
+    Returning `None` distinguishes an uninspectable graph (a remote agent, or a
+    local graph whose internals no longer match that convention) from a local
+    graph that validly binds zero tools (`[]`).
 
     Args:
         agent: Active local or remote agent object.
 
     Returns:
-        Bound tools in graph order, or `None` when the agent cannot be
-        inspected locally.
+        Bound tools in graph order; `[]` for an inspectable local graph with no
+        tools; or `None` when the agent cannot be inspected locally.
     """
     nodes = getattr(agent, "nodes", None)
     if not isinstance(nodes, Mapping):
+        # No conventional node map: a remote agent or a non-graph object. Expected
+        # for remote agents, so debug rather than warning.
+        logger.debug("Agent %r has no inspectable node map", type(agent))
         return None
+    if "tools" not in nodes:
+        # LangChain omits the tool node when an otherwise valid local agent
+        # binds no tools. The graph is still inspectable; its tool set is empty.
+        return []
     node = nodes.get("tools")
     tool_node = cast("ToolNode | None", getattr(node, "bound", None))
     tools_by_name = getattr(tool_node, "tools_by_name", None)
     if not isinstance(tools_by_name, Mapping):
+        # A "tools" node exists but does not expose the expected
+        # `bound.tools_by_name` mapping — a LangGraph internal-shape change, not
+        # a remote agent. Warn so this drift is visible in logs even though the
+        # user-facing notice attributes it to an uninspectable agent.
+        logger.warning(
+            "Agent 'tools' node is not introspectable (bound=%r); "
+            "LangGraph internals may have changed",
+            type(tool_node),
+        )
         return None
     tools: list[ToolEntry] = []
     for name, tool in tools_by_name.items():
@@ -308,19 +363,15 @@ def split_mcp_server_info(
         elif server.status != "ok":
             # A server that loaded but has no tools *and* is not "ok" is broken,
             # unauthenticated, or disabled — report it so the omission is
-            # explained. Disabled servers are labeled by the catalog renderers,
-            # except when a just-re-enabled server still needs a reconnect. That
-            # pending state temporarily retains the disabled status, so its
-            # guidance must survive for the renderer to distinguish it from a
-            # server the user left disabled. Other statuses retain discovery's
-            # reason string. It is not a stack trace, but config-load failures
-            # can include the local config file path — see
-            # `UnavailableServer.detail`.
+            # explained. A plainly-disabled server drops discovery's reason so
+            # the renderers show the generic "disabled by user" label; a
+            # just-re-enabled one (`pending_reconnect`) keeps its reconnect
+            # guidance so the renderer can distinguish it from a server the user
+            # left disabled. Other statuses retain discovery's reason string —
+            # not a stack trace, but config-load failures can include the local
+            # config file path — see `UnavailableServer.detail`.
             detail = server.error or ""
-            if (
-                server.status == "disabled"
-                and detail != "Re-enabled — press Ctrl+R to load."
-            ):
+            if server.status == "disabled" and not server.pending_reconnect:
                 detail = ""
             unavailable.append(
                 UnavailableServer(

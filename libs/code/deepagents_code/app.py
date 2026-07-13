@@ -45,6 +45,7 @@ from deepagents_code import (
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    MCP_REENABLED_PENDING_ERROR,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -361,7 +362,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
-    from deepagents_code.tool_catalog import ToolCatalog
+    from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
@@ -8370,17 +8371,28 @@ class DeepAgentsApp(App):
         # on success. Drives the notice logic below.
         enumeration_failed_reason = ""
         if self._server_kwargs is None:
-            active_tools = (
-                collect_tools_from_agent(self._agent)
-                if self._agent is not None
-                else None
-            )
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+            except Exception:
+                # `collect_tools_from_agent` is defensively written, but a remote
+                # graph proxy can do real work on attribute access and raise.
+                # Mirror the managed branch: log and degrade to the notice below
+                # rather than letting it escape as an unhandled handler error.
+                logger.exception("Failed to inspect agent tools for /tools")
+                active_tools = None
             if active_tools is None:
                 enumeration_failed_reason = (
                     "Built-in tools cannot be enumerated for this custom or "
                     "remote agent"
                 )
             else:
+                # The local graph's tool node holds built-in *and* MCP tools;
+                # MCP tools are rendered separately from `server_info`, so drop
+                # them here to avoid listing each MCP tool twice.
                 mcp_names = {
                     tool.name for server in server_info for tool in server.tools
                 }
@@ -8453,6 +8465,8 @@ class DeepAgentsApp(App):
         Returns:
             Assembled `Content` ready to mount in an `AppMessage`.
         """
+        from deepagents_code.tool_catalog import unavailable_server_display
+
         total = sum(len(group.tools) for group in catalog.groups)
         noun = "tool" if total == 1 else "tools"
 
@@ -8484,18 +8498,21 @@ class DeepAgentsApp(App):
                 ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
             )
 
+        def _unavailable_row(server: UnavailableServer) -> tuple[str, str]:
+            """Map an unavailable server to a `(name, detail)` row for `_section`.
+
+            Args:
+                server: An MCP server discovered with no usable tools.
+
+            Returns:
+                A `(name, detail)` pair for `_section` to align and render.
+            """
+            label, detail = unavailable_server_display(server)
+            return (server.name, f"{label}: {detail}" if detail else label)
+
         _section(
             "Unavailable MCP servers",
-            [
-                (server.name, server.detail or "disabled by user")
-                if server.status == "disabled"
-                else (
-                    (server.name, f"{server.status}: {server.detail}")
-                    if server.detail
-                    else (server.name, server.status)
-                )
-                for server in catalog.unavailable
-            ],
+            [_unavailable_row(server) for server in catalog.unavailable],
         )
 
         if catalog.mcp_error:
@@ -15468,7 +15485,8 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — press Ctrl+R to load.",
+                            error=MCP_REENABLED_PENDING_ERROR,
+                            pending_reconnect=True,
                         ),
                     )
         self._mcp_server_info = updated

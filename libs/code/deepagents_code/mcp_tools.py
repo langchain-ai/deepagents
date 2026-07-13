@@ -112,13 +112,24 @@ class MCPServerInfo:
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
 
+    pending_reconnect: bool = False
+    """`True` for a disabled entry that was just re-enabled in the TUI and is
+    awaiting a reconnect to load its tools.
+
+    Lets `/tools` (`tool_catalog.split_mcp_server_info`) preserve the reconnect
+    guidance held in `error` instead of collapsing it to the generic "disabled
+    by user" label — an explicit flag rather than a fragile match on the
+    guidance text. Only meaningful while `status == "disabled"`.
+    """
+
     def __post_init__(self) -> None:
         """Enforce the status/error/tools consistency invariant.
 
         Raises:
             ValueError: If any of: `status='ok'` with a non-`None` error;
                 non-`ok` status without an error message; non-`ok` status
-                carrying tools.
+                carrying tools; or `pending_reconnect` set without
+                `status='disabled'`.
         """
         if self.status == "ok":
             if self.error is not None:
@@ -140,6 +151,12 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = (
+                f"MCPServerInfo {self.name!r}: pending_reconnect requires "
+                f"status='disabled' (got {self.status!r})"
+            )
+            raise ValueError(msg)
 
     def needs_attention(self) -> bool:
         """Return whether this server is blocked on user login."""

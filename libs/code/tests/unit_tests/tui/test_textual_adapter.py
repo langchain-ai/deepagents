@@ -1104,6 +1104,14 @@ class TestBuildStreamConfig:
             config = build_stream_config("t-stable", assistant_id=None)
         assert "dcode_experimental" not in config["metadata"]
 
+    def test_experimental_absent_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default path (env var unset) is not labeled experimental."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
+        config = build_stream_config("t-default", assistant_id=None)
+        assert "dcode_experimental" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""

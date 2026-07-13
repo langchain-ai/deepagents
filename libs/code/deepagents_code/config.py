@@ -1676,6 +1676,9 @@ def build_stream_config(
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
+    Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
+    is enabled, so experimental runs are filterable in trace metadata.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1711,10 +1714,12 @@ def build_stream_config(
         user_id=os.environ.get(USER_ID) or None,
     )
 
-    # Legacy / diagnostic keys preserved for backward-compatibility during the
-    # coding-agent-v1 rollout (not part of the contract).
+    # Mark experimental runs so they are filterable in trace metadata.
     if is_env_truthy(EXPERIMENTAL):
         metadata["dcode_experimental"] = True
+
+    # Legacy / diagnostic keys preserved for backward-compatibility during the
+    # coding-agent-v1 rollout (not part of the contract).
     metadata["lc_versions"] = {
         "deepagents-code": _format_lc_version(
             __version__, editable=_is_editable_install()

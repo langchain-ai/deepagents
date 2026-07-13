@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,13 @@ class ReasoningProviderConfig(NamedTuple):
 
 
 OPENAI_EFFORTS: tuple[EffortLabel, ...] = ("none", "low", "medium", "high", "xhigh")
-"""OpenAI GPT-5 effort labels for `reasoning.effort`.
+"""OpenAI GPT-5 effort labels before GPT-5.6 for `reasoning.effort`.
 
 See https://platform.openai.com/docs/guides/reasoning.
 """
+
+OPENAI_56_EFFORTS: tuple[EffortLabel, ...] = (*OPENAI_EFFORTS, "max")
+"""OpenAI GPT-5.6 effort labels for `reasoning.effort`."""
 
 ANTHROPIC_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high", "xhigh", "max")
 """Anthropic `output_config.effort` labels for Opus 4.7+ and Sonnet 5.
@@ -132,17 +136,16 @@ _REASONING_KEYS: frozenset[str] = frozenset(
 """Runtime config keys that may already carry provider reasoning settings."""
 
 
-def _openai_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
+def _openai_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
     """Return OpenAI reasoning effort levels."""
-    return OPENAI_EFFORTS
+    return OPENAI_56_EFFORTS if _has_version(model, "gpt-5.6") else OPENAI_EFFORTS
 
 
 def _openai_default_effort(model: str) -> EffortLabel | None:
     """Return the OpenAI default reasoning effort when known."""
-    # Only gpt-5.5 documents `medium` as its default; other/newer gpt-5 variants
-    # fall through to `None` until their default is confirmed against
-    # https://platform.openai.com/docs/guides/reasoning.
-    return "medium" if model.startswith("gpt-5.5") else None
+    if _has_version(model, "gpt-5.5") or _has_version(model, "gpt-5.6"):
+        return "medium"
+    return None
 
 
 def _openai_model_params(effort: str) -> dict[str, Any]:
@@ -454,7 +457,7 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
         return "anthropic"
     if provider == "google_genai" and model_lower.startswith("gemini-3"):
         return "google_genai"
-    if provider == "fireworks" and model_lower.startswith("accounts/fireworks/models/"):
+    if provider == "fireworks" and model_lower.startswith(FIREWORKS_MODEL_ID_PREFIXES):
         return "fireworks"
     if provider == "xai" and _is_xai_grok_45(model_lower):
         return "xai"

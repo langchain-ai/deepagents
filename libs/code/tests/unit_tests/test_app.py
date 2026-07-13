@@ -11321,6 +11321,144 @@ class TestToolsSlashCommand:
         assert "broken" in rendered
         assert "boom" in rendered
 
+    async def test_forwards_enable_interpreter_true(self) -> None:
+        from deepagents_code.tool_catalog import ToolEntry
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {"enable_interpreter": True}
+        app._mcp_server_info = []
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[ToolEntry(name="js_eval", description="Run JS")],
+            ) as collect,
+        ):
+            await app._handle_command("/tools")
+
+        collect.assert_called_once_with(assistant_id="agent", enable_interpreter=True)
+        assert mount.await_count == 2
+        assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
+
+    async def test_built_in_failure_without_mcp_is_honest(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        app._assistant_id = "agent"
+        app._server_kwargs = {}
+        app._mcp_server_info = []
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                side_effect=RuntimeError("compile boom"),
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        # Only the user echo and an honest notice — no misleading "0 tools"
+        # catalog when the agent still binds tools that just could not be listed.
+        assert mount.await_count == 2
+        notice = str(mount.await_args_list[-1].args[0]._content)
+        assert "still has its built-in tools" in notice
+        assert "showing MCP tools only" not in notice
+        assert "0 tools available" not in notice
+
+    async def test_remote_agent_without_mcp_is_honest(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(spec=[]))
+        app._server_kwargs = None
+        app._mcp_server_info = []
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 2
+        notice = str(mount.await_args_list[-1].args[0]._content)
+        assert "cannot be enumerated" in notice
+        assert "still has its built-in tools" in notice
+        assert "showing MCP tools only" not in notice
+
+    def test_render_escapes_markup(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="[bold]evil[/bold]", description="desc [red]x[/red]")],
+            [
+                MCPServerInfo(
+                    name="[i]srv",
+                    transport="http",
+                    tools=(MCPToolInfo(name="t", description="d"),),
+                    status="ok",
+                )
+            ],
+        )
+        # Rich markup in external names/descriptions must survive verbatim and
+        # never be parsed (an unclosed "[" would raise if it were).
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "[bold]evil[/bold]" in rendered
+        assert "[red]x[/red]" in rendered
+        assert "[i]srv" in rendered
+
+    def test_render_empty_catalog_reports_zero_without_error(self) -> None:
+        from deepagents_code.tool_catalog import build_catalog_from_server_info
+
+        rendered = DeepAgentsApp._render_tool_catalog(
+            build_catalog_from_server_info([], [])
+        ).plain
+        assert "0 tools available" in rendered
+
+    def test_render_plural_noun_and_column_alignment(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [
+                ToolEntry(name="ls", description="list"),
+                ToolEntry(name="read_file", description="read"),
+            ],
+            [],
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "2 tools available" in rendered
+        # Shorter name padded to the widest name in the group so columns align.
+        assert f"  {'ls'.ljust(len('read_file'))}  list" in rendered
+        assert "  read_file  read" in rendered
+
+    def test_render_unavailable_without_detail_omits_colon(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        # A non-`ok` server must carry an error, but it may be empty (""), which
+        # yields an empty `detail` — the branch that renders status with no colon.
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")],
+            [MCPServerInfo(name="off", transport="http", status="disabled", error="")],
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "  off  disabled" in rendered
+        assert "disabled:" not in rendered
+
+    def test_render_includes_mcp_error(self) -> None:
+        from deepagents_code.tool_catalog import (
+            BUILT_IN_GROUP,
+            ToolCatalog,
+            ToolGroup,
+        )
+
+        catalog = ToolCatalog(
+            groups=(ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=()),),
+            mcp_error="MCP discovery failed; showing built-in tools only.",
+        )
+        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        assert "MCP discovery failed" in rendered
+
 
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""

@@ -329,10 +329,12 @@ def build_catalog_from_server_info(
     """Assemble a `ToolCatalog` from pre-collected built-in tools and live MCP info.
 
     The interactive `/tools` command entry point: it avoids the `asyncio.run`
-    MCP discovery in `collect_catalog` (unusable inside Textual's running event
-    loop) by reusing the MCP metadata the app already loaded. `mcp_error` is
-    always `None` here because discovery is not attempted — any load failures
-    are already reflected per-server in `server_info` as `UnavailableServer`s.
+    MCP discovery reached via `collect_catalog` (the `asyncio.run` call itself
+    lives in `collect_mcp_catalog`), which cannot run inside Textual's running
+    event loop, by reusing the MCP metadata the app already loaded. `mcp_error`
+    is always `None` here because discovery is not attempted — any load failures
+    are already reflected per-server in `server_info` as non-`ok` `MCPServerInfo`
+    entries, which `split_mcp_server_info` surfaces as `UnavailableServer`s.
 
     Args:
         built_in: Built-in tools in bind order (from `collect_built_in_tools`).

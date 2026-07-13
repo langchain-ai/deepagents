@@ -8361,6 +8361,14 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
 
         server_info = self._mcp_server_info_for_tools()
+        has_mcp_tools = any(server.tools for server in server_info)
+
+        built_in = []
+        # Set to a human-readable reason when built-in tools cannot be listed:
+        # a remote/custom agent we cannot introspect, or a compile that raised.
+        # The agent still binds those tools; only enumeration failed. Left empty
+        # on success. Drives the notice logic below.
+        enumeration_failed_reason = ""
         if self._server_kwargs is None:
             active_tools = (
                 collect_tools_from_agent(self._agent)
@@ -8368,12 +8376,9 @@ class DeepAgentsApp(App):
                 else None
             )
             if active_tools is None:
-                built_in = []
-                await self._mount_message(
-                    AppMessage(
-                        "Built-in tools cannot be enumerated for this custom or "
-                        "remote agent; showing known MCP tools only.",
-                    ),
+                enumeration_failed_reason = (
+                    "Built-in tools cannot be enumerated for this custom or "
+                    "remote agent"
                 )
             else:
                 mcp_names = {
@@ -8390,12 +8395,23 @@ class DeepAgentsApp(App):
                 )
             except Exception:
                 logger.exception("Failed to enumerate built-in tools for /tools")
-                built_in = []
-                await self._mount_message(
-                    AppMessage(
-                        "Could not enumerate built-in tools; showing MCP tools only.",
-                    ),
-                )
+                enumeration_failed_reason = "Could not enumerate built-in tools"
+
+        if enumeration_failed_reason and not has_mcp_tools:
+            # No MCP tools to fall back on: rendering "0 tools available" would
+            # wrongly imply the agent has no tools at all, when in fact only the
+            # listing failed. Surface the reason on its own and skip the catalog.
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}. The agent still has its "
+                    "built-in tools; they just cannot be listed here.",
+                ),
+            )
+            return
+        if enumeration_failed_reason:
+            await self._mount_message(
+                AppMessage(f"{enumeration_failed_reason}; showing MCP tools only."),
+            )
 
         catalog = build_catalog_from_server_info(built_in, server_info)
         await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
@@ -8420,13 +8436,17 @@ class DeepAgentsApp(App):
     def _render_tool_catalog(catalog: ToolCatalog) -> Content:
         """Render a tool catalog as chat `Content`.
 
-        Shows a count header, each group's heading with its `name  description`
-        rows, then any MCP servers that loaded with no tools. Tool names and
-        descriptions come from tool objects (external), so they are added as
-        plain-text spans that are never parsed as markup.
+        Shows a count header, each group's heading with its aligned
+        `name  description` rows, then any MCP servers that loaded with no tools
+        and a non-`ok` status, and finally a discovery-error notice if the
+        catalog carries one. Every display string — tool names/descriptions and
+        MCP server names/statuses, some of which are external — is added as a
+        plain-text span (via `Content.styled` or a `(text, style)` tuple) that
+        is never parsed as markup.
 
         Args:
-            catalog: Collected tool groups and unavailable MCP servers.
+            catalog: Collected tool groups, unavailable MCP servers, and any
+                discovery-error notice.
 
         Returns:
             Assembled `Content` ready to mount in an `AppMessage`.
@@ -8437,24 +8457,32 @@ class DeepAgentsApp(App):
         parts: list[str | Content | tuple[str, str | TStyle]] = [
             Content.styled(f"{total} {noun} available", "bold"),
         ]
-        for group in catalog.groups:
-            if not group.tools:
-                continue
-            name_width = max(len(entry.name) for entry in group.tools)
-            parts.extend(("\n\n", Content.styled(group.label, "bold")))
-            for entry in group.tools:
-                padded = entry.name.ljust(name_width)
-                row = f"  {padded}  {entry.description}".rstrip()
+
+        def _section(heading: str, rows: list[tuple[str, str]]) -> None:
+            """Append a bold heading and left-aligned `label  detail` rows."""
+            if not rows:
+                return
+            width = max(len(label) for label, _ in rows)
+            parts.extend(("\n\n", Content.styled(heading, "bold")))
+            for label, detail in rows:
+                row = f"  {label.ljust(width)}  {detail}".rstrip()
                 parts.extend(("\n", (row, "dim")))
 
-        if catalog.unavailable:
-            width = max(len(server.name) for server in catalog.unavailable)
-            parts.extend(("\n\n", Content.styled("Unavailable MCP servers", "bold")))
-            for server in catalog.unavailable:
-                padded = server.name.ljust(width)
-                detail = f": {server.detail}" if server.detail else ""
-                row = f"  {padded}  {server.status}{detail}".rstrip()
-                parts.extend(("\n", (row, "dim")))
+        for group in catalog.groups:
+            _section(group.label, [(e.name, e.description) for e in group.tools])
+
+        _section(
+            "Unavailable MCP servers",
+            [
+                (server.name, f"{server.status}: {server.detail}")
+                if server.detail
+                else (server.name, server.status)
+                for server in catalog.unavailable
+            ],
+        )
+
+        if catalog.mcp_error:
+            parts.extend(("\n\n", (catalog.mcp_error, "dim")))
 
         return Content.assemble(*parts)
 

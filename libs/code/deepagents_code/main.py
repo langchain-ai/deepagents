@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
 
+_UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
+    "\n[yellow]Note:[/yellow] this failure could not be recorded, so dcode will "
+    "retry this update on the next launch until the state directory becomes writable."
+)
+
 
 def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
     """Unwind dcode on a terminating signal so owned resources are cleaned up.
@@ -508,11 +513,7 @@ def _run_startup_auto_update(console: "Console") -> None:
             # dir), so this same failing upgrade would otherwise be retried on
             # every launch. Surface it rather than silently re-stalling, the
             # way the consent-announce path surfaces its un-persisted state.
-            message += (
-                "\n[yellow]Note:[/yellow] this failure could not be recorded, so "
-                "dcode will retry this update on the next launch until the state "
-                "directory becomes writable."
-            )
+            message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
         console.print(message, markup=True, highlight=False)
     except SystemExit:
         # Process replacement (and test doubles that simulate it) must not be
@@ -520,15 +521,18 @@ def _run_startup_auto_update(console: "Console") -> None:
         raise
     except Exception:
         logger.warning("Startup auto-update failed", exc_info=True)
+        message = (
+            "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
+            "continuing with the installed version."
+        )
         if pending_failure_version is not None:
             # An exception escaped the upgrade attempt itself (not a returned
             # failure), so the returned-failure branch never marked it. Record
             # the cooldown here so the same target is not retried every launch.
-            mark_startup_auto_update_failed(pending_failure_version)
-        console.print(
-            "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
-            "continuing with the installed version."
-        )
+            persisted = mark_startup_auto_update_failed(pending_failure_version)
+            if not persisted:
+                message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+        console.print(message, markup=True, highlight=False)
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:

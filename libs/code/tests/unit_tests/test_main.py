@@ -389,8 +389,10 @@ class TestStartupAutoUpdate:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "could not be recorded" in printed
 
-    def test_exception_during_upgrade_marks_failure(self) -> None:
-        """An upgrade that *raises* must still record the same-version cooldown."""
+    def test_exception_during_upgrade_warns_if_failure_marker_is_unpersisted(
+        self,
+    ) -> None:
+        """A raised upgrade must warn when its cooldown marker cannot be saved."""
         console = MagicMock()
         upgrade = AsyncMock(side_effect=RuntimeError("uv wedged"))
 
@@ -414,7 +416,8 @@ class TestStartupAutoUpdate:
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
             patch(
-                "deepagents_code.update_check.mark_startup_auto_update_failed"
+                "deepagents_code.update_check.mark_startup_auto_update_failed",
+                return_value=False,
             ) as mark_failed,
             patch("deepagents_code.main._restart_current_process") as restart,
         ):
@@ -425,6 +428,7 @@ class TestStartupAutoUpdate:
         restart.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Auto-update failed before startup" in printed
+        assert "could not be recorded" in printed
 
     def test_recent_failure_cooldown_skips_startup_update(self) -> None:
         """A same-version startup failure cooldown must bypass repeat attempts."""

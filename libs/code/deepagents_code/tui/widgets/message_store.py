@@ -159,6 +159,9 @@ class MessageData:
     diff_file_path: str | None = None
     """File path associated with the diff (DIFF messages only)."""
 
+    diff_tool_name: str | None = None
+    """Name of the file tool that produced the diff (DIFF messages only)."""
+
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
     """Name of the skill that was invoked."""
@@ -280,6 +283,7 @@ class MessageData:
                 return DiffMessage(
                     self.content,
                     file_path=self.diff_file_path or "",
+                    tool_name=self.diff_tool_name,
                     id=self.id,
                 )
 
@@ -384,6 +388,7 @@ class MessageData:
                 content=widget._diff_content,
                 id=widget_id,
                 diff_file_path=widget._file_path,
+                diff_tool_name=widget._tool_name,
             )
 
         if isinstance(widget, SummarizationMessage):

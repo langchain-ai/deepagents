@@ -322,13 +322,19 @@ async function listComments(github, owner, repo, number) {
   });
 }
 
-// Fail closed if the privileged token does not authenticate as the configured bot
-// identity, so a misconfigured or swapped GitHub App token can never mutate the
-// changelog, PR body, or branch under the wrong account.
-async function authenticatedBot(github, login, id) {
-  const { data: user } = await github.rest.users.getAuthenticated();
+// `create-github-app-token` derives `appSlug` from the same App authentication
+// used to mint the installation token. Verify that trusted output resolves to the
+// configured bot login and immutable user id without calling the user-only `/user`
+// endpoint, which rejects installation tokens.
+async function authenticatedBot(github, appSlug, login, id) {
+  if (!appSlug) throw new Error('GitHub App token action did not report an app slug');
+  const tokenLogin = `${appSlug}[bot]`;
+  if (tokenLogin !== login) {
+    throw new Error(`GitHub App token was minted for ${tokenLogin}, expected ${login} (${id})`);
+  }
+  const { data: user } = await github.rest.users.getByUsername({ username: tokenLogin });
   if (user.login !== login || Number(user.id) !== Number(id)) {
-    throw new Error(`Configured release token authenticated as ${user.login} (${user.id}), expected ${login} (${id})`);
+    throw new Error(`GitHub App bot is ${user.login} (${user.id}), expected ${login} (${id})`);
   }
   return user;
 }
@@ -505,8 +511,8 @@ function validateDraftOutput(output) {
   return notes;
 }
 
-async function postDraft({ github, owner, repo, stateFile, outputFile, login, id }) {
-  await authenticatedBot(github, login, id);
+async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const pr = await getPr(github, owner, repo, state.number);
   if (!isReleasePr(pr) || pr.draft || pr.head.sha !== state.head || releaseVersion(pr.title) !== state.version) {
@@ -537,8 +543,8 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, login, id
 // Post a bot-authored failure notice once per PR head (deduped by the head-scoped
 // marker) and only under the configured bot identity, so a draft/apply failure
 // surfaces its reason on the PR instead of only as a red Actions run.
-async function postFailure({ github, owner, repo, number, head, login, id, message, markerBase, headline, remediation }) {
-  await authenticatedBot(github, login, id);
+async function postFailure({ github, owner, repo, number, head, appSlug, login, id, message, markerBase, headline, remediation }) {
+  await authenticatedBot(github, appSlug, login, id);
   const marker = `${markerBase}\nhead: ${head}\n-->`;
   const body = [marker, headline, '', remediation, '', `Details: ${message}`].join('\n');
   const comments = await listComments(github, owner, repo, number);
@@ -546,26 +552,26 @@ async function postFailure({ github, owner, repo, number, head, login, id, messa
   if (!existing) await createComment(github, owner, repo, number, body);
 }
 
-async function postDraftFailure({ github, owner, repo, number, head, login, id, message }) {
+async function postDraftFailure({ github, owner, repo, number, head, appSlug, login, id, message }) {
   return postFailure({
-    github, owner, repo, number, head, login, id, message,
+    github, owner, repo, number, head, appSlug, login, id, message,
     markerBase: FAILURE_MARKER,
     headline: 'Automatic release-note drafting failed.',
     remediation: `Resolve the workflow failure, then have a release maintainer run \`${COMMAND_MENTION} draft\` again.`,
   });
 }
 
-async function postApplyFailure({ github, owner, repo, number, head, login, id, message }) {
+async function postApplyFailure({ github, owner, repo, number, head, appSlug, login, id, message }) {
   return postFailure({
-    github, owner, repo, number, head, login, id, message,
+    github, owner, repo, number, head, appSlug, login, id, message,
     markerBase: APPLY_FAILURE_MARKER,
     headline: 'Applying curated release notes failed.',
     remediation: `Resolve the issue below, then run \`${COMMAND_MENTION} apply\` again (run \`${COMMAND_MENTION} draft\` first if the changelog changed).`,
   });
 }
 
-async function prepareApply({ github, owner, repo, number, expectedHead, changelogFile, stateFile, login, id }) {
-  await authenticatedBot(github, login, id);
+async function prepareApply({ github, owner, repo, number, expectedHead, changelogFile, stateFile, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
   const pr = await getPr(github, owner, repo, number);
   if (!isReleasePr(pr) || pr.draft || pr.head.sha !== expectedHead) {
     throw new Error('Release PR changed before apply started; re-run the command');
@@ -635,8 +641,8 @@ async function validateApplySnapshot({ github, owner, repo, state, login, id, ex
   return comments;
 }
 
-async function createApplyCommit({ github, owner, repo, stateFile, changelogFile, login, id }) {
-  await authenticatedBot(github, login, id);
+async function createApplyCommit({ github, owner, repo, stateFile, changelogFile, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: state.sourceHead });
   const changelog = fs.readFileSync(changelogFile, 'utf8');
@@ -679,8 +685,8 @@ async function createApplyCommit({ github, owner, repo, stateFile, changelogFile
   return { appliedHead: commit.data.sha, created: true };
 }
 
-async function publishAppliedState({ github, owner, repo, stateFile, appliedHead, login, id }) {
-  await authenticatedBot(github, login, id);
+async function publishAppliedState({ github, owner, repo, stateFile, appliedHead, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
   const comments = await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: appliedHead });
   await github.rest.pulls.update({ owner, repo, pull_number: state.number, body: state.body });

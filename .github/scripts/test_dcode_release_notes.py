@@ -133,6 +133,14 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             step["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"
             for step in privileged_steps
         )
+        assert all(
+            step["env"]["APP_SLUG"] == "${{ steps.app-token.outputs.app-slug }}"
+            for step in privileged_steps
+        )
+        assert all(
+            "appSlug: process.env.APP_SLUG" in step["with"]["script"]
+            for step in privileged_steps
+        )
 
     assert "DCODE_RELEASE_BOT_TOKEN" not in automation
 

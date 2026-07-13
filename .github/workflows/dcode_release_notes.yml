@@ -196,6 +196,7 @@ jobs:
         env:
           DRAFT_STATE: ${{ steps.prepare.outputs.state }}
           DRAFT_OUTPUT: ${{ steps.prepare.outputs.output }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
@@ -208,6 +209,7 @@ jobs:
                 ...context.repo,
                 stateFile: process.env.DRAFT_STATE,
                 outputFile: process.env.DRAFT_OUTPUT,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
               });
@@ -226,6 +228,7 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
@@ -248,6 +251,7 @@ jobs:
                 ...context.repo,
                 number,
                 head: process.env.PR_HEAD,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
                 message: details,
@@ -305,6 +309,7 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
           APPLY_STATE: ${{ runner.temp }}/dcode-release-apply.json
@@ -321,6 +326,7 @@ jobs:
                 expectedHead: process.env.PR_HEAD,
                 changelogFile: process.env.CHANGELOG_FILE,
                 stateFile: process.env.APPLY_STATE,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
               });
@@ -337,6 +343,7 @@ jobs:
         env:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           CHANGELOG_FILE: ${{ steps.prepare-apply.outputs.changelog }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
@@ -349,6 +356,7 @@ jobs:
                 ...context.repo,
                 stateFile: process.env.APPLY_STATE,
                 changelogFile: process.env.CHANGELOG_FILE,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
               });
@@ -366,6 +374,7 @@ jobs:
         env:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           APPLIED_HEAD: ${{ steps.commit.outputs.applied-head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
@@ -378,6 +387,7 @@ jobs:
                 ...context.repo,
                 stateFile: process.env.APPLY_STATE,
                 appliedHead: process.env.APPLIED_HEAD,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
               });
@@ -395,6 +405,7 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
@@ -418,6 +429,7 @@ jobs:
                 ...context.repo,
                 number,
                 head: process.env.PR_HEAD,
+                appSlug: process.env.APP_SLUG,
                 login: process.env.BOT_LOGIN,
                 id: process.env.BOT_ID,
                 message: details,

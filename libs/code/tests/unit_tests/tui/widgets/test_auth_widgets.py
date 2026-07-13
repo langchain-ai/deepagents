@@ -166,6 +166,7 @@ class TestAuthPromptScreen:
             PROVIDER_API_KEY_URLS["litellm"]
             == "https://docs.litellm.ai/docs/proxy/virtual_keys"
         )
+        assert PROVIDER_API_KEY_URLS["meta"] == "https://dev.meta.ai/api-keys/"
         assert (
             PROVIDER_API_KEY_URLS["openrouter"]
             == "https://openrouter.ai/workspaces/default/keys"

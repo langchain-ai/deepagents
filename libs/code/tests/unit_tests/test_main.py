@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import os
+import signal
 import sys
 from collections.abc import Iterator
 from io import StringIO
@@ -18,6 +19,8 @@ from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
     _auto_install_ripgrep_cli,
+    _handle_sighup,
+    _install_sighup_handler,
     _is_managed_ripgrep_path,
     _render_teardown_thread_hints,
     _restart_current_process,
@@ -36,6 +39,37 @@ from deepagents_code.main import (
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
 # tests startup update behavior itself, so each test must control those values.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+class TestSighupHandling:
+    """Tests for terminal-hangup cleanup wiring."""
+
+    def test_posix_installs_unwinding_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSIX SIGHUP is converted into an exception that permits cleanup."""
+        monkeypatch.setattr("deepagents_code.main.sys.platform", "linux")
+        install = MagicMock()
+        monkeypatch.setattr("deepagents_code.main.signal.signal", install)
+
+        _install_sighup_handler()
+
+        install.assert_called_once_with(signal.SIGHUP, _handle_sighup)
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_sighup(signal.SIGHUP, None)
+        assert exc_info.value.code == 128 + signal.SIGHUP
+
+    def test_windows_does_not_install_sighup_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows skips the POSIX-only SIGHUP API."""
+        monkeypatch.setattr("deepagents_code.main.sys.platform", "win32")
+        install = MagicMock()
+        monkeypatch.setattr("deepagents_code.main.signal.signal", install)
+
+        _install_sighup_handler()
+
+        install.assert_not_called()
 
 
 class TestStartupAutoUpdate:

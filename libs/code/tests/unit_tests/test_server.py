@@ -21,6 +21,7 @@ from deepagents_code.client.launch.server import (
     _port_in_use,
     _server_process_group,
     _terminate_server_process,
+    _wait_for_process_group_exit,
     wait_for_server_healthy,
 )
 
@@ -1226,16 +1227,25 @@ class TestTerminateServerProcess:
             lambda pid: 4321 if pid == 4321 else 999,
         )
 
+    @staticmethod
+    def _gone_after_signal(_pgid: int, sig: int) -> None:
+        """Model a group that disappears after receiving its real signal."""
+        if sig == 0:
+            raise ProcessLookupError
+
     def test_graceful_group_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """SIGTERM is sent to the whole group and the process exits gracefully."""
         self._patch_own_group(monkeypatch)
-        killpg = MagicMock()
+        killpg = MagicMock(side_effect=self._gone_after_signal)
         monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
         process = self._own_group_process()
 
         _terminate_server_process(process)
 
-        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
         process.wait.assert_called_once()
         process.send_signal.assert_not_called()
         process.kill.assert_not_called()
@@ -1245,22 +1255,55 @@ class TestTerminateServerProcess:
     ) -> None:
         """A hung group is escalated to a group SIGKILL after the timeout."""
         self._patch_own_group(monkeypatch)
-        killpg = MagicMock()
+        group_killed = False
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            nonlocal group_killed
+            if sig == signal.SIGKILL:
+                group_killed = True
+            elif sig == 0 and group_killed:
+                raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
         monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
         process = self._own_group_process()
-        process.wait.side_effect = [
-            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
-            None,
-        ]
 
         _terminate_server_process(process)
 
         assert killpg.call_args_list == [
             ((4321, signal.SIGTERM),),
+            ((4321, 0),),
             ((4321, signal.SIGKILL),),
+            ((4321, 0),),
         ]
-        assert process.wait.call_count == 2
+        process.wait.assert_called_once_with()
         process.kill.assert_not_called()
+
+    def test_group_wait_ignores_exited_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group remains live while a descendant survives its leader."""
+        probes = iter([None, ProcessLookupError()])
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            result = next(probes)
+            if isinstance(result, BaseException):
+                raise result
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.time.sleep", lambda _: None
+        )
+        process = self._own_group_process()
+        process.wait.return_value = 0
+
+        assert _wait_for_process_group_exit(process, 4321, 1) is True
+
+        # The leader is only reaped after the second probe proves the group is
+        # gone; its earlier exit does not end the group-level wait.
+        process.wait.assert_called_once_with()
 
     def test_never_signals_dcodes_process_group(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1301,13 +1344,136 @@ class TestTerminateServerProcess:
         process.send_signal.assert_called_once_with(signal.SIGTERM)
         process.kill.assert_called_once_with()
 
+    def test_initial_sigterm_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group that vanishes before SIGTERM is not escalated to SIGKILL."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, _sig: int) -> None:
+            raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        process.kill.assert_not_called()
+
+    def test_initial_sigterm_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An undeliverable SIGTERM leaves the group running and is reported."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, _sig: int) -> None:
+            raise PermissionError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        process.kill.assert_not_called()
+        assert "may be orphaned" in caplog.text
+
+    def test_sigkill_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group that exits just before the escalation SIGKILL is benign."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+        ]
+
+    def test_sigkill_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed escalation SIGKILL surfaces the orphan risk."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise PermissionError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        assert "may be orphaned" in caplog.text
+
+    def test_sigkill_group_probe_timeout_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A group that outlives SIGKILL is reported, not silently dropped."""
+        self._patch_own_group(monkeypatch)
+        # The group never disappears: every liveness probe reports it alive.
+        killpg = MagicMock(return_value=None)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SIGKILL_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
+        assert "did not exit after SIGKILL" in caplog.text
+
+    def test_windows_sigkill_timeout_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """On Windows a process that ignores SIGKILL is reported after the wait."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=2),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        process.kill.assert_called_once_with()
+        assert "did not exit after SIGKILL" in caplog.text
+
     async def test_startup_failure_terminates_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failed startup tears down the detached server group, not just root."""
         monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
         self._patch_own_group(monkeypatch)
-        killpg = MagicMock()
+        killpg = MagicMock(side_effect=self._gone_after_signal)
         monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
 
         config_dir = tmp_path / "runtime"
@@ -1340,7 +1506,10 @@ class TestTerminateServerProcess:
         ):
             await server.start()
 
-        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
         assert server._process is None
 
     async def test_restart_terminates_group_and_restarts(
@@ -1348,7 +1517,7 @@ class TestTerminateServerProcess:
     ) -> None:
         """Restart tears down the old server group before starting a new one."""
         self._patch_own_group(monkeypatch)
-        killpg = MagicMock()
+        killpg = MagicMock(side_effect=self._gone_after_signal)
         monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
 
         config_dir = tmp_path / "runtime"
@@ -1362,6 +1531,9 @@ class TestTerminateServerProcess:
         with patch.object(server, "start", start_mock):
             await server.restart()
 
-        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
         start_mock.assert_awaited_once()
         assert server._process is None

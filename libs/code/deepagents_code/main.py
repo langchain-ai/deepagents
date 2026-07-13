@@ -17,6 +17,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -39,6 +40,25 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+def _handle_sighup(signum: int, _frame: object) -> NoReturn:
+    """Unwind dcode on terminal hangup so owned resources are cleaned up.
+
+    Args:
+        signum: Received signal number.
+        _frame: Interrupted stack frame, unused.
+
+    Raises:
+        SystemExit: Always, using the conventional signal-derived exit code.
+    """
+    raise SystemExit(128 + signum)
+
+
+def _install_sighup_handler() -> None:
+    """Install graceful terminal-hangup handling on POSIX."""
+    if sys.platform != "win32":
+        signal.signal(signal.SIGHUP, _handle_sighup)
 
 
 def _tail_log_command(log_path: Path | str) -> str:
@@ -2623,6 +2643,12 @@ def cli_main() -> None:
     # the flag is present in raw argv.
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
+
+    # The app-owned server runs in a detached session so terminal job-control
+    # signals do not suspend or kill it. Replace SIGHUP's immediate default
+    # termination with an exception so the app/server cleanup finally blocks
+    # run when the terminal window or tab closes.
+    _install_sighup_handler()
 
     try:
         args = parse_args()

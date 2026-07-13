@@ -265,6 +265,7 @@ class TestInitialPromptOnMount:
         chat.styles = SimpleNamespace(scrollbar_size_vertical=None)
         status_bar = MagicMock(spec=StatusBar)
         chat_input = MagicMock(spec=ChatInput)
+        chat_input.input_widget = None
 
         def query_one(selector: object, *_args: object) -> object:
             if selector == "#chat":
@@ -1796,6 +1797,44 @@ class TestStartupSequence:
             "later with /model. Sandboxes and other integrations install "
             "anytime with /install."
         )
+
+
+class TestStartupFocus:
+    """Tests for focus selection before the app starts processing input."""
+
+    async def test_queued_startup_input_reaches_chat_input(self) -> None:
+        """Keys queued before startup should reach the mounted chat input."""
+        app = DeepAgentsApp()
+        app.post_message(events.Key("x", "x"))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one("#input-area", ChatInput)
+            assert chat_input.value == "x"
+
+    async def test_modal_uses_first_focusable_widget(self) -> None:
+        """Modal keyboard navigation should retain Textual's focus fallback."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+
+        app = DeepAgentsApp()
+        results: list[str | None] = []
+        async with app.run_test() as pilot:
+            await app.push_screen(
+                EffortSelectorScreen(
+                    model_spec="openai:gpt-5.5",
+                    efforts=("low", "medium", "high"),
+                    current_effort="low",
+                ),
+                results.append,
+            )
+            await pilot.pause()
+
+            assert app.focused is not None
+            assert app.focused.id == "effort-options"
+            await pilot.press("down", "enter")
+            await pilot.pause()
+
+            assert results == ["medium"]
 
 
 class TestAppCSSValidation:
@@ -17923,6 +17962,36 @@ class TestNotificationCenterIntegration:
             await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected != start
+            assert app._auto_approve is False
+
+    async def test_mcp_viewer_shift_tab_jumps_to_previous_server(self) -> None:
+        """App-level shift+tab routes to MCPViewerScreen.jump_up."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
+
+        servers = [
+            MCPServerInfo(
+                name="first",
+                transport="stdio",
+                tools=(MCPToolInfo(name="first-tool", description=""),),
+            ),
+            MCPServerInfo(
+                name="second",
+                transport="stdio",
+                tools=(MCPToolInfo(name="second-tool", description=""),),
+            ),
+        ]
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = MCPViewerScreen(server_info=servers)
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._selected_index == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
             assert app._auto_approve is False
 
     async def test_toast_identity_warn_once_semantics(

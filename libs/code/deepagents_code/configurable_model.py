@@ -112,22 +112,37 @@ def _is_openai_model(model: object) -> bool:
     incompatible.
 
     Returns:
-        `True` if the model reports `'openai'` and uses `api.openai.com`.
+        `True` if the model reports `'openai'` and uses `api.openai.com` or an
+            official regional subdomain.
     """
     if _get_ls_provider(model) != "openai":
         return False
 
+    # Prefer the SDK client's resolved base URL: a default `ChatOpenAI()` leaves
+    # `openai_api_base` unset, but its `root_client.base_url` still resolves to
+    # the official `api.openai.com` default. Fall back to the constructor field
+    # only when the client is unavailable.
     client = getattr(model, "root_client", None)
     base_url = getattr(client, "base_url", None)
     if base_url is None:
         base_url = getattr(model, "openai_api_base", None)
     if base_url is None:
+        # The provider is 'openai' yet no endpoint is discoverable. A genuine
+        # `ChatOpenAI` always exposes one, so this points to an unexpected model
+        # shape (e.g. an attribute renamed by an upstream upgrade). Skip the
+        # optimization instead of guessing, and leave a trace so the silent
+        # regression is diagnosable.
+        logger.debug("OpenAI model exposes no base URL; skipping prompt_cache_key")
         return False
 
     try:
-        return urlsplit(str(base_url)).hostname == "api.openai.com"
+        hostname = urlsplit(str(base_url)).hostname
     except ValueError:
+        logger.debug("OpenAI base URL is unparseable; skipping prompt_cache_key")
         return False
+    return hostname == "api.openai.com" or (
+        hostname is not None and hostname.endswith(".api.openai.com")
+    )
 
 
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
@@ -200,11 +215,13 @@ def _with_openai_prompt_cache_key(
     automatic (keyless) matching; it is optional, and requests still cache
     without it. It is a supported top-level `ChatOpenAI` invocation setting
     forwarded to the OpenAI request payload, so passing it through
-    `model_settings` reaches the wire unchanged. The same key is applied to
-    every OpenAI model regardless of version; models that do not support it
-    ignore it, so no version gate is needed. This mirrors the Fireworks path
-    (`_with_fireworks_session_settings`), which sets `prompt_cache_key` the same
-    way and additionally sends an `x-session-affinity` header.
+    `model_settings` reaches the wire unchanged. `prompt_cache_key` is an
+    optional, additive request field: it sharpens prefix-cache routing on model
+    families that support it (GPT-5.6 and later) and is otherwise inert, so the
+    same key is sent to every OpenAI model without a version gate. This mirrors
+    the Fireworks path (`_with_fireworks_session_settings`), which sets
+    `prompt_cache_key` the same way and additionally sends an
+    `x-session-affinity` header.
 
     A user-supplied `prompt_cache_key` is always preserved, whether it was
     configured on the model (`model_kwargs`) or supplied for this invocation
@@ -216,6 +233,15 @@ def _with_openai_prompt_cache_key(
             add).
     """
     model_kwargs = getattr(model, "model_kwargs", None)
+    if model_kwargs is not None and not isinstance(model_kwargs, Mapping):
+        # A non-mapping `model_kwargs` cannot carry a user-supplied key, so it is
+        # treated as "no key present" and injection proceeds. Trace the anomaly
+        # since a real `ChatOpenAI` always exposes a mapping here.
+        logger.debug(
+            "Ignoring non-mapping model_kwargs (%s) when checking for a "
+            "user-supplied prompt_cache_key",
+            type(model_kwargs).__name__,
+        )
     if "prompt_cache_key" in model_settings or (
         isinstance(model_kwargs, Mapping) and "prompt_cache_key" in model_kwargs
     ):
@@ -303,27 +329,29 @@ def _build_overrides(
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
 
+    # Inject the provider's prompt-cache routing hint from the active thread.
+    # Only one provider path applies per call; both share the fetch/guard/log
+    # tail below. `overrides.get` is side-effect-free, so resolving `settings`
+    # before the provider check is equivalent to doing it inside each branch.
     effective_model = new_model if new_model is not None else request.model
-    if ctx.thread_id and _is_fireworks_model(effective_model):
+    if ctx.thread_id:
         settings = overrides.get("model_settings", request.model_settings)
-        settings_with_session = _with_fireworks_session_settings(
-            settings, ctx.thread_id
-        )
-        if settings_with_session is not None:
-            overrides["model_settings"] = settings_with_session
-            # No thread ID in the message: it is treated as a sensitive session
-            # identifier. The line's presence alone confirms injection ran.
-            logger.debug("Injected Fireworks session settings")
-    elif ctx.thread_id and _is_openai_model(effective_model):
-        settings = overrides.get("model_settings", request.model_settings)
-        settings_with_key = _with_openai_prompt_cache_key(
-            effective_model, settings, ctx.thread_id
-        )
-        if settings_with_key is not None:
-            overrides["model_settings"] = settings_with_key
-            # No thread ID in the message: it is treated as a sensitive session
-            # identifier. The line's presence alone confirms injection ran.
-            logger.debug("Injected OpenAI prompt_cache_key")
+        if _is_fireworks_model(effective_model):
+            updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
+            injected = "Fireworks session settings"
+        elif _is_openai_model(effective_model):
+            updated_settings = _with_openai_prompt_cache_key(
+                effective_model, settings, ctx.thread_id
+            )
+            injected = "OpenAI prompt_cache_key"
+        else:
+            updated_settings = None
+            injected = ""
+        if updated_settings is not None:
+            overrides["model_settings"] = updated_settings
+            # The thread ID is a sensitive session identifier, so it is kept out
+            # of the log line; the line firing at all confirms injection ran.
+            logger.debug("Injected %s", injected)
 
     if not overrides:
         return request

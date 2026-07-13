@@ -788,9 +788,66 @@ class TestOpenAIPromptCacheKey:
         assert captured[0] is request
         assert captured[0].model_settings == {}
 
+    def test_non_mapping_model_kwargs_still_injects(self) -> None:
+        """A non-mapping `model_kwargs` is treated as no key present."""
+        model = _make_model("gpt-5.6")
+        model.model_kwargs = ["not", "a", "mapping"]
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
     def test_custom_openai_endpoint_skips_prompt_cache_key(self) -> None:
         model = _make_model("gpt-5.6")
         model.root_client = SimpleNamespace(base_url="https://proxy.example/v1")
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+        assert captured[0].model_settings == {}
+
+    def test_regional_openai_endpoint_gets_prompt_cache_key(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url="https://eu.api.openai.com/v1")
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.openai.com.example/v1",
+            "https://eu.api.openai.com.example/v1",
+            "https://fake-api.openai.com/v1",
+        ],
+    )
+    def test_lookalike_openai_endpoint_skips_prompt_cache_key(
+        self, base_url: str
+    ) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url=base_url)
         request = _make_request(
             model,
             context=CLIContext(thread_id="thread-123"),
@@ -971,6 +1028,23 @@ class TestIsOpenAIModel:
     def test_returns_false_without_endpoint_metadata(self) -> None:
         model = MagicMock(spec=BaseChatModel)
         model._get_ls_params.return_value = {"ls_provider": "openai"}
+        assert _is_openai_model(model) is False
+
+    def test_falls_back_to_openai_api_base_for_official(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = None
+        model.openai_api_base = "https://api.openai.com/v1"
+        assert _is_openai_model(model) is True
+
+    def test_falls_back_to_openai_api_base_for_custom(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = None
+        model.openai_api_base = "https://proxy.example/v1"
+        assert _is_openai_model(model) is False
+
+    def test_returns_false_for_malformed_base_url(self) -> None:
+        model = _make_model("gpt-5.6")
+        model.root_client = SimpleNamespace(base_url="http://[::1")
         assert _is_openai_model(model) is False
 
     def test_returns_false_for_non_openai(self) -> None:

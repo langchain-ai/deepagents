@@ -38,6 +38,12 @@ _LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
 def _style_covering(content: Content, needle: str) -> TStyle:
     """Return the style of the single span whose text contains `needle`.
 
+    Only usable for spans whose style resolves to a `TStyle` (i.e. built from a
+    themed `TStyle`, not ANSI string markup, which `Content.assemble` preserves
+    as a raw `str` — see `test_debug_tag_uses_ansi_markup_under_ansi_theme`).
+    Reaches into Textual internals (`Content._text` and `Span.style`); update if
+    those change.
+
     Args:
         content: Assembled banner content to inspect.
         needle: Substring identifying the span whose style to return.
@@ -242,12 +248,12 @@ class TestTitle:
         assert f"v{__version__}" in plain
         assert "(local)" not in plain
 
-    def test_hides_only_version_when_env_set(self) -> None:
-        """`HIDE_SPLASH_VERSION` leaves the editable-install tag visible."""
+    def test_hides_version_and_local_tag_when_env_set(self) -> None:
+        """`HIDE_SPLASH_VERSION` removes version and local-install details."""
         with patch(_EDITABLE, return_value=True):
             plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
         assert f"v{__version__}" not in plain
-        assert "(local)" in plain
+        assert "(local)" not in plain
 
     def test_marks_editable_install_as_local(self) -> None:
         """Editable installs show a `(local)` tag."""
@@ -280,14 +286,16 @@ class TestTitle:
         assert plain.index("(debug enabled)") < plain.index("(local)")
 
     def test_debug_tag_when_version_hidden(self) -> None:
-        """`HIDE_SPLASH_VERSION` leaves the debug tag visible."""
-        plain = (
-            _make_banner(env={DEBUG: "1", HIDE_SPLASH_VERSION: "1"})
-            ._build_banner()
-            .plain
-        )
+        """The debug tag remains visible without exposing local-install details."""
+        with patch(_EDITABLE, return_value=True):
+            plain = (
+                _make_banner(env={DEBUG: "1", HIDE_SPLASH_VERSION: "1"})
+                ._build_banner()
+                .plain
+            )
         assert f"v{__version__}" not in plain
         assert "(debug enabled)" in plain
+        assert "(local)" not in plain
 
     def test_title_tags_carry_their_own_styles(self) -> None:
         """Each title tag's span carries its own style helper's output.
@@ -310,6 +318,34 @@ class TestTitle:
             "#010203"
         )
         assert _style_covering(content, "(local)").foreground == TColor.parse("#040506")
+
+    def test_debug_tag_uses_ansi_markup_under_ansi_theme(self) -> None:
+        """Under an ANSI theme the assembled debug span carries bold-yellow markup.
+
+        `TestDebugTagStyle` covers `_debug_tag_style` in isolation; only an
+        assembled banner confirms the ANSI branch's markup survives
+        `Content.assemble`, which keeps it a raw `str` rather than a parsed
+        `TStyle` (so `_style_covering` cannot be used here). Guards the ANSI
+        rendering path that every other assembled test misses, since they run
+        under the non-ANSI default theme.
+        """
+        from textual._context import active_app
+
+        app = active_app.get()
+        previous_theme = app.theme
+        app.theme = "ansi-dark"
+        try:
+            with patch(_EDITABLE, return_value=False):
+                content = _make_banner(env={DEBUG: "1"})._build_banner()
+        finally:
+            app.theme = previous_theme
+        spans = [
+            s
+            for s in content.spans
+            if "(debug enabled)" in content._text[s.start : s.end]
+        ]
+        assert len(spans) == 1, "expected exactly one span covering the debug tag"
+        assert spans[0].style == "bold yellow"
 
 
 class TestModelLine:
@@ -694,15 +730,15 @@ class TestEditableInstallPath:
             plain = _make_banner()._build_banner().plain
         assert "installed:" not in plain
 
-    def test_install_path_when_version_hidden(self) -> None:
-        """Hiding the version does not hide the editable-install path."""
+    def test_no_install_path_when_version_hidden(self) -> None:
+        """Hiding the version also hides the editable-install path."""
         with (
             patch(_EDITABLE, return_value=True),
             patch(_EDITABLE_PATH, return_value="~/code"),
         ):
             plain = _make_banner(env={HIDE_SPLASH_VERSION: "1"})._build_banner().plain
-        assert "installed:" in plain
-        assert "~/code" in plain
+        assert "installed:" not in plain
+        assert "~/code" not in plain
 
     def test_no_install_path_when_cwd_hidden(self) -> None:
         """No install path row when local path displays are hidden."""

@@ -143,15 +143,14 @@ class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
     Renders a bordered box with the product title and optional version. A
-    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is set, and a
-    `(local)` tag appears for editable installs. These tags are independent of
-    whether the version is shown. Rows follow that appear only when their data
-    (and any env gate) is present. In render order: the active model
-    (`SPLASH_SHOW_MODEL`, opt-in),
-    working directory (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and
-    its replica (each clickable once its URL resolves), thread ID (debug mode
-    only), and the MCP tool count. MCP server warnings and the editable-install
-    path follow.
+    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is set, even when
+    the version is hidden. A `(local)` tag appears for editable installs only
+    when the version is shown. Rows follow that appear only when their data (and
+    any env gate) is present. In render order: the active model
+    (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
+    opt-in), LangSmith tracing project and its replica (each clickable once its
+    URL resolves), thread ID (debug mode only), and the MCP tool count. MCP
+    server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -379,7 +378,7 @@ class WelcomeBanner(Static):
                     _debug_tag_style(ansi=ansi, colors=colors),
                 )
             )
-        if _is_editable_install():
+        if not self._hide_version and _is_editable_install():
             parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
 
         # Row labels share a common column width so values stay aligned; the
@@ -497,7 +496,7 @@ class WelcomeBanner(Static):
             parts.extend(line)
 
         # Editable-install path for local development visibility.
-        if not self._hide_cwd:
+        if not self._hide_version and not self._hide_cwd:
             editable_path = _get_editable_install_path()
             if editable_path:
                 parts.append("\n")

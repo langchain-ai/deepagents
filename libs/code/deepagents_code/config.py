@@ -1434,11 +1434,11 @@ def get_banner() -> str:
     else:
         banner = _UNICODE_BANNER
 
+    if is_env_truthy(HIDE_SPLASH_VERSION):
+        return banner.replace(f"v{__version__}", "")
+
     if _is_editable_install():
         banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
-
-    if is_env_truthy(HIDE_SPLASH_VERSION):
-        banner = banner.replace(f"v{__version__}", "")
 
     return banner
 

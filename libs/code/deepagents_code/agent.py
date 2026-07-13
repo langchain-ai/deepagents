@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
 
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
@@ -67,6 +68,7 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -101,6 +103,73 @@ logger = logging.getLogger(__name__)
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+
+class _NoTodoListMiddleware(AgentMiddleware):
+    """No-op stand-in that drops the SDK's `TodoListMiddleware` by name.
+
+    `create_deep_agent` always injects `TodoListMiddleware` and exposes no
+    per-call parameter to disable it (only a globally registered
+    `HarnessProfile.excluded_middleware` can strip it, which dcode does not use
+    here). Its `_apply_custom_middleware` merge replaces a default middleware in
+    place when a caller-supplied middleware shares its `.name`, so threading
+    this tool-less stand-in into the agent and subagent middleware lists removes
+    the real middleware — and its `write_todos` tool — without touching the SDK.
+
+    Deriving `name` from `TodoListMiddleware.__name__` makes a *rename* or
+    removal of the SDK class fail loudly (`ImportError`) at the top-of-module
+    import. It does not, on its own, guard a `.name` *override* on an unrenamed
+    class: the merge keys on the instance `.name`, not `__name__`, so such an
+    override would slip past the import and silently turn this into a no-op.
+    That case is caught two ways — `_todo_list_middleware_override` re-checks the
+    match at build time and raises, and `test_agent.py` guards it in CI. Gated
+    behind `DEEPAGENTS_CODE_EXPERIMENTAL`; see `_todo_list_middleware_override`.
+    """
+
+    name: str = TodoListMiddleware.__name__
+    tools: Sequence[BaseTool] = ()
+    """No tools — replacing the real `TodoListMiddleware` drops its `write_todos`.
+
+    Declared explicitly (mirroring the base's `transformers = ()` default) so a
+    bare instance is self-contained rather than relying on the SDK's
+    `getattr(mw, "tools", [])` fallback.
+    """
+
+
+def _todo_list_middleware_override() -> list[AgentMiddleware]:
+    """Return the middleware needed to strip `TodoListMiddleware`, if enabled.
+
+    Returns a single-element list with `_NoTodoListMiddleware` when the
+    experimental flag is set, else an empty list. Callers splice the result
+    into the middleware list they pass to `create_deep_agent` so the SDK's
+    name-based merge drops the real `TodoListMiddleware`.
+
+    Raises:
+        RuntimeError: If the stand-in's `.name` no longer matches the SDK
+            middleware's instance `.name`. The merge replaces by name, so a
+            mismatch would silently *append* the tool-less stand-in instead of
+            replacing the real middleware, leaving `write_todos` bound. Failing
+            fast here converts that silent no-op into a loud, actionable error
+            (only ever runs when the flag is on).
+    """
+    if not is_env_truthy(EXPERIMENTAL):
+        return []
+    stand_in = _NoTodoListMiddleware()
+    sdk_name = TodoListMiddleware().name
+    if stand_in.name != sdk_name:
+        msg = (
+            f"{EXPERIMENTAL} is set but the TodoListMiddleware override would be "
+            f"a silent no-op: stand-in name {stand_in.name!r} no longer matches "
+            f"the SDK middleware's instance name {sdk_name!r}. The SDK likely "
+            f"overrode TodoListMiddleware.name; update _NoTodoListMiddleware."
+        )
+        raise RuntimeError(msg)
+    logger.info(
+        "%s set: dropping TodoListMiddleware / write_todos from this stack",
+        EXPERIMENTAL,
+    )
+    return [stand_in]
+
 
 _RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
 _RUBRIC_GRADER_SYSTEM_PROMPT = (
@@ -826,7 +895,11 @@ def get_system_prompt(
         ... {CONDITIONAL SECTIONS} ...
         ```
     """
-    template = (Path(__file__).parent / "system_prompt.md").read_text()
+    prompt_dir = Path(__file__).parent
+    template = (prompt_dir / "system_prompt.md").read_text()
+    todo_list_section = ""
+    if not is_env_truthy(EXPERIMENTAL):
+        todo_list_section = (prompt_dir / "todo_list_prompt.md").read_text().rstrip()
 
     skills_path = f"~/.deepagents/{assistant_id}/skills"
 
@@ -938,6 +1011,7 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{todo_list_section}", todo_list_section)
         .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
@@ -1514,6 +1588,9 @@ def create_cli_agent(
 
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
+        # Experimental: mirror the main agent and drop TodoListMiddleware /
+        # write_todos from subagent stacks too. No-op unless the flag is set.
+        middleware.extend(_todo_list_middleware_override())
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
@@ -1575,6 +1652,9 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
+        # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
+        # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
+        *_todo_list_middleware_override(),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

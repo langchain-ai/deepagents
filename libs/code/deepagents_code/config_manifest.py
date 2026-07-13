@@ -1088,6 +1088,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("memory", "auto_save"),
     ),
     ConfigOption(
+        key="features.experimental",
+        group="Tools",
+        summary="Opt into experimental, unstable dcode behavior.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",

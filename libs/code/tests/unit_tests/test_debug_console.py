@@ -724,6 +724,38 @@ class TestDebugConsoleToggle:
             await pilot.pause()
             assert not isinstance(app.screen, DebugConsoleScreen)
 
+    async def test_shift_tab_reverses_focus_despite_app_toggle_binding(
+        self,
+    ) -> None:
+        """Shift+Tab reverses console focus instead of toggling auto-approve.
+
+        Must drive the real `DeepAgentsApp` (not `_Harness`): the App defines a
+        priority `shift+tab -> toggle_auto_approve` binding that would otherwise
+        consume the key App-first. This guards the `check_action` step-aside that
+        lets the console's own reverse-focus traversal run; a `_Harness`-based
+        test has no such binding and would pass regardless of that logic.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            screen = cast("DebugConsoleScreen", app.screen)
+            log = screen.query_one("#debug-log", _DebugLogView)
+            select = screen.query_one("#debug-level-filter", Select)
+            assert screen.focused is log
+            assert app._auto_approve is False
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen.focused is select
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen.focused is log
+            # Shift+Tab navigated; it must not have fired the auto-approve toggle.
+            assert app._auto_approve is False
+
     async def test_toggle_action_closes_open_console(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:

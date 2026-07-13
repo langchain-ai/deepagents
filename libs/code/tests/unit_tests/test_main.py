@@ -163,6 +163,9 @@ class TestStartupAutoUpdate:
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
             patch(
+                "deepagents_code.update_check.clear_startup_auto_update_failure"
+            ) as clear_failure,
+            patch(
                 "deepagents_code.main._restart_current_process",
                 side_effect=SystemExit(0),
             ) as restart,
@@ -171,6 +174,7 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        clear_failure.assert_called_once_with("9.9.9")
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "tail -f /tmp/dcode-update.log" in printed
         restart.assert_called_once_with()
@@ -331,15 +335,137 @@ class TestStartupAutoUpdate:
                 return_value="uv tool upgrade deepagents-code",
             ),
             patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed"
+            ) as mark_failed,
             patch("deepagents_code.main._restart_current_process") as restart,
         ):
-            # Must not raise: a failed upgrade falls through to launch.
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        mark_failed.assert_called_once_with("9.9.9")
         restart.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Auto-update failed" in printed
+
+    def test_unpersisted_failure_marker_warns_user(self) -> None:
+        """An unwritable cooldown marker must be surfaced, not silently dropped."""
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(False, "pip exploded"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            # The marker write fails (e.g. a read-only state dir).
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "could not be recorded" in printed
+
+    def test_exception_during_upgrade_warns_if_failure_marker_is_unpersisted(
+        self,
+    ) -> None:
+        """A raised upgrade must warn when its cooldown marker cannot be saved."""
+        console = MagicMock()
+        upgrade = AsyncMock(side_effect=RuntimeError("uv wedged"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed",
+                return_value=False,
+            ) as mark_failed,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            # Must not raise: the fail-soft handler swallows and continues.
+            _run_startup_auto_update(console)
+
+        mark_failed.assert_called_once_with("9.9.9")
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Auto-update failed before startup" in printed
+        assert "could not be recorded" in printed
+
+    def test_recent_failure_cooldown_skips_startup_update(self) -> None:
+        """A same-version startup failure cooldown must bypass repeat attempts."""
+        console = MagicMock()
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.should_skip_startup_auto_update_after_failure",
+                return_value=True,
+            ) as should_skip,
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U deepagents-code",
+            ),
+            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        should_skip.assert_called_once_with("9.9.9")
+        upgrade.assert_not_called()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "recent failed attempt" in printed
 
     def test_editable_install_skips_update(self) -> None:
         """Editable installs must short-circuit before any PyPI/install work."""
@@ -840,7 +966,9 @@ class TestStartupAutoUpdate:
         no-op.
         """
         source = inspect.getsource(cli_main)
-        assert "_run_startup_auto_update(console)" in source
+        assert "clear_resume_auto_update_deferral()" in source
+        assert "if not should_defer_startup_auto_update_for_resume():" in source
+        assert source.count("_run_startup_auto_update(console)") == 2
 
 
 class TestAutoUpdateDefaultMigration:

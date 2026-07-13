@@ -526,9 +526,12 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         bounds how long the caller waits; it does not stop the worker thread
         created by `asyncio.to_thread`.
         """
+        grep_call = partial(self.grep, pattern, path, glob)
+        if _method_accepts_max_count(type(self), "grep"):
+            grep_call = partial(self.grep, pattern, path, glob, max_count=max_count)
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(partial(self.grep, pattern, path, glob, max_count=max_count)),
+                asyncio.to_thread(grep_call),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:
@@ -953,6 +956,22 @@ class SandboxBackendProtocol(BackendProtocol):
         if timeout is not None and execute_accepts_timeout(type(self)):
             return await asyncio.to_thread(self.execute, command, timeout=timeout)
         return await asyncio.to_thread(self.execute, command)
+
+
+@lru_cache(maxsize=256)
+def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["grep", "agrep"]) -> bool:
+    """Check whether a backend method accepts the optional `max_count` keyword."""
+    try:
+        sig = inspect.signature(getattr(cls, method_name))
+    except (AttributeError, ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.%s; assuming max_count is not supported.",
+            cls.__qualname__,
+            method_name,
+            exc_info=True,
+        )
+        return False
+    return "max_count" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
 
 
 @lru_cache(maxsize=128)

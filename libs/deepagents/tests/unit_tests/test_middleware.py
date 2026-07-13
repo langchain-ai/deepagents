@@ -818,6 +818,52 @@ class TestFilesystemMiddleware:
 
         assert captured["max_count"] is None
 
+    def test_grep_caps_legacy_backend_without_forwarding_max_count(self):
+        """The default cap remains compatible with a backend using the previous `grep` signature."""
+
+        class LegacyBackend(StateBackend):
+            def grep(self, pattern, path=None, glob=None):  # type: ignore[override]
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.py", "line": 1, "text": "needle"},
+                        {"path": "/two.py", "line": 1, "text": "needle"},
+                        {"path": "/three.py", "line": 1, "text": "needle"},
+                    ]
+                )
+
+        middleware = FilesystemMiddleware(backend=LegacyBackend(), grep_max_count=2)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = grep_search_tool.invoke({"pattern": "needle", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/one.py" in result.content
+        assert "/two.py" in result.content
+        assert "/three.py" not in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    async def test_async_grep_caps_legacy_backend_without_forwarding_max_count(self):
+        """The inherited async wrapper also supports the previous `grep` signature."""
+
+        class LegacyBackend(StateBackend):
+            def grep(self, pattern, path=None, glob=None):  # type: ignore[override]
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.py", "line": 1, "text": "needle"},
+                        {"path": "/two.py", "line": 1, "text": "needle"},
+                    ]
+                )
+
+        middleware = FilesystemMiddleware(backend=LegacyBackend(), grep_max_count=1)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = await grep_search_tool.ainvoke({"pattern": "needle", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/one.py" in result.content
+        assert "/two.py" not in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
     def test_invalid_grep_max_count_raises(self):
         """A non-positive `grep_max_count` is rejected at construction."""
         backend, _ = _make_backend()

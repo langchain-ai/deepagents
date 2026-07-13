@@ -1491,7 +1491,12 @@ def test_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
 # the silent-zero-results class this route exists to fix.
 
 
-def _run_grep_glob_script(path: Path, pattern: str, glob: str) -> subprocess.CompletedProcess[str]:
+def _run_grep_glob_script(
+    path: Path,
+    pattern: str,
+    glob: str,
+    max_count: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Execute the formatted `_GREP_PATH_GLOB_TEMPLATE` script directly.
 
     Extracts the inline `python3 -c` body from the command `_build_grep_cmd`
@@ -1500,7 +1505,7 @@ def _run_grep_glob_script(path: Path, pattern: str, glob: str) -> subprocess.Com
     assert on both stdout and the exit code — the template's error-surfacing
     contract depends on a non-zero exit propagating rather than being masked.
     """
-    cmd = _build_grep_cmd(pattern, str(path), glob)
+    cmd = _build_grep_cmd(pattern, str(path), glob, max_count)
     _, _, tail = cmd.partition('python3 -c "')
     script, _, _ = tail.rpartition('"')
     return subprocess.run(  # noqa: S603  # script is the project's own _GREP_PATH_GLOB_TEMPLATE, not user input
@@ -1542,6 +1547,25 @@ def test_grep_glob_script_matches_recursively_and_prefixes_path(tmp_path: Path) 
     ]
     assert "c.txt" not in proc.stdout
     assert "other.py" not in proc.stdout
+
+
+def test_grep_glob_script_stops_after_cap_probe(tmp_path: Path) -> None:
+    """A slash-glob search emits only the cap plus one truncation probe record."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "matches.py").write_text("needle\n" * 20)
+
+    proc = _run_grep_glob_script(tmp_path, "needle", "src/*.py", max_count=2)
+
+    assert proc.returncode == 0
+    assert len(_parse_script_records(proc.stdout)) == 3
+    result = _parse_grep_output(
+        ExecuteResponse(output=proc.stdout, exit_code=proc.returncode, truncated=False),
+        str(tmp_path),
+        max_count=2,
+    )
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
 
 
 def test_grep_glob_script_terminates_records_end_to_end(tmp_path: Path) -> None:

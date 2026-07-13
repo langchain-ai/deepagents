@@ -56,6 +56,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _method_accepts_max_count,
     _resolve_backend,
     _supports_delete,
     execute_accepts_timeout,
@@ -455,6 +456,43 @@ def _filter_grep_matches_by_permission(
     pass through.
     """
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
+
+
+def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResult:
+    """Enforce the tool-level cap when a legacy backend cannot do so while searching."""
+    if max_count is None or result.matches is None or len(result.matches) <= max_count:
+        return result
+    return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
+
+
+def _grep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `grep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "grep"):
+        result = backend.grep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = backend.grep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
+
+
+async def _agrep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `agrep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "agrep"):
+        result = await backend.agrep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = await backend.agrep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
 
 
 def _format_grep_tool_result(
@@ -2175,7 +2213,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
             resolved_backend = self._get_backend(runtime)
             effective_max_count = max_count if max_count is not None else self._grep_max_count
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob, max_count=effective_max_count)
+            grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
@@ -2221,7 +2259,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     )
             resolved_backend = self._get_backend(runtime)
             effective_max_count = max_count if max_count is not None else self._grep_max_count
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob, max_count=effective_max_count)
+            grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(

@@ -97,6 +97,8 @@ import glob, os, base64, sys
 search_path = base64.b64decode('{path_b64}').decode('utf-8')
 glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+max_count = {max_count}
+match_count = 0
 
 # When the search path is a directory, chdir to it so glob patterns
 # resolve relative to it. When it is a single file, search it directly
@@ -139,6 +141,9 @@ for open_path, display_path in targets:
                     # one so records never concatenate when a file's last
                     # line lacks a final newline.
                     sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
+                    match_count += 1
+                    if max_count is not None and match_count > max_count:
+                        sys.exit(0)
     except OSError:
         pass
 " 2>/dev/null"""
@@ -582,6 +587,7 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count:
             path_b64=path_b64,
             glob_b64=glob_b64,
             pattern_b64=pattern_b64,
+            max_count=None if max_count is None else int(max_count),
         )
 
     glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""

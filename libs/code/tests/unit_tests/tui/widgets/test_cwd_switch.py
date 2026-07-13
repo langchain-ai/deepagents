@@ -139,8 +139,8 @@ class TestCwdSwitchAbortOption:
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
-    def test_switch_mode_uses_parallel_abort_wording(self) -> None:
-        """The in-session `/threads` abort parallels the resume-path wording."""
+    def test_switch_mode_omits_abort_body_note(self) -> None:
+        """The in-session `/threads` abort is described only in the help line."""
         switch = CwdSwitchPromptScreen(
             current_cwd="/a",
             thread_cwd="/b",
@@ -149,8 +149,8 @@ class TestCwdSwitchAbortOption:
 
         body = switch._body_text()
         assert "new session" not in body
-        assert "instead of switching" in body
-        assert "keep your current thread" in body
+        assert "instead of switching" not in body
+        assert "keep your current thread" not in body
 
     def test_title_reflects_flow(self) -> None:
         """The title asks about switching for `/threads`, resuming otherwise."""
@@ -173,12 +173,12 @@ class TestCwdSwitchAbortOption:
             )._help_text()
 
         assert help_line("resume") == (
-            "Enter: switch · Esc: stay here · A: don't resume"
+            "Enter: switch · Esc: stay in cwd · A: don't resume"
         )
         assert help_line("thread_switch") == (
-            "Enter: switch · Esc: stay here · A: don't switch"
+            "Enter: switch · Esc: stay in cwd · A: don't switch"
         )
-        assert help_line(None) == "Enter: switch · Esc: stay here"
+        assert help_line(None) == "Enter: switch · Esc: stay in cwd"
 
     def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
         """Abort-mode tokens never collide with prompt-outcome tokens.

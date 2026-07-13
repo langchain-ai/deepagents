@@ -133,14 +133,10 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             if self._project_settings_change_detected
             else ""
         )
-        if self._abort is None:
+        if self._abort is None or self._abort == "thread_switch":
             abort_note = ""
         elif self._abort == "resume":
             abort_note = "\n\nOr abort to start a new session instead of resuming."
-        elif self._abort == "thread_switch":
-            abort_note = (
-                "\n\nOr abort to keep your current thread instead of switching."
-            )
         else:
             assert_never(self._abort)
         return (
@@ -156,7 +152,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
-        help_text = "Enter: switch · Esc: stay here"
+        help_text = "Enter: switch · Esc: stay in cwd"
         if self._abort is None:
             return help_text
         if self._abort == "resume":

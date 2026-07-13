@@ -1032,7 +1032,7 @@ class TestModelSwitchBareModelName:
         Without provider inference the raw ID would surface unprefixed in the
         confirmation message and the status bar (which reads
         `settings.model_provider`). `detect_provider` recognizes the
-        fully-qualified Fireworks ID so both show `fireworks:<id>`.
+        fully-qualified Fireworks ID so both reflect the `fireworks` provider.
         """
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore

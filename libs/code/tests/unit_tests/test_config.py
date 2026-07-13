@@ -4369,6 +4369,38 @@ temperature = 0
         assert result.model_name == "my-model"
         assert result.provider == "custom"
 
+    def test_configured_provider_takes_precedence_over_bedrock_inference(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured explicit provider is not treated as a bare Bedrock ID."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers."meta.custom"]
+class_path = "my_pkg.models:MyChatModel"
+models = ["my-model"]
+""")
+        mock_instance = MagicMock(spec=BaseChatModel)
+        mock_instance.profile = None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_code.config._create_model_from_class",
+                return_value=mock_instance,
+            ) as mock_factory,
+        ):
+            result = create_model("meta.custom:my-model")
+
+        mock_factory.assert_called_once()
+        assert mock_factory.call_args.args[1:3] == ("my-model", "meta.custom")
+        assert result.model is mock_instance
+        assert result.model_name == "my-model"
+        assert result.provider == "meta.custom"
+
     def test_create_model_falls_through_without_class_path(
         self, tmp_path: Path
     ) -> None:

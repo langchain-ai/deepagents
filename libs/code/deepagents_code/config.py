@@ -4377,12 +4377,16 @@ def create_model(
         model_spec = _get_default_model_spec()
 
     # Parse provider:model syntax. Bedrock model IDs can include a version suffix
-    # such as `:0`, so resolve their distinctive bare-ID prefixes first.
+    # such as `:0`, so resolve their distinctive bare-ID prefixes unless the
+    # parsed provider is explicitly configured.
     provider: str
     model_name: str
+    config = ModelConfig.load()
     inferred_provider = detect_provider(model_spec)
     parsed = ModelSpec.try_parse(model_spec)
-    if inferred_provider == "bedrock":
+    if parsed and parsed.provider in config.providers:
+        provider, model_name = parsed.provider, parsed.model
+    elif inferred_provider == "bedrock":
         provider, model_name = inferred_provider, model_spec
     elif parsed:
         # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
@@ -4494,7 +4498,6 @@ def create_model(
         kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
 
     # Check if this provider uses a custom BaseChatModel class
-    config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
     if provider == CODEX_PROVIDER:

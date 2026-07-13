@@ -119,7 +119,9 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         elif self._abort == "resume":
             abort_note = "\n\nOr abort to start a new session instead of resuming."
         elif self._abort == "switch":
-            abort_note = "\n\nOr abort to cancel and keep your current thread."
+            abort_note = (
+                "\n\nOr abort to keep your current thread instead of switching."
+            )
         else:
             assert_never(self._abort)
         return (
@@ -141,7 +143,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         if self._abort == "resume":
             abort_help = "A: don't resume"
         elif self._abort == "switch":
-            abort_help = "A: cancel"
+            abort_help = "A: don't switch"
         else:
             assert_never(self._abort)
         return f"{help_text} · {abort_help}"

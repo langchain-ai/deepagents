@@ -138,8 +138,8 @@ class TestCwdSwitchAbortOption:
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
-    def test_switch_mode_uses_cancel_wording(self) -> None:
-        """The in-session `/threads` abort describes cancelling, not a new session."""
+    def test_switch_mode_uses_parallel_abort_wording(self) -> None:
+        """The in-session `/threads` abort parallels the resume-path wording."""
         switch = CwdSwitchPromptScreen(
             current_cwd="/a",
             thread_cwd="/b",
@@ -148,7 +148,7 @@ class TestCwdSwitchAbortOption:
 
         body = switch._body_text()
         assert "new session" not in body
-        assert "cancel" in body
+        assert "instead of switching" in body
         assert "keep your current thread" in body
 
     def test_help_text_names_mode_specific_abort_action(self) -> None:
@@ -162,7 +162,9 @@ class TestCwdSwitchAbortOption:
         assert help_line("resume") == (
             "Enter: switch · Esc: stay here · A: don't resume"
         )
-        assert help_line("switch") == "Enter: switch · Esc: stay here · A: cancel"
+        assert help_line("switch") == (
+            "Enter: switch · Esc: stay here · A: don't switch"
+        )
         assert help_line(None) == "Enter: switch · Esc: stay here"
 
     def test_action_abort_dismisses_abort_when_allowed(self) -> None:

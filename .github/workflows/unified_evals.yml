@@ -129,6 +129,11 @@ jobs:
           IN_FORCE_BUILD: ${{ inputs.force_build }}
           IN_HARBOR_OVERRIDE: ${{ inputs.harbor_package_override }}
         run: |
+          # Never echo the override spec: uv accepts authenticated specs
+          # (e.g. git+https://user:token@host/repo.git) and this summary is
+          # public, so report only whether an override was set.
+          override_status="(pinned)"
+          [ -n "${IN_HARBOR_OVERRIDE}" ] && override_status="(override set)"
           {
             echo "## Unified evals — run configuration"
             echo ""
@@ -144,7 +149,7 @@ jobs:
             echo "| n_shards (autonomous/conversation/context) | \`${IN_N_SHARDS_AUTONOMOUS}\` / \`${IN_N_SHARDS_CONVERSATION}\` / \`${IN_N_SHARDS_CONTEXT}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
             echo "| force_build | \`${IN_FORCE_BUILD}\` |"
-            echo "| harbor_package_override | \`${IN_HARBOR_OVERRIDE:-(pinned)}\` |"
+            echo "| harbor_package_override | \`${override_status}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   eval-anthropic:

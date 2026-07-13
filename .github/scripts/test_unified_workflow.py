@@ -126,6 +126,11 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert "run: python .github/scripts/unified_prep.py" in prep_job
     # A run-configuration summary in prep makes a dispatch's inputs debuggable.
     assert "$GITHUB_STEP_SUMMARY" in prep_job
+    # ...but the harbor_package_override spec (which can carry credentials) must
+    # never be echoed into the public summary: report only whether one was set,
+    # and never via the `:-` form that renders the raw value when it is set.
+    assert 'override_status="(override set)"' in prep_job
+    assert "IN_HARBOR_OVERRIDE:-" not in prep_job
 
     # The harness selector is a constrained choice defaulting to bare.
     agent_impl_input = _indented_block(workflow, "      agent_impl:")

@@ -61,11 +61,11 @@ CATEGORY_MAP: dict[str, dict] = {
 
 DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
 
-# Deep-agents harnesses (a `create_deep_agent` graph). The `agent_impl` override
-# swaps between these for the deep-agents categories; categories on a different
-# harness (e.g. `tau3`, which drives its own user simulator) are left untouched.
 DEEPAGENT_IMPLS = {"bare", "dcode"}
+"""Deep-agent harnesses eligible for the `agent_impl` override."""
+
 DEFAULT_AGENT_IMPL = "bare"
+"""Deep-agent harness used when `UNIFIED_AGENT_IMPL` is not set."""
 
 
 def parse_int_input(

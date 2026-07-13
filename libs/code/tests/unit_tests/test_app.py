@@ -265,6 +265,7 @@ class TestInitialPromptOnMount:
         chat.styles = SimpleNamespace(scrollbar_size_vertical=None)
         status_bar = MagicMock(spec=StatusBar)
         chat_input = MagicMock(spec=ChatInput)
+        chat_input.input_widget = None
 
         def query_one(selector: object, *_args: object) -> object:
             if selector == "#chat":

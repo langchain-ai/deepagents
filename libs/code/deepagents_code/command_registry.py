@@ -181,6 +181,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="cost",
     ),
     SlashCommand(
+        name="/tools",
+        description="List the tools available to the agent",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="mcp functions capabilities builtin built-in",
+    ),
+    SlashCommand(
         name="/reload",
         description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,
@@ -311,7 +317,7 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error"})
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug", "/debug-error"})
 """Power-user commands kept out of autocomplete and help."""
 
 STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(

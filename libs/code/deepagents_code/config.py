@@ -519,10 +519,13 @@ def _quiet_sdk_tracing_logging() -> None:
     stay off the terminal.
     """
     from deepagents_code._debug import configure_debug_logging
+    from deepagents_code._env_vars import DEBUG, is_env_truthy
 
+    debug_enabled = is_env_truthy(DEBUG)
     for name in ("langsmith", "langchain"):
         sdk_logger = logging.getLogger(name)
-        configure_debug_logging(sdk_logger)
+        if debug_enabled:
+            configure_debug_logging(sdk_logger)
         if not sdk_logger.handlers:
             sdk_logger.addHandler(logging.NullHandler())
 
@@ -3781,6 +3784,36 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
+_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "us-gov.")
+"""Cross-region inference-profile prefixes that front a vendor namespace.
+
+E.g. `us.anthropic.claude-3-5-sonnet-20241022-v2:0`. Only stripped when a vendor
+namespace follows, so a bare name merely starting with `us`/`eu` is untouched.
+"""
+
+
+def _is_bedrock_model_id(model_lower: str) -> bool:
+    """Return whether *model_lower* is a bare Bedrock model ID.
+
+    Bedrock IDs have the shape `[<region>.]<vendor>.<model>[:<version>]`, e.g.
+    `meta.llama3-70b-instruct-v1:0` or the cross-region inference profile
+    `us.anthropic.claude-3-5-sonnet-20241022-v2:0`. Rather than enumerate AWS's
+    ever-growing vendor list, this keys off the structural signature: an
+    alphanumeric vendor token immediately followed by a dot. Bare direct-API
+    names don't fit -- they either have no dot (`mistral-large`, `command-r`),
+    carry a hyphen before their version dot (`claude-3.5`, `gemini-2.5`), or are
+    already claimed by an earlier prefix check (`gpt-4.1`). Case is folded by the
+    caller, and the explicit `bedrock:<model>` syntax is handled upstream via
+    `provider:model` parsing.
+    """
+    for region in _BEDROCK_REGION_PREFIXES:
+        if model_lower.startswith(region):
+            model_lower = model_lower.removeprefix(region)
+            break
+    vendor, dot, _ = model_lower.partition(".")
+    return bool(dot) and vendor.isalnum()
+
+
 def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
@@ -3796,14 +3829,36 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai,
-            nvidia, fireworks) or `None` if the provider cannot be determined
-            from the name alone.
+        Provider name inferred from the model name (some names, e.g. `claude`
+            and `gemini`, are disambiguated using configured credentials), or
+            `None` if the provider cannot be determined.
     """
     model_lower = model_name.lower()
 
-    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-davinci")):
         return "openai"
+
+    # Bedrock uses dotted, vendor-namespaced IDs. Match them before the bare
+    # `mistral`/`deepseek` prefixes below (which would otherwise swallow
+    # `mistral.`/`deepseek.` IDs) and before the fall-through `None`, so a
+    # `:version` suffix is never misparsed as a `provider:model` separator.
+    if _is_bedrock_model_id(model_lower):
+        return "bedrock"
+
+    if model_lower.startswith("command"):
+        return "cohere"
+
+    if model_lower.startswith(("mistral", "mixtral")):
+        return "mistralai"
+
+    if model_lower.startswith("deepseek"):
+        return "deepseek"
+
+    if model_lower.startswith("grok"):
+        return "xai"
+
+    if model_lower.startswith("sonar"):
+        return "perplexity"
 
     if model_lower.startswith("claude"):
         s = _get_settings()
@@ -4356,11 +4411,19 @@ def create_model(
     if not model_spec:
         model_spec = _get_default_model_spec()
 
-    # Parse provider:model syntax
+    # Parse provider:model syntax. Bedrock model IDs can include a version suffix
+    # such as `:0`, so resolve their distinctive bare-ID prefixes unless the
+    # parsed provider is explicitly configured.
     provider: str
     model_name: str
+    config = ModelConfig.load()
+    inferred_provider = detect_provider(model_spec)
     parsed = ModelSpec.try_parse(model_spec)
-    if parsed:
+    if parsed and parsed.provider in config.providers:
+        provider, model_name = parsed.provider, parsed.model
+    elif inferred_provider == "bedrock":
+        provider, model_name = inferred_provider, model_spec
+    elif parsed:
         # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
         provider, model_name = parsed.provider, parsed.model
     elif ":" in model_spec:
@@ -4379,7 +4442,7 @@ def create_model(
     else:
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
-        provider = detect_provider(model_spec) or ""
+        provider = inferred_provider or ""
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so
@@ -4470,7 +4533,6 @@ def create_model(
         kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
 
     # Check if this provider uses a custom BaseChatModel class
-    config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
     if provider == CODEX_PROVIDER:

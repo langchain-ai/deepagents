@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
+    _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
@@ -1806,11 +1807,19 @@ class TestCreateCliAgentMemoryAutoSave:
         assert system_prompt == "__unset__"
 
     def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
-        """Auto-save off swaps in the SDK read-only prompt."""
-        from deepagents.middleware import MEMORY_READONLY_SYSTEM_PROMPT
-
+        """Auto-save off swaps in the Code-owned read-only prompt."""
         system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
-        assert system_prompt is MEMORY_READONLY_SYSTEM_PROMPT
+        assert system_prompt is _MEMORY_READONLY_SYSTEM_PROMPT
+
+        formatted = _MEMORY_READONLY_SYSTEM_PROMPT.format(
+            agent_memory="(No memory loaded)"
+        )
+        assert "<agent_memory>" in formatted
+        assert "**Trust and verification:**" in formatted
+        assert "**Learning from feedback:**" not in formatted
+        assert "**When to update memories:**" not in formatted
+        assert "**Automatic memory saving is disabled:**" in formatted
+        assert "Never store API keys, access tokens, passwords" in formatted
 
 
 class TestCreateCliAgentProjectContext:

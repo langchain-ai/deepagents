@@ -49,11 +49,7 @@ Use a **plain tool** when:
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
-from deepagents.middleware.memory import (
-    MEMORY_READONLY_SYSTEM_PROMPT,
-    MEMORY_SYSTEM_PROMPT,
-    MemoryMiddleware,
-)
+from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
     GRADER_SYSTEM_PROMPT,
     RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -83,8 +79,6 @@ from deepagents.middleware.summarization import (
 __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
     "GRADER_SYSTEM_PROMPT",
-    "MEMORY_READONLY_SYSTEM_PROMPT",
-    "MEMORY_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",

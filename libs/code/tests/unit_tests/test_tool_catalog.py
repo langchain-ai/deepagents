@@ -6,6 +6,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, PropertyMock, patch
 
+import pytest
+
 from deepagents_code.config import Settings
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
@@ -13,11 +15,15 @@ from deepagents_code.tool_catalog import (
     ToolEntry,
     ToolGroup,
     UnavailableServer,
+    _CatalogModel,
     _first_line,
     _load_mcp_server_info,
+    build_catalog_from_server_info,
     collect_built_in_tools,
     collect_catalog,
     collect_mcp_catalog,
+    collect_tools_from_agent,
+    split_mcp_server_info,
 )
 
 # Core tools the agent always binds, independent of optional integrations.
@@ -96,6 +102,76 @@ class TestCollectBuiltInTools:
         assert tools == [ToolEntry(name="task", description="Run a subagent")]
         create.assert_called_once()
         assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+
+    def test_raises_when_compiled_agent_not_inspectable(self) -> None:
+        # A compiled agent whose graph does not expose the conventional tool
+        # node must fail loudly (documented `Raises: RuntimeError`) rather than
+        # silently returning an empty list — `collect_tools_from_agent` returns
+        # `None`, which this function turns into the raise.
+        agent = SimpleNamespace()
+        with (
+            patch(
+                "deepagents_code.agent.create_cli_agent",
+                return_value=(agent, None),
+            ),
+            pytest.raises(RuntimeError, match="does not expose"),
+        ):
+            collect_built_in_tools()
+
+
+class TestCollectToolsFromAgent:
+    """Tests for inspecting the tool node of an already-running local graph."""
+
+    def test_reads_bound_tools(self) -> None:
+        tool_node = SimpleNamespace(
+            tools_by_name={
+                "custom_search": SimpleNamespace(
+                    description="Search custom data\nAdditional details"
+                )
+            }
+        )
+        agent = SimpleNamespace(nodes={"tools": SimpleNamespace(bound=tool_node)})
+
+        assert collect_tools_from_agent(agent) == [
+            ToolEntry(name="custom_search", description="Search custom data")
+        ]
+
+    def test_returns_empty_for_local_agent_without_tool_node(self) -> None:
+        from langchain.agents import create_agent
+
+        agent = create_agent(model=_CatalogModel(), tools=[])
+
+        assert collect_tools_from_agent(agent) == []
+
+    def test_returns_none_for_remote_agent(self) -> None:
+        agent = SimpleNamespace(url="https://example.test")
+
+        assert collect_tools_from_agent(agent) is None
+
+    def test_returns_none_when_tool_node_shape_unexpected(self) -> None:
+        # A "tools" node exists but its `bound` object lacks a `tools_by_name`
+        # mapping — a LangGraph internal-shape drift. Reported as uninspectable
+        # (`None`), not as a validly-empty tool set (`[]`).
+        agent = SimpleNamespace(
+            nodes={"tools": SimpleNamespace(bound=SimpleNamespace())}
+        )
+
+        assert collect_tools_from_agent(agent) is None
+
+    def test_skips_non_string_names_and_defaults_missing_description(self) -> None:
+        tool_node = SimpleNamespace(
+            tools_by_name={
+                "ok": SimpleNamespace(description="Fine"),
+                123: SimpleNamespace(description="dropped: non-str name"),
+                "no_desc": SimpleNamespace(description=None),
+            }
+        )
+        agent = SimpleNamespace(nodes={"tools": SimpleNamespace(bound=tool_node)})
+
+        assert collect_tools_from_agent(agent) == [
+            ToolEntry(name="ok", description="Fine"),
+            ToolEntry(name="no_desc", description=""),
+        ]
 
 
 class TestCollectMcpCatalog:
@@ -187,9 +263,7 @@ class TestCollectMcpCatalog:
         assert groups == []
         assert mcp_error is None
         assert unavailable == [
-            UnavailableServer(
-                name="off", status="disabled", detail="turned off via /mcp"
-            ),
+            UnavailableServer(name="off", status="disabled", detail=""),
             UnavailableServer(
                 name="pending",
                 status="awaiting_reconnect",
@@ -209,6 +283,135 @@ class TestCollectMcpCatalog:
         assert mcp_error == "MCP discovery failed; showing built-in tools only."
         assert "secret" not in mcp_error
         assert "/path/mcp.json" not in mcp_error
+
+
+class TestSplitMcpServerInfo:
+    """Tests for the pure server-info splitter shared by CLI and `/tools`."""
+
+    def test_ok_server_becomes_group(self) -> None:
+        servers = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(
+                    MCPToolInfo(name="search_docs", description="Search the docs\nX"),
+                ),
+                status="ok",
+            ),
+        ]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == [
+            ToolGroup(
+                label="docs",
+                source="mcp",
+                tools=(ToolEntry(name="search_docs", description="Search the docs"),),
+            )
+        ]
+        assert unavailable == []
+
+    def test_non_ok_server_becomes_unavailable(self) -> None:
+        servers = [
+            MCPServerInfo(
+                name="broken", transport="http", status="error", error="boom"
+            ),
+        ]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == []
+        assert unavailable == [
+            UnavailableServer(name="broken", status="error", detail="boom")
+        ]
+
+    def test_pending_reenable_guidance_is_preserved(self) -> None:
+        # `pending_reconnect` (not the guidance text) is what keeps the detail:
+        # a plainly-disabled server with the same text would be blanked.
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="http",
+                status="disabled",
+                error="Re-enabled — press Ctrl+R to load.",
+                pending_reconnect=True,
+            ),
+        ]
+
+        groups, unavailable = split_mcp_server_info(servers)
+
+        assert groups == []
+        assert unavailable == [
+            UnavailableServer(
+                name="notion",
+                status="disabled",
+                detail="Re-enabled — press Ctrl+R to load.",
+            )
+        ]
+
+    def test_disabled_server_detail_blanked_without_pending_reconnect(self) -> None:
+        # Same guidance text, but no `pending_reconnect`: the detail is dropped
+        # so the renderers fall back to the generic "disabled by user" label.
+        servers = [
+            MCPServerInfo(
+                name="notion",
+                transport="http",
+                status="disabled",
+                error="Re-enabled — press Ctrl+R to load.",
+            ),
+        ]
+
+        _, unavailable = split_mcp_server_info(servers)
+
+        assert unavailable == [
+            UnavailableServer(name="notion", status="disabled", detail="")
+        ]
+
+    def test_ok_server_without_tools_is_dropped(self) -> None:
+        servers = [MCPServerInfo(name="empty", transport="http", status="ok")]
+        groups, unavailable = split_mcp_server_info(servers)
+        assert groups == []
+        assert unavailable == []
+
+
+class TestBuildCatalogFromServerInfo:
+    """Tests for the TUI entry point that avoids `asyncio.run` discovery."""
+
+    def test_built_in_first_then_live_mcp_no_error(self) -> None:
+        built_in = [ToolEntry(name="read_file", description="Read a file")]
+        servers = [
+            MCPServerInfo(
+                name="docs",
+                transport="http",
+                tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                status="ok",
+            ),
+            MCPServerInfo(
+                name="broken", transport="http", status="error", error="boom"
+            ),
+        ]
+        catalog = build_catalog_from_server_info(built_in, servers)
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[0].source == "built-in"
+        assert catalog.groups[0].tools == (
+            ToolEntry(name="read_file", description="Read a file"),
+        )
+        assert catalog.groups[-1].label == "docs"
+        assert catalog.unavailable == (
+            UnavailableServer(name="broken", status="error", detail="boom"),
+        )
+        # Discovery is never attempted here, so there is no discovery error.
+        assert catalog.mcp_error is None
+
+    def test_does_not_run_mcp_discovery(self) -> None:
+        # The whole point of this path is to avoid `asyncio.run`-based discovery,
+        # which cannot run inside a live event loop.
+        with patch("deepagents_code.tool_catalog._load_mcp_server_info") as loader:
+            build_catalog_from_server_info([], [])
+        loader.assert_not_called()
+
+    def test_empty_inputs_yield_only_built_in_group(self) -> None:
+        catalog = build_catalog_from_server_info([], [])
+        assert len(catalog.groups) == 1
+        assert catalog.groups[0].label == BUILT_IN_GROUP
+        assert catalog.groups[0].tools == ()
+        assert catalog.unavailable == ()
 
 
 class TestLoadMcpServerInfo:

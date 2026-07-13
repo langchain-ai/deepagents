@@ -172,6 +172,99 @@ class TestResolveAutoApprove:
             assert _resolve_auto_approve(args) is True
 
 
+class TestAutoApproveHeadlessValidation:
+    """Tests that headless mode rejects the interactive approval flag."""
+
+    def test_rejects_explicit_non_interactive_mode(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`-n` must reject `--auto-approve` instead of silently ignoring it."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--auto-approve", "-n", "do the thing"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "--auto-approve is only supported in interactive mode" in stderr
+        assert "--shell-allow-list" in stderr
+
+    def test_rejects_piped_stdin_mode(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Piped stdin must reject the flag after selecting headless mode."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "do the thing"
+        with (
+            patch.object(sys, "argv", ["deepagents", "--auto-approve"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("os.open", side_effect=OSError("No controlling terminal")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        stderr = capsys.readouterr().err
+        assert "--auto-approve is only supported in interactive mode" in stderr
+        assert "--shell-allow-list" in stderr
+
+    def test_accepts_auto_approve_in_interactive_mode(self) -> None:
+        """`--auto-approve` must still be honored on an interactive launch.
+
+        The guard rejects only when `args.non_interactive_message` is also set.
+        Without that conjunct it would wrongly reject `dcode -m ... -y`; this
+        pins the interactive path so a dropped conjunct fails loudly instead of
+        silently breaking the flag's primary use. Also asserts the resolved
+        value flows through to the TUI (`auto_approve=True`).
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "--auto-approve", "-m", "hello"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        await_args = run_tui.await_args
+        assert await_args is not None
+        assert await_args.kwargs["auto_approve"] is True
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected"),
     [

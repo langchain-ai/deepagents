@@ -17,6 +17,7 @@ import logging
 import os
 import shlex
 import shutil
+import signal
 import sys
 import traceback
 from collections.abc import Callable, Sequence
@@ -39,6 +40,39 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+_UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
+    "\n[yellow]Note:[/yellow] this failure could not be recorded, so dcode will "
+    "retry this update on the next launch until the state directory becomes writable."
+)
+
+
+def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
+    """Unwind dcode on a terminating signal so owned resources are cleaned up.
+
+    Args:
+        signum: Received signal number.
+        _frame: Interrupted stack frame, unused.
+
+    Raises:
+        SystemExit: Always, using the conventional signal-derived exit code.
+
+    Note:
+        The `SystemExit` is raised at an arbitrary point in the main thread, so
+        it can interrupt server teardown mid-escalation (e.g. between SIGTERM and
+        SIGKILL). This is safe because teardown is re-entrant: the process-group
+        `except` clauses catch only `ProcessLookupError`/`OSError` (never a
+        `BaseException` like `SystemExit`), and the app's cleanup `finally` block
+        re-invokes `stop()` as the exception unwinds, resuming the teardown.
+    """
+    raise SystemExit(128 + signum)
+
+
+def _install_termination_signal_handlers() -> None:
+    """Install graceful terminating-signal handling on POSIX."""
+    if sys.platform != "win32":
+        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
+            signal.signal(signum, _handle_termination_signal)
 
 
 def _tail_log_command(log_path: Path | str) -> str:
@@ -276,6 +310,7 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code._version import __version__ as cli_version
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
+        clear_startup_auto_update_failure,
         create_update_log_path,
         detect_shadowed_dcode_safe,
         format_release_age_parenthetical,
@@ -285,12 +320,19 @@ def _run_startup_auto_update(console: "Console") -> None:
         is_installed_version_at_least,
         is_update_check_enabled,
         mark_auto_update_default_acknowledged,
+        mark_startup_auto_update_failed,
         perform_upgrade,
         release_requires_prereleases,
         should_announce_auto_update_default,
+        should_skip_startup_auto_update_after_failure,
         upgrade_command,
     )
 
+    # Set to the target version while an upgrade attempt is in flight, and
+    # cleared on success. If `perform_upgrade` *raises* instead of returning a
+    # failure, the fail-soft handler below records the cooldown from this so the
+    # same broken target is not retried — and re-stalled — on every launch.
+    pending_failure_version: str | None = None
     try:
         if (
             _is_editable_install()
@@ -339,6 +381,23 @@ def _run_startup_auto_update(console: "Console") -> None:
                 highlight=False,
             )
             return
+        if should_skip_startup_auto_update_after_failure(latest):
+            # A same-version upgrade failed recently; retrying it here would
+            # very likely fail again and re-stall every launch (this runs before
+            # the TUI). Skip for the cooldown window and point at a manual
+            # command instead.
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
+            console.print(
+                f"[bold yellow]Warning:[/bold yellow] Skipping automatic update to "
+                f"v{latest} after a recent failed attempt. Update manually: "
+                f"[cyan]{cmd}[/cyan]\nContinuing with v{cli_version}.",
+                highlight=False,
+            )
+            return
         if should_announce_auto_update_default():
             # First-run consent/migration: auto-update is on only because of the
             # opt-out default, not an explicit choice. Announce it once and skip
@@ -382,10 +441,13 @@ def _run_startup_auto_update(console: "Console") -> None:
             highlight=False,
             markup=False,
         )
+        pending_failure_version = latest
         success, output = asyncio.run(
             perform_upgrade(log_path=log_path, target_version=latest)
         )
         if success:
+            pending_failure_version = None
+            clear_startup_auto_update_failure(latest)
             # If a stale `dcode` is earlier on PATH, the auto-restart would
             # re-exec into the old binary and the user would silently keep
             # running the pre-upgrade version. Detect that *before* the
@@ -434,29 +496,43 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
+        persisted = mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
         cmd = upgrade_command(
             include_prereleases=True if update_needs_prereleases else None,
             version=latest if update_needs_prereleases else None,
         )
         detail = f": {escape(output[:200])}" if output else ""
-        console.print(
+        message = (
             f"[bold red]Auto-update failed{detail}[/bold red]\n"
             f"Run manually: [cyan]{cmd}[/cyan]\n"
-            f"Continuing with v{cli_version}.",
-            markup=True,
-            highlight=False,
+            f"Continuing with v{cli_version}."
         )
+        if not persisted:
+            # The cooldown marker could not be saved (e.g. a read-only state
+            # dir), so this same failing upgrade would otherwise be retried on
+            # every launch. Surface it rather than silently re-stalling, the
+            # way the consent-announce path surfaces its un-persisted state.
+            message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+        console.print(message, markup=True, highlight=False)
     except SystemExit:
         # Process replacement (and test doubles that simulate it) must not be
         # swallowed by the fail-soft handler below.
         raise
     except Exception:
         logger.warning("Startup auto-update failed", exc_info=True)
-        console.print(
+        message = (
             "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
             "continuing with the installed version."
         )
+        if pending_failure_version is not None:
+            # An exception escaped the upgrade attempt itself (not a returned
+            # failure), so the returned-failure branch never marked it. Record
+            # the cooldown here so the same target is not retried every launch.
+            persisted = mark_startup_auto_update_failed(pending_failure_version)
+            if not persisted:
+                message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+        console.print(message, markup=True, highlight=False)
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
@@ -602,8 +678,9 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
 
 
 def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether tool calls should be auto-approved for these CLI args.
+    """Return whether the interactive TUI should auto-approve tool calls.
 
+    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
     An explicit `-y`/`--auto-approve` wins; when the flag is omitted
     (`args.auto_approve is None`), the persistent `[startup].mode` config
     default decides — `dangerously-auto` enables auto-approval, anything else
@@ -1463,7 +1540,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help=(
-            "Agent to use (e.g., coder, researcher). "
+            "Agent to use. "
             "If omitted, falls back to [agents].default, then "
             "[agents].recent, then "
             f"the '{DEFAULT_AGENT_NAME}' built-in default."
@@ -1532,6 +1609,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "-s",
         "--skill",
         dest="initial_skill",
         metavar="NAME",
@@ -1639,11 +1717,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=None,
         help=(
-            "Auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell "
-            "execution, file writes/edits, web search, and URL fetch. "
-            "Use with caution — the agent can execute arbitrary commands. "
-            "When omitted, the launch default comes from [startup].mode in "
+            "Interactive mode only: auto-approve all tool calls without prompting "
+            "(disables human-in-the-loop). Affected tools: shell execution, file "
+            "writes/edits, web search, and URL fetch. Headless mode approves "
+            "non-shell tools; shell is disabled unless allowed via "
+            "--shell-allow-list. "
+            "Use with caution — the agent can execute arbitrary commands. When "
+            "omitted, the launch default comes from [startup].mode in "
             "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
         ),
     )
@@ -2638,6 +2718,12 @@ def cli_main() -> None:
     if "--acp" not in sys.argv[1:]:
         check_cli_dependencies()
 
+    # The app-owned server runs in a detached session so terminal job-control
+    # signals do not suspend or kill it. Replace terminating signals' immediate
+    # default behavior with an exception so the app/server cleanup finally
+    # blocks run when dcode's process group is stopped.
+    _install_termination_signal_handlers()
+
     try:
         args = parse_args()
 
@@ -2791,6 +2877,21 @@ def cli_main() -> None:
             settings.shell_allow_list = parse_shell_allow_list(args.shell_allow_list)
 
         apply_stdin_pipe(args)
+
+        # Validated here, before mode dispatch and any heavy session setup:
+        # `apply_stdin_pipe` has finalized `non_interactive_message` (the same
+        # predicate that selects the headless branch below), so this reliably
+        # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
+        # leaving interactive launches untouched.
+        if args.auto_approve and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-approve is only supported in "
+                "interactive mode. Headless mode already approves non-shell tools; "
+                "use --shell-allow-list to control shell access."
+            )
+            sys.exit(2)
 
         if getattr(args, "no_mcp", False) and getattr(args, "mcp_config", None):
             from rich.console import Console as _Console
@@ -3636,7 +3737,26 @@ def cli_main() -> None:
                 sys.exit(130)
             sys.exit(exit_code)
         else:
-            _run_startup_auto_update(console)
+            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
+            if resume_thread is None:
+                # A normal (non-resume) launch runs the update path and resets
+                # the resume grace period, so a later resume-only stretch starts
+                # a fresh deferral window rather than inheriting a stale one.
+                from deepagents_code.update_check import (
+                    clear_resume_auto_update_deferral,
+                )
+
+                clear_resume_auto_update_deferral()
+                _run_startup_auto_update(console)
+            else:
+                # Keep immediate resume launches uninterrupted, but do not let
+                # a resume-only workflow bypass startup updates indefinitely.
+                from deepagents_code.update_check import (
+                    should_defer_startup_auto_update_for_resume,
+                )
+
+                if not should_defer_startup_auto_update_for_resume():
+                    _run_startup_auto_update(console)
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
@@ -3647,7 +3767,6 @@ def cli_main() -> None:
             # Instead of resolving thread_id here with synchronous asyncio.run()
             # DB calls, pass the raw resume request to the TUI and let it
             # resolve asynchronously during startup.
-            resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
             thread_id = None if resume_thread else generate_thread_id()
 
             # Validate sandbox provider deps before spawning server subprocess

@@ -3229,13 +3229,17 @@ class TestQuietSdkTracingLogging:
 
         monkeypatch.delenv(DEBUG, raising=False)
         for name in ("langsmith", "langchain"):
-            logging.getLogger(name).handlers.clear()
+            logger = logging.getLogger(name)
+            logger.handlers.clear()
+            logger.setLevel(logging.NOTSET)
 
         _quiet_sdk_tracing_logging()
 
         for name in ("langsmith", "langchain"):
-            handlers = logging.getLogger(name).handlers
+            logger = logging.getLogger(name)
+            handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
+            assert logger.level == logging.NOTSET
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
@@ -4365,6 +4369,38 @@ temperature = 0
         assert result.model_name == "my-model"
         assert result.provider == "custom"
 
+    def test_configured_provider_takes_precedence_over_bedrock_inference(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured explicit provider is not treated as a bare Bedrock ID."""
+        from unittest.mock import MagicMock
+
+        from langchain_core.language_models import BaseChatModel
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers."meta.custom"]
+class_path = "my_pkg.models:MyChatModel"
+models = ["my-model"]
+""")
+        mock_instance = MagicMock(spec=BaseChatModel)
+        mock_instance.profile = None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_code.config._create_model_from_class",
+                return_value=mock_instance,
+            ) as mock_factory,
+        ):
+            result = create_model("meta.custom:my-model")
+
+        mock_factory.assert_called_once()
+        assert mock_factory.call_args.args[1:3] == ("my-model", "meta.custom")
+        assert result.model is mock_instance
+        assert result.model_name == "my-model"
+        assert result.provider == "meta.custom"
+
     def test_create_model_falls_through_without_class_path(
         self, tmp_path: Path
     ) -> None:
@@ -4495,6 +4531,96 @@ class TestCreateModelEdgeCaseParsing:
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_versioned_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock version suffix is not parsed as a provider separator."""
+        model_id = "meta.llama3-70b-instruct-v1:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_versioned_bedrock_vendor_id_not_misparsed(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock vendor namespace is not split on its `:version` suffix.
+
+        Regression: `mistral.` collides with the bare `mistral` prefix, so
+        without dotted-namespace detection this ID parses to the garbage pair
+        `provider='mistral.mistral-large-2402-v1', model='0'`.
+        """
+        model_id = "mistral.mistral-large-2402-v1:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_cross_region_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A cross-region inference-profile ID resolves to Bedrock intact."""
+        model_id = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.args == (model_id,)
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_non_versioned_bedrock_id_treated_as_bare_model(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """A Bedrock ID without a `:version` suffix still routes to Bedrock."""
+        model_id = "amazon.titan-text-express-v1"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_id)
+
+        assert result.provider == "bedrock"
+        assert result.model_name == model_id
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_provider_not_hijacked_by_bedrock(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """An explicit `provider:model` spec wins over Bedrock inference.
+
+        `anthropic.` (dot) is a Bedrock namespace, but `anthropic:` (colon) is
+        the explicit-provider syntax and must resolve to Anthropic, not Bedrock.
+        """
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.provider == "anthropic"
+        assert result.model_name == "claude-sonnet-4-5"
 
     def test_trailing_colon_raises_error(self) -> None:
         """Trailing colon (e.g., 'anthropic:') raises ModelConfigError."""
@@ -4745,13 +4871,49 @@ class TestDetectProvider:
             ("o1-preview", "openai"),
             ("o3-mini", "openai"),
             ("o4-mini", "openai"),
+            ("text-davinci-003", "openai"),
+            ("command-r-plus", "cohere"),
+            ("amazon.titan-text-express-v1", "bedrock"),
+            ("anthropic.claude-3-sonnet", "bedrock"),
+            ("meta.llama3-70b-instruct-v1:0", "bedrock"),
+            # Bedrock vendor namespaces that collide with the bare direct-API
+            # prefixes below: the dotted form must win so the `:version` suffix
+            # is not misparsed as a `provider:model` separator.
+            ("mistral.mistral-large-2402-v1:0", "bedrock"),
+            ("deepseek.r1-v1:0", "bedrock"),
+            ("cohere.command-r-v1:0", "bedrock"),
+            ("ai21.jamba-1-5-large-v1:0", "bedrock"),
+            ("writer.palmyra-x5-v1:0", "bedrock"),
+            # Structural detection covers vendors with no hardcoded entry.
+            ("qwen.qwen3-32b-v1:0", "bedrock"),
+            ("google.gemma-3-27b-v1:0", "bedrock"),
+            # Cross-region inference-profile IDs front the vendor with a region.
+            ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("eu.meta.llama3-2-3b-instruct-v1:0", "bedrock"),
+            ("apac.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"),
+            ("US.Anthropic.Claude-3-5-Sonnet-20241022-v2:0", "bedrock"),
+            # A bare name that merely starts with a region token is not Bedrock.
+            ("useful-model", None),
+            ("mistral-large", "mistralai"),
+            ("mixtral-8x7b-instruct", "mistralai"),
+            ("deepseek-chat", "deepseek"),
+            ("grok-4", "xai"),
+            ("sonar-pro", "perplexity"),
             ("claude-sonnet-4-5", "anthropic"),
             ("claude-opus-4-5", "anthropic"),
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("accounts/fireworks/models/kimi-k2p7-code", "fireworks"),
+            ("accounts/fireworks/routers/kimi-k2p7-code", "fireworks"),
+            ("Accounts/Fireworks/Models/Kimi-K2P7-Code", "fireworks"),
+            ("accounts/openai/models/gpt-5.5", None),
+            # A different account whose name merely starts with "fireworks"
+            # must not resolve to Fireworks; the trailing slash in the prefix
+            # is what anchors the match to the exact account namespace.
+            ("accounts/fireworks-enterprise/models/kimi-k2p7-code", None),
             ("llama3", None),
-            ("mistral-large", None),
+            ("solar-pro", None),
             ("some-unknown-model", None),
         ],
     )

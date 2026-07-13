@@ -44,6 +44,13 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
+"""Chat input cursor style (`block` or `underline`).
+
+Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
+through to the config file and then the default block cursor.
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -181,6 +188,12 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

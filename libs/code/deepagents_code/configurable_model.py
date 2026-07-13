@@ -12,6 +12,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from deepagents._models import (  # noqa: PLC2701
     get_model_identifier,
@@ -103,16 +104,30 @@ def _is_fireworks_model(model: object) -> bool:
 
 
 def _is_openai_model(model: object) -> bool:
-    """Check whether a resolved model reports `'openai'` as its provider.
+    """Check whether a resolved model targets OpenAI's official API.
 
-    Only OpenAI's own models report `'openai'`; OpenAI-compatible providers
-    (xAI, OpenRouter, Ollama, Fireworks, ...) report their own `ls_provider`, so
-    this excludes them.
+    `ChatOpenAI` reports `'openai'` even when configured with a custom base URL,
+    so provider metadata alone cannot establish support for OpenAI-specific
+    request fields. Unknown endpoints are treated conservatively as
+    incompatible.
 
     Returns:
-        `True` if the model's `ls_provider` is `'openai'`.
+        `True` if the model reports `'openai'` and uses `api.openai.com`.
     """
-    return _get_ls_provider(model) == "openai"
+    if _get_ls_provider(model) != "openai":
+        return False
+
+    client = getattr(model, "root_client", None)
+    base_url = getattr(client, "base_url", None)
+    if base_url is None:
+        base_url = getattr(model, "openai_api_base", None)
+    if base_url is None:
+        return False
+
+    try:
+        return urlsplit(str(base_url)).hostname == "api.openai.com"
+    except ValueError:
+        return False
 
 
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
@@ -176,26 +191,34 @@ def _with_fireworks_session_settings(
 
 
 def _with_openai_prompt_cache_key(
-    model_settings: dict[str, Any], thread_id: str
+    model: object, model_settings: dict[str, Any], thread_id: str
 ) -> dict[str, Any] | None:
     """Return model settings with an OpenAI `prompt_cache_key` added if needed.
 
-    OpenAI's GPT-5.6 and later model families require `prompt_cache_key` for the
-    more reliable prompt-prefix matching used by both implicit and explicit
-    caching; without it a request may still get automatic cache hits but not the
-    improved matching. The key is passed top-level (unlike xAI, which routes it
-    through `extra_body`, and Fireworks, which additionally sets an
-    `x-session-affinity` header). `langchain_openai.ChatOpenAI` merges unknown
-    top-level kwargs into the request payload for both the Chat Completions and
-    Responses APIs, so a top-level setting reaches the wire unchanged.
+    Setting `prompt_cache_key` lets OpenAI route a conversation to a stable
+    prompt-cache prefix across turns, giving more reliable cache hits than the
+    automatic (keyless) matching; it is optional, and requests still cache
+    without it. It is a supported top-level `ChatOpenAI` invocation setting
+    forwarded to the OpenAI request payload, so passing it through
+    `model_settings` reaches the wire unchanged. The same key is applied to
+    every OpenAI model regardless of version; models that do not support it
+    ignore it, so no version gate is needed. This mirrors the Fireworks path
+    (`_with_fireworks_session_settings`), which sets `prompt_cache_key` the same
+    way and additionally sends an `x-session-affinity` header.
 
-    A user-supplied `prompt_cache_key` is always preserved.
+    A user-supplied `prompt_cache_key` is always preserved, whether it was
+    configured on the model (`model_kwargs`) or supplied for this invocation
+    (`model_settings`).
 
     Returns:
         A new `model_settings` dict with `prompt_cache_key` added, or `None` when
-            a key is already present (nothing to add).
+            a key is already present on the model or in the settings (nothing to
+            add).
     """
-    if "prompt_cache_key" in model_settings:
+    model_kwargs = getattr(model, "model_kwargs", None)
+    if "prompt_cache_key" in model_settings or (
+        isinstance(model_kwargs, Mapping) and "prompt_cache_key" in model_kwargs
+    ):
         return None
     return {**model_settings, "prompt_cache_key": thread_id}
 
@@ -293,7 +316,9 @@ def _build_overrides(
             logger.debug("Injected Fireworks session settings")
     elif ctx.thread_id and _is_openai_model(effective_model):
         settings = overrides.get("model_settings", request.model_settings)
-        settings_with_key = _with_openai_prompt_cache_key(settings, ctx.thread_id)
+        settings_with_key = _with_openai_prompt_cache_key(
+            effective_model, settings, ctx.thread_id
+        )
         if settings_with_key is not None:
             overrides["model_settings"] = settings_with_key
             # No thread ID in the message: it is treated as a sensitive session

@@ -29,13 +29,14 @@ from textual.css.query import NoMatches
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -1911,6 +1912,29 @@ class _ChatScroll(VerticalScroll):
         return self.max_scroll_y > 0
 
 
+class _MainScreen(Screen[None]):
+    """Default screen containing the main chat interface.
+
+    Exists so `AUTO_FOCUS` can be scoped to this screen rather than the `App`.
+    An App-level `AUTO_FOCUS` is the fallback for *every* screen, so a
+    `"#chat-input"` selector there resolves to nothing on modals (whose DOM has
+    no such widget) and leaves them opening with no focused control. Keeping it
+    on the main screen lets modals retain Textual's default first-focusable
+    behavior.
+    """
+
+    AUTO_FOCUS = "#chat-input"
+    """Focus the chat text area on this screen's first focus pass.
+
+    Overrides Textual's default `"*"`, which would focus the earlier-composed,
+    still-focusable `_ChatScroll` (`#chat`) instead, sending startup type-ahead
+    to the scroll container. Textual applies this during compose, before the
+    message loop dispatches queued keys; `on_mount` re-focuses the input too
+    (see `DeepAgentsApp.on_mount`), so this is the earlier half of a
+    belt-and-suspenders pair -- don't drop one assuming the other is redundant.
+    """
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -1995,6 +2019,11 @@ class DeepAgentsApp(App):
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
+
+    @override
+    def get_default_screen(self) -> Screen[None]:
+        """Return the main screen with chat-specific startup focus."""
+        return _MainScreen(id="_default")
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""

@@ -1798,6 +1798,54 @@ class TestStartupSequence:
         )
 
 
+class TestStartupFocus:
+    """Tests for focus selection before the app starts processing input."""
+
+    async def test_auto_focus_targets_chat_input(self) -> None:
+        """Textual's first focus pass should skip the chat scroll container.
+
+        `on_mount` focuses the input independently, so a plain post-startup
+        assertion would pass even without `AUTO_FOCUS`. Clearing focus and
+        re-running the focus pass isolates the `AUTO_FOCUS` selector itself,
+        which is the half that guards startup type-ahead before `on_mount`.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test():
+            app.screen.set_focus(None)
+            # `_update_auto_focus` is Textual-private; a rename on a `textual`
+            # bump breaks this even when behavior is correct. Validated against
+            # the pinned `textual>=8.2.7,<9.0.0` (see pyproject.toml); this test
+            # is the safety net for that upgrade.
+            app.screen._update_auto_focus()
+
+            assert app.focused is not None
+            assert app.focused.id == "chat-input"
+
+    async def test_modal_uses_first_focusable_widget(self) -> None:
+        """Modal keyboard navigation should retain Textual's focus fallback."""
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+
+        app = DeepAgentsApp()
+        results: list[str | None] = []
+        async with app.run_test() as pilot:
+            await app.push_screen(
+                EffortSelectorScreen(
+                    model_spec="openai:gpt-5.5",
+                    efforts=("low", "medium", "high"),
+                    current_effort="low",
+                ),
+                results.append,
+            )
+            await pilot.pause()
+
+            assert app.focused is not None
+            assert app.focused.id == "effort-options"
+            await pilot.press("down", "enter")
+            await pilot.pause()
+
+            assert results == ["medium"]
+
+
 class TestAppCSSValidation:
     """Test that app CSS is valid and doesn't cause runtime errors."""
 

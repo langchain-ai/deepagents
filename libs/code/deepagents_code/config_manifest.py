@@ -1076,6 +1076,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="features.experimental",
+        group="Tools",
+        summary="Opt into experimental, unstable dcode behavior.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
+    ),
+    ConfigOption(
         key="events.external_socket",
         group="Tools",
         summary="Enable the local Unix-socket external event listener (experimental).",

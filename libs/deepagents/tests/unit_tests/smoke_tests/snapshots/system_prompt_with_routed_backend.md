@@ -90,6 +90,8 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 - execute: run a shell command in the sandbox (returns output and exit code)
 
+When a command times out (exit code 124) or fails, do NOT re-run the identical command. Adapt your approach on the next attempt: increase or remove the `timeout`, narrow the command's scope, add diagnostics to isolate the hang, or stop and report the blocker to the user. Repeating the same command with the same arguments after a timeout or failure is prohibited.
+
 ## Shell paths vs. virtual paths
 
 The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.

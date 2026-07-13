@@ -90,6 +90,8 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 - execute: run a shell command in the sandbox (returns output and exit code)
 
+When a command times out (exit code 124) or fails, do NOT re-run the identical command. Adapt your approach on the next attempt: increase or remove the `timeout`, narrow the command's scope, add diagnostics to isolate the hang, or stop and report the blocker to the user. Repeating the same command with the same arguments after a timeout or failure is prohibited.
+
 ## `task` (subagent spawner)
 
 You have access to a `task` tool to launch short-lived subagents that handle isolated tasks. These agents are ephemeral — they live only for the duration of the task and return a single result.

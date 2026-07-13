@@ -891,6 +891,7 @@ Usage notes:
   - If the output is very large, it may be truncated
   - For long-running commands, use the optional timeout parameter to override the default timeout (e.g., execute(command="make build", timeout=300))
   - A timeout of 0 may disable timeouts on backends that support no-timeout execution
+  - When a command times out (exit code 124) or returns a "timed out" / "Command failed" result, you MUST NOT re-issue the identical command. Change strategy on the next attempt: increase or remove the timeout, narrow the command's scope, add diagnostics to isolate the hang, or stop and report the blocker to the user. Repeating the same command with the same arguments after a timeout or failure is prohibited.
   - VERY IMPORTANT: You MUST avoid using search commands like find and grep. Instead use the grep, glob tools to search. You MUST avoid read tools like cat, head, tail, and use read_file to read files.
   - When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings)
     - Use '&&' when commands depend on each other (e.g., "mkdir dir && cd dir")
@@ -912,6 +913,48 @@ Examples:
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
+
+_EXECUTE_REPEAT_LIMIT = 3
+"""Consecutive identical `execute` commands that trip the anti-repeat guard."""
+
+_EXECUTE_REPEAT_MESSAGE = (
+    "Error: This exact command has already been run {count} times in a row without "
+    "adapting. Re-running the identical command is unlikely to produce a different "
+    "result. Change your approach before trying again: increase or remove the "
+    "timeout, narrow the command's scope, add diagnostics to isolate the problem, "
+    "or stop and report the blocker to the user."
+)
+
+
+def _normalize_command(command: str) -> str:
+    """Normalize a shell command string for anti-repeat comparison."""
+    return " ".join(command.split())
+
+
+def _consecutive_execute_repeats(messages: list[AnyMessage] | None, command: str) -> int:
+    """Count how many times `command` was the most recent consecutive `execute` call.
+
+    Walks the tail of the conversation and tallies unbroken `execute` tool calls
+    whose (normalized) command matches, stopping at the first differing `execute`
+    call. Includes the pending call, so a return of `_EXECUTE_REPEAT_LIMIT` means
+    the current invocation is the Nth identical one in a row.
+    """
+    target = _normalize_command(command)
+    count = 1
+    for message in reversed(messages or []):
+        if not isinstance(message, AIMessage):
+            continue
+        prior = [call for call in (message.tool_calls or []) if call.get("name") == "execute"]
+        if not prior:
+            continue
+        # Only the latest execute call on this turn determines continuity.
+        last = prior[-1]
+        if _normalize_command(str(last.get("args", {}).get("command", ""))) == target:
+            count += 1
+        else:
+            break
+    return count
+
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
@@ -965,7 +1008,9 @@ EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
 You have access to an `execute` tool for running shell commands in a sandboxed environment.
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
-- execute: run a shell command in the sandbox (returns output and exit code)"""
+- execute: run a shell command in the sandbox (returns output and exit code)
+
+When a command times out (exit code 124) or fails, do NOT re-run the identical command. Adapt your approach on the next attempt: increase or remove the `timeout`, narrow the command's scope, add diagnostics to isolate the hang, or stop and report the blocker to the user. Repeating the same command with the same arguments after a timeout or failure is prohibited."""
 
 
 def _route_host_path_prompt(backend: BackendProtocol) -> str:
@@ -2404,6 +2449,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
 
+            repeats = _consecutive_execute_repeats(runtime.state.get("messages"), command)
+            if repeats >= _EXECUTE_REPEAT_LIMIT:
+                return ToolMessage(
+                    content=_EXECUTE_REPEAT_MESSAGE.format(count=repeats),
+                    name="execute",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -2490,6 +2544,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
+
+            repeats = _consecutive_execute_repeats(runtime.state.get("messages"), command)
+            if repeats >= _EXECUTE_REPEAT_LIMIT:
+                return ToolMessage(
+                    content=_EXECUTE_REPEAT_MESSAGE.format(count=repeats),
+                    name="execute",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
 
             resolved_backend = self._get_backend(runtime)
 

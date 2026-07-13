@@ -15,7 +15,8 @@ from langchain_core.messages import ToolMessage
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
+from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
+from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
 
@@ -1574,6 +1575,168 @@ class TestGrepPythonFallbackTimeout:
         # Partial matches collected before the timeout are preserved.
         assert result.matches
         assert result.matches[0]["path"] == "/file.txt"
+
+
+class TestFilesystemGrepContext:
+    def test_default_and_zero_preserve_existing_matches(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        def fail_if_called(*_args: object) -> None:
+            pytest.fail("context collection should not run when context_lines is disabled")
+
+        monkeypatch.setattr(backend, "_add_grep_context", fail_if_called)
+        expected = [{"path": "/sample.txt", "line": 2, "text": "needle"}]
+
+        assert backend.grep("needle", path="/").matches == expected
+        assert backend.grep("needle", path="/", context_lines=0).matches == expected
+
+    def test_negative_context_lines_rejected(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        with pytest.raises(ValueError, match="context_lines must be non-negative"):
+            backend.grep("needle", path="/", context_lines=-1)
+
+    def test_context_respects_file_boundaries_and_merges_overlap(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle start\ntwo\nmiddle\nfour\nneedle end")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=2)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "needle start",
+                "context_before": [],
+                "context_after": [{"line": 2, "text": "two"}, {"line": 3, "text": "middle"}],
+            },
+            {
+                "path": "/sample.txt",
+                "line": 5,
+                "text": "needle end",
+                "context_before": [{"line": 3, "text": "middle"}, {"line": 4, "text": "four"}],
+                "context_after": [],
+            },
+        ]
+        assert format_grep_matches(result.matches, "content") == (
+            "/sample.txt:\n  1: needle start\n  2- two\n  3- middle\n  4- four\n  5: needle end"
+        )
+
+    def test_context_lines_larger_than_file_iterate_only_existing_lines(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=10**9)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "needle",
+                "context_before": [],
+                "context_after": [],
+            }
+        ]
+
+    def test_context_formatting_groups_matches_in_one_pass(self) -> None:
+        class CountingMatches(list[GrepMatch]):
+            iterations = 0
+
+            def __iter__(self) -> Iterator[GrepMatch]:
+                self.iterations += 1
+                return super().__iter__()
+
+        matches = CountingMatches(
+            {
+                "path": f"/file-{index}.txt",
+                "line": 1,
+                "text": "needle",
+                "context_before": [],
+                "context_after": [],
+            }
+            for index in range(100)
+        )
+
+        output = format_grep_matches(matches, "content")
+
+        assert matches.iterations <= 2
+        assert output.count(":\n  1: needle") == 100
+
+    def test_context_merges_overlapping_windows_and_separates_groups(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("one\ntwo\nneedle three\nfour\nneedle five\nsix\nseven\neight\nnine\nneedle ten\neleven")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        matches = backend.grep("needle", path="/", context_lines=1).matches
+
+        assert matches is not None
+        assert format_grep_matches(matches, "content") == (
+            "/sample.txt:\n  2- two\n  3: needle three\n  4- four\n  5: needle five\n  6- six\n  --\n  9- nine\n  10: needle ten\n  11- eleven"
+        )
+
+    def test_context_does_not_change_file_or_count_modes(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle\ncontext\nneedle\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        without_context = backend.grep("needle", path="/").matches
+        with_context = backend.grep("needle", path="/", context_lines=1).matches
+
+        assert without_context is not None
+        assert with_context is not None
+        for output_mode in ("files_with_matches", "count"):
+            assert format_grep_matches(with_context, output_mode) == format_grep_matches(without_context, output_mode)
+        assert format_grep_matches(with_context, "files_with_matches") == "/sample.txt"
+        assert format_grep_matches(with_context, "count") == "/sample.txt: 2"
+
+    def test_context_is_scoped_per_file(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("alpha\nneedle a\nbravo\n")
+        (tmp_path / "b.txt").write_text("charlie\nneedle b\ndelta\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.error is None
+        by_path = {match["path"]: match for match in result.matches or []}
+        # Each match carries context only from its own file — no cross-file bleed.
+        assert by_path["/a.txt"]["context_before"] == [{"line": 1, "text": "alpha"}]
+        assert by_path["/a.txt"]["context_after"] == [{"line": 3, "text": "bravo"}]
+        assert by_path["/b.txt"]["context_before"] == [{"line": 1, "text": "charlie"}]
+        assert by_path["/b.txt"]["context_after"] == [{"line": 3, "text": "delta"}]
+        assert format_grep_matches(result.matches or [], "content") == (
+            "/a.txt:\n  1- alpha\n  2: needle a\n  3- bravo\n/b.txt:\n  1- charlie\n  2: needle b\n  3- delta"
+        )
+
+    def test_context_read_failure_keeps_matches_and_surfaces_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        # Simulate a matched file that cannot be re-read for context.
+        monkeypatch.setattr(backend, "_read_grep_context", lambda *_args: ({}, False))
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        # The match survives with empty context, and the failure is not silent.
+        assert result.matches == [{"path": "/sample.txt", "line": 2, "text": "needle", "context_before": [], "context_after": []}]
+        assert result.error is not None
+        assert "/sample.txt" in result.error
+        assert "context" in result.error.lower()
+
+    def test_read_grep_context_reports_unreadable_file(self, tmp_path: Path) -> None:
+        # A file ripgrep can match but that is not valid strict UTF-8.
+        target = tmp_path / "latin1.txt"
+        target.write_bytes(b"needle\n\xff\xfe not utf-8\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        context, ok = backend._read_grep_context("/latin1.txt", [(1, 2)])
+
+        assert ok is False
+        assert context == {}
 
 
 class TestGrepPythonFallbackIncludeGlob:

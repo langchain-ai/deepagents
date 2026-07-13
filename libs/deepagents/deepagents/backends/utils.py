@@ -871,7 +871,57 @@ def format_grep_matches(
     """Format structured grep matches using existing formatting logic."""
     if not matches:
         return "No matches found"
-    return _format_grep_results(build_grep_results_dict(matches), output_mode)
+
+    # Presence of the context keys signals "context mode" for the whole result;
+    # the producer sets both keys on every match or none. `_format_grep_with_context`
+    # still tolerates a hand-built mix of matches with and without context, since
+    # this is a public helper.
+    if output_mode != "content" or not any("context_before" in match or "context_after" in match for match in matches):
+        return _format_grep_results(build_grep_results_dict(matches), output_mode)
+    return _format_grep_with_context(matches)
+
+
+def _format_grep_with_context(matches: list[GrepMatch]) -> str:
+    """Render `content`-mode grep output including surrounding context lines.
+
+    Matched lines are marked with `:` and context lines with `-`. Non-adjacent
+    line groups within a file are separated by a `--` line, mirroring `grep -C`.
+    """
+    matches_by_path: dict[str, list[GrepMatch]] = {}
+    for match in matches:
+        matches_by_path.setdefault(match["path"], []).append(match)
+
+    lines: list[str] = []
+    for file_path in sorted(matches_by_path):
+        file_matches = matches_by_path[file_path]
+        matching_lines = {match["line"] for match in file_matches}
+        displayed_lines: dict[int, str] = {}
+        for match in file_matches:
+            for context_line in match.get("context_before", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+            displayed_lines[match["line"]] = match["text"]
+            for context_line in match.get("context_after", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+
+        lines.append(f"{file_path}:")
+        for group_index, group in enumerate(_group_adjacent_lines(displayed_lines)):
+            if group_index:
+                lines.append("  --")
+            for line_num, text in group:
+                separator = ":" if line_num in matching_lines else "-"
+                lines.append(f"  {line_num}{separator} {text}")
+    return "\n".join(lines)
+
+
+def _group_adjacent_lines(displayed_lines: dict[int, str]) -> list[list[tuple[int, str]]]:
+    """Split `{line_number: text}` into runs of consecutive line numbers."""
+    groups: list[list[tuple[int, str]]] = []
+    for item in sorted(displayed_lines.items()):
+        if not groups or item[0] > groups[-1][-1][0] + 1:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
+    return groups
 
 
 _REGEX_SIGNAL_RE = re.compile(

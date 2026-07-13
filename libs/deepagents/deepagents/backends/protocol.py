@@ -151,6 +151,16 @@ class FileInfo(TypedDict):
     """ISO 8601 timestamp of last modification, if known."""
 
 
+class ContextLine(TypedDict):
+    """A non-matching line surrounding a grep match, used for `context_lines`."""
+
+    line: int
+    """1-indexed line number of the context line."""
+
+    text: str
+    """Content of the context line."""
+
+
 class GrepMatch(TypedDict):
     """A single match from a grep search."""
 
@@ -162,6 +172,17 @@ class GrepMatch(TypedDict):
 
     text: str
     """Content of the matching line."""
+
+    context_before: NotRequired[list[ContextLine]]
+    """Context lines before the match.
+
+    Present (alongside `context_after`) only when a backend was asked for
+    `context_lines > 0`; both keys are set together on every match or on none.
+    An empty list means the requested context ran into the start of the file.
+    """
+
+    context_after: NotRequired[list[ContextLine]]
+    """Context lines after the match. See `context_before` for presence rules."""
 
 
 class FileData(TypedDict):

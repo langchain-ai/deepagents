@@ -1484,7 +1484,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         target = self._next_tool_row(self._selected_index, -1)
         if target is None:
             target = self._next_tool_row(len(self._row_widgets), -1)
-        if target is None:
+        if target is None or target == self._selected_index:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=-1)
@@ -1494,7 +1494,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         target = self._next_tool_row(self._selected_index, +1)
         if target is None:
             target = self._next_tool_row(-1, +1)
-        if target is None:
+        if target is None or target == self._selected_index:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=1)

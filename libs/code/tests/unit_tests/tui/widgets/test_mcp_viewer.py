@@ -1308,6 +1308,44 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 1
 
+    async def test_tab_single_tool_does_not_move_viewport(self) -> None:
+        """Tab and Shift+Tab are no-ops when only one tool is available."""
+        from textual.containers import VerticalScroll
+
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(MCPToolInfo(name="only", description=long_desc),),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            scroll.scroll_relative(y=10, animate=False)
+            await pilot.pause()
+            offset = scroll.scroll_offset
+
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            assert scroll.scroll_offset == offset
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            assert scroll.scroll_offset == offset
+
     async def test_server_header_rows_are_selectable(self) -> None:
         """Up/Down lands the cursor on server header rows too (R10)."""
         app = MCPViewerTestApp()

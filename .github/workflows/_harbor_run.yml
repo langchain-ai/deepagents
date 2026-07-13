@@ -61,6 +61,12 @@ on:
       harbor_package_override:
         type: string
         default: ""
+      judge_models:
+        # Grader model(s) for LLM-judge verifiers (e.g. harbor-index), passed as
+        # JUDGE_MODELS with JUDGE_PROVIDER=openai. Prefer an independent grader,
+        # not the model under test, to avoid self-grading bias.
+        type: string
+        default: "gpt-5.6-luna"
 
 permissions:
   contents: read
@@ -131,6 +137,7 @@ jobs:
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
+      HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -567,6 +574,13 @@ jobs:
             # reward file. Mirrors the always-on base URL above; forwards empty
             # when the job wasn't granted a key (harmless for non-judge verifiers).
             --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}'
+            # native_judge config the harbor-index verifiers require ("set by the
+            # job yaml"); without these the judge raises JudgeConfigurationError
+            # and writes no reward. Non-judge verifiers ignore the unused vars.
+            --verifier-env 'JUDGE_PROVIDER=openai'
+            --verifier-env "JUDGE_MODELS=$HARBOR_JUDGE_MODELS"
+            --verifier-env 'JUDGE_REPEATS=1'
+            --verifier-env 'JUDGE_CONCURRENCY=1'
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in

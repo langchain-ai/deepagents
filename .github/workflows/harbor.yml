@@ -184,6 +184,11 @@ on:
         required: false
         default: ""
         type: string
+      judge_models:
+        description: "Grader model for LLM-judge verifiers (e.g. harbor-index), used with an OpenAI judge. Prefer an independent grader, not the model under test."
+        required: false
+        default: "gpt-5.6-luna"
+        type: string
 permissions:
   contents: read
   # Lets the called reusable workflow manage run artifacts; a caller caps the
@@ -326,3 +331,4 @@ jobs:
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}

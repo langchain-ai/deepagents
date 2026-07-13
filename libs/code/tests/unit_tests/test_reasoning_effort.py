@@ -94,6 +94,12 @@ def _restore_settings() -> Iterator[None]:
             ("low", "medium", "high"),
         ),
         ("fireworks:accounts/fireworks/models/glm-5p2", ("none", "high", "max")),
+        # Fireworks routers (`accounts/fireworks/routers/...`) are gated the same
+        # as individual models, so effort support keys off the model family.
+        (
+            "fireworks:accounts/fireworks/routers/glm-5p1-fast",
+            ("none", "high", "max"),
+        ),
         # Recognized provider, wrong model family: the per-provider prefix
         # guards in `_classify_reasoning_provider` (and the Fireworks family
         # check) must reject these rather than fall through to an effort set.
@@ -103,6 +109,9 @@ def _restore_settings() -> Iterator[None]:
         ("google_genai:gemini-2.5-flash", ()),
         ("xai:grok-4", ()),
         ("fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct", ()),
+        # Same guard for the router prefix: a recognized router whose id carries
+        # no known family token must also fall through to no efforts.
+        ("fireworks:accounts/fireworks/routers/llama-v3p1-70b-instruct", ()),
     ],
 )
 def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:
@@ -133,6 +142,8 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
         ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "high"),
         ("fireworks:accounts/fireworks/models/glm-5p2", "max"),
         ("fireworks:accounts/fireworks/models/kimi-k2p7-code", None),
+        # Routers reach the same family-based default lookup as models.
+        ("fireworks:accounts/fireworks/routers/deepseek-v4-pro", "high"),
         ("ollama:llama3.1", None),
     ],
 )

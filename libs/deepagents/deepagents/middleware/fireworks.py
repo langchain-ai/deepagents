@@ -12,8 +12,9 @@ configuration.
 The middleware is a no-op unless the resolved model reports
 `ls_provider == "fireworks"`. When it applies, it injects both a
 `prompt_cache_key` and an `x-session-affinity` header derived from the thread
-ID. If the caller already manages affinity (via `user`, `prompt_cache_key`, or
-an `x-session-affinity` header), the request is left untouched.
+ID. If the caller already manages affinity (via a non-empty `user` or
+`prompt_cache_key`, or an `x-session-affinity` header), the request is left
+untouched.
 
 ## Usage
 
@@ -52,7 +53,7 @@ _SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
 _USER_MANAGED_SETTINGS = ("user", "prompt_cache_key")
-"""Model settings whose presence signals the caller manages affinity itself."""
+"""Model settings whose non-empty values signal caller-managed affinity."""
 
 
 def _get_ls_provider(model: object) -> str | None:
@@ -124,7 +125,7 @@ class FireworksPromptCachingMiddleware(AgentMiddleware):
     be installed. It also no-ops when:
 
     - no non-empty string `thread_id` is present in the config, or
-    - the caller already manages affinity by supplying `user`,
+    - the caller already manages affinity with a non-empty `user` or
         `prompt_cache_key`, or an `x-session-affinity` header (case-insensitive),
         or
     - `extra_headers` is present but is not a mapping (a warning is logged).
@@ -151,7 +152,7 @@ class FireworksPromptCachingMiddleware(AgentMiddleware):
             return None
 
         model_settings = request.model_settings
-        if any(key in model_settings for key in _USER_MANAGED_SETTINGS):
+        if any(model_settings.get(key) for key in _USER_MANAGED_SETTINGS):
             return None
 
         raw_headers = model_settings.get("extra_headers")

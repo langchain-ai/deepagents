@@ -102,6 +102,23 @@ def test_existing_prompt_cache_key_causes_no_injection() -> None:
     assert result.model_settings == {"prompt_cache_key": "mine"}
 
 
+def test_null_user_setting_injects_session_affinity() -> None:
+    """A null `user` setting does not disable session affinity."""
+    request = _make_request(_make_model("fireworks"), {"user": None})
+    result = _run(request)
+    assert result.model_settings["user"] is None
+    assert result.model_settings["prompt_cache_key"] == _THREAD_ID
+    assert result.model_settings["extra_headers"][_SESSION_AFFINITY_HEADER] == _THREAD_ID
+
+
+def test_null_prompt_cache_key_injects_session_affinity() -> None:
+    """A null `prompt_cache_key` is replaced with the active thread ID."""
+    request = _make_request(_make_model("fireworks"), {"prompt_cache_key": None})
+    result = _run(request)
+    assert result.model_settings["prompt_cache_key"] == _THREAD_ID
+    assert result.model_settings["extra_headers"][_SESSION_AFFINITY_HEADER] == _THREAD_ID
+
+
 def test_existing_session_affinity_header_causes_no_injection() -> None:
     """An existing x-session-affinity header (any case) is left untouched."""
     request = _make_request(

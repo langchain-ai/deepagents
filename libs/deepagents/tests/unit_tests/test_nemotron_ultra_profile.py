@@ -135,6 +135,23 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     assert "offset=12" in result.content
 
 
+def test_read_file_continuation_notice_ignores_wrapped_rows() -> None:
+    """Wrapped chunks should not count toward the source-line limit."""
+    middleware = ReadFileContinuationNoticeMiddleware()
+    content = "  1  first chunk\n1.1  second chunk\n1.2  third chunk"
+
+    def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
+        return ToolMessage(content=content, tool_call_id="call_1")
+
+    result = middleware.wrap_tool_call(
+        _request("read_file", {"file_path": "/x.txt", "limit": 2}),
+        handler,
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.content == content
+
+
 def test_read_file_continuation_notice_uses_shim_default_limit() -> None:
     """The continuation notice should describe the same limit sent to `read_file`."""
     shim = NemotronToolCallShim()

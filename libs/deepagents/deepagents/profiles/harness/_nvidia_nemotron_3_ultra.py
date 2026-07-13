@@ -139,7 +139,7 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     @staticmethod
     def _is_numbered_read_file_row(row: str) -> bool:
         """Return whether `row` looks like a formatted `read_file` source line."""
-        return re.match(r"^\s*\d+(?:\.\d+)?(?:\t|\s{2,})", row) is not None
+        return re.match(r"^\s*\d+(?:\t|\s{2,})", row) is not None
 
     @staticmethod
     def _annotate(

@@ -3010,7 +3010,7 @@ class TestFetchOllamaInstalledModelProfiles:
         """Unexpected capability shape does not produce false flags."""
         payload = {"model_info": {}, "capabilities": "tools"}
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             profile = model_config._profile_from_ollama_show_payload(payload)
 
         assert profile == {}

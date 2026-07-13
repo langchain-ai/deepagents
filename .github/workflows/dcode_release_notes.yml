@@ -7,7 +7,7 @@
 # network calls (there is no separate network toggle; see the shell_allow_list note
 # below). Repository mutations — curated-notes comments, PR-body updates, and a
 # non-force Git Data API update to the release-please branch — are performed only by
-# specific helper steps that receive the dedicated bot token. (The validate job's
+# specific helper steps that receive a short-lived GitHub App token. (The validate job's
 # permission/readiness feedback comments use the default GITHUB_TOKEN.)
 
 name: "📝 Curate dcode release notes"
@@ -112,6 +112,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Generate release bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Checkout trusted automation
         id: checkout-trusted
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -189,7 +199,7 @@ jobs:
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { postDraft } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
             try {
@@ -223,7 +233,7 @@ jobs:
           AGENT_OUTCOME: ${{ steps.agent.outcome }}
           CHECKOUT_TRUSTED_OUTCOME: ${{ steps.checkout-trusted.outcome }}
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const number = Number(process.env.PR_NUMBER);
             const details = process.env.PREPARE_ERROR
@@ -272,6 +282,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Generate release bot token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Checkout trusted automation
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -290,7 +310,7 @@ jobs:
           APPLY_STATE: ${{ runner.temp }}/dcode-release-apply.json
           CHANGELOG_FILE: ${{ runner.temp }}/dcode-release-changelog.md
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { prepareApply } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
             try {
@@ -320,7 +340,7 @@ jobs:
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { createApplyCommit } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
             try {
@@ -349,7 +369,7 @@ jobs:
           BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { publishAppliedState } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
             try {
@@ -382,7 +402,7 @@ jobs:
           PUBLISH_ERROR: ${{ steps.publish.outputs.error }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
         with:
-          github-token: ${{ secrets.DCODE_RELEASE_BOT_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const number = Number(process.env.PR_NUMBER);
             // Steps run prepare-apply -> commit -> publish, each skipping the rest on

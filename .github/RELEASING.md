@@ -67,9 +67,23 @@ For an exceptional release that must skip curation, add the `release: dangerousl
 
 #### One-time repository setup
 
-The draft and apply jobs use the `release-dcode` environment. It needs `DCODE_RELEASE_BOT_TOKEN`, the model-provider API key matching `DCODE_RELEASE_MODEL` (only the one for the configured model is required), and the `DCODE_RELEASE_BOT_LOGIN`, `DCODE_RELEASE_BOT_ID`, `DCODE_RELEASE_MODEL`, and `DCODE_RELEASE_CLI_VERSION` variables. The bot token needs read/write access to contents, issues, and pull requests. Do not require environment approval, because that would block automatic drafting.
+The draft and apply jobs reuse the repository's GitHub App credentials to mint short-lived installation tokens. Keep `ORG_MEMBERSHIP_APP_CLIENT_ID` and `ORG_MEMBERSHIP_APP_PRIVATE_KEY` as repository secrets, and ensure the installed App grants read/write access to contents, issues, and pull requests. `ORG_MEMBERSHIP_APP_ID` is not used by this workflow.
 
-For the check to actually gate merges, add the `curated release notes` workflow job to `main`'s required status checks (repo settings). The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.
+Configure these repository-level Actions variables, which are also needed by jobs that do not use the release environment:
+
+- `DCODE_RELEASE_BOT_LOGIN`: the App bot login, `<app-slug>[bot]`
+- `DCODE_RELEASE_BOT_ID`: the numeric user ID for that bot login (this is not the GitHub App ID)
+
+Find the App slug in its GitHub App settings URL, then look up both values with:
+
+```bash
+APP_SLUG=<app-slug>
+gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
+```
+
+Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add the model-provider API key matching `DCODE_RELEASE_MODEL` as an environment secret (only the configured provider's key is required), and add `DCODE_RELEASE_MODEL` and `DCODE_RELEASE_CLI_VERSION` as environment variables. Pin `DCODE_RELEASE_CLI_VERSION` to a published `deepagents-code` version rather than leaving it empty so release-note behavior changes only when maintainers deliberately update the pin.
+
+For the check to actually gate merges, add the literal `curated release notes` workflow job name to `main`'s required status checks (repo settings). Without that required check, failures remain visible on the PR but do not prevent a stale or unapplied changelog from being merged. The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.
 
 ### Releasable Commit Types and Version Bumping
 

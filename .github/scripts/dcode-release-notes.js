@@ -323,8 +323,8 @@ async function listComments(github, owner, repo, number) {
 }
 
 // Fail closed if the privileged token does not authenticate as the configured bot
-// identity, so a misconfigured or swapped DCODE_RELEASE_BOT_TOKEN can never mutate
-// the changelog, PR body, or branch under the wrong account.
+// identity, so a misconfigured or swapped GitHub App token can never mutate the
+// changelog, PR body, or branch under the wrong account.
 async function authenticatedBot(github, login, id) {
   const { data: user } = await github.rest.users.getAuthenticated();
   if (user.login !== login || Number(user.id) !== Number(id)) {

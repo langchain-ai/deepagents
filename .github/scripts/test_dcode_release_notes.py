@@ -101,13 +101,40 @@ def test_mutation_workflow_commands_are_target_only() -> None:
 
     # The privileged draft/apply jobs must stay gated on the validate job's
     # should-run output, pinned to the release-dcode environment, and read-only for
-    # contents. Dropping the gate would let the bot-token jobs run without the
+    # contents. Dropping the gate would let the App-token jobs run without the
     # permission/identity check; widening permissions would be privilege escalation.
     for job_name in ("draft", "apply"):
         job = workflow["jobs"][job_name]
         assert "needs.validate.outputs.should-run == 'true'" in job["if"]
         assert job["environment"] == "release-dcode"
         assert job["permissions"] == {"contents": "read"}
+        app_token = next(
+            step for step in job["steps"] if step.get("id") == "app-token"
+        )
+        assert app_token["uses"] == (
+            "actions/create-github-app-token@"
+            "bcd2ba49218906704ab6c1aa796996da409d3eb1"
+        )
+        assert app_token["with"] == {
+            "client-id": "${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}",
+            "private-key": "${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}",
+            "permission-contents": "write",
+            "permission-issues": "write",
+            "permission-pull-requests": "write",
+        }
+        privileged_steps = [
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/github-script@")
+            and "github-token" in step.get("with", {})
+        ]
+        assert privileged_steps
+        assert all(
+            step["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"
+            for step in privileged_steps
+        )
+
+    assert "DCODE_RELEASE_BOT_TOKEN" not in automation
 
     # The drafting agent must stay sandboxed: no GitHub token and shell/MCP/
     # interpreter/memory off. Flipping shell_allow_list to a non-empty value would

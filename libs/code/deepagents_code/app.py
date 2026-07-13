@@ -12688,9 +12688,10 @@ class DeepAgentsApp(App):
         """Handle the Ctrl+D binding.
 
         Delete-confirm screens and the auth/thread selectors keep their own
-        Ctrl+D behavior. Otherwise, when the chat input is focused and holds a
-        draft, Ctrl+D deletes right of the cursor instead of quitting; the app
-        only exits from an empty (or unfocused) prompt.
+        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
+        deletes a non-empty selection or the character right of the cursor.
+        Only at the end of the prompt with no active selection does it exit
+        the app.
         """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
@@ -12717,14 +12718,22 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
-        # Delegate Ctrl+D to the chat input's delete-right when it holds a
-        # draft. Check `self.focused` (the active screen's focused widget), not
-        # `text_area.has_focus`: a draft hidden behind a modal keeps focus but
-        # must not be edited from under it, so Ctrl+D quits in that case.
+        # Delegate Ctrl+D when delete-right can remove selected text or content
+        # after the cursor. Check `self.focused` (the active screen's focused
+        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
+        # focus but must not be edited from under it, so Ctrl+D quits in that case.
         chat_input = self._chat_input
         if chat_input is not None:
             text_area = chat_input.input_widget
-            if text_area is not None and self.focused is text_area and chat_input.value:
+            if (
+                text_area is not None
+                and self.focused is text_area
+                and chat_input.value
+                and (
+                    not text_area.selection.is_empty
+                    or text_area.cursor_location != text_area.document.end
+                )
+            ):
                 text_area.action_delete_right()
                 return
 

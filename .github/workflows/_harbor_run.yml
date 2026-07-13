@@ -52,6 +52,14 @@ on:
       agent_timeout_multiplier:
         type: string
         default: "1.0"
+      env_build_timeout_multiplier:
+        # Scales each task's environment.build_timeout_sec. Heavy first-time
+        # (cold) snapshot builds — e.g. harbor-index bix* (big base image + HF
+        # capsule download) — exceed the default and hit EnvironmentStartTimeoutError.
+        # Raise this for a one-time cold build; the content-addressed snapshot then
+        # persists so later runs cache-hit at 1.0.
+        type: string
+        default: "1.0"
       disable_verification:
         type: boolean
         default: false
@@ -127,6 +135,7 @@ jobs:
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
@@ -360,6 +369,10 @@ jobs:
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
+            exit 1
+          fi
+          if ! [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
+            echo "::error::Invalid env_build_timeout_multiplier (must be a positive decimal): $HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER"
             exit 1
           fi
           # Allowlist the boolean; only literal true/false accepted.
@@ -616,6 +629,7 @@ jobs:
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
+            --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
             "${force_build_flag[@]}" \
             $n_tasks_flag \

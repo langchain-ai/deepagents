@@ -164,6 +164,11 @@ on:
         required: false
         default: "1.0"
         type: string
+      env_build_timeout_multiplier:
+        description: "Multiplier for each task's environment build timeout. Raise (e.g. 4) for a one-time cold build of heavy-image tasks (e.g. harbor-index bix*) that otherwise hit EnvironmentStartTimeoutError; the content-addressed snapshot then persists and later runs cache-hit at 1.0."
+        required: false
+        default: "1.0"
+        type: string
       disable_verification:
         description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
         required: false
@@ -328,6 +333,7 @@ jobs:
       n_tasks: ${{ inputs.n_tasks }}
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}

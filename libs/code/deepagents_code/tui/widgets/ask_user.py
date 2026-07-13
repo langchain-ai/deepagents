@@ -264,12 +264,16 @@ class AskUserMenu(Container):
 
     def _set_active_question(self, index: int) -> None:
         """Update the visual indicator and focus for the active question."""
+        self._highlight_question(index)
+        self._question_widgets[index].focus_input()
+
+    def _highlight_question(self, index: int) -> None:
+        """Highlight `index` and dim the rest without changing focus."""
         self._current_question = index
         for i, qw in enumerate(self._question_widgets):
             if i == index:
                 qw.add_class("ask-user-question-active")
                 qw.remove_class("ask-user-question-inactive")
-                qw.focus_input()
             else:
                 qw.remove_class("ask-user-question-active")
                 qw.add_class("ask-user-question-inactive")
@@ -299,6 +303,23 @@ class AskUserMenu(Container):
         if self._future and not self._future.done():
             self._future.set_result({"type": "cancelled"})
         self.post_message(self.Cancelled())
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        """Keep the active-question highlight in sync with focus.
+
+        A mouse click moves focus into another question's text input, or onto
+        the question container itself for multiple-choice (whose choices are
+        not individually focusable), without going through
+        `_set_active_question`, which would otherwise leave the highlight on
+        the previously active question. Sync the highlight to the focused
+        question so exactly one question is ever active. Focus is not moved
+        here, so the widget the user clicked keeps focus.
+        """
+        node: Any = event.widget
+        while node is not None and not isinstance(node, _QuestionWidget):
+            node = node.parent
+        if node is not None and node._index != self._current_question:
+            self._highlight_question(node._index)
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
         """Prevent blur from propagating and dismissing the menu."""

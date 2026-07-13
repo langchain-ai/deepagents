@@ -1279,12 +1279,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
-        if callable(self.backend):
+        if callable(self.backend) and not isinstance(self.backend, BackendProtocol):
             msg = (
                 "backend must be an initialized backend instance. Backend factories "
-                "and callable backends were removed in deepagents 0.7; pass "
-                "StateBackend(), CompositeBackend(...), or another BackendProtocol "
-                "instance instead."
+                "were removed in deepagents 0.7; pass StateBackend(), "
+                "CompositeBackend(...), or another BackendProtocol instance instead."
             )
             raise TypeError(msg)
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):

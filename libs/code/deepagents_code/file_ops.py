@@ -194,12 +194,12 @@ def is_sensitive_file_path(path_str: str | None) -> bool:
 
     Args:
         path_str: Filesystem path to classify (a display or absolute path).
-            May be ``None`` or empty.
+            May be `None` or empty.
 
     Returns:
-        ``True`` if the basename matches a known credential pattern. A falsy
-        path returns ``False`` (nothing to classify). An unparseable path
-        returns ``True`` and logs a warning, so the redaction gate fails
+        `True` if the basename matches a known credential pattern. A falsy
+        path returns `False` (nothing to classify). An unparseable path
+        returns `True` and logs a warning, so the redaction gate fails
         closed on unexpected input rather than leaking.
     """
     if not path_str:

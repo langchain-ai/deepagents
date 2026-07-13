@@ -323,6 +323,11 @@ def _run_startup_auto_update(console: "Console") -> None:
         upgrade_command,
     )
 
+    # Set to the target version while an upgrade attempt is in flight, and
+    # cleared on success. If `perform_upgrade` *raises* instead of returning a
+    # failure, the fail-soft handler below records the cooldown from this so the
+    # same broken target is not retried — and re-stalled — on every launch.
+    pending_failure_version: str | None = None
     try:
         if (
             _is_editable_install()
@@ -372,6 +377,10 @@ def _run_startup_auto_update(console: "Console") -> None:
             )
             return
         if should_skip_startup_auto_update_after_failure(latest):
+            # A same-version upgrade failed recently; retrying it here would
+            # very likely fail again and re-stall every launch (this runs before
+            # the TUI). Skip for the cooldown window and point at a manual
+            # command instead.
             update_needs_prereleases = release_requires_prereleases(latest)
             cmd = upgrade_command(
                 include_prereleases=True if update_needs_prereleases else None,
@@ -427,10 +436,12 @@ def _run_startup_auto_update(console: "Console") -> None:
             highlight=False,
             markup=False,
         )
+        pending_failure_version = latest
         success, output = asyncio.run(
             perform_upgrade(log_path=log_path, target_version=latest)
         )
         if success:
+            pending_failure_version = None
             clear_startup_auto_update_failure(latest)
             # If a stale `dcode` is earlier on PATH, the auto-restart would
             # re-exec into the old binary and the user would silently keep
@@ -480,26 +491,40 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
-        mark_startup_auto_update_failed(latest)
+        persisted = mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
         cmd = upgrade_command(
             include_prereleases=True if update_needs_prereleases else None,
             version=latest if update_needs_prereleases else None,
         )
         detail = f": {escape(output[:200])}" if output else ""
-        console.print(
+        message = (
             f"[bold red]Auto-update failed{detail}[/bold red]\n"
             f"Run manually: [cyan]{cmd}[/cyan]\n"
-            f"Continuing with v{cli_version}.",
-            markup=True,
-            highlight=False,
+            f"Continuing with v{cli_version}."
         )
+        if not persisted:
+            # The cooldown marker could not be saved (e.g. a read-only state
+            # dir), so this same failing upgrade would otherwise be retried on
+            # every launch. Surface it rather than silently re-stalling, the
+            # way the consent-announce path surfaces its un-persisted state.
+            message += (
+                "\n[yellow]Note:[/yellow] this failure could not be recorded, so "
+                "dcode will retry this update on the next launch until the state "
+                "directory becomes writable."
+            )
+        console.print(message, markup=True, highlight=False)
     except SystemExit:
         # Process replacement (and test doubles that simulate it) must not be
         # swallowed by the fail-soft handler below.
         raise
     except Exception:
         logger.warning("Startup auto-update failed", exc_info=True)
+        if pending_failure_version is not None:
+            # An exception escaped the upgrade attempt itself (not a returned
+            # failure), so the returned-failure branch never marked it. Record
+            # the cooldown here so the same target is not retried every launch.
+            mark_startup_auto_update_failed(pending_failure_version)
         console.print(
             "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
             "continuing with the installed version."
@@ -3692,7 +3717,24 @@ def cli_main() -> None:
         else:
             resume_thread = args.resume_thread  # "__MOST_RECENT__", "<id>", or None
             if resume_thread is None:
+                # A normal (non-resume) launch runs the update path and resets
+                # the resume grace period, so a later resume-only stretch starts
+                # a fresh deferral window rather than inheriting a stale one.
+                from deepagents_code.update_check import (
+                    clear_resume_auto_update_deferral,
+                )
+
+                clear_resume_auto_update_deferral()
                 _run_startup_auto_update(console)
+            else:
+                # Keep immediate resume launches uninterrupted, but do not let
+                # a resume-only workflow bypass startup updates indefinitely.
+                from deepagents_code.update_check import (
+                    should_defer_startup_auto_update_for_resume,
+                )
+
+                if not should_defer_startup_auto_update_for_resume():
+                    _run_startup_auto_update(console)
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume

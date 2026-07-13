@@ -523,7 +523,7 @@ jobs:
               ;;
             minimal)
               HARBOR_AGENT_GRAPH=minimal_deepagent
-              HARBOR_AGENT_LABEL="minimal create_agent (no prompt, execute only)"
+              HARBOR_AGENT_LABEL="minimal coding agent (create_agent + background exec)"
               ;;
             tau3)
               # Requires a Harbor build that forwards the task environment's MCP

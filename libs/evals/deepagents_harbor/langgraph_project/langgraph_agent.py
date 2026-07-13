@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -269,15 +272,16 @@ def _make_execute_tool(backend: LocalShellBackend) -> BaseTool:
 
 
 def make_minimal_graph(config: dict[str, object] | None = None) -> object:
-    """Create a bare-minimum agent: one ``execute`` tool, no system prompt.
+    """Create the minimal coding agent.
 
-    Experimental Terminal-Bench baseline. This bypasses ``create_deep_agent``
-    (and therefore all of its middleware, built-in tools, and dynamically
-    injected prompt fragments) and wires LangChain's ``create_agent`` directly
-    to a single shell-execution tool backed by ``LocalShellBackend``. The model
-    receives only the task as its first message and can do nothing but run
-    shell commands. The point is to measure what the raw model does with a
-    terminal, then rebuild deliberately from there.
+    A deliberately lean coding agent built directly on LangChain's ``create_agent``,
+    bypassing ``create_deep_agent`` and all of its middleware and built-in tools. It
+    has a concise coding system prompt (explore, plan, iterate against the task's own
+    tests/examples, verify before finishing) and a small tool surface: a one-shot
+    ``execute`` plus a background-process set (``run_background``/``poll``/
+    ``write_stdin``/``kill``) so long-running or interactive commands are polled
+    instead of blocking to timeout. No filesystem or multimodal tools, so it avoids
+    that failure surface. This is the base we build up from, kept minimal on purpose.
 
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
@@ -293,17 +297,156 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
-    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
-    # Prompt caching is a billing/latency optimization only: it inserts
-    # cache_control markers the model never sees and no-ops for non-Anthropic
-    # models, so the agent stays behaviorally minimal (no prompt, execute only)
-    # while remaining affordable on Claude.
+    workdir = _workdir(configurable)
+    backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
+    manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
+    tools = [_make_execute_tool(backend), *_make_background_tools(manager)]
+    # Prompt caching is a billing/latency optimization only (no-ops for non-Anthropic
+    # models), so the agent stays affordable on Claude.
     return create_agent(
         model=model,
-        tools=[_make_execute_tool(backend)],
-        system_prompt=None,
+        tools=tools,
+        system_prompt=CODING_SYSTEM_PROMPT,
         middleware=[AnthropicPromptCachingMiddleware()],
     )
+
+
+CODING_SYSTEM_PROMPT = """You are an autonomous coding agent working in a sandbox at /app. \
+There is no human available to answer questions, so make reasonable assumptions and keep working \
+until the task is fully solved.
+
+Approach every task like this:
+1. Explore first. List and read the task's files, and look for anything you can check yourself \
+against: a provided test script, an example input with a known expected output, a reference \
+binary or program, or worked examples in the task description. Treat these as your ground truth.
+2. Plan, then implement. Prefer writing a script or generator to produce the required artifact \
+rather than hand-writing it.
+3. Verify before you finish. Run the task's own tests/examples and iterate against concrete \
+failures until they pass. Do not declare the task done until you have actually observed your \
+solution meeting the acceptance criteria. When a check fails, read the error, fix the root cause, \
+and re-run.
+
+Running commands:
+- Use `execute` for quick commands that finish within a few seconds.
+- For anything long-running or interactive (compiles, builds, test suites, servers, REPLs, a \
+program that renders or runs for a while), use `run_background` to start it and `poll` in short \
+increments to watch its output instead of blocking on a single command. Use `write_stdin` to feed \
+input to an interactive process and `kill` to stop one. This lets you observe partial progress and \
+never hang waiting for a command to finish.
+- Prefer non-interactive flags; never run a command that silently waits for human input without \
+driving it with `write_stdin`.
+
+Keep going until the task is complete and verified. Do not stop early.
+"""
+
+
+class _ProcessManager:
+    """Track long-running background shell processes for the coding agent.
+
+    Each process runs in the sandbox workdir with the same key-scrubbed env the
+    one-shot `execute` tool uses. A daemon thread drains combined stdout/stderr into
+    a buffer so `poll` returns incremental output without blocking. Processes are
+    daemon-threaded and die with the ephemeral sandbox; `kill` stops one explicitly.
+    """
+
+    def __init__(self, cwd: Path, env: dict[str, str]) -> None:
+        self._cwd = cwd
+        self._env = env
+        self._procs: dict[str, dict[str, Any]] = {}
+        self._count = 0
+
+    def start(self, command: str) -> str:
+        self._count += 1
+        handle = f"proc-{self._count}"
+        proc = subprocess.Popen(  # noqa: S602  # shell execution is the tool's purpose
+            command,
+            shell=True,
+            cwd=str(self._cwd),
+            env=self._env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        rec: dict[str, Any] = {"proc": proc, "buf": [], "read": 0, "lock": threading.Lock()}
+
+        def _drain() -> None:
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                with rec["lock"]:
+                    rec["buf"].append(line)
+
+        threading.Thread(target=_drain, daemon=True).start()
+        self._procs[handle] = rec
+        return handle
+
+    def poll(self, handle: str, wait_seconds: float) -> str:
+        rec = self._procs.get(handle)
+        if rec is None:
+            return f"[unknown handle {handle!r}]"
+        proc = rec["proc"]
+        deadline = time.monotonic() + max(0.0, min(wait_seconds, 60.0))
+        while time.monotonic() < deadline and proc.poll() is None:
+            time.sleep(0.5)
+        with rec["lock"]:
+            new = "".join(rec["buf"][rec["read"] :])
+            rec["read"] = len(rec["buf"])
+        if len(new) > 8000:
+            new = new[:3000] + "\n[... output truncated ...]\n" + new[-5000:]
+        status = "still running" if proc.poll() is None else f"exited with code {proc.returncode}"
+        return f"[{handle}: {status}]\n{new}" if new else f"[{handle}: {status}] (no new output)"
+
+    def write_stdin(self, handle: str, text: str) -> str:
+        rec = self._procs.get(handle)
+        if rec is None:
+            return f"[unknown handle {handle!r}]"
+        proc = rec["proc"]
+        if proc.stdin is None or proc.poll() is not None:
+            return f"[{handle}: process is not accepting input]"
+        proc.stdin.write(text if text.endswith("\n") else text + "\n")
+        proc.stdin.flush()
+        return f"[{handle}: sent input]"
+
+    def kill(self, handle: str) -> str:
+        rec = self._procs.get(handle)
+        if rec is None:
+            return f"[unknown handle {handle!r}]"
+        rec["proc"].terminate()
+        return f"[{handle}: terminated]"
+
+
+def _make_background_tools(manager: _ProcessManager) -> list[BaseTool]:
+    """Build the background-process tool set (run_background/poll/write_stdin/kill)."""
+
+    @tool
+    def run_background(command: str) -> str:
+        """Start a long-running or interactive shell command in the background.
+
+        Returns a handle. Use `poll` to read its output and status, `write_stdin` to
+        send it input, and `kill` to stop it. Use this instead of `execute` for
+        compiles, builds, test suites, servers, or anything that runs more than a few
+        seconds, so you can watch progress instead of blocking.
+        """
+        return manager.start(command)
+
+    @tool
+    def poll(handle: str, wait_seconds: int = 10) -> str:
+        """Wait up to `wait_seconds` (max 60) for a background process, then return new output and status."""
+        return manager.poll(handle, wait_seconds)
+
+    @tool
+    def write_stdin(handle: str, text: str) -> str:
+        """Send a line of input to a background process's stdin."""
+        return manager.write_stdin(handle, text)
+
+    @tool
+    def kill(handle: str) -> str:
+        """Terminate a background process by handle."""
+        return manager.kill(handle)
+
+    return [run_background, poll, write_stdin, kill]
 
 
 _TAU3_SYSTEM_PROMPT = """You are a customer-service agent in a Harbor benchmark, \

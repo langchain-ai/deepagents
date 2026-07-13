@@ -741,12 +741,16 @@ class TestMCPViewerScreen:
                 await pilot.pause()
                 assert screen._selected_index == expected
 
-            # No wrap-around at the end of the list.
+            # Down from the final row wraps to the first row.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 4
+            assert screen._selected_index == 0
 
-            # Up walks back row by row.
+            # Up from the first row wraps back to the final row, then walks
+            # backward row by row.
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 4
             await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 3
@@ -757,23 +761,20 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 4
 
-            # Tab from search: no further tool → no-op.
+            # Tab from the final tool wraps to the first tool (read_file, row 1).
             await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 4
-
-            # Shift+Tab skip-header: search (4) → write_file (2).
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 2
-
-            # Shift+Tab again: write_file (2) → read_file (1).
-            await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 1
 
-            # Shift+Tab from read_file (1): no prior tool (only header
-            # before) → no-op.
+            # Shift+Tab from the first tool wraps to the final tool.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 4
+
+            # Shift+Tab then walks backward across tool rows, skipping headers.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
             await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 1
@@ -1241,8 +1242,8 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 1
             assert scroll.scroll_offset.y < offset_before
 
-    async def test_no_wrap_around_at_list_ends(self) -> None:
-        """Down past the last row, or Up past the first, are no-ops."""
+    async def test_navigation_wraps_at_list_ends(self) -> None:
+        """Arrow and Tab navigation wrap in both directions."""
         # Rows: [0: filesystem header, 1: read_file, 2: write_file,
         #        3: remote-api header, 4: search]
         app = MCPViewerTestApp()
@@ -1252,30 +1253,23 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert screen._selected_index == 0
-            # Up from the first row (header) stays put.
+
+            # Up from the first row wraps to the final row; Down wraps back.
             await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 0
-            # Shift+Tab from a header with no prior tool is also a no-op.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 0
-
-            # Walk to the last row (search, row 4) via Down.
-            for _ in range(4):
-                await pilot.press("down")
-                await pilot.pause()
             assert screen._selected_index == 4
-
-            # Down past the last row stays put.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 4
+            assert screen._selected_index == 0
 
-            # Tab past the last tool also stays put.
-            await pilot.press("tab")
+            # Shift+Tab from the first header wraps to the final tool; Tab from
+            # there wraps to the first tool.
+            await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 4
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
 
     async def test_tab_always_jumps_even_inside_tall_tool(self) -> None:
         """Tab / Shift+Tab unconditionally jump, ignoring viewport visibility."""
@@ -1370,11 +1364,20 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 1
 
-            # No wrap; no tools to Tab to.
+            # Down wraps across header-only lists too. With no tool rows,
+            # Tab and Shift+Tab remain no-ops.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 0
             await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Up wraps from the first header back to the last.
+            await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 1
 

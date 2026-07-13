@@ -1345,10 +1345,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
             # bottom for up).
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta row positions, clamped at the list ends.
+        """Move selection by delta row positions within the list bounds.
 
-        No wrap-around — pressing `Down` past the last row stays put rather
-        than jumping to the first. Walks every row (headers + tools).
+        Walks every row (headers + tools). Navigation actions handle wrapping
+        before calling this helper at a list boundary.
 
         Args:
             delta: Number of row positions to move.
@@ -1426,9 +1426,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart up: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's top edge is already inside the viewport, jump
-        to the previous row (header or tool). For rows taller than the
-        viewport, pin the new selection's **bottom** to the viewport so the
-        next `Up` resumes line-stepping through that row; otherwise just
+        to the previous row (header or tool), wrapping to the final row from
+        the first. For rows taller than the viewport, pin the new selection's
+        **bottom** to the viewport so the next `Up` resumes line-stepping
+        through that row; otherwise just
         ensure the row is visible. `Tab` / `Shift+Tab` skip the smart check
         AND skip header rows (see `action_jump_up`).
         """
@@ -1438,7 +1439,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         selected = self._row_widgets[self._selected_index]
         if selected.region.y >= scroll.region.y:
             old = self._selected_index
-            self._move_selection(-1)
+            if old == 0:
+                self._move_to(len(self._row_widgets) - 1)
+            else:
+                self._move_selection(-1)
             if self._selected_index != old:
                 self._reveal_selection(
                     self._row_widgets[self._selected_index], direction=-1
@@ -1450,10 +1454,11 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart down: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's bottom edge is already inside the viewport,
-        jump to the next row (header or tool). For rows taller than the
-        viewport, pin the new selection's top to the viewport; otherwise
-        just ensure the row is visible. `Tab` / `Shift+Tab` skip the smart
-        check AND skip header rows (see `action_jump_down`).
+        jump to the next row (header or tool), wrapping to the first row from
+        the final one. For rows taller than the viewport, pin the new
+        selection's top to the viewport; otherwise just ensure the row is
+        visible. `Tab` / `Shift+Tab` skip the smart check AND skip header rows
+        (see `action_jump_down`).
         """
         if not self._row_widgets:
             return
@@ -1463,7 +1468,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         viewport_bottom = scroll.region.y + scroll.region.height
         if selected_bottom <= viewport_bottom:
             old = self._selected_index
-            self._move_selection(1)
+            if old == len(self._row_widgets) - 1:
+                self._move_to(0)
+            else:
+                self._move_selection(1)
             if self._selected_index != old:
                 self._reveal_selection(
                     self._row_widgets[self._selected_index], direction=1
@@ -1472,16 +1480,20 @@ class MCPViewerScreen(ModalScreen[str | None]):
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Jump to the previous tool (Shift+Tab); skips headers."""
+        """Jump to the previous tool (Shift+Tab); skips headers and wraps."""
         target = self._next_tool_row(self._selected_index, -1)
+        if target is None:
+            target = self._next_tool_row(len(self._row_widgets), -1)
         if target is None:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=-1)
 
     def action_jump_down(self) -> None:
-        """Jump to the next tool (Tab); skips headers."""
+        """Jump to the next tool (Tab); skips headers and wraps."""
         target = self._next_tool_row(self._selected_index, +1)
+        if target is None:
+            target = self._next_tool_row(-1, +1)
         if target is None:
             return
         self._move_to(target)

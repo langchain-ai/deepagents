@@ -477,6 +477,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 non-Anthropic models)
             - [`BedrockPromptCachingMiddleware`](https://reference.langchain.com/python/langchain-aws/middleware/prompt_caching/BedrockPromptCachingMiddleware)
                 when `langchain-aws` is installed (no-ops for non-Bedrock models)
+            - [`FireworksPromptCachingMiddleware`][deepagents.middleware.fireworks.FireworksPromptCachingMiddleware]
+                (unconditional; no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 

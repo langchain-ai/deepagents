@@ -11,7 +11,7 @@ configuration.
 
 The middleware is a no-op unless the resolved model reports
 `ls_provider == "fireworks"`. When it applies, it injects both a
-`prompt_cache_key` and an `x-session-affinity` header derived from the thread
+`prompt_cache_key` and an `x-session-affinity` header set to the thread
 ID. If the caller already manages affinity (via a non-empty `user` or
 `prompt_cache_key`, or an `x-session-affinity` header), the request is left
 untouched.
@@ -62,15 +62,27 @@ def _get_ls_provider(model: object) -> str | None:
     Reads `_get_ls_params()` (implemented by `BaseChatModel`) so detection is
     provider-metadata based and does not require importing `langchain-fireworks`.
 
+    A model without a callable `_get_ls_params` (e.g. not a `BaseChatModel`) is
+    an expected, silent no-op. A model whose `_get_ls_params` *is* callable but
+    raises signals a broken model implementation rather than "not Fireworks", so
+    it is logged at `warning` before degrading to `None`.
+
     Returns:
         The `ls_provider` string when the model reports one, otherwise `None`
-            (including when `_get_ls_params` is missing, raises, or yields a
-            non-string provider).
+            (when `_get_ls_params` is missing or not callable, raises, or yields
+            a non-`dict` result or non-string provider).
     """
+    get_ls_params = getattr(model, "_get_ls_params", None)
+    if not callable(get_ls_params):
+        return None
     try:
-        ls_params = model._get_ls_params()  # ty: ignore[unresolved-attribute]
+        ls_params = get_ls_params()
     except (AttributeError, TypeError, RuntimeError, NotImplementedError):
-        logger.debug("_get_ls_params raised for %s", type(model).__name__)
+        logger.warning(
+            "Fireworks provider detection failed for %s; skipping session affinity",
+            type(model).__name__,
+            exc_info=True,
+        )
         return None
     if isinstance(ls_params, dict):
         provider = ls_params.get("ls_provider")
@@ -90,7 +102,7 @@ def _get_thread_id() -> str | None:
         config = get_config()
     except RuntimeError:
         return None
-    thread_id = config.get("configurable", {}).get("thread_id")
+    thread_id = (config.get("configurable") or {}).get("thread_id")
     if isinstance(thread_id, str) and thread_id:
         return thread_id
     return None
@@ -106,6 +118,28 @@ def _has_session_affinity_header(headers: Mapping[Any, Any]) -> bool:
             is present.
     """
     return any(isinstance(key, str) and key.lower() == _SESSION_AFFINITY_HEADER for key in headers)
+
+
+def _get_effective_model_settings(request: ModelRequest) -> dict[str, Any]:
+    """Combine model defaults with settings supplied for this request.
+
+    `ChatFireworks` stores constructor-level passthrough arguments such as
+    `prompt_cache_key`, `user`, and `extra_headers` in `model_kwargs`. Request
+    settings take precedence, while header mappings are combined so binding an
+    affinity header cannot discard constructor-level headers.
+
+    Returns:
+        A copy of the effective model settings.
+    """
+    raw_model_settings = getattr(request.model, "model_kwargs", None)
+    model_settings = dict(raw_model_settings) if isinstance(raw_model_settings, Mapping) else {}
+
+    model_headers = model_settings.get("extra_headers")
+    request_headers = request.model_settings.get("extra_headers")
+    model_settings.update(request.model_settings)
+    if isinstance(model_headers, Mapping) and isinstance(request_headers, Mapping):
+        model_settings["extra_headers"] = {**model_headers, **request_headers}
+    return model_settings
 
 
 class FireworksPromptCachingMiddleware(AgentMiddleware):
@@ -151,7 +185,7 @@ class FireworksPromptCachingMiddleware(AgentMiddleware):
         if thread_id is None:
             return None
 
-        model_settings = request.model_settings
+        model_settings = _get_effective_model_settings(request)
         if any(model_settings.get(key) for key in _USER_MANAGED_SETTINGS):
             return None
 
@@ -175,8 +209,8 @@ class FireworksPromptCachingMiddleware(AgentMiddleware):
             "prompt_cache_key": thread_id,
             "extra_headers": headers,
         }
-        # No thread ID in the message: it is treated as a sensitive session
-        # identifier. The line's presence alone confirms injection ran.
+        # Log without the thread ID: it is treated as a sensitive session
+        # identifier, so this line's presence alone confirms injection ran.
         logger.debug("Set Fireworks prompt-cache session affinity")
         return request.override(model_settings=new_settings)
 

@@ -455,6 +455,33 @@ class TestPromptCachingWiring:
         general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
         assert any(isinstance(m, FireworksPromptCachingMiddleware) for m in general_purpose["middleware"])
 
+    def test_explicit_subagent_gets_fireworks_prompt_caching(self) -> None:
+        """Caller-supplied subagents also receive FireworksPromptCachingMiddleware."""
+        main_model = GenericFakeChatModel(messages=iter([AIMessage(content="main")]))
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="sub")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model=main_model,
+                subagents=[
+                    {
+                        "name": "worker",
+                        "description": "Does work.",
+                        "system_prompt": "Help with tasks.",
+                        "model": worker_model,
+                    }
+                ],
+            )
+
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        worker = next(spec for spec in subagents if spec["name"] == "worker")
+        assert any(isinstance(m, FireworksPromptCachingMiddleware) for m in worker["middleware"])
+
 
 class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""

@@ -29,6 +29,11 @@ def _make_model(provider: str | None) -> GenericFakeChatModel:
     return model
 
 
+def _set_model_kwargs(model: GenericFakeChatModel, settings: dict[str, Any]) -> None:
+    """Set constructor-style passthrough settings on a fake chat model."""
+    object.__setattr__(model, "model_kwargs", settings)
+
+
 def _make_request(model: GenericFakeChatModel, model_settings: dict[str, Any] | None = None) -> ModelRequest:
     """Build a minimal `ModelRequest` for the given model."""
     return ModelRequest(
@@ -38,8 +43,17 @@ def _make_request(model: GenericFakeChatModel, model_settings: dict[str, Any] | 
     )
 
 
-def _run(request: ModelRequest, thread_id: str | None = _THREAD_ID) -> ModelRequest:
-    """Run the middleware and return the request seen by the handler."""
+def _run(
+    request: ModelRequest,
+    thread_id: str | None = _THREAD_ID,
+    config: dict[str, Any] | None = None,
+) -> ModelRequest:
+    """Run the middleware and return the request seen by the handler.
+
+    `config` overrides the patched `get_config()` return value outright; when it
+    is omitted, a config carrying `thread_id` is synthesized (or `{}` when
+    `thread_id` is `None`).
+    """
     middleware = FireworksPromptCachingMiddleware()
     captured: dict[str, ModelRequest] = {}
 
@@ -47,7 +61,8 @@ def _run(request: ModelRequest, thread_id: str | None = _THREAD_ID) -> ModelRequ
         captured["request"] = req
         return ModelResponse(result=[AIMessage(content="ok")])
 
-    config = {"configurable": {"thread_id": thread_id}} if thread_id is not None else {}
+    if config is None:
+        config = {"configurable": {"thread_id": thread_id}} if thread_id is not None else {}
     with patch("deepagents.middleware.fireworks.get_config", return_value=config):
         middleware.wrap_model_call(request, handler)
     return captured["request"]
@@ -69,10 +84,58 @@ def test_non_fireworks_model_is_unchanged() -> None:
     assert result.model_settings == {}
 
 
+def test_missing_ls_provider_is_unchanged() -> None:
+    """A model reporting no `ls_provider` is treated as non-Fireworks."""
+    request = _make_request(_make_model(None))
+    result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
+
+
+def test_ls_params_raising_is_unchanged_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A model whose `_get_ls_params` raises degrades to a no-op with a warning."""
+    model = _make_model("fireworks")
+    model._get_ls_params = MagicMock(side_effect=NotImplementedError)  # type: ignore[method-assign]
+    request = _make_request(model)
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.fireworks"):
+        result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
+    assert any("provider detection failed" in record.message for record in caplog.records)
+
+
+def test_model_without_ls_params_is_unchanged() -> None:
+    """A model lacking a callable `_get_ls_params` is treated as non-Fireworks."""
+    request = ModelRequest(model=object(), messages=[], model_settings={})
+    result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
+
+
+def test_non_dict_ls_params_is_unchanged() -> None:
+    """A model whose `_get_ls_params` returns a non-dict is treated as non-Fireworks."""
+    model = _make_model("fireworks")
+    model._get_ls_params = MagicMock(return_value=None)  # type: ignore[method-assign]
+    request = _make_request(model)
+    result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
+
+
 def test_missing_thread_id_is_unchanged() -> None:
     """No configured thread ID leaves the request unchanged."""
     request = _make_request(_make_model("fireworks"))
     result = _run(request, thread_id=None)
+    assert result is request
+    assert result.model_settings == {}
+
+
+def test_null_configurable_is_unchanged() -> None:
+    """A null `configurable` in the config leaves the request unchanged."""
+    request = _make_request(_make_model("fireworks"))
+    result = _run(request, config={"configurable": None})
     assert result is request
     assert result.model_settings == {}
 
@@ -83,6 +146,23 @@ def test_empty_thread_id_is_unchanged() -> None:
     result = _run(request, thread_id="")
     assert result is request
     assert result.model_settings == {}
+
+
+def test_no_runnable_context_is_unchanged() -> None:
+    """Outside a runnable context (`get_config` raises) the request is unchanged."""
+    request = _make_request(_make_model("fireworks"))
+    middleware = FireworksPromptCachingMiddleware()
+    captured: dict[str, ModelRequest] = {}
+
+    def handler(req: ModelRequest) -> ModelResponse:
+        captured["request"] = req
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    with patch("deepagents.middleware.fireworks.get_config", side_effect=RuntimeError):
+        middleware.wrap_model_call(request, handler)
+
+    assert captured["request"] is request
+    assert captured["request"].model_settings == {}
 
 
 def test_existing_user_setting_causes_no_injection() -> None:
@@ -100,6 +180,26 @@ def test_existing_prompt_cache_key_causes_no_injection() -> None:
     result = _run(request)
     assert result is request
     assert result.model_settings == {"prompt_cache_key": "mine"}
+
+
+def test_model_prompt_cache_key_causes_no_injection() -> None:
+    """A constructor-level `prompt_cache_key` is left untouched."""
+    model = _make_model("fireworks")
+    _set_model_kwargs(model, {"prompt_cache_key": "mine"})
+    request = _make_request(model)
+    result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
+
+
+def test_model_user_causes_no_injection() -> None:
+    """A constructor-level `user` is treated as caller-managed affinity."""
+    model = _make_model("fireworks")
+    _set_model_kwargs(model, {"user": "caller"})
+    request = _make_request(model)
+    result = _run(request)
+    assert result is request
+    assert result.model_settings == {}
 
 
 def test_null_user_setting_injects_session_affinity() -> None:
@@ -144,6 +244,38 @@ def test_unrelated_headers_are_preserved_and_not_mutated() -> None:
     # Caller-provided dicts must not be mutated.
     assert original_headers == {"Authorization": "Bearer token"}
     assert original_settings == {"temperature": 0.5, "extra_headers": original_headers}
+
+
+def test_model_headers_are_preserved_when_affinity_is_injected() -> None:
+    """Constructor-level headers survive binding the session affinity settings."""
+    model = _make_model("fireworks")
+    original_headers = {"Authorization": "Bearer token"}
+    model_settings = {"extra_headers": original_headers}
+    _set_model_kwargs(model, model_settings)
+
+    result = _run(_make_request(model))
+
+    assert result.model_settings["extra_headers"] == {
+        "Authorization": "Bearer token",
+        _SESSION_AFFINITY_HEADER: _THREAD_ID,
+    }
+    assert original_headers == {"Authorization": "Bearer token"}
+    assert model_settings == {"extra_headers": original_headers}
+
+
+def test_model_and_request_headers_are_merged() -> None:
+    """Per-request headers extend rather than replace constructor-level headers."""
+    model = _make_model("fireworks")
+    _set_model_kwargs(model, {"extra_headers": {"Authorization": "Bearer token"}})
+    request = _make_request(model, {"extra_headers": {"X-Request-ID": "request-1"}})
+
+    result = _run(request)
+
+    assert result.model_settings["extra_headers"] == {
+        "Authorization": "Bearer token",
+        "X-Request-ID": "request-1",
+        _SESSION_AFFINITY_HEADER: _THREAD_ID,
+    }
 
 
 def test_non_mapping_extra_headers_is_unchanged_and_warns(

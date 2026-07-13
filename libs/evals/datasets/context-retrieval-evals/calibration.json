@@ -1,0 +1,193 @@
+{
+  "description": "Calibration record for context-retrieval-evals. `tier` is the authoritative difficulty bucket (stamped into each task.toml by `contextbench --stamp-tiers`); `pass_at_bare` is the measured fraction solved; `source_difficulty` is the original Context-Bench label.",
+  "model": "anthropic:claude-opus-4-8",
+  "harness": "bare (create_deep_agent)",
+  "sandbox": "langsmith",
+  "rollouts_per_task": 3,
+  "runs": [
+    "29106461133",
+    "29109367820"
+  ],
+  "tasks": {
+    "cb-cloud-1": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-11": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 1.0,
+      "n": 3,
+      "tier": "easy"
+    },
+    "cb-cloud-22": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 1.0,
+      "n": 3,
+      "tier": "easy"
+    },
+    "cb-cloud-37": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 1.0,
+      "n": 3,
+      "tier": "easy"
+    },
+    "cb-cloud-50": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 1.0,
+      "n": 3,
+      "tier": "easy"
+    },
+    "cb-cloud-64": {
+      "source_difficulty": "easy",
+      "pass_at_bare": 1.0,
+      "n": 2,
+      "tier": "easy"
+    },
+    "cb-cloud-2": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-7": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-36": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-48": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-56": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.6667,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-31": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-35": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-55": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.3333,
+      "n": 3,
+      "tier": "medium"
+    },
+    "cb-cloud-0": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-5": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-10": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-13": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-15": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-16": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-18": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-24": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-26": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-32": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-38": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-41": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-42": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-47": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-49": {
+      "source_difficulty": "hard",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    },
+    "cb-cloud-78": {
+      "source_difficulty": "medium",
+      "pass_at_bare": 0.0,
+      "n": 3,
+      "tier": "hard"
+    }
+  }
+}

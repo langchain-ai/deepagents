@@ -3279,6 +3279,21 @@ class TestResumeThread:
 
         assert app._should_adopt_resumed_model is False
 
+    async def test_successful_switch_records_previous_thread(self) -> None:
+        """A successful switch records the outgoing thread as previous_thread_id.
+
+        Lets a follow-up bare `/threads -r` step back to the thread just left
+        rather than resolving `previous == current` and reporting "Already on
+        thread".
+        """
+        app = self._switch_app()
+
+        await app._resume_thread("new-thread")
+
+        session_state = app._session_state
+        assert session_state is not None
+        assert session_state.previous_thread_id == "old-thread"
+
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
         from textual.css.query import NoMatches as _NoMatches

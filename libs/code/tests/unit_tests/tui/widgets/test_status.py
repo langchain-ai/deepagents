@@ -542,6 +542,35 @@ class TestModelLabelPrefixStripping:
             assert "fireworks:kimi-k2p6" in rendered
             assert "accounts/fireworks/models/" not in rendered
 
+    async def test_fireworks_routers_prefix_stripped(self) -> None:
+        """The fireworks routers prefix is stripped before rendering."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/routers/glm-5p1-fast"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "fireworks:glm-5p1-fast" in rendered
+            assert "accounts/fireworks/routers/" not in rendered
+
+    async def test_fireworks_prefix_stripped_case_insensitively(self) -> None:
+        """A mixed-case fireworks ID is stripped, preserving the tail's casing.
+
+        `detect_provider` resolves mixed-case `accounts/fireworks/...` IDs to
+        the `fireworks` provider, so the display layer strips the prefix
+        case-insensitively too. The remaining model name keeps its original
+        casing rather than being lowercased.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "Accounts/Fireworks/Models/Kimi-K2P6"
+            await pilot.pause()
+            assert label._clean_model() == "Kimi-K2P6"
+            rendered = str(label.render())
+            assert "fireworks:Kimi-K2P6" in rendered
+            assert "Accounts/Fireworks/Models/" not in rendered
+
     async def test_get_content_width_uses_stripped_name(self) -> None:
         """`get_content_width` sizes to the stripped name, not the raw model."""
         async with StatusBarApp().run_test() as pilot:

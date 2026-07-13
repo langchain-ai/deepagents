@@ -13,12 +13,14 @@ from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
+    "Use /threads -r to jump back to the thread you just left with /clear": 1,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
     "Use /mcp to search your MCP servers and inspect tool parameters": 1,
     "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "In /model, press Ctrl+N to toggle between friendly names and raw model IDs": 1,
     "Use /effort high to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
@@ -34,6 +36,7 @@ _TIPS: dict[str, int] = {
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
+    "Launch with dcode -s <name> to auto-invoke a skill at startup": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }

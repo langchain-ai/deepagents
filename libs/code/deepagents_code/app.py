@@ -1687,6 +1687,13 @@ class TextualSessionState:
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+        self.previous_thread_id: str | None = None
+        """Thread id abandoned by the most recent `reset_thread`.
+
+        Set by every `reset_thread` caller — `/clear`, `/force-clear`, and the
+        agent-switch teardown — not just `/clear`. Lets the TUI point users
+        back to the thread they just left; `None` until the first reset.
+        """
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
@@ -1723,9 +1730,13 @@ class TextualSessionState:
     def reset_thread(self) -> str:
         """Reset to a new thread.
 
+        Records the outgoing thread as `previous_thread_id` first, so the UI
+        can offer a one-step path back to it.
+
         Returns:
             The new thread_id.
         """
+        self.previous_thread_id = self._thread_id
         self.thread_id = _new_thread_id()  # setter resets the turn markers
         self.approval_mode_key = None
         return self.thread_id
@@ -1945,6 +1956,9 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `ModelSelectorScreen` is active so the selector's own priority
+        # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
         Binding(
             "ctrl+n",
             "open_notifications",
@@ -2519,6 +2533,12 @@ class DeepAgentsApp(App):
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
+
+        self._active_turn_visible_output_started = False
+        """True once the current turn has displayed model text or a tool call.
+
+        Gates Esc prompt restore without counting hidden agent activity.
+        """
 
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
@@ -3301,6 +3321,7 @@ class DeepAgentsApp(App):
             on_auto_approve_enabled=self._on_auto_approve_enabled,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
+            on_user_visible_output_started=self._on_user_visible_output_started,
             sync_message_content=self._sync_message_content,
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
@@ -7597,8 +7618,10 @@ class DeepAgentsApp(App):
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — /model opens selector,
-            # /model <name> does a direct switch that shouldn't race with agent.
+            # Only bare form (no args) bypasses — the selector-opening form is
+            # safe, but an argument form does a direct action that shouldn't
+            # race the agent (e.g. `/model <name>` switches models, `/threads
+            # -r <id>` resumes a thread).
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -9708,6 +9731,51 @@ class DeepAgentsApp(App):
                     prefix="Started new thread",
                     thread_id=new_thread_id,
                 )
+                previous_thread_id = self._session_state.previous_thread_id
+                if previous_thread_id:
+                    import sqlite3
+
+                    from deepagents_code.sessions import thread_exists
+
+                    # Best-effort: on any failure just suppress the hint (never
+                    # crash `/clear`), but log unexpected errors loudly so a
+                    # real bug isn't silently read as "not resumable".
+                    try:
+                        previous_thread_is_resumable = await thread_exists(
+                            previous_thread_id
+                        )
+                    except (sqlite3.Error, OSError):
+                        logger.debug(
+                            "Could not check whether previous thread %s is resumable",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                    except Exception:
+                        logger.warning(
+                            "Unexpected error checking previous thread %s resumability",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                else:
+                    previous_thread_is_resumable = False
+                if previous_thread_id and previous_thread_is_resumable:
+                    previous_msg_widget = AppMessage(
+                        f"Previous thread: {previous_thread_id}"
+                    )
+                    await self._mount_message(previous_msg_widget)
+                    self._schedule_thread_message_link(
+                        previous_msg_widget,
+                        prefix="Previous thread",
+                        thread_id=previous_thread_id,
+                    )
+                    await self._mount_message(
+                        AppMessage(
+                            "Resume it with /threads -r"
+                            f" (or /threads -r {previous_thread_id})"
+                        )
+                    )
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -9756,8 +9824,8 @@ class DeepAgentsApp(App):
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
-        elif cmd == "/threads":
-            await self._show_thread_selector()
+        elif cmd == "/threads" or cmd.startswith("/threads "):
+            await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
         elif cmd == "/update" or cmd.startswith("/update "):
@@ -10563,6 +10631,9 @@ class DeepAgentsApp(App):
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
             self._agent_running = True
+            # Fresh turn: no model text or tool call is visible yet, so an Esc
+            # interrupt may still return this prompt to the input.
+            self._active_turn_visible_output_started = False
 
             # Flush any buffered non-incognito `!` shell output into thread
             # state so this turn's model sees commands run since the last turn.
@@ -11023,6 +11094,10 @@ class DeepAgentsApp(App):
         self._agent_running = False
         self._agent_worker = None
         self._active_user_message = None
+        # Clear the output-started gate alongside its lifecycle siblings so the
+        # "False at turn start" invariant holds locally, not just via the
+        # start-of-turn reset in `_send_to_agent`.
+        self._active_turn_visible_output_started = False
 
         # Remove spinner if present
         await self._set_spinner(None)
@@ -11958,6 +12033,15 @@ class DeepAgentsApp(App):
             for widget in collapsible:
                 widget.remove_class("-grouped")
 
+    def _on_user_visible_output_started(self) -> None:
+        """Record that the current turn has rendered model text or a tool call.
+
+        Hidden model and subagent activity does not call this. Once set, an Esc
+        interrupt no longer returns the prompt to the input because the user has
+        seen work produced from it.
+        """
+        self._active_turn_visible_output_started = True
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -12092,7 +12176,14 @@ class DeepAgentsApp(App):
         the message — the interrupted `UserMessage` stays visible in the
         transcript, dimmed via `set_cancelled()` — so when it does not restore
         it stays silent rather than reporting a "discarded" outcome.
+
+        Restore is also skipped once model text or a tool call is visible for
+        the turn (`_active_turn_visible_output_started`). Returning the prompt
+        then would invite a confusing re-submission of a request that has already
+        produced user-visible work.
         """
+        if self._active_turn_visible_output_started:
+            return
         chat_input = self._chat_input
         if chat_input is None:
             logger.debug(
@@ -12435,7 +12526,8 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it (restoring the interrupted prompt
-           to the chat input when it is empty)
+           to the chat input when it is empty and no user-visible model output
+           — text or a tool call — has appeared yet for the turn)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -14266,6 +14358,34 @@ class DeepAgentsApp(App):
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
+
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Disable `open_notifications` while the model selector is open.
+
+        Textual resolves `priority=True` bindings App-first, so the App's
+        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
+        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
+        Returning `False` here disables the App's binding for this dispatch, so
+        resolution falls through to the selector, whose binding then runs.
+
+        Branches on the action name, not the key, so it stays correct if
+        `ctrl+n` is ever rebound.
+
+        Returns:
+            `False` to disable `open_notifications` while a `ModelSelectorScreen`
+                is active, letting the selector handle Ctrl+N; `True` otherwise,
+                leaving the binding enabled.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        return True
 
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
@@ -16184,6 +16304,144 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
 
+    async def _handle_threads_command(self, command: str) -> None:
+        """Dispatch `/threads`, optionally resuming a thread without the modal.
+
+        Bare `/threads` opens the interactive selector. `/threads -r [ID]`
+        resumes in place: `-r` alone returns to the thread left by the most
+        recent reset (e.g. `/clear`), falling back to the most recent thread
+        for the active agent; `-r <ID>` resumes a specific thread. Both forms
+        only resume threads owned by the active agent, mirroring the
+        launch-time `-r` flag.
+
+        Args:
+            command: The raw command text, e.g. `"/threads -r abc123"`.
+        """
+        args = command.split()[1:]  # drop the leading "/threads"
+
+        if not args:
+            await self._show_thread_selector()
+            return
+
+        if args[0].lower() not in {"-r", "--resume"}:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /threads (open selector) or /threads -r [ID] "
+                    "(resume the previous or a specific thread)."
+                )
+            )
+            return
+
+        max_resume_args = 2  # flag plus at most one thread id
+        if len(args) > max_resume_args:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Usage: /threads -r [ID] accepts at most one thread ID."),
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
+        requested_id = args[1] if len(args) == max_resume_args else None
+        target = await self._resolve_threads_resume_target(requested_id)
+        if target is not None:
+            await self._resume_thread(target)
+
+    async def _resolve_threads_resume_target(
+        self, requested_id: str | None
+    ) -> str | None:
+        """Resolve a `/threads -r` argument to a concrete, resumable thread id.
+
+        Only threads owned by the active agent resolve: an explicit id owned by
+        another agent is refused, and the bare-`-r` fallback is filtered to the
+        active agent's most recent thread.
+
+        Args:
+            requested_id: Explicit thread id from `-r <ID>`, or `None` for a
+                bare `-r` (resume the previous or most-recent thread).
+
+        Returns:
+            The thread id to resume, or `None` when nothing suitable exists;
+            in that case a user-facing message has already been mounted.
+        """
+        import sqlite3
+
+        from deepagents_code.sessions import (
+            find_similar_threads,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        try:
+            active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+            if requested_id is not None:
+                if await thread_exists(requested_id):
+                    owner = await get_thread_agent(requested_id)
+                    if owner == active_agent:
+                        return requested_id
+                    if owner:
+                        msg = (
+                            f"Thread '{requested_id}' belongs to agent '{owner}', not "
+                            f"the active agent '{active_agent}'. Switch agents first."
+                        )
+                    else:
+                        msg = (
+                            f"Could not verify which agent owns thread "
+                            f"'{requested_id}', so it was not resumed."
+                        )
+                    await self._mount_message(AppMessage(msg))
+                    return None
+                hint = f"Thread '{requested_id}' not found."
+                similar = await find_similar_threads(requested_id)
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                await self._mount_message(AppMessage(hint))
+                return None
+
+            # Bare `-r`: prefer the thread the session just left (e.g. via
+            # `/clear`), then fall back to the most recent inactive thread on disk.
+            previous = (
+                self._session_state.previous_thread_id if self._session_state else None
+            )
+            if previous and await thread_exists(previous):
+                owner = await get_thread_agent(previous)
+                if owner == active_agent:
+                    return previous
+
+            current = self._session_state.thread_id if self._session_state else None
+            candidate = await get_most_recent(
+                active_agent,
+                exclude_thread_id=current,
+            )
+            if candidate:
+                return candidate
+
+            msg = f"No previous threads for '{active_agent}' to resume."
+            await self._mount_message(AppMessage(msg))
+        except (sqlite3.Error, OSError):
+            # Expected thread-store failures: log for a debug session and tell
+            # the user to retry. Mirrors the launch-time resolver's handling.
+            logger.warning(
+                "Thread-history lookup failed resolving resume target %r",
+                requested_id,
+                exc_info=True,
+            )
+            await self._mount_message(
+                AppMessage("Could not look up thread history. Please try again.")
+            )
+        except Exception:
+            # Anything else (e.g. a programming error, or a widget-mount fault)
+            # is a real bug, not "database unavailable" — surface it loudly
+            # instead of masking it behind the retry message above.
+            logger.exception(
+                "Unexpected error resolving resume target %r", requested_id
+            )
+            await self._mount_message(
+                AppMessage("Something went wrong resolving that thread.")
+            )
+        return None
+
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
         from functools import partial
@@ -16855,6 +17113,13 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
+
+            # The switch succeeded: record the thread we just left so a
+            # subsequent bare `/threads -r` steps back to it rather than
+            # resolving `previous == current` and reporting "Already on
+            # thread". Set only after the last statement that can raise, so a
+            # failed switch (handled below) never leaves a stale pointer.
+            self._session_state.previous_thread_id = prev_session_thread
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

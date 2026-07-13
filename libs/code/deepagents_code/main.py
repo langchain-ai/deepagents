@@ -2319,7 +2319,8 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     if not stdin_text:
         return
 
-    # Priority: -n message > -m prompt > --skill (no -m) > fallback to -n.
+    # Priority: -n message > -m prompt > --skill (no -m, no explicit --stdin)
+    # > fallback to -n.
     # The initial_prompt branch uses `is not None` (not truthiness) so that
     # `-m ""` is distinguished from "no -m at all", allowing stdin to land
     # in initial_prompt even when the explicit value is empty.  The --skill

@@ -519,6 +519,46 @@ class TestSkillFlagValidation:
             cli_main()
         assert exc_info.value.code == 2
 
+    def test_skill_with_explicit_stdin_and_quiet_runs_headless(self) -> None:
+        """`--skill --stdin -q` clears the guard and forwards the skill headless.
+
+        Explicit `--stdin` routes the piped text to `non_interactive_message`
+        (not the interactive `-m` seed), which satisfies the `--skill` +
+        `--quiet` guard and reaches `run_non_interactive` with both the piped
+        message and `initial_skill`.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "review this repo"
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            # Skip the /dev/tty dance — os.open would fail in test sandboxes
+            # and the real code path already tolerates that failure.
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        assert mock_run.await_args.kwargs["initial_skill"] == "code-review"  # ty: ignore
+        assert mock_run.await_args.kwargs["message"] == "review this repo"  # ty: ignore
+
 
 class TestMaxTurnsArgument:
     """Tests for --max-turns argument parsing and validation."""

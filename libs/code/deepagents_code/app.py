@@ -1939,6 +1939,11 @@ class DeepAgentsApp(App):
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `DebugConsoleScreen` is active so the console's own `shift+tab`
+        # reverse-focus traversal runs instead; keep the action name in sync
+        # there. That branch keys on the `toggle_auto_approve` action, so it also
+        # steps aside the `ctrl+t` binding above while the console is open.
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -14603,26 +14608,42 @@ class DeepAgentsApp(App):
         action: str,
         parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
     ) -> bool | None:
-        """Disable `open_notifications` while the model selector is open.
+        """Step aside priority app bindings that the active screen needs.
 
-        Textual resolves `priority=True` bindings App-first, so the App's
-        `ctrl+n -> open_notifications` binding (see `BINDINGS`) would otherwise
-        win over `ModelSelectorScreen`'s own priority `ctrl+n -> toggle_names`.
-        Returning `False` here disables the App's binding for this dispatch, so
-        resolution falls through to the selector, whose binding then runs.
+        Textual resolves `priority=True` bindings App-first, so these app actions
+        would otherwise consume the key before the active screen sees it.
+        Returning `False` disables the app binding for this dispatch so the key
+        reverts to the active screen's own handling. Depending on the screen that
+        is either a competing screen binding or default key handling:
 
-        Branches on the action name, not the key, so it stays correct if
-        `ctrl+n` is ever rebound.
+        - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
+          priority `ctrl+n -> toggle_names` binding that then wins.
+        - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
+          binding for the key; stepping aside lets it fall through to the
+          console's `key_shift_tab` reverse-focus traversal. Without this the
+          binding fires `action_toggle_auto_approve`, which no-ops under any
+          `ModalScreen`, so the key would be silently swallowed. Note this keys
+          on the action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
+          that (harmless, already a no-op under modals) binding is stepped aside
+          too while the console is open.
+
+        Branches on action names, not keys, so this stays correct if a binding is
+        ever rebound.
 
         Returns:
-            `False` to disable `open_notifications` while a `ModelSelectorScreen`
-                is active, letting the selector handle Ctrl+N; `True` otherwise,
-                leaving the binding enabled.
+            `False` to disable the app binding for this dispatch (letting the
+                active screen or default key handling take the key); `True` to
+                leave it enabled.
         """
         if action == "open_notifications":
             from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
             if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        if action == "toggle_auto_approve":
+            from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+            if isinstance(self.screen, DebugConsoleScreen):
                 return False
         return True
 

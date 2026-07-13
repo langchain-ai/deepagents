@@ -1137,8 +1137,13 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.head(url)
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
+        # Name the failure *class* (e.g. `ConnectTimeout`, `InvalidURL`) so the
+        # failure mode stays diagnosable, but keep the URL redacted: `str(exc)`
+        # echoes the URL (which may carry `${VAR}`-injected credentials), while
+        # the class name never does.
         msg = (
-            f"MCP server '{server_name}': configured URL is unreachable. "
+            f"MCP server '{server_name}': configured URL is unreachable "
+            f"({type(exc).__name__}). "
             "Check that the URL is correct and the server is running."
         )
         raise RuntimeError(msg) from exc
@@ -1148,6 +1153,31 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
             f"{response.status_code}. Server may be down; retry later."
         )
         raise RuntimeError(msg)
+
+
+def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
+    """Return whether a supported config value contains an env reference.
+
+    Exceptions raised after interpolation may include resolved connection
+    values in their messages or traceback. Treat every environment-derived
+    value as potentially sensitive so those failures can be reported without
+    exposing the resolved value.
+
+    Args:
+        server_config: Raw, unresolved MCP server configuration.
+
+    Returns:
+        Whether a supported value contains a `${...}` reference.
+    """
+    scalar_values = [server_config.get("command"), server_config.get("url")]
+    sequence_values = server_config.get("args")
+    if isinstance(sequence_values, list):
+        scalar_values.extend(sequence_values)
+    for field in ("env", "headers"):
+        mapping = server_config.get(field)
+        if isinstance(mapping, dict):
+            scalar_values.extend(mapping.values())
+    return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
 async def _discover_tools(session: ClientSession) -> list[Any]:
@@ -1637,6 +1667,11 @@ async def _load_tools_from_config(
             ready `Connection` otherwise.
         """
         server_type = transports[server_name]
+        # Capture this from the *raw* config, before resolution below rebinds
+        # `server_config` to the expanded copy. Once `${...}` refs are expanded,
+        # a downstream setup error may echo the resolved (secret-bearing) value,
+        # so those messages are redacted; plain configs keep full detail.
+        redact_failure_details = _config_uses_env_interpolation(server_config)
         # Config env-var resolution is the only step that raises `TypeError`
         # (non-string field). Keep it in its own `try` so an unexpected
         # `TypeError` from the connectivity checks below — whose contract is
@@ -1730,12 +1765,25 @@ async def _load_tools_from_config(
                 transport="stdio",
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            logger.warning(
-                "MCP server '%s' skipped: config/setup failed: %s",
-                server_name,
-                exc,
-            )
-            return ("error", str(exc))
+            if redact_failure_details:
+                error = (
+                    f"MCP server {server_name!r}: setup failed after "
+                    "resolving environment variables."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed (%s; details "
+                    "redacted because config uses environment interpolation)",
+                    server_name,
+                    exc.__class__.__name__,
+                )
+            else:
+                error = str(exc)
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed",
+                    server_name,
+                    exc_info=exc,
+                )
+            return ("error", error)
 
     # Preflight + connection build runs concurrently across servers (bounded).
     # Results come back in submission order, so `skipped`/`connections` are
@@ -1781,13 +1829,33 @@ async def _load_tools_from_config(
         Returns:
             The server's LangChain tools plus its `MCPServerInfo` entry.
         """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+
+        def _log_caught_exception(
+            level: int,
+            message: str,
+            caught: BaseException,
+        ) -> None:
+            """Log a caught exception without exposing resolved config values."""
+            if redact_failure_details:
+                rendered_message = message % server_name
+                logger.log(
+                    level,
+                    "%s (%s; details redacted because config uses environment "
+                    "interpolation)",
+                    rendered_message,
+                    caught.__class__.__name__,
+                )
+            else:
+                logger.log(level, message, server_name, exc_info=caught)
+
         try:
             async with create_session(connections[server_name]) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate third-party discovery failures per server
             from deepagents_code.mcp_auth import (
                 find_oauth_challenge,
                 find_reauth_required,
@@ -1801,17 +1869,17 @@ async def _load_tools_from_config(
                     if transport in _SUPPORTED_REMOTE_TYPES
                     else None
                 )
-            except Exception:
+            except Exception as classify_exc:  # noqa: BLE001 - classification must not abort other servers
                 # Classifying the failure is best-effort. If a classifier
                 # itself raises, degrade this one server to a plain error
                 # rather than letting the exception abort tool loading for
                 # every remaining server.
                 reauth = None
                 challenge_url = None
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s': failed to classify discovery error",
-                    server_name,
-                    exc_info=True,
+                    classify_exc,
                 )
 
             if reauth is not None:
@@ -1821,19 +1889,21 @@ async def _load_tools_from_config(
                 # re-login, and keep the original exception only in debug logs
                 # so expected re-auth skips don't flood non-interactive output.
                 status = "unauthenticated"
-                error = (
-                    f"{reauth} "
-                    "(token refresh failed; the original error is in debug logs)"
+                detail = (
+                    "details redacted because config uses environment interpolation"
+                    if redact_failure_details
+                    else "the original error is in debug logs"
                 )
+                error = f"{reauth} (token refresh failed; {detail})"
                 logger.warning(
                     "MCP server '%s' skipped: %s",
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             elif challenge_url is not None:
                 # A remote server answered with a 401 OAuth challenge
@@ -1851,18 +1921,25 @@ async def _load_tools_from_config(
                     server_name,
                     error,
                 )
-                logger.debug(
+                _log_caught_exception(
+                    logging.DEBUG,
                     "MCP server '%s' skipped: 401 OAuth challenge detected",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             else:
                 status = "error"
-                error = str(exc)
-                logger.warning(
+                error = (
+                    (
+                        f"MCP server {server_name!r}: tool discovery failed "
+                        "after resolving environment variables."
+                    )
+                    if redact_failure_details
+                    else str(exc)
+                )
+                _log_caught_exception(
+                    logging.WARNING,
                     "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                    exc,
                 )
             return [], MCPServerInfo(
                 name=server_name,
@@ -1949,17 +2026,25 @@ async def _load_tools_from_config(
                 )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
-            logger.warning(
+        except Exception as exc:  # noqa: BLE001 - isolate third-party tool conversion failures per server
+            error = (
+                (
+                    f"MCP server {server_name!r}: tool construction failed "
+                    "after resolving environment variables."
+                )
+                if redact_failure_details
+                else str(exc)
+            )
+            _log_caught_exception(
+                logging.WARNING,
                 "MCP server '%s' skipped: tool construction failed",
-                server_name,
-                exc_info=True,
+                exc,
             )
             return [], MCPServerInfo(
                 name=server_name,
                 transport=transport,
                 status="error",
-                error=str(exc),
+                error=error,
             )
 
         return server_tools, MCPServerInfo(

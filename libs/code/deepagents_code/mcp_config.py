@@ -142,7 +142,9 @@ def resolve_mcp_server_env(
         A resolved copy of the server configuration.
 
     Raises:
-        TypeError: If a supported field contains a non-string value.
+        TypeError: If a supported field has the wrong type — a non-string
+            scalar value, or `args`/`env`/`headers` with the wrong container
+            type.
         RuntimeError: If a required environment variable is unset.
     """  # noqa: DOC502 - `RuntimeError` is raised by `_interpolate_env`
     resolved: dict[str, Any] = copy.deepcopy(dict(server_config))

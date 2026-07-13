@@ -2266,6 +2266,114 @@ class TestHealthChecks:
         assert tools == []
         assert infos[0].status == "error"
         assert "configured URL is unreachable" in (infos[0].error or "")
+        # The failure *class* is surfaced for diagnosability; it never
+        # embeds the URL, so it is safe to include even when redacting.
+        assert "InvalidURL" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_url_is_redacted_from_discovery_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved URL credentials never reach discovery status or debug logs."""
+        secret = "discovery-url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        request = httpx.Request(
+            "POST",
+            f"https://mcp.example.com/mcp?token={secret}",
+        )
+        response = httpx.Response(500, request=request)
+        discovery_error = httpx.HTTPStatusError(
+            f"server error for URL {request.url}",
+            request=request,
+            response=response,
+        )
+
+        @asynccontextmanager
+        async def _fail_discovery(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[None]:
+            raise discovery_error
+            yield
+
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "langchain_mcp_adapters.sessions.create_session",
+                _fail_discovery,
+            ),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": ("https://mcp.example.com/mcp?token=${MCP_TOKEN}"),
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "tool discovery failed" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_value_is_redacted_from_connection_build_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved values never reach the connection-build error path either.
+
+        Covers the `_preflight_and_connect` setup catch (token-store / provider
+        construction), which runs after preflight succeeds and after `${...}`
+        refs are expanded.
+        """
+        secret = "build-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        storage = MagicMock()
+        storage.get_tokens = AsyncMock(
+            side_effect=RuntimeError(f"token store failure for {secret}")
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.mcp_auth.FileTokenStorage", return_value=storage),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "https://mcp.example.com/mcp?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "setup failed after resolving environment variables" in (
+            infos[0].error or ""
+        )
         assert secret not in (infos[0].error or "")
         assert secret not in caplog.text
         assert manager is not None

@@ -179,6 +179,35 @@ rejected as expired by the server — without the margin, a 401 sends the SDK
 into the full re-auth (browser) flow instead of the cheaper refresh grant.
 """
 
+
+def resolve_headers(
+    headers: dict[str, str],
+    *,
+    server_name: str | None = None,
+) -> dict[str, str]:
+    """Resolve environment-variable references in MCP header values.
+
+    This compatibility wrapper preserves the original public helper while
+    delegating interpolation and validation to the shared MCP config resolver.
+
+    Args:
+        headers: Raw header mapping from MCP config.
+        server_name: Optional server name for field-specific error messages.
+
+    Returns:
+        A new dictionary with environment-variable references resolved.
+
+    Raises:
+        TypeError: If a header value is not a string.
+        RuntimeError: If interpolation fails.
+    """  # noqa: DOC502 - `RuntimeError` is raised by the shared config resolver
+    resolved = resolve_mcp_server_env(
+        server_name or "<unknown>",
+        {"headers": headers},
+    )
+    return resolved["headers"]
+
+
 _REFRESH_LOCK_TIMEOUT_SECONDS = 60.0
 """Longest a provider waits for the cross-process token-refresh lock.
 
@@ -1842,7 +1871,8 @@ async def login(
     Raises:
         ValueError: If `server_config` isn't an http/sse server.
         MCPConfigError: If config env-var interpolation fails or a
-            supported field has a non-string value.
+            supported field has the wrong type (a non-string value, or
+            args/env/headers with the wrong container type).
         RuntimeError: If the device flow fails or times out, or the
             OAuth handshake aborts.
     """  # noqa: DOC502 - `RuntimeError` surfaces via the device flow / handshake

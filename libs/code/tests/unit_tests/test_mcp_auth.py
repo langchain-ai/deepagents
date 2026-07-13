@@ -22,11 +22,40 @@ from deepagents_code.mcp_auth import (
     find_oauth_challenge,
     find_reauth_required,
     format_login_failure,
+    resolve_headers,
 )
 
 _RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
 _BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
 """A minimal RFC 9728 Bearer challenge pointing at the resource metadata."""
+
+
+class TestResolveHeaders:
+    """Compatibility coverage for the public header resolver."""
+
+    def test_delegates_to_shared_interpolation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The legacy helper remains importable and supports shared syntax."""
+        monkeypatch.delenv("MCP_HEADER_TOKEN", raising=False)
+
+        resolved = resolve_headers(
+            {"Authorization": "Bearer ${MCP_HEADER_TOKEN:-fallback}"},
+            server_name="remote",
+        )
+
+        assert resolved == {"Authorization": "Bearer fallback"}
+
+    def test_preserves_original_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Compatibility resolution returns a copy without mutating its input."""
+        monkeypatch.setenv("MCP_HEADER_TOKEN", "resolved")
+        headers = {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
+
+        resolved = resolve_headers(headers)
+
+        assert resolved == {"Authorization": "Bearer resolved"}
+        assert headers == {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
 
 
 def _http_status_error(
@@ -2681,6 +2710,32 @@ class TestLogin:
                     "url": "https://${MISSING_HOST}/mcp",
                     "auth": "oauth",
                 },
+                ui=CliOAuthInteraction(),
+            )
+
+    async def test_login_non_string_field_raises_config_error(self) -> None:
+        """A non-string supported field is wrapped as `MCPConfigError` too.
+
+        Exercises the `TypeError` arm of `login()`'s resolution wrapper (the
+        unset-var tests only cover the `RuntimeError` arm).
+        """
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        # Deliberately malformed (non-string header value) to hit the
+        # `TypeError` arm; typed separately so the intent is explicit.
+        bad_config: dict[str, Any] = {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "auth": "oauth",
+            "headers": {"X-Bad": 1},
+        }
+
+        with pytest.raises(MCPConfigError, match=r"mcpServers\.notion\.headers\.X-Bad"):
+            await login(
+                server_name="notion",
+                server_config=bad_config,  # ty: ignore
                 ui=CliOAuthInteraction(),
             )
 

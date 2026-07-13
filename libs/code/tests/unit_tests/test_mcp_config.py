@@ -79,6 +79,67 @@ class TestResolveMcpServerEnv:
 
         assert resolved["url"] == "https://example.com"
 
+    def test_empty_default_yields_empty_string(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`${VAR:-}` (empty default) resolves to `""` for an unset var."""
+        monkeypatch.delenv("MCP_OPT", raising=False)
+
+        resolved = resolve_mcp_server_env(
+            "srv",
+            {"command": "node", "env": {"OPT": "${MCP_OPT:-}"}},
+        )
+
+        assert resolved["env"] == {"OPT": ""}
+
+    def test_bare_reference_set_empty_emits_empty_without_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bare `${VAR}` set to `""` emits the empty value, not an error.
+
+        Distinct from the unset case (which raises): `:-`-less refs only hard
+        error when the variable is *absent*, not when it is set-but-empty.
+        """
+        monkeypatch.setenv("MCP_EMPTY", "")
+
+        resolved = resolve_mcp_server_env("srv", {"command": "${MCP_EMPTY}/x"})
+
+        assert resolved["command"] == "/x"
+
+    def test_resolved_value_containing_brace_is_not_rescanned(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A resolved value that itself contains `${` is emitted verbatim.
+
+        The malformed-reference guard runs against the raw config string, so a
+        substituted value that happens to contain `${...}` neither re-expands
+        nor trips the malformed check.
+        """
+        monkeypatch.setenv("MCP_LITERAL", "keep-${NOT_A_REF}-literal")
+
+        resolved = resolve_mcp_server_env("srv", {"command": "${MCP_LITERAL}"})
+
+        assert resolved["command"] == "keep-${NOT_A_REF}-literal"
+
+    def test_remote_fields_do_not_mutate_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Resolving `url`/`headers` leaves the source config (and its dicts) intact."""
+        monkeypatch.setenv("MCP_TOKEN", "token")
+        config: dict[str, Any] = {
+            "url": "https://example.com",
+            "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+        }
+
+        resolved = resolve_mcp_server_env("remote", config)
+
+        assert resolved["headers"] == {"Authorization": "Bearer token"}
+        assert config["headers"] == {"Authorization": "Bearer ${MCP_TOKEN}"}
+
     def test_plain_dollar_and_unsupported_fields_are_unchanged(self) -> None:
         """Only braced references in the supported field allowlist expand."""
         config = {

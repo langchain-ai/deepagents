@@ -683,6 +683,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "huggingface": ("langchain_huggingface", "huggingface"),
     "ibm": ("langchain_ibm", "ibm"),
     "litellm": ("langchain_litellm", "litellm"),
+    "meta": ("langchain_meta", "meta"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
     "ollama": ("langchain_ollama", "ollama"),

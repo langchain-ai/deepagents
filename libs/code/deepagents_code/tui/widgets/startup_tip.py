@@ -13,6 +13,7 @@ from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
+    "Use /threads -r to jump back to the thread you just left with /clear": 1,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
     "Use /mcp to search your MCP servers and inspect tool parameters": 1,

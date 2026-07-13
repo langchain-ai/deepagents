@@ -83,6 +83,7 @@ class TestRetryParamByProvider:
         """Major retry-enabled providers use `max_retries`."""
         assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
@@ -1443,6 +1444,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1461,6 +1463,10 @@ class TestProviderBaseUrlEnv:
             "BASETEN_BASE_URL",
             "BASETEN_API_BASE",
         )
+
+    def test_meta_matches_langchain_meta(self) -> None:
+        """Meta reads its dedicated model API base URL variable."""
+        assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
 
 
 class TestModelConfigLoad:

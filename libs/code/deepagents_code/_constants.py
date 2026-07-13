@@ -13,11 +13,14 @@ from typing import Final
 DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
+FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
+"""Prefix used to infer Fireworks from fully-qualified IDs."""
+
 FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (
     "accounts/fireworks/models/",
     "accounts/fireworks/routers/",
 )
-"""Fully-qualified prefixes for Fireworks model and router IDs."""
+"""Model and router ID prefixes used for stripping and classification."""
 
 SYSTEM_MESSAGE_PREFIX: Final[str] = "[SYSTEM]"
 """Prefix for synthetic human messages (e.g. interrupt cancellation notices).

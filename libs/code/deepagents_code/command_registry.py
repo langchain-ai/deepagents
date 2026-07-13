@@ -166,7 +166,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/threads",
         description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="continue history sessions",
+        hidden_keywords="continue history sessions resume back previous",
+        argument_hint="[-r [ID]]",
     ),
     SlashCommand(
         name="/trace",

@@ -219,9 +219,13 @@ jobs:
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
         run: |
-          # Split on whitespace so several specs (e.g. harbor + harbor-langsmith)
-          # can be overridden together in one run.
-          read -ra specs <<< "$HARBOR_PACKAGE_OVERRIDE"
+          # One package spec per line (blank lines ignored); intra-spec spaces
+          # are preserved so PEP 508 `name @ url` refs survive. Several specs
+          # (e.g. harbor + harbor-langsmith) install together as one set.
+          specs=()
+          while IFS= read -r spec; do
+            [ -n "$spec" ] && specs+=("$spec")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
           uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"

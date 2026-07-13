@@ -246,6 +246,23 @@ class TestThreadFunctions:
             tid = asyncio.run(sessions.get_most_recent(agent_name="agent2"))
             assert tid == "thread2"
 
+    def test_get_most_recent_excludes_thread(self, temp_db):
+        """Get most recent skips the excluded thread."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            tid = asyncio.run(sessions.get_most_recent(exclude_thread_id="thread3"))
+            assert tid == "thread2"
+
+    def test_get_most_recent_excludes_thread_with_agent_filter(self, temp_db):
+        """Thread exclusion composes with the agent filter."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            tid = asyncio.run(
+                sessions.get_most_recent(
+                    agent_name="agent1",
+                    exclude_thread_id="thread3",
+                )
+            )
+            assert tid == "thread1"
+
     def test_get_most_recent_empty(self, tmp_path):
         """Get most recent returns None when empty."""
         db_path = tmp_path / "empty.db"

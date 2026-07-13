@@ -16326,36 +16326,52 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        if requested_id is not None:
-            if await thread_exists(requested_id):
-                return requested_id
-            hint = f"Thread '{requested_id}' not found."
-            similar = await find_similar_threads(requested_id)
-            if similar:
-                hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
-            await self._mount_message(AppMessage(hint))
-            return None
+        try:
+            if requested_id is not None:
+                if await thread_exists(requested_id):
+                    return requested_id
+                hint = f"Thread '{requested_id}' not found."
+                similar = await find_similar_threads(requested_id)
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                await self._mount_message(AppMessage(hint))
+                return None
 
-        # Bare `-r`: prefer the thread the session just left (e.g. via `/clear`),
-        # then fall back to the most recent thread on disk.
-        previous = (
-            self._session_state.previous_thread_id if self._session_state else None
-        )
-        if previous and await thread_exists(previous):
-            return previous
+            # Bare `-r`: prefer the thread the session just left (e.g. via
+            # `/clear`), then fall back to the most recent inactive thread on disk.
+            previous = (
+                self._session_state.previous_thread_id if self._session_state else None
+            )
+            if previous and await thread_exists(previous):
+                return previous
 
-        agent_filter = (
-            self._assistant_id if self._assistant_id != DEFAULT_ASSISTANT_ID else None
-        )
-        candidate = await get_most_recent(agent_filter)
-        if candidate:
-            return candidate
+            agent_filter = (
+                self._assistant_id
+                if self._assistant_id != DEFAULT_ASSISTANT_ID
+                else None
+            )
+            current = self._session_state.thread_id if self._session_state else None
+            candidate = await get_most_recent(
+                agent_filter,
+                exclude_thread_id=current,
+            )
+            if candidate:
+                return candidate
 
-        if agent_filter:
-            msg = f"No previous threads for '{agent_filter}' to resume."
-        else:
-            msg = "No previous threads to resume."
-        await self._mount_message(AppMessage(msg))
+            if agent_filter:
+                msg = f"No previous threads for '{agent_filter}' to resume."
+            else:
+                msg = "No previous threads to resume."
+            await self._mount_message(AppMessage(msg))
+        except Exception:
+            logger.debug(
+                "Failed to resolve in-TUI resume target %r",
+                requested_id,
+                exc_info=True,
+            )
+            await self._mount_message(
+                AppMessage("Could not look up thread history. Please try again.")
+            )
         return None
 
     async def _show_thread_selector(self) -> None:

@@ -117,6 +117,22 @@ class TestResolveResumeTarget:
         assert target is None
         app._mount_message.assert_awaited()  # ty: ignore
 
+    async def test_specific_id_database_failure_notifies(self) -> None:
+        app = _make_app()
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.find_similar_threads",
+                AsyncMock(side_effect=RuntimeError("db unavailable")),
+            ),
+        ):
+            target = await app._resolve_threads_resume_target("abc")
+        assert target is None
+        app._mount_message.assert_awaited_once()  # ty: ignore
+
     async def test_bare_prefers_previous_thread(self) -> None:
         app = _make_app()
         state = TextualSessionState(thread_id="cur")
@@ -145,7 +161,10 @@ class TestResolveResumeTarget:
         ):
             target = await app._resolve_threads_resume_target(None)
         assert target == "recent"
-        most_recent.assert_awaited_once_with("coder")
+        most_recent.assert_awaited_once_with(
+            "coder",
+            exclude_thread_id="cur",
+        )
 
     async def test_bare_none_when_no_threads(self) -> None:
         app = _make_app()
@@ -163,3 +182,20 @@ class TestResolveResumeTarget:
             target = await app._resolve_threads_resume_target(None)
         assert target is None
         app._mount_message.assert_awaited()  # ty: ignore
+
+    async def test_bare_database_failure_notifies(self) -> None:
+        app = _make_app()
+        app._session_state = TextualSessionState(thread_id="cur")
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(side_effect=RuntimeError("db unavailable")),
+            ),
+        ):
+            target = await app._resolve_threads_resume_target(None)
+        assert target is None
+        app._mount_message.assert_awaited_once()  # ty: ignore

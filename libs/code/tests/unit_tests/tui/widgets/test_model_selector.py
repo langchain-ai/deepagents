@@ -2476,10 +2476,8 @@ class TestGetModelDisplayName:
         [
             ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
             ("meta:muse-spark-1.1", "Muse Spark 1.1"),
-            ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),
-            ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
             ("xai:grok-4.5", "Grok 4.5"),

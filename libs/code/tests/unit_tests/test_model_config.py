@@ -5823,10 +5823,10 @@ class TestCodexProviderMirror:
 
     def test_gpt_56_models_are_allowlisted(self) -> None:
         assert {
-            "gpt-5.6-luna",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
         } <= model_config.CODEX_MODELS
+        assert "gpt-5.6-luna" not in model_config.CODEX_MODELS
 
     def test_available_models_mirror_codex_allowlist(self) -> None:
         model_config.clear_caches()

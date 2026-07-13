@@ -48,10 +48,6 @@ def _restore_settings() -> Iterator[None]:
             ("none", "low", "medium", "high", "xhigh", "max"),
         ),
         (
-            "openai:gpt-5.6-luna",
-            ("none", "low", "medium", "high", "xhigh", "max"),
-        ),
-        (
             "openai_codex:gpt-5.6-sol",
             ("none", "low", "medium", "high", "xhigh", "max"),
         ),
@@ -125,7 +121,6 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
         ("openai_codex:gpt-5.5", "medium"),
         ("openai:gpt-5.6-sol", "medium"),
         ("openai:gpt-5.6-terra", "medium"),
-        ("openai:gpt-5.6-luna", "medium"),
         ("openai_codex:gpt-5.6-sol", "medium"),
         ("openai:gpt-5.4", None),
         ("openai:gpt-5.60-sol", None),

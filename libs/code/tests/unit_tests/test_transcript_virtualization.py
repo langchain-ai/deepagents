@@ -4,9 +4,9 @@ These bind the behavior that history hydration is driven by real changes to the
 chat's vertical scroll offset (`_ChatScroll.watch_scroll_y` -> the
 `_ChatScroll.Scrolled` message -> `DeepAgentsApp.on_chat_scrolled`), rather than
 the scrollbar `ScrollUp`/`ScrollDown` messages the feature originally relied on.
-Those scrollbar messages never fire for wheel/trackpad/keyboard scrolling and are
-consumed by the container before reaching the app, so hydration never ran for the
-common case of scrolling with a trackpad.
+See `_ChatScroll.Scrolled` for why those scrollbar messages never reached the app
+for wheel/trackpad/keyboard scrolling, so hydration never ran for the common case
+of scrolling with a trackpad.
 """
 
 from __future__ import annotations
@@ -81,6 +81,24 @@ class TestChatScrollNotifies:
             assert chat.scroll_y < chat.max_scroll_y
             assert app.scroll_notifications > 0
 
+    async def test_keyboard_scroll_notifies_app(self) -> None:
+        """Keyboard scrolling (key-binding scroll actions) reaches the app."""
+        app = _ScrollProbeApp()
+        async with app.run_test(size=(40, 6)) as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.focus()
+            await pilot.pause()
+            assert chat.max_scroll_y > 0
+            app.scroll_notifications = 0
+
+            # `pagedown` routes through a key binding -> `action_page_down` ->
+            # `scroll_y`, never through a scrollbar `ScrollDown` message.
+            await pilot.press("pagedown")
+            await pilot.pause()
+
+            assert chat.scroll_y > 0
+            assert app.scroll_notifications > 0
+
     async def test_scrollbar_track_scroll_notifies_app(self) -> None:
         """Scrollbar-track paging also flows through the scroll-offset watcher."""
         app = _ScrollProbeApp()
@@ -105,9 +123,17 @@ class TestChatScrollNotifies:
             await pilot.pause()
             app.scroll_notifications = 0
 
+            # Assigning the same value: Textual's reactive dedups this before the
+            # watcher even runs, so no notification regardless of our guard.
             chat.scroll_y = chat.scroll_y
             await pilot.pause()
+            assert app.scroll_notifications == 0
 
+            # Invoke the watcher directly with equal offsets to bind the
+            # `old_value != new_value` guard itself (not just Textual's dedup):
+            # deleting the guard would make this post a `Scrolled` message.
+            chat.watch_scroll_y(5.0, 5.0)
+            await pilot.pause()
             assert app.scroll_notifications == 0
 
 
@@ -133,6 +159,7 @@ class TestScrollDrivenHydration:
             # Shrink the window and prune the oldest rows so history is archived
             # above the mounted tail (the state after a long transcript grows).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
             await app._prune_old_messages()
             await pilot.pause()
 
@@ -140,15 +167,25 @@ class TestScrollDrivenHydration:
             assert app._message_store.has_messages_above
             assert start_before > 0
 
+            # The oldest row (`m0`) is archived, so no widget for it is mounted.
+            # The DOM stays bounded at `WINDOW_SIZE`, so hydration swaps rows
+            # rather than growing the count — assert the boundary row itself is
+            # (re)mounted, which binds the store counters to real widgets.
+            messages = app.query_one("#messages", Container)
+            assert not messages.query("#m0")
+
             chat = app.query_one("#chat", _ChatScroll)
             chat.scroll_end(animate=False)
             await pilot.pause()
             chat.scroll_to(y=0, animate=False)
-            for _ in range(6):
+            for _ in range(30):
                 await pilot.pause()
+                if not app._message_store.has_messages_above:
+                    break
 
             start_after, _end_after = app._message_store.get_visible_range()
-            assert start_after < start_before
+            assert start_after == 0
+            assert messages.query("#m0")
 
     async def test_scroll_down_hydrates_tail_below(
         self, monkeypatch: pytest.MonkeyPatch
@@ -163,19 +200,27 @@ class TestScrollDrivenHydration:
             # Archive the newest rows below the window (the state after the user
             # has scrolled up and older history was mounted in their place).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
             messages = app.query_one("#messages", Container)
             await app._prune_messages_below_window(messages)
             await pilot.pause()
 
-            _start_before, end_before = app._message_store.get_visible_range()
+            _start_before, _end_before = app._message_store.get_visible_range()
             assert app._message_store.has_messages_below
+            # The newest row is archived below the window, so it is not mounted.
+            last_id = f"#m{app._message_store.total_count - 1}"
+            assert not messages.query(last_id)
 
             chat = app.query_one("#chat", _ChatScroll)
             chat.scroll_to(y=0, animate=False)
             await pilot.pause()
             chat.scroll_end(animate=False)
-            for _ in range(6):
+            for _ in range(30):
                 await pilot.pause()
+                if not app._message_store.has_messages_below:
+                    break
 
             _start_after, end_after = app._message_store.get_visible_range()
-            assert end_after > end_before
+            assert end_after == app._message_store.total_count
+            # Bind the store counter to a real widget: the tail row is mounted.
+            assert messages.query(last_id)

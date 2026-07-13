@@ -39,8 +39,25 @@ def _restore_settings() -> Iterator[None]:
     [
         ("openai:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
         ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+        (
+            "openai:gpt-5.6-sol",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai:gpt-5.6-terra",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai:gpt-5.6-luna",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
+        (
+            "openai_codex:gpt-5.6-sol",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+        ),
         # A generic (non-5.5) gpt-5 still gets the full OpenAI range.
         ("openai:gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
+        ("openai:gpt-5.60-sol", ("none", "low", "medium", "high", "xhigh")),
         ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
         # Opus 4.7 is the first version documented for the full range; assert the
         # named boundary directly rather than relying on 4.8 to exercise it.
@@ -65,6 +82,9 @@ def _restore_settings() -> Iterator[None]:
         ("anthropic:claude-opus-4-16", ("low", "medium", "high", "xhigh", "max")),
         ("google_genai:gemini-3.5-flash", ("low", "medium", "high")),
         ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
+        ("xai:grok-4.5", ("low", "medium", "high")),
+        ("xai:grok-4.5-latest", ("low", "medium", "high")),
+        ("xai:grok-build-latest", ("low", "medium", "high")),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
             ("none", "low", "medium", "high", "xhigh", "max"),
@@ -74,6 +94,12 @@ def _restore_settings() -> Iterator[None]:
             ("low", "medium", "high"),
         ),
         ("fireworks:accounts/fireworks/models/glm-5p2", ("none", "high", "max")),
+        # Fireworks routers (`accounts/fireworks/routers/...`) are gated the same
+        # as individual models, so effort support keys off the model family.
+        (
+            "fireworks:accounts/fireworks/routers/glm-5p1-fast",
+            ("none", "high", "max"),
+        ),
         # Recognized provider, wrong model family: the per-provider prefix
         # guards in `_classify_reasoning_provider` (and the Fireworks family
         # check) must reject these rather than fall through to an effort set.
@@ -81,7 +107,11 @@ def _restore_settings() -> Iterator[None]:
         ("openai_codex:gpt-4o", ()),
         ("anthropic:claude-3-5-haiku-latest", ()),
         ("google_genai:gemini-2.5-flash", ()),
+        ("xai:grok-4", ()),
         ("fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct", ()),
+        # Same guard for the router prefix: a recognized router whose id carries
+        # no known family token must also fall through to no efforts.
+        ("fireworks:accounts/fireworks/routers/llama-v3p1-70b-instruct", ()),
     ],
 )
 def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:
@@ -93,8 +123,12 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
     [
         ("openai:gpt-5.5", "medium"),
         ("openai_codex:gpt-5.5", "medium"),
-        # Only gpt-5.5 has a documented default; other gpt-5 variants are None.
+        ("openai:gpt-5.6-sol", "medium"),
+        ("openai:gpt-5.6-terra", "medium"),
+        ("openai:gpt-5.6-luna", "medium"),
+        ("openai_codex:gpt-5.6-sol", "medium"),
         ("openai:gpt-5.4", None),
+        ("openai:gpt-5.60-sol", None),
         ("anthropic:claude-opus-4-8", "high"),
         ("anthropic:claude-opus-4-7", "high"),
         ("anthropic:claude-sonnet-4-6", "high"),
@@ -104,9 +138,12 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
         ("google_genai:gemini-3.1-pro-preview", "high"),
         ("google_genai:gemini-3-pro", "high"),
         ("google_genai:gemini-3-flash", "high"),
+        ("xai:grok-4.5", "high"),
         ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "high"),
         ("fireworks:accounts/fireworks/models/glm-5p2", "max"),
         ("fireworks:accounts/fireworks/models/kimi-k2p7-code", None),
+        # Routers reach the same family-based default lookup as models.
+        ("fireworks:accounts/fireworks/routers/deepseek-v4-pro", "high"),
         ("ollama:llama3.1", None),
     ],
 )
@@ -118,6 +155,9 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
     assert model_params_for_effort("openai:gpt-5.5", "high") == {
         "reasoning": {"effort": "high", "summary": "auto"}
     }
+    assert model_params_for_effort("openai:gpt-5.6-sol", "max") == {
+        "reasoning": {"effort": "max", "summary": "auto"}
+    }
     assert model_params_for_effort("anthropic:claude-opus-4-8", "xhigh") == {
         "thinking": {"type": "adaptive", "display": "summarized"},
         "output_config": {"effort": "xhigh"},
@@ -128,6 +168,9 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
     assert model_params_for_effort(
         "fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"
     ) == {"model_kwargs": {"reasoning_effort": "max"}}
+    assert model_params_for_effort("xai:grok-4.5", "medium") == {
+        "extra_body": {"reasoning_effort": "medium"}
+    }
 
 
 def test_current_effort_reads_anthropic_output_config() -> None:
@@ -136,6 +179,15 @@ def test_current_effort_reads_anthropic_output_config() -> None:
             "anthropic:claude-opus-4-8", {"output_config": {"effort": "low"}}
         )
         == "low"
+    )
+
+
+def test_current_effort_reads_xai_extra_body() -> None:
+    assert (
+        current_effort_from_model_params(
+            "xai:grok-4.5", {"extra_body": {"reasoning_effort": "high"}}
+        )
+        == "high"
     )
 
 
@@ -171,6 +223,21 @@ def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> Non
     }
 
 
+def test_merge_and_clear_xai_effort_preserves_extra_body_params() -> None:
+    merged = merge_effort_model_params(
+        {"extra_body": {"prompt_cache_key": "thread-1"}},
+        {"extra_body": {"reasoning_effort": "high"}},
+    )
+
+    assert merged == {
+        "extra_body": {"prompt_cache_key": "thread-1", "reasoning_effort": "high"}
+    }
+    assert current_effort_from_model_params("xai:grok-4.5", merged) == "high"
+    assert without_effort_model_params(merged) == {
+        "extra_body": {"prompt_cache_key": "thread-1"}
+    }
+
+
 @pytest.mark.parametrize(
     ("model_spec", "model_params"),
     [
@@ -185,6 +252,7 @@ def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> Non
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
             {"model_kwargs": {"reasoning_effort": 5}},
         ),
+        ("xai:grok-4.5", {"extra_body": {"reasoning_effort": 5}}),
     ],
 )
 def test_current_effort_warns_on_malformed_params(
@@ -212,6 +280,13 @@ def test_current_effort_non_dict_model_kwargs_is_silent() -> None:
             {"model_kwargs": "raw"},
         )
         is None
+    )
+
+
+def test_current_effort_non_dict_extra_body_is_silent() -> None:
+    """A non-dict `extra_body` is a legit shape and must not warn."""
+    assert (
+        current_effort_from_model_params("xai:grok-4.5", {"extra_body": "raw"}) is None
     )
 
 

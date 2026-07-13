@@ -12,11 +12,14 @@ import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
+    DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
     PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
+    STARTUP_MODE_DANGEROUSLY_AUTO,
+    STARTUP_MODE_MANUAL,
     THREAD_COLUMN_DEFAULTS,
     McpServerTrustLists,
     ModelConfig,
@@ -43,6 +46,7 @@ from deepagents_code.model_config import (
     load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
+    load_startup_mode,
     load_thread_columns,
     save_default_agent,
     save_recent_agent,
@@ -79,6 +83,7 @@ class TestRetryParamByProvider:
         """Major retry-enabled providers use `max_retries`."""
         assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
@@ -1439,6 +1444,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1458,6 +1464,10 @@ class TestProviderBaseUrlEnv:
             "BASETEN_API_BASE",
         )
 
+    def test_meta_matches_langchain_meta(self) -> None:
+        """Meta reads its dedicated model API base URL variable."""
+        assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
+
 
 class TestModelConfigLoad:
     """Tests for ModelConfig.load() method."""
@@ -1469,6 +1479,40 @@ class TestModelConfigLoad:
 
         assert config.default_model is None
         assert config.providers == {}
+
+    def test_returns_empty_config_when_models_section_is_not_a_table(
+        self, tmp_path, caplog
+    ):
+        """Valid TOML with a scalar `models` falls back instead of raising.
+
+        `load()` must be total: a structurally wrong config surfaces as an
+        AttributeError from `.get(...)` after a clean parse, which callers like
+        the /auth modal do not guard against.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('models = "oops"\n')
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
+
+    def test_returns_empty_config_when_providers_is_not_a_table(self, tmp_path, caplog):
+        """Valid TOML with a non-table `providers` falls back instead of raising.
+
+        This shape raises a TypeError from the dataclass constructor
+        (`MappingProxyType(5)`), the other post-parse failure mode.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nproviders = 5\n")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""
@@ -5777,6 +5821,13 @@ class TestCodexProviderMirror:
     `openai_codex`; other openai models are not mirrored.
     """
 
+    def test_gpt_56_models_are_allowlisted(self) -> None:
+        assert {
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        } <= model_config.CODEX_MODELS
+
     def test_available_models_mirror_codex_allowlist(self) -> None:
         model_config.clear_caches()
         available = model_config.get_available_models()
@@ -5881,3 +5932,66 @@ enabled = false
         assert not any(
             spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
         )
+
+
+class TestLoadStartupMode:
+    """Tests for `load_startup_mode` reading `[startup].mode` from config.toml."""
+
+    def test_missing_file_returns_default(self, tmp_path: Path) -> None:
+        """A nonexistent config file falls back to the default mode."""
+        assert load_startup_mode(tmp_path / "missing.toml") == DEFAULT_STARTUP_MODE
+        assert DEFAULT_STARTUP_MODE == STARTUP_MODE_MANUAL
+
+    def test_unset_option_returns_default(self, tmp_path: Path) -> None:
+        """A config file without `[startup].mode` falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[threads]\nsort_order = 'created_at'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_manual(self, tmp_path: Path) -> None:
+        """`mode = 'manual'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'manual'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_dangerously_auto(self, tmp_path: Path) -> None:
+        """`mode = 'dangerously-auto'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'dangerously-auto'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_DANGEROUSLY_AUTO
+
+    def test_invalid_value_returns_default(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unrecognized mode logs a warning and falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'yolo'\n")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        assert any("startup" in r.getMessage().lower() for r in caplog.records)
+
+    def test_malformed_startup_table_returns_default(self, tmp_path: Path) -> None:
+        """A non-table `startup` value does not crash and falls back."""
+        config = tmp_path / "config.toml"
+        config.write_text("startup = 'oops'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_non_scalar_mode_returns_default(self, tmp_path: Path) -> None:
+        """A non-string `mode` (e.g. array) falls back instead of raising.
+
+        `value in VALID_STARTUP_MODES` (a frozenset) would raise `TypeError:
+        unhashable type` on a list/dict; the isinstance guard must prevent that.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = ['dangerously-auto']\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_unparseable_file_returns_default(self, tmp_path: Path) -> None:
+        """Syntactically invalid TOML is swallowed and falls back to default.
+
+        Exercises the `except (OSError, tomllib.TOMLDecodeError)` branch, which
+        must fail closed (to `manual`) rather than propagate and abort startup.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("this is not valid toml [[[\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL

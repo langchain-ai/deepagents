@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import os
+import signal
 import sys
 from collections.abc import Iterator
 from io import StringIO
@@ -18,6 +19,8 @@ from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
     _auto_install_ripgrep_cli,
+    _handle_termination_signal,
+    _install_termination_signal_handlers,
     _is_managed_ripgrep_path,
     _render_teardown_thread_hints,
     _restart_current_process,
@@ -36,6 +39,42 @@ from deepagents_code.main import (
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
 # tests startup update behavior itself, so each test must control those values.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+class TestTerminationSignalHandling:
+    """Tests for terminating-signal cleanup wiring."""
+
+    def test_posix_installs_unwinding_handler(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POSIX terminating signals unwind so cleanup can run."""
+        monkeypatch.setattr("deepagents_code.main.sys.platform", "linux")
+        install = MagicMock()
+        monkeypatch.setattr("deepagents_code.main.signal.signal", install)
+
+        _install_termination_signal_handlers()
+
+        assert install.call_args_list == [
+            ((signal.SIGHUP, _handle_termination_signal),),
+            ((signal.SIGTERM, _handle_termination_signal),),
+            ((signal.SIGQUIT, _handle_termination_signal),),
+        ]
+        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
+            with pytest.raises(SystemExit) as exc_info:
+                _handle_termination_signal(signum, None)
+            assert exc_info.value.code == 128 + signum
+
+    def test_windows_does_not_install_termination_signal_handlers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows skips the POSIX-only SIGHUP API."""
+        monkeypatch.setattr("deepagents_code.main.sys.platform", "win32")
+        install = MagicMock()
+        monkeypatch.setattr("deepagents_code.main.signal.signal", install)
+
+        _install_termination_signal_handlers()
+
+        install.assert_not_called()
 
 
 class TestStartupAutoUpdate:
@@ -132,6 +171,8 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "tail -f /tmp/dcode-update.log" in printed
         restart.assert_called_once_with()
 
     def test_successful_update_skips_restart_when_shadowed(self) -> None:
@@ -1529,8 +1570,9 @@ class TestCheckOptionalTools:
 
         assert missing == ["ripgrep"]
 
-    def test_returns_tavily_when_key_missing(self) -> None:
+    def test_returns_tavily_when_key_missing(self, tmp_path: Path) -> None:
         """Returns `'tavily'` when TAVILY_API_KEY is not set."""
+        config_path = tmp_path / "config.toml"
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
@@ -1538,7 +1580,7 @@ class TestCheckOptionalTools:
                 SimpleNamespace(has_tavily=False),
             ),
         ):
-            missing = check_optional_tools()
+            missing = check_optional_tools(config_path=config_path)
 
         assert missing == ["tavily"]
 
@@ -1680,6 +1722,30 @@ class TestAutoInstallRipgrepCli:
         assert result == ["ripgrep"]
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "SHA-256" in printed
+
+    def test_managed_tool_unavailable_keeps_ripgrep_and_reports(self) -> None:
+        """Permanent managed-tool gaps report remediation and keep fallback active."""
+        from deepagents_code.managed_tools import ManagedToolUnavailableError
+
+        message = (
+            "Managed ripgrep is not available for this system. "
+            "Set DEEPAGENTS_CODE_RIPGREP_INSTALLER=system."
+        )
+        error = ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="unsupported",
+            message=message,
+        )
+        console = MagicMock()
+        with patch(
+            "deepagents_code.managed_tools.ensure_ripgrep",
+            AsyncMock(side_effect=error),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep"])
+
+        assert result == ["ripgrep"]
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert f"[yellow]Warning:[/yellow] {message}" in printed
 
     def test_unexpected_failure_keeps_ripgrep(self) -> None:
         """An unexpected error degrades gracefully to the missing-tool path."""

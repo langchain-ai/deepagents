@@ -2580,7 +2580,7 @@ def editable_package_hint(package: str) -> str:
     """
     return (
         f"Add '{package}' to your editable checkout's environment (the one your "
-        "editable install of Deep Agents Code runs from), then relaunch."
+        "editable install of dcode runs from), then relaunch."
     )
 
 
@@ -2700,21 +2700,21 @@ async def perform_install_package(
     if method == "brew":
         return False, (
             "Homebrew install detected — packages can't be added to a brew "
-            "install. Reinstall Deep Agents Code as a uv-managed tool (see the "
+            "install. Reinstall dcode as a uv-managed tool (see the "
             "installation docs) to enable adding packages."
         )
     if method == "other":
         return False, (
             "Unsupported install method detected — cannot add packages without "
-            "knowing which environment provides `dcode`. Reinstall Deep Agents "
-            "Code as a uv-managed tool (see the installation docs) to enable "
+            "knowing which environment provides `dcode`. Reinstall dcode "
+            "as a uv-managed tool (see the installation docs) to enable "
             "adding packages."
         )
 
     if not shutil.which("uv"):
         return False, (
-            "Package installs require uv, which was not found. Reinstall Deep "
-            "Agents Code following the installation docs so packages can be "
+            "Package installs require uv, which was not found. Reinstall "
+            "dcode following the installation docs so packages can be "
             "added."
         )
 

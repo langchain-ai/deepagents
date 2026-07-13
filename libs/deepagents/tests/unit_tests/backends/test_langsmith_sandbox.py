@@ -426,6 +426,29 @@ def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
     assert 0 < result.next_offset < 8
 
 
+def test_read_oversized_first_line_advances_next_offset() -> None:
+    """A first line larger than the byte cap still advances `next_offset` by one.
+
+    When even the first rendered line overflows `MAX_OUTPUT_BYTES`, the retained
+    prefix contains no line terminator, so the `or 1` fallback must advance the
+    resume offset past that line — otherwise a re-read loops on the same page.
+    """
+    sb, mock_sdk = _make_sandbox()
+    big_line = "y" * 600_000
+    mock_sdk.read.return_value = (big_line + "\nsmall1\nsmall2").encode("utf-8")
+
+    result = sb.read("/app/huge_line.txt", offset=0, limit=5)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.total_lines == 3
+    assert result.start_line == 1
+    # The oversized line cannot be paginated within, so resume just past it.
+    assert result.end_line == 1
+    assert result.next_offset == 1
+
+
 def test_read_binary_at_exact_max_size_succeeds() -> None:
     sb, mock_sdk = _make_sandbox()
     raw = b"\x00" * MAX_BINARY_BYTES

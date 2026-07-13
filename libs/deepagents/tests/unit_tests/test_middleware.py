@@ -1431,7 +1431,7 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == "     1\tone\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
 
-    def test_read_file_truncation_preserves_remaining_lines_notice(self):
+    def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
         read_result = ReadResult(
             file_data=FileData(content="x" * 1000, encoding="utf-8"),
@@ -1448,7 +1448,31 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert "Output was truncated due to size limits" in result.content
-        assert result.content.endswith("[Read 1 line (lines 1-1 of 2 total). 1 line remaining from offset 1.]")
+        assert "remaining from offset" not in result.content
+
+    def test_read_file_truncation_recomputes_remaining_lines_notice(self):
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(
+                content="\n".join(f"line {line}: " + "x" * 80 for line in range(1, 101)),
+                encoding="utf-8",
+            ),
+            total_lines=120,
+            start_line=1,
+            end_line=100,
+            next_offset=100,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=500)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        numbered_lines = [line for line in result.content.splitlines() if "\t" in line]
+        last_displayed_line = int(numbered_lines[-1].split("\t", 1)[0])
+        assert last_displayed_line < 100
+        assert f"remaining from offset {last_displayed_line}.]" in result.content
 
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""

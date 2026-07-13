@@ -200,6 +200,25 @@ class ReadResult:
     end_line: int | None = None
     next_offset: int | None = None
 
+    def __post_init__(self) -> None:
+        """Reject malformed pagination-field combinations at construction.
+
+        The window fields are not independent: `start_line`/`end_line` are a
+        pair, and neither `next_offset` nor `total_lines` describes anything
+        without the window it refers to. Failing loudly here keeps a buggy
+        backend from emitting a `next_offset` that would silently skip unshown
+        source lines once it reaches the middleware.
+        """
+        if (self.start_line is None) != (self.end_line is None):
+            msg = "ReadResult.start_line and end_line must be set together or both left unset"
+            raise ValueError(msg)
+        if self.next_offset is not None and self.start_line is None:
+            msg = "ReadResult.next_offset requires start_line and end_line to be set"
+            raise ValueError(msg)
+        if self.total_lines is not None and self.start_line is None:
+            msg = "ReadResult.total_lines requires start_line and end_line to be set"
+            raise ValueError(msg)
+
 
 class _Unset:
     """Sentinel type for detecting explicit parameter usage."""

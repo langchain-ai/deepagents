@@ -533,7 +533,17 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
 
 
 def _remaining_lines_notice(read_result: ReadResult) -> str:
-    """Render the read pagination notice when the backend returned a partial window."""
+    """Render the read pagination notice when the backend returned a partial window.
+
+    Args:
+        read_result: Backend read result carrying the pagination metadata
+            (`start_line`, `end_line`, `next_offset`, `total_lines`).
+
+    Returns:
+        A model-facing notice describing the window that was read and where to
+        resume, or an empty string when no window metadata is present or the
+        window already reached the end of the file (nothing more to read).
+    """
     total_lines = read_result.total_lines
     start_line = read_result.start_line
     end_line = read_result.end_line
@@ -597,6 +607,80 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
+
+
+def _truncate_paginated_read(
+    content: str,
+    file_path: str,
+    read_result: ReadResult,
+    offset: int,
+    token_limit: int | None,
+) -> str:
+    """Truncate a paginated read without skipping undisplayed source lines.
+
+    The backend computes the pagination notice from the full window it
+    returned, but the char budget may drop trailing rows from what the model
+    actually sees. Appending the backend's notice verbatim would then advertise
+    a `next_offset` past those dropped lines, so a re-read would silently skip
+    them. This recomputes the notice from the last *complete* rendered row that
+    still fits, and falls back to the size warning alone (no stale offset) when
+    not even one full source line fits.
+
+    Args:
+        content: Line-numbered content produced by
+            `format_content_with_line_numbers` (one gutter + tab per row).
+        file_path: Path used to format the truncation message.
+        read_result: Backend read result carrying the window metadata.
+        offset: 0-indexed source-line offset the read started from; used to
+            derive the adjusted `next_offset` after trimming.
+        token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
+            falsy, content is returned with its notice untouched.
+
+    Returns:
+        The (possibly truncated) content with a notice that never overstates
+        which source lines were shown.
+    """
+    notice = _remaining_lines_notice(read_result)
+    if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
+        return content + notice
+
+    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+    threshold = NUM_CHARS_PER_TOKEN * token_limit
+    if read_result.start_line is not None and read_result.end_line is not None and read_result.next_offset is not None:
+        rows = content.split("\n")
+        position = 0
+        boundaries: list[tuple[int, int]] = []
+        for index, row in enumerate(rows):
+            position += len(row)
+            marker = row.partition("\t")[0].strip().partition(".")[0]
+            source_line = int(marker)
+            next_source_line = None
+            if index + 1 < len(rows):
+                next_marker = rows[index + 1].partition("\t")[0].strip().partition(".")[0]
+                next_source_line = int(next_marker)
+            if next_source_line != source_line:
+                boundaries.append((position, source_line))
+            position += 1
+
+        # Only advertise source lines whose complete rendered rows fit. If the
+        # byte cut landed partway through a row, resuming after that row would
+        # silently skip its undisplayed tail.
+        for boundary, end_line in reversed(boundaries):
+            retained_count = end_line - read_result.start_line + 1
+            adjusted_result = ReadResult(
+                total_lines=read_result.total_lines,
+                start_line=read_result.start_line,
+                end_line=end_line,
+                next_offset=offset + retained_count,
+            )
+            adjusted_notice = _remaining_lines_notice(adjusted_result)
+            if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
+                return content[:boundary] + truncation_msg + adjusted_notice
+
+    # No complete source line fits. Keep the size warning but omit the
+    # backend's stale pagination offset.
+    max_content_length = max(0, threshold - len(truncation_msg))
+    return content[:max_content_length] + truncation_msg
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -1516,21 +1600,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         args_schema = ReadVideoFileSchema if video_enabled else ReadFileSchema
         token_limit = self._tool_token_limit_before_evict
 
-        def _truncate(content: str, file_path: str, *, line_limit: int | None = None, suffix: str = "") -> str:
+        def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
             if line_limit is not None:
                 lines = content.splitlines(keepends=True)
                 if len(lines) > line_limit:
                     content = "".join(lines[:line_limit])
 
-            if token_limit and len(content) + len(suffix) >= NUM_CHARS_PER_TOKEN * token_limit:
+            if token_limit and len(content) >= NUM_CHARS_PER_TOKEN * token_limit:
                 truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
-                max_content_length = max(
-                    0,
-                    NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg) - len(suffix),
-                )
+                max_content_length = NUM_CHARS_PER_TOKEN * token_limit - len(truncation_msg)
                 content = content[:max_content_length] + truncation_msg
 
-            return content + suffix
+            return content
 
         def _handle_read_result(  # noqa: PLR0911  # one branch per distinct read-result disposition
             read_result: ReadResult | str,
@@ -1619,12 +1700,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             content = format_content_with_line_numbers(content, start_line=read_result.start_line or offset + 1)
-            notice = _remaining_lines_notice(read_result)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate(content, validated_path, suffix=notice),
+                content=_truncate_paginated_read(content, validated_path, read_result, offset, token_limit),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

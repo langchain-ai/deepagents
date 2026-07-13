@@ -462,9 +462,10 @@ try:
         print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
         sys.exit(0)
 
-    # Count the complete file only when its size makes that extra work bounded.
-    # surrogateescape keeps an invalid byte after the requested page from
-    # invalidating content that was decoded successfully.
+    # When the page already reached EOF, reuse its scan's count for free.
+    # Otherwise re-scan for the total only when the file is small enough that
+    # the extra pass stays bounded; surrogateescape keeps an invalid byte after
+    # the requested page from invalidating content that was decoded successfully.
     if at_eof:
         total_lines = line_count
     elif st.st_size <= MAX_LINE_COUNT_BYTES:
@@ -479,11 +480,11 @@ try:
 
     # A byte cap can cut the final rendered line mid-way; that partial line is
     # deliberately not counted toward returned_lines (see the truncation
-    # branch), so next_offset resumes at its start and its tail is re-read.
-    # If even the first requested line overflows the cap no full line was
-    # returned: advance by one so the read still makes progress instead of
-    # looping on the same page (that line's tail is unreadable via line offsets).
-    resumes_partial_line = truncated and returned_lines > 0
+    # branch), so next_offset resumes at its start and the whole boundary line
+    # is re-read. If even the first requested line overflows the cap no full
+    # line was returned: advance by one so the read still makes progress instead
+    # of looping on the same page (that line's tail is unreadable via line
+    # offsets).
     if truncated and returned_lines == 0:
         returned_lines = 1
 
@@ -491,7 +492,10 @@ try:
     if total_lines is not None:
         next_offset = end_line if end_line < total_lines else None
     else:
-        next_offset = end_line if not at_eof or resumes_partial_line else None
+        # total_lines is None only via the large-file branch above, which is
+        # reached only when the page stopped short of EOF, so lines always
+        # remain here.
+        next_offset = end_line
     print(json.dumps({{
         'encoding': 'utf-8',
         'content': text,
@@ -518,7 +522,8 @@ and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
 next unread line (`null` once the file is fully read). `total_lines` is `null`
 when counting the rest of a large file would exceed the bounded scan. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
-On failure: `{{"error": ...}}`.
+An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
+reminder>}}`, also without pagination keys. On failure: `{{"error": ...}}`.
 """
 
 

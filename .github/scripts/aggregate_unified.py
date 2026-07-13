@@ -67,7 +67,16 @@ def _require_metric(
 
 
 def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
-    raw: object = json.loads((leaf_dir / "summary.json").read_text(encoding="utf-8"))
+    text = (leaf_dir / "summary.json").read_text(encoding="utf-8")
+    try:
+        raw: object = json.loads(text)
+    except ValueError as exc:
+        # json.loads raises JSONDecodeError (a ValueError) on corrupt JSON, and a
+        # plain ValueError when a numeric literal exceeds the int-string-conversion
+        # limit. Both are bad leaf data -- normalize to _LeafSummaryError so callers
+        # catch one narrow type rather than a broad ValueError.
+        msg = f"summary.json is not valid JSON: {exc}"
+        raise _LeafSummaryError(msg) from exc
     summary = _require_object(raw, "summary")
     k = _require_integer(
         summary.get("rollouts_per_task"), "rollouts_per_task", minimum=1
@@ -317,7 +326,12 @@ def _discover_leaves(root: Path, *, expected_rollouts: int | None = None) -> lis
     for leaf_dir in candidates:
         try:
             leaves.append(read_leaf(leaf_dir, expected_rollouts=expected_rollouts))
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, UnicodeError, _LeafSummaryError) as exc:
+            # Catch only genuine bad-data signals: an unreadable file (OSError /
+            # UnicodeError) or a schema/parse violation, which read_leaf always
+            # raises as _LeafSummaryError (including corrupt or oversized JSON). A
+            # broad ValueError would also swallow an incidental bug inside
+            # read_leaf, silently dropping a valid leaf as "malformed".
             print(
                 f"::warning::Skipping malformed eval summary at "
                 f"{leaf_dir / 'summary.json'}: {exc}"

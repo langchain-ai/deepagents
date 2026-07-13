@@ -379,6 +379,11 @@ jobs:
       - eval-other
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    # Every ref publishes to the same branch. Serialize the publishing jobs so
+    # each one fetches the branch tip after the previous writer has pushed.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -459,6 +464,11 @@ jobs:
       - name: "🖼️ Publish charts to eval-assets branch"
         id: publish-charts
         if: hashFiles('_combined/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded (unified-combined artifact + leaderboard summary), so a
+        # transient git/push failure must not fail an otherwise-successful
+        # combine. The "Append charts" step gates on this outcome == 'success'.
+        continue-on-error: true
         env:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
@@ -484,7 +494,10 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory (light + dark variants).
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/_combined/radar.png" "${asset_dir}/radar.png"
           if [ -f "$GITHUB_WORKSPACE/_combined/radar-dark.png" ]; then

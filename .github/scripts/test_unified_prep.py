@@ -258,3 +258,22 @@ def test_main_emits_expected_models_and_categories(tmp_path, monkeypatch):
     )
     assert _j.loads(lines["models"]) == ["anthropic:opus", "openai:gpt"]
     assert _j.loads(lines["categories"]) == ["autonomous", "context"]
+
+
+def test_main_routes_unknown_provider_into_other_bucket(tmp_path, monkeypatch):
+    # A spec whose prefix isn't a KNOWN_PROVIDER still resolves (the resolver
+    # doesn't allowlist providers), and must land in the "other" matrix rather
+    # than being silently dropped from every provider bucket.
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "weirdvendor:x")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert up.main([]) == 0
+    import json as _j
+
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    assert lines["other_has_models"] == "true"
+    assert lines["anthropic_has_models"] == "false"
+    other = _j.loads(lines["other_matrix"])
+    assert [e["model"] for e in other["include"]] == ["weirdvendor:x"]
+    assert other["include"][0]["provider"] == "other"

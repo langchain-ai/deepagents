@@ -1,8 +1,12 @@
 # Harbor evaluation workflow for Deep Agents
 #
-# Runs terminal-bench evaluations via Harbor with Docker or LangSmith
-# sandboxes.
+# Runs Harbor evaluations (terminal-bench, harbor-index, tau3, local datasets)
+# with Docker or LangSmith sandboxes; terminal-bench is the default.
 # Models are selected via dropdown or comma-separated override.
+#
+# Config (non-secret):
+#   OLLAMA_HOST is hardcoded to https://ollama.com in the workflow env for
+#   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
 #   LANGSMITH_API_KEY          — experiment tracking (always required)
@@ -13,7 +17,6 @@
 #   XAI_API_KEY                — needed for xAI/Grok models
 #   GROQ_API_KEY               — needed for Groq-hosted models
 #   OLLAMA_API_KEY             — needed for Ollama Cloud models
-#   OLLAMA_HOST                — set to https://ollama.com for cloud inference
 #   NVIDIA_API_KEY             — needed for NVIDIA NIM models
 #   BASETEN_API_KEY            — needed for Baseten-hosted models
 #   FIREWORKS_API_KEY          — needed for Fireworks-hosted models

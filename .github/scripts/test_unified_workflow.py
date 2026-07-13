@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 UNIFIED_WORKFLOW = ROOT / ".github/workflows/unified_evals.yml"
 HARBOR_WORKFLOW = ROOT / ".github/workflows/_harbor_run.yml"
 HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
+EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PREP_SCRIPT = ROOT / ".github/scripts/unified_prep.py"
 
@@ -290,6 +291,43 @@ def test_combined_diagnostics_upload_after_aggregation_failure() -> None:
     )
     assert upload.count(condition) == 1
     assert "continue-on-error" not in upload
+
+
+def test_leaf_aggregation_requires_every_expected_shard() -> None:
+    """Use prep's effective shard count to detect a missing artifact."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    aggregate = _indented_block(workflow, "  aggregate:")
+
+    assert "    needs: [prep, harbor]" in aggregate
+    assert (
+        "inputs.n_tasks == '0' && inputs.include_tasks == '' "
+        "&& needs.prep.outputs.n_shards || ''" in aggregate
+    )
+    compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
+    assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
+    assert '"${expected_shards_args[@]}"' in compute
+
+
+def test_chart_publishers_are_serialized_and_replace_rerun_assets() -> None:
+    """Protect the shared branch from concurrent pushes and stale rerun files."""
+    publishers = [
+        (UNIFIED_WORKFLOW, "  combine:"),
+        (EVALS_WORKFLOW, "  aggregate:"),
+    ]
+    for workflow_path, job_marker in publishers:
+        job = _indented_block(workflow_path.read_text(), job_marker)
+        concurrency = _indented_block(job, "    concurrency:")
+        assert "      group: eval-assets-publication" in concurrency
+        assert "      cancel-in-progress: false" in concurrency
+
+        publish = _indented_block(
+            job, '      - name: "🖼️ Publish charts to eval-assets branch"'
+        )
+        remove = 'rm -rf "${asset_dir}"'
+        create = 'mkdir -p "${asset_dir}"'
+        copy = 'cp "$GITHUB_WORKSPACE/'
+        assert publish.count(remove) == 1
+        assert publish.index(remove) < publish.index(create) < publish.index(copy)
 
 
 def test_credential_check_rejects_unsupported_model_providers() -> None:

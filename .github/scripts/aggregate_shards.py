@@ -6,8 +6,9 @@ of all shard artifacts), groups trials by task, and computes:
 
   - pass@K  the fraction of tasks that passed at least once within K rollouts
             (K = rollouts_per_task; only this single k is reported).
-  - avg@K   passing trials over the EXPECTED trial count (tasks * rollouts), so
-            missing rollouts of a present task count as failures.
+  - avg@K   passing trials (capped at K per task, so duplicated rollouts cannot
+            push a task above 1) over the EXPECTED trial count (tasks * rollouts),
+            so missing rollouts of a present task count as failures.
 
 The summary is flagged ``incomplete`` when a full run cannot be vouched for:
 the matrix job did not fully succeed (``--harbor-result`` != "success"); a

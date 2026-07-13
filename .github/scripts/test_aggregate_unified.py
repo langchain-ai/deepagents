@@ -261,6 +261,31 @@ def test_render_markdown_sorts_by_macro_desc():
     assert "pass@3" in md
 
 
+def test_render_markdown_ranks_none_macro_last():
+    # A model with an incomplete/ghost result has a None macro (_mean([]) is
+    # None). The sort key pushes None to the bottom; if that element were
+    # dropped or inverted, incomplete models would rank above scored ones.
+    combined = {
+        "categories": ["context"],
+        "models": {
+            "ghost": {
+                "categories": {},
+                "macro": {"pass_at_k": None, "avg_at_k": None},
+                "micro": {"pass_at_k": None, "avg_at_k": None},
+                "incomplete": True,
+            },
+            "scored": {
+                "categories": {"context": {"pass_at_k": 0.2, "avg_at_k": 0.2}},
+                "macro": {"pass_at_k": 0.2, "avg_at_k": 0.2},
+                "micro": {"pass_at_k": 0.2, "avg_at_k": 0.2},
+                "incomplete": False,
+            },
+        },
+    }
+    md = au.render_markdown(combined, k=3)
+    assert md.index("scored") < md.index("ghost")  # None macro ranked last
+
+
 def test_render_markdown_describes_expected_model_without_leaf_summaries() -> None:
     combined = au.combine([], expected_models=["ghost"])
 
@@ -334,6 +359,22 @@ def test_discover_leaves_rejects_numeric_metrics_for_zero_task_summary(
     model = au.combine(au._discover_leaves(tmp_path))["models"]["m"]
 
     assert model["macro"] == {"pass_at_k": 0.8, "avg_at_k": 0.5}
+    assert str(malformed / "summary.json") in capsys.readouterr().out
+
+
+def test_discover_leaves_rejects_null_metric_for_populated_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Inverse of the zero-task rule: a populated leaf (tasks > 0) with a null
+    # metric must be rejected. Otherwise combine would treat the null as 0.0
+    # (`leaf["pass_at_k"] or 0.0`) weighted by a real task count, silently
+    # deflating the model's micro score instead of surfacing the bad leaf.
+    malformed = _leaf_dir(tmp_path, "bad", "context", pass_k=None, avg_k=0.5)
+    _leaf_dir(tmp_path, "good", "context", pass_k=0.8, avg_k=0.5)
+
+    leaves = au._discover_leaves(tmp_path)
+
+    assert [leaf["model"] for leaf in leaves] == ["good"]
     assert str(malformed / "summary.json") in capsys.readouterr().out
 
 

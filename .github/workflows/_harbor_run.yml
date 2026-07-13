@@ -394,9 +394,11 @@ jobs:
             # Sharding: run this shard's disjoint slice of the dataset. Resolve the
             # live task list from Harbor's own manifest (no drift), compose it with
             # include_tasks/n_tasks exactly as an unsharded run would, then partition
-            # by i % n_shards. select_shard_tasks reproduces the include-glob +
-            # n_tasks subset of Harbor's _filter_task_ids; task_display_name mirrors
-            # each task id's get_name() (see .github/scripts/shard_matrix.py + tests).
+            # by i % n_shards. The include-glob is applied inline below (so a zero
+            # match fails loudly); select_shard_tasks then applies the n_tasks cap
+            # and the i % n_shards partition of Harbor's _filter_task_ids subset.
+            # task_display_name mirrors each task id's get_name() (see
+            # .github/scripts/shard_matrix.py + tests).
             if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
               echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
             fi
@@ -680,7 +682,7 @@ jobs:
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
-    needs: harbor
+    needs: [prep, harbor]
     # Runs after all shards. Skipped only when the matrix never ran (prep failed
     # the validation -> harbor skipped) or the run was cancelled; otherwise it
     # aggregates whatever shards uploaded, even if some shards failed.
@@ -697,6 +699,10 @@ jobs:
       # failed. Empty shards (task-filtered slices) no-op successfully, so a
       # filtered run is not falsely reported as incomplete.
       HARBOR_RESULT: ${{ needs.harbor.result }}
+      # Authoritative effective count after prep caps shards to selectable work.
+      # Filtered direct runs can legitimately have empty slices, so only enforce
+      # the count when every emitted shard is expected to contain work.
+      EXPECTED_SHARDS: ${{ inputs.n_tasks == '0' && inputs.include_tasks == '' && needs.prep.outputs.n_shards || '' }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -760,10 +766,15 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
             exit 1
           fi
+          expected_shards_args=()
+          if [ -n "$EXPECTED_SHARDS" ]; then
+            expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")
+          fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
           python3 .github/scripts/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
+            "${expected_shards_args[@]}" \
             --dataset "$DATASET" \
             --model "$MODEL" \
             --category "$CATEGORY" \

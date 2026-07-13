@@ -392,33 +392,25 @@ _EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset(
 """Slash commands gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`."""
 
 
-def _public_commands() -> tuple[SlashCommand, ...]:
-    """Return commands visible in autocomplete/help for the current process."""
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-    if is_env_truthy(EXPERIMENTAL):
-        return COMMANDS
-    return tuple(
-        cmd for cmd in COMMANDS if cmd.name not in _EXPERIMENTAL_PLUGIN_COMMANDS
-    )
-
-
 def get_slash_commands() -> list[CommandEntry]:
     """Return autocomplete entries for currently enabled slash commands.
+
+    This function is the public autocomplete API. It derives entries directly
+    from `COMMANDS` so callers always observe the current experimental-feature
+    environment instead of a stale import-time snapshot.
 
     Returns:
         Autocomplete entries derived from `COMMANDS`, excluding experimental
         plugin commands unless `DEEPAGENTS_CODE_EXPERIMENTAL` is set.
     """
-    return [cmd.to_entry() for cmd in _public_commands()]
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-
-SLASH_COMMANDS: list[CommandEntry] = get_slash_commands()
-"""Default autocomplete entries for the current process env.
-
-Prefer `get_slash_commands()` at call sites so tests that toggle
-`DEEPAGENTS_CODE_EXPERIMENTAL` see the live set.
-"""
+    include_experimental = is_env_truthy(EXPERIMENTAL)
+    return [
+        command.to_entry()
+        for command in COMMANDS
+        if include_experimental or command.name not in _EXPERIMENTAL_PLUGIN_COMMANDS
+    ]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

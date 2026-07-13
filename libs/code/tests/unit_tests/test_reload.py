@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import dotenv as _dotenv_module
 import pytest
 
-from deepagents_code.command_registry import SLASH_COMMANDS
+from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.config import Settings
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
@@ -815,7 +815,7 @@ class TestReloadInAutocomplete:
 
     def test_reload_in_slash_commands(self) -> None:
         """`/reload` should be registered in slash command completions."""
-        assert any(entry.name == "/reload" for entry in SLASH_COMMANDS)
+        assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
 class TestReloadSkillReport:

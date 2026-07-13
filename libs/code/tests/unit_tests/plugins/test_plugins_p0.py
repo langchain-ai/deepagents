@@ -21,19 +21,21 @@ from deepagents_code.mcp_tools import MCPServerInfo
 from deepagents_code.plugins import (
     add_local_marketplace,
     add_marketplace_source,
-    disable_plugin,
     discover_plugins,
-    enable_plugin,
     install_plugin,
     list_available_plugins,
     remove_marketplace,
+    set_installed_plugin_enabled,
     uninstall_plugin,
 )
 from deepagents_code.plugins.adapters.mcp import (
     plugin_mcp_configs,
     scoped_mcp_server_name,
 )
-from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+from deepagents_code.plugins.adapters.skills import (
+    plugin_skill_sources,
+    skill_name_prefix,
+)
 from deepagents_code.plugins.commands_cli import execute_plugin_command
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
@@ -432,7 +434,7 @@ def test_disable_keeps_install_uninstall_removes_cache(
     cache_root = versioned_cache_path(plugin_id, "1.0.0")
     assert cache_root.is_dir()
 
-    disable_plugin(plugin_id)
+    set_installed_plugin_enabled(plugin_id, enabled=False)
     assert plugin_id not in load_enabled_plugin_ids()
     assert plugin_id in load_installed_plugins()
     assert cache_root.is_dir()
@@ -453,10 +455,13 @@ def test_enable_without_install_does_not_discover(tmp_path: Path, monkeypatch) -
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
 
-    enable_plugin("quality-review-plugin@company-tools")
+    with pytest.raises(MarketplaceError, match="is not installed"):
+        set_installed_plugin_enabled(
+            "quality-review-plugin@company-tools", enabled=True
+        )
     result = discover_plugins()
     assert result.plugins == ()
-    assert any("not installed" in warning for warning in result.warnings)
+    assert not result.warnings
 
 
 def test_marketplace_source_parser_accepts_common_inputs(tmp_path: Path) -> None:
@@ -543,7 +548,7 @@ def test_remove_marketplace_cleans_enabled_only_plugin_state(
     _make_marketplace(marketplace_root)
     add_local_marketplace(marketplace_root)
     plugin_id = "quality-review-plugin@company-tools"
-    enable_plugin(plugin_id)
+    install_plugin(plugin_id)
 
     assert remove_marketplace("company-tools") is True
 
@@ -762,7 +767,7 @@ def test_marketplace_source_parser_accepts_bare_relative_directory(
     assert Path(source.value) == marketplace_root.resolve()
 
 
-def test_plugin_skill_source_prefixes_sdk_skill_name(
+def test_plugin_skill_namespace_qualifies_sdk_skill_name(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -776,7 +781,7 @@ def test_plugin_skill_source_prefixes_sdk_skill_name(
     add_local_marketplace(marketplace_root)
     install_plugin("quality-review-plugin@company-tools")
     plugin = discover_plugins().plugins[0]
-    source_path, _label, prefix = plugin_skill_sources((plugin,))[0]
+    source_path, _label, namespace = plugin_skill_sources((plugin,))[0]
 
     skills = list_sdk_skills(
         FilesystemBackend(root_dir=source_path, virtual_mode=False), "."
@@ -787,7 +792,7 @@ def test_plugin_skill_source_prefixes_sdk_skill_name(
 
     middleware = SkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False),
-        sources=[(source_path, "Plugin", prefix)],
+        sources=[(source_path, "Plugin", skill_name_prefix(namespace))],
         system_prompt=None,
     )
     update = middleware.before_agent(
@@ -843,17 +848,21 @@ def test_namespaces_distinguish_same_named_plugins_across_marketplaces(
         for config in plugin_mcp_configs(plugins)
         for name in cast("dict[str, object]", config["mcpServers"])
     }
-    skill_prefixes = {prefix for _path, _label, prefix in plugin_skill_sources(plugins)}
+    skill_namespaces = {
+        namespace for _path, _label, namespace in plugin_skill_sources(plugins)
+    }
 
     assert len(mcp_names) == 2
-    assert len(skill_prefixes) == 2
+    assert len(skill_namespaces) == 2
 
 
-def test_marketplace_credentials_are_rejected_or_redacted(
+def test_marketplace_credentials_are_preserved_for_updates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    with pytest.raises(MarketplaceError, match="embedded credentials"):
-        parse_marketplace_source("https://user:secret@example.com/marketplace.json")
+    credentialed = parse_marketplace_source(
+        "https://user:secret@example.com/marketplace.json"
+    )
+    assert credentialed.value == ("https://user:secret@example.com/marketplace.json")
 
     monkeypatch.setattr(
         "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
@@ -874,15 +883,14 @@ def test_marketplace_credentials_are_rejected_or_redacted(
     )
 
     stored = load_marketplace_records()["company-tools"].source
-    assert "secret" not in stored
-    assert "token=%2A%2A%2A" in stored
-    assert "channel=stable" in stored
+    assert stored == (
+        "https://example.com/marketplace.json?token=secret&channel=stable"
+    )
 
     add_marketplace_source("https://example.com/token/path-credential/marketplace.json")
 
     stored = load_marketplace_records()["company-tools"].source
-    assert "path-credential" not in stored
-    assert "/token/***/marketplace.json" in stored
+    assert stored == "https://example.com/token/path-credential/marketplace.json"
 
 
 def test_failed_marketplace_refresh_preserves_existing_clone(

@@ -160,9 +160,6 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
         except ValueError as exc:
             msg = "Invalid marketplace URL"
             raise MarketplaceError(msg) from exc
-        if parsed.username is not None or parsed.password is not None:
-            msg = "Marketplace URLs must not contain embedded credentials"
-            raise MarketplaceError(msg)
         path = parsed.path
         if path.endswith(".git") or "/_git/" in path:
             return RepositoryMarketplaceSource(
@@ -172,7 +169,7 @@ def parse_marketplace_source(raw: str) -> MarketplaceSource:
             parts = [part for part in path.split("/") if part]
             if len(parts) == _GITHUB_REPO_PART_COUNT:
                 repo_path = "/".join(parts)
-                git_url = f"https://github.com/{repo_path}.git"
+                git_url = urlunparse(parsed._replace(path=f"/{repo_path}.git"))
                 return RepositoryMarketplaceSource(
                     source_type="git", value=git_url, ref=ref or None
                 )

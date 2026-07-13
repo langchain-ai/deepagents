@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_code.plugins.models import JsonValue
+
 
 def plugin_environment(
     *, plugin_root: Path, plugin_data: Path, project_dir: Path | None = None
@@ -58,12 +60,12 @@ def substitute_string(
 
 
 def substitute_json(
-    value: object,
+    value: JsonValue,
     *,
     plugin_root: Path,
     plugin_data: Path,
     project_dir: Path | None = None,
-) -> object:
+) -> JsonValue:
     """Substitute plugin variables throughout a JSON-compatible value.
 
     Args:

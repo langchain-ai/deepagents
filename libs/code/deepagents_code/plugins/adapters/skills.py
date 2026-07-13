@@ -3,28 +3,49 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, TypeAlias
+
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents_code.plugins.models import PluginInstance
 
 logger = logging.getLogger(__name__)
 
-SkillSourceTuple = tuple[str, str, str]
+SkillPath: TypeAlias = str
+SkillLabel: TypeAlias = str
+SkillNamespace: TypeAlias = str
+DirectorySkillSource: TypeAlias = tuple[SkillPath, SkillLabel]
+PluginSkillSource: TypeAlias = tuple[SkillPath, SkillLabel, SkillNamespace]
 
 
-def plugin_skill_sources(plugins: tuple[PluginInstance, ...]) -> list[SkillSourceTuple]:
+def namespaced_skill_name(namespace: SkillNamespace, name: str) -> str:
+    """Qualify a skill name under its plugin namespace.
+
+    Returns:
+        The qualified skill name.
+    """
+    return f"{namespace}:{name}"
+
+
+def skill_name_prefix(namespace: SkillNamespace) -> str:
+    """Return the SDK skill-name prefix for a plugin namespace."""
+    return namespaced_skill_name(namespace, "")
+
+
+def plugin_skill_sources(
+    plugins: tuple[PluginInstance, ...],
+) -> list[PluginSkillSource]:
     """Return skill source tuples for plugin skills.
 
     Args:
         plugins: Plugin instances.
 
     Returns:
-        Source tuples containing path, label, and skill-name prefix.
+        Source tuples containing path, label, and plugin namespace.
     """
-    sources: list[SkillSourceTuple] = []
+    sources: list[PluginSkillSource] = []
     for plugin in plugins:
         for path in plugin.inventory.skills:
             source_path = path.parent if path.name == "SKILL.md" else path
@@ -38,7 +59,7 @@ def plugin_skill_sources(plugins: tuple[PluginInstance, ...]) -> list[SkillSourc
                 (
                     str(source_path),
                     f"Plugin: {plugin.plugin_id}",
-                    f"{plugin.plugin_id}:",
+                    plugin.plugin_id,
                 )
             )
     return sources
@@ -60,3 +81,31 @@ def plugin_skill_roots(plugins: tuple[PluginInstance, ...]) -> list[Path]:
             for path in plugin.inventory.skills
         )
     return roots
+
+
+def discover_plugin_skill_sources_and_roots() -> tuple[
+    tuple[tuple[Path, str], ...], tuple[Path, ...]
+]:
+    """Discover plugin skill sources and containment roots.
+
+    Returns:
+        Plugin skill sources and roots, or empty tuples when plugins are disabled
+        or discovery fails.
+    """
+    plugin_sources: tuple[tuple[Path, str], ...] = ()
+    plugin_roots: tuple[Path, ...] = ()
+    try:
+        if is_env_truthy(EXPERIMENTAL):
+            from deepagents_code.plugins import discover_plugins
+
+            plugins = discover_plugins().plugins
+            plugin_sources = tuple(
+                (Path(path), namespace)
+                for path, _label, namespace in plugin_skill_sources(plugins)
+            )
+            plugin_roots = tuple(plugin_skill_roots(plugins))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("Could not discover plugin skills", exc_info=True)
+        return (), ()
+
+    return plugin_sources, plugin_roots

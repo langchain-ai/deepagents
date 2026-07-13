@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deepagents_code.command_registry import SLASH_COMMANDS, CommandEntry
+from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.tui.widgets import autocomplete as autocomplete_module
 from deepagents_code.tui.widgets.autocomplete import (
     MAX_SUGGESTIONS,
@@ -178,7 +178,7 @@ class TestSlashCommandController:
     @pytest.fixture
     def controller(self, mock_view):
         """Create a SlashCommandController with mock view."""
-        return SlashCommandController(SLASH_COMMANDS, mock_view)
+        return SlashCommandController(get_slash_commands(), mock_view)
 
     def test_can_handle_slash_prefix(self, controller):
         """Handles text starting with /."""
@@ -215,7 +215,7 @@ class TestSlashCommandController:
 
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_clears_on_no_match(self, controller, mock_view):
         """Clears suggestions when no commands match after having suggestions."""
@@ -246,7 +246,7 @@ class TestSlashCommandController:
         controller.on_text_changed("/", 1)
         mock_view.render_completion_suggestions.assert_called()
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
-        assert len(suggestions) == min(len(SLASH_COMMANDS), MAX_SUGGESTIONS)
+        assert len(suggestions) == min(len(get_slash_commands()), MAX_SUGGESTIONS)
 
     def test_hidden_keyword_match_continue(self, controller, mock_view):
         """Typing 'continue' surfaces /threads via hidden keyword."""
@@ -491,7 +491,7 @@ class TestMultiCompletionManager:
     @pytest.fixture
     def manager(self, mock_view, tmp_path):
         """Create a MultiCompletionManager with both controllers."""
-        slash_ctrl = SlashCommandController(SLASH_COMMANDS, mock_view)
+        slash_ctrl = SlashCommandController(get_slash_commands(), mock_view)
         file_ctrl = FuzzyFileController(mock_view, cwd=tmp_path)
         # Cast needed: lists are invariant, so the inferred type
         # list[SlashCommandController | FuzzyFileController] won't match

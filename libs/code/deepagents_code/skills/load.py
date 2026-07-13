@@ -62,18 +62,19 @@ def list_skills(
 
     Precedence order (lowest to highest):
     0. `built_in_skills_dir` (`<package>/built_in_skills/`)
-    1. `user_skills_dir` (`~/.deepagents/{agent}/skills/`)
-    2. `user_agent_skills_dir` (`~/.agents/skills/`)
-    3. `project_skills_dir` (`.deepagents/skills/`)
-    4. `project_agent_skills_dir` (`.agents/skills/`)
-    5. `user_claude_skills_dir` (`~/.claude/skills/`, experimental)
-    6. `project_claude_skills_dir` (`.claude/skills/`, experimental)
+    1. `plugin_skill_sources`
+    2. `user_skills_dir` (`~/.deepagents/{agent}/skills/`)
+    3. `user_agent_skills_dir` (`~/.agents/skills/`)
+    4. `project_skills_dir` (`.deepagents/skills/`)
+    5. `project_agent_skills_dir` (`.agents/skills/`)
+    6. `user_claude_skills_dir` (`~/.claude/skills/`, experimental)
+    7. `project_claude_skills_dir` (`.claude/skills/`, experimental)
 
     Skills from higher-precedence directories override those with the same name.
 
     Args:
         built_in_skills_dir: Path to built-in skills shipped with the package.
-        plugin_skill_sources: Plugin skill source directories with name prefixes.
+        plugin_skill_sources: Plugin skill source directories with namespaces.
         user_skills_dir: Path to `~/.deepagents/{agent}/skills/`.
         project_skills_dir: Path to `.deepagents/skills/`.
         user_agent_skills_dir: Path to `~/.agents/skills/` (alias).
@@ -89,7 +90,10 @@ def list_skills(
 
     sources: list[tuple[Path | None, str, bool, str]] = [
         (built_in_skills_dir, "built-in", False, ""),
-        *[(path, "plugin", False, prefix) for path, prefix in plugin_skill_sources],
+        *[
+            (path, "plugin", False, namespace)
+            for path, namespace in plugin_skill_sources
+        ],
         (user_skills_dir, "user", False, ""),
         (user_agent_skills_dir, "user", False, ""),
         (project_skills_dir, "project", False, ""),
@@ -99,23 +103,31 @@ def list_skills(
     ]
     """Sources in precedence order (lowest to highest).
 
-    Each tuple: `(directory, source label, is_experimental)`.
+    Each tuple: `(directory, source label, is_experimental, namespace)`.
 
     Each source is individually try/except-guarded so a single inaccessible
     directory doesn't block the rest.
     """
 
-    for skill_dir, source_label, experimental, name_prefix in sources:
+    for skill_dir, source_label, experimental, namespace in sources:
         if not skill_dir or not skill_dir.exists():
             continue
         try:
             backend = FilesystemBackend(root_dir=str(skill_dir), virtual_mode=False)
             skills = list_skills_from_backend(backend=backend, source_path=".")
-            if name_prefix:
-                skills = [
-                    {**skill, "name": f"{name_prefix}{skill['name']}"}
+            if namespace:
+                from deepagents_code.plugins.adapters.skills import (
+                    namespaced_skill_name,
+                )
+
+                namespaced_skills: list[SkillMetadata] = [
+                    {
+                        **skill,
+                        "name": namespaced_skill_name(namespace, skill["name"]),
+                    }
                     for skill in skills
                 ]
+                skills = namespaced_skills
             if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",
@@ -125,12 +137,10 @@ def list_skills(
             for skill in skills:
                 extra: dict[str, object] = {"source": source_label}
                 if source_label == "built-in":
-                    raw_metadata = skill.get("metadata", {})
-                    metadata = (
-                        raw_metadata.copy() if isinstance(raw_metadata, dict) else {}
-                    )
-                    metadata["deepagents-code-version"] = _cli_version
-                    extra["metadata"] = metadata
+                    extra["metadata"] = {
+                        **skill["metadata"],
+                        "deepagents-code-version": _cli_version,
+                    }
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
                 all_skills[skill["name"]] = extended
         except Exception:

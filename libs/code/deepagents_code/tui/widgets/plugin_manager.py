@@ -28,11 +28,10 @@ from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.plugins import (
     add_marketplace_source,
-    disable_plugin,
     discover_plugins,
-    enable_plugin,
     install_plugin,
     remove_marketplace,
+    set_installed_plugin_enabled,
     uninstall_plugin,
 )
 from deepagents_code.plugins.marketplace import (
@@ -99,14 +98,18 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
         _list_skills as list_sdk_skills,  # noqa: PLC2701
     )
 
-    from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+    from deepagents_code.plugins.adapters.skills import (
+        namespaced_skill_name,
+        plugin_skill_sources,
+    )
 
     names: list[str] = []
-    for path, _label, prefix in plugin_skill_sources((instance,)):
+    for path, _label, namespace in plugin_skill_sources((instance,)):
         try:
             backend = FilesystemBackend(root_dir=path, virtual_mode=False)
             names.extend(
-                f"{prefix}{skill['name']}" for skill in list_sdk_skills(backend, ".")
+                namespaced_skill_name(namespace, skill["name"])
+                for skill in list_sdk_skills(backend, ".")
             )
         except Exception:
             logger.warning(
@@ -1032,12 +1035,12 @@ class PluginManagerScreen(ModalScreen[None]):
         if row is None:
             return
         if row.enabled:
-            disable_plugin(row.plugin_id)
+            set_installed_plugin_enabled(row.plugin_id, enabled=False)
             self._status = f"Disabled {row.plugin_id}. Run /reload-plugins to unload."
             self._mode = "list"
             self._selected_plugin = None
         else:
-            enable_plugin(row.plugin_id)
+            set_installed_plugin_enabled(row.plugin_id, enabled=True)
             self._status = f"Enabled {row.plugin_id}. Run /reload-plugins to activate."
             self._mode = "list"
             self._tab = "installed"

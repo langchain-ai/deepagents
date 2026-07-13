@@ -2168,6 +2168,7 @@ async def resolve_and_load_mcp_tools(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    additional_configs: tuple[dict[str, Any], ...] = (),
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -2200,6 +2201,8 @@ async def resolve_and_load_mcp_tools(
             and explicitly denied servers are dropped even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        additional_configs: Config layers injected by higher-level composition,
+            such as plugin-provided MCP servers.
         stateless: When `True`, do not return an owned runtime session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2244,25 +2247,7 @@ async def resolve_and_load_mcp_tools(
 
     project_trusted: bool | None = None
     trust_lists: McpServerTrustLists | None = None
-    try:
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        if is_env_truthy(EXPERIMENTAL):
-            from deepagents_code.plugins import discover_plugins
-            from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
-
-            plugin_result = discover_plugins()
-            if plugin_result.warnings:
-                logger.warning(
-                    "Plugin discovery warnings while loading MCP: %s",
-                    plugin_result.warnings,
-                )
-            project_dir = _resolve_project_config_base(project_context)
-            configs.extend(
-                plugin_mcp_configs(plugin_result.plugins, project_dir=project_dir)
-            )
-    except Exception:
-        logger.warning("Could not discover plugin MCP configs", exc_info=True)
+    configs.extend(additional_configs)
 
     for path in project_configs:
         config, error = _load_mcp_config_top_level_with_error(path)

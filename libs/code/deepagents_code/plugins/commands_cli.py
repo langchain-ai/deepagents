@@ -10,11 +10,10 @@ if TYPE_CHECKING:
 
 from deepagents_code.plugins import (
     add_marketplace_source,
-    disable_plugin,
-    enable_plugin,
     install_plugin,
     list_available_plugins,
     remove_marketplace,
+    set_installed_plugin_enabled,
     uninstall_plugin,
 )
 from deepagents_code.plugins.marketplace import MarketplaceError
@@ -88,7 +87,7 @@ def setup_plugin_parser(
     return parser
 
 
-def _rows_json() -> list[dict[str, object]]:
+def _plugin_list_rows() -> list[dict[str, object]]:
     return [
         {"id": plugin_id, "description": description, "enabled": enabled}
         for plugin_id, description, enabled in list_available_plugins()
@@ -103,6 +102,9 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
 
     Returns:
         Text output for slash-command callers, or `None` when output was written.
+
+    Raises:
+        SystemExit: With status 1 when a mutating command fails.
     """
     output_format = getattr(args, "output_format", "text")
     command = getattr(args, "plugin_command", None)
@@ -112,7 +114,7 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         show_plugins_help()
         return None
     if command in {"list", "ls"}:
-        rows = _rows_json()
+        rows = _plugin_list_rows()
         if output_format == "json":
             from deepagents_code.output import write_json
 
@@ -134,7 +136,7 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
             text = f"Failed to install {args.plugin_id}: {exc}"
             print(text)  # noqa: T201
-            return text
+            raise SystemExit(1) from exc
         details = ""
         if instance.version is not None:
             details = f" (version: {instance.version})"
@@ -149,14 +151,15 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         text = f"Uninstalled plugin {args.plugin_id}."
         print(text)  # noqa: T201
         return text
-    if command == "enable":
-        enable_plugin(args.plugin_id)
-        text = f"Enabled plugin {args.plugin_id}. Run /reload-plugins to activate."
-        print(text)  # noqa: T201
-        return text
-    if command == "disable":
-        disable_plugin(args.plugin_id)
-        text = f"Disabled plugin {args.plugin_id}. Run /reload-plugins to unload."
+    if command in {"enable", "disable"}:
+        enabled = command == "enable"
+        try:
+            set_installed_plugin_enabled(args.plugin_id, enabled=enabled)
+        except (MarketplaceError, OSError, ValueError) as exc:
+            text = f"Failed to {command} {args.plugin_id}: {exc}"
+            print(text)  # noqa: T201
+            raise SystemExit(1) from exc
+        text = f"{command.title()}d plugin {args.plugin_id}."
         print(text)  # noqa: T201
         return text
     if command == "marketplace":
@@ -185,7 +188,12 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             print(text)  # noqa: T201
             return text
         if marketplace_command == "add":
-            marketplace = add_marketplace_source(args.source)
+            try:
+                marketplace = add_marketplace_source(args.source)
+            except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
+                text = f"Failed to add marketplace {args.source}: {exc}"
+                print(text)  # noqa: T201
+                raise SystemExit(1) from exc
             text = (
                 f"Added marketplace {marketplace.name} "
                 f"({len(marketplace.plugins)} plugin(s))."

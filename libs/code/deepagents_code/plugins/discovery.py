@@ -19,7 +19,6 @@ from deepagents_code.plugins.marketplace import (
     materialize_marketplace_source,
     materialize_plugin_source,
     parse_marketplace_source,
-    redact_marketplace_source,
 )
 from deepagents_code.plugins.models import (
     MarketplacePluginEntry,
@@ -83,7 +82,7 @@ def add_marketplace_source(raw: str) -> PluginMarketplace:
         MarketplaceRecord(
             name=marketplace.name,
             source_type=source.source_type,
-            source=redact_marketplace_source(source.value),
+            source=source.value,
             install_location=str(location),
             ref=source.ref if isinstance(source, RepositoryMarketplaceSource) else None,
         )
@@ -133,22 +132,26 @@ def remove_marketplace(name: str) -> bool:
     return removed
 
 
-def enable_plugin(plugin_id: str) -> None:
-    """Enable a plugin id (settings-only; does not materialize cache).
+def _require_installed_plugin(plugin_id: str) -> None:
+    """Raise when `plugin_id` does not identify an installed plugin.
+
+    Raises:
+        MarketplaceError: If the plugin is not installed.
+    """
+    if plugin_id not in load_installed_plugins():
+        msg = f"Plugin {plugin_id!r} is not installed"
+        raise MarketplaceError(msg)
+
+
+def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
+    """Set the enabled state of an installed plugin.
 
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
+        enabled: Whether to enable the plugin.
     """
-    set_plugin_enabled(plugin_id, True)
-
-
-def disable_plugin(plugin_id: str) -> None:
-    """Disable a plugin id (settings-only; keeps install cache).
-
-    Args:
-        plugin_id: Plugin id in `{name}@{marketplace}` form.
-    """
-    set_plugin_enabled(plugin_id, False)
+    _require_installed_plugin(plugin_id)
+    set_plugin_enabled(plugin_id, enabled)
 
 
 def uninstall_plugin(plugin_id: str) -> None:

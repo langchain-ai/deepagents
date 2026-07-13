@@ -13,7 +13,6 @@ import warnings
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-import deepagents.middleware.skills as _skills_module
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
@@ -25,19 +24,12 @@ from deepagents.middleware import (
     SkillsMiddleware,
 )
 
-# Backwards-compat flags for SDKs that accept only paths or two-item sources.
-try:
-    from deepagents.middleware.skills import SkillSource as _SkillSource  # noqa: F401
-except ImportError:
-    _SUPPORTS_SKILL_SOURCE_TUPLES = False
-else:
-    _SUPPORTS_SKILL_SOURCE_TUPLES = True
-
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
+    from deepagents.middleware.skills import SkillSource
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
@@ -96,24 +88,6 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
-
-_PREFIXED_SKILL_SOURCE_LEN = 3
-_SUPPORTS_SKILL_SOURCE_PREFIXES = (
-    getattr(_skills_module, "_SKILL_SOURCE_WITH_PREFIX_LEN", None)
-    == _PREFIXED_SKILL_SOURCE_LEN
-)
-SkillSourceSpec = tuple[str, str] | tuple[str, str, str]
-
-
-def _compatible_skill_sources(
-    sources: Sequence[SkillSourceSpec],
-) -> list[str | tuple[str, str] | tuple[str, str, str]]:
-    if not _SUPPORTS_SKILL_SOURCE_TUPLES:
-        return [path for path, *_rest in sources]
-    if _SUPPORTS_SKILL_SOURCE_PREFIXES:
-        return list(sources)
-    return [(path, label) for path, label, *_rest in sources]
-
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
@@ -1714,12 +1688,11 @@ def create_cli_agent(
     if enable_skills:
         # Lowest to highest precedence:
         # built-in -> user .deepagents -> user .agents
-        # -> project .deepagents -> project .agents
+        # -> plugins -> project .deepagents -> project .agents
         # -> user .claude (experimental) -> project .claude (experimental)
-        # Labels disambiguate user- vs project-scoped sources that share a
-        # `.../skills` leaf; the middleware would otherwise derive identical
-        # labels from the parent directory name.
-        sources: list[tuple[str, str] | tuple[str, str, str]] = [
+        # Plugin skills are namespaced as `{plugin_id}:{skill_name}` to avoid
+        # collisions between plugins and user/project skills.
+        sources: list[SkillSource] = [
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
         try:
@@ -1727,14 +1700,22 @@ def create_cli_agent(
 
             if is_env_truthy(EXPERIMENTAL):
                 from deepagents_code.plugins import discover_plugins
-                from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+                from deepagents_code.plugins.adapters.skills import (
+                    plugin_skill_sources,
+                    skill_name_prefix,
+                )
 
                 plugin_result = discover_plugins()
                 if plugin_result.warnings:
                     logger.warning(
                         "Plugin discovery warnings: %s", plugin_result.warnings
                     )
-                sources.extend(plugin_skill_sources(plugin_result.plugins))
+                sources.extend(
+                    (path, label, skill_name_prefix(namespace))
+                    for path, label, namespace in plugin_skill_sources(
+                        plugin_result.plugins
+                    )
+                )
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
         sources.extend(
@@ -1756,13 +1737,10 @@ def create_cli_agent(
         if project_claude_skills_dir:
             sources.append((str(project_claude_skills_dir), "Project Claude"))
 
-        # Preserve the richest source shape supported by the installed SDK.
-        middleware_sources = _compatible_skill_sources(sources)
-
         agent_middleware.append(
             SkillsMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),
-                sources=middleware_sources,
+                sources=sources,
             )
         )
 

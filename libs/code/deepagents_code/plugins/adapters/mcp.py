@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_code.plugins._json import json_object, json_value
-from deepagents_code.plugins.substitution import substitute_json
+from deepagents_code.plugins.substitution import plugin_environment, substitute_json
 
 if TYPE_CHECKING:
     from deepagents_code.plugins.models import JsonObject, JsonValue, PluginInstance
 
 logger = logging.getLogger(__name__)
+# For example, `tools@example.com` becomes `tools_example_com_<hash>`.
 _MCP_NAME_PART_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_NAME_PART_LENGTH = 48
 
@@ -30,7 +31,7 @@ def _safe_mcp_name_part(value: str) -> str:
 
 
 def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
-    """Return an MCP-loader-safe scoped server name for a plugin server.
+    """Namespace a plugin-declared MCP server's name under its plugin id.
 
     Plugin identifiers may contain characters rejected by dcode's MCP loader.
     Use `__` as the namespace separator so names stay unique and valid.
@@ -48,6 +49,14 @@ def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
 
 
 def _server_map(raw: object) -> JsonObject:
+    """Extract the server-name to config map from a decoded MCP document.
+
+    Accepts Claude's `{"mcpServers": {...}}` wrapper, Codex's
+    `{"mcp_servers": {...}}` wrapper, or a bare server map.
+
+    Returns:
+        The extracted server map, or an empty map for non-object input.
+    """
     if not isinstance(raw, dict):
         return {}
     wrapped = raw.get("mcpServers")
@@ -59,7 +68,12 @@ def _server_map(raw: object) -> JsonObject:
     return json_object(raw)
 
 
-def _load_mcp_file(path: Path) -> JsonObject:
+def _load_mcp_server_map(path: Path) -> JsonObject:
+    """Load an MCP config file and extract its server-name to config map.
+
+    Returns:
+        The extracted server map, or an empty map when the file cannot be read.
+    """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -83,19 +97,46 @@ def _normalize_server(
         if isinstance(cwd, str) and cwd and not Path(cwd).is_absolute():
             substituted = {**substituted, "cwd": str((plugin.root / cwd).resolve())}
         env = substituted.get("env")
-        plugin_env = {
-            "CLAUDE_PLUGIN_ROOT": str(plugin.root),
-            "CLAUDE_PLUGIN_DATA": str(plugin.data_dir),
-            "PLUGIN_ROOT": str(plugin.root),
-            "PLUGIN_DATA": str(plugin.data_dir),
-            "DEEPAGENTS_PLUGIN_ROOT": str(plugin.root),
-            "DEEPAGENTS_PLUGIN_DATA": str(plugin.data_dir),
-        }
+        plugin_env = plugin_environment(
+            plugin_root=plugin.root,
+            plugin_data=plugin.data_dir,
+            project_dir=project_dir,
+        )
         if isinstance(env, dict):
             substituted = {**substituted, "env": {**plugin_env, **env}}
         else:
             substituted = {**substituted, "env": plugin_env}
     return json_value(substituted)
+
+
+def discover_plugin_mcp_configs(
+    *, project_dir: Path | None = None
+) -> tuple[JsonObject, ...]:
+    """Discover enabled plugins and compose their MCP config layers.
+
+    Args:
+        project_dir: Project directory for variable substitution.
+
+    Returns:
+        Plugin MCP config layers, or an empty tuple when plugins are disabled or
+        discovery fails.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return ()
+    try:
+        from deepagents_code.plugins import discover_plugins
+
+        result = discover_plugins()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        logger.warning("Could not discover plugin MCP configs", exc_info=True)
+        return ()
+    if result.warnings:
+        logger.warning(
+            "Plugin discovery warnings while loading MCP: %s", result.warnings
+        )
+    return tuple(plugin_mcp_configs(result.plugins, project_dir=project_dir))
 
 
 def plugin_mcp_configs(
@@ -124,7 +165,7 @@ def plugin_mcp_configs(
                     path,
                 )
                 continue
-            servers.update(_load_mcp_file(path))
+            servers.update(_load_mcp_server_map(path))
         if plugin.manifest and plugin.manifest.inline_mcp:
             servers.update(_server_map(plugin.manifest.inline_mcp))
         scoped: JsonObject = {}

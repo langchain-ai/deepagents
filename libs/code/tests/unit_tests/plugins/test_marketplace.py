@@ -94,6 +94,14 @@ def test_parse_marketplace_source_http_json() -> None:
     )
 
 
+def test_parse_marketplace_source_preserves_credentials() -> None:
+    source = parse_marketplace_source("https://user:pass@example.com/marketplace.json")
+    assert source == UrlMarketplaceSource(
+        source_type="url",
+        value="https://user:pass@example.com/marketplace.json",
+    )
+
+
 @pytest.mark.parametrize("separator", ["#", "@"])
 def test_parse_marketplace_source_github_shorthand(separator: str) -> None:
     source = parse_marketplace_source(f"owner/repo{separator}main")
@@ -138,7 +146,6 @@ def test_parse_marketplace_source_rejects_non_json_file(
     ("value", "message"),
     [
         ("", "Please enter"),
-        ("https://user:pass@example.com/marketplace.json", "embedded credentials"),
         ("https://github.com/owner/repo/tree/main", "exactly owner/repo"),
         ("https://[invalid", "Invalid marketplace URL"),
         ("http://example.com/marketplace.json", "must use https"),

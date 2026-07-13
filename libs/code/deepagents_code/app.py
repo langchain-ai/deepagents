@@ -3817,10 +3817,20 @@ class DeepAgentsApp(App):
         Returns:
             Tuple of `(skill metadata list, pre-resolved containment roots)`.
         """
+        from deepagents_code.plugins.adapters.skills import (
+            discover_plugin_skill_sources_and_roots,
+        )
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        return discover_skills_and_roots(assistant_id)
+        plugin_skill_sources, plugin_skill_roots = (
+            discover_plugin_skill_sources_and_roots()
+        )
+        return discover_skills_and_roots(
+            assistant_id,
+            plugin_skill_sources=plugin_skill_sources,
+            plugin_skill_roots=plugin_skill_roots,
+        )
 
     def _discover_skills_and_roots_with_import_lock(
         self,
@@ -9993,18 +10003,14 @@ class DeepAgentsApp(App):
             self.exit()
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
+            from deepagents_code.command_registry import get_slash_commands
+
+            command_names = ", ".join(
+                f"{entry.name} {entry.argument_hint}".rstrip()
+                for entry in get_slash_commands()
+            )
             help_body = (
-                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/copy, /goal, /offload, /editor, /effort, "
-                "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /plugins (experimental), /reload, "
-                "/reload-plugins (experimental), "
-                "/restart, /rubric, "
-                "/skill:<name>, /remember, "
-                "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/tools, /threads, /trace, "
-                "/update, /auto-update, /install, /changelog, /docs, "
-                "/feedback, /help\n\n"
+                f"Commands: {command_names}, /skill:<name>\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"

@@ -105,6 +105,7 @@ async def _build_tools(
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+        from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
 
         try:
             mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
@@ -112,6 +113,7 @@ async def _build_tools(
                 no_mcp=config.no_mcp,
                 trust_project_mcp=config.trust_project_mcp,
                 project_context=project_context,
+                additional_configs=discover_plugin_mcp_configs(),
                 stateless=True,
                 session_manager=_get_mcp_session_manager(),
             )

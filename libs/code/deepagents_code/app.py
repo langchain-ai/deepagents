@@ -160,6 +160,9 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
+_TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
+"""Tools that remain standalone instead of collapsing into step summaries."""
+
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
 
@@ -12072,7 +12075,8 @@ class DeepAgentsApp(App):
         # step's group; a diff folds into it; anything else is a step boundary
         # that closes the group.
         is_groupable_tool = (
-            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+            isinstance(widget, ToolCallMessage)
+            and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
         )
         is_diff = isinstance(widget, DiffMessage)
 
@@ -12282,7 +12286,7 @@ class DeepAgentsApp(App):
                     continue  # footers are transparent to grouping
                 if isinstance(child, ToolCallMessage):
                     groupable = (
-                        child.tool_name != "ask_user"
+                        child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
                         and not child.has_class("-grouped")
                     )

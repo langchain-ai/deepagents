@@ -24268,6 +24268,35 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
+    @pytest.mark.parametrize("tool_name", ["edit_file", "write_todos"])
+    async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+        """TODO and edit tools stay visible and split adjacent tool groups."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, excluded, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("excluded", tool_name, {}, "success"),
+                    ("after", "execute", {"command": "ls"}, "success"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
+            assert excluded.display is True
+            assert not excluded.has_class("-grouped")
+            assert after.display is False
+
     async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
         """A timestamp footer between two tools does not split the run.
 
@@ -24450,6 +24479,24 @@ class TestToolGroupCollapse:
             assert "Read 1 file" in rendered.plain
             assert tool.display is False
             await pilot.pause()
+
+    @pytest.mark.parametrize("tool_name", ["edit_file", "write_todos"])
+    async def test_mount_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+        """TODO and edit tools mount standalone instead of opening a live group."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-live")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage(tool_name, {})
+            await app._mount_message(tool)
+
+            assert app._active_tool_group is None
+            assert tool.display is True
+            assert not tool.has_class("-grouped")
 
     async def test_group_survives_idle_after_completion(self) -> None:
         """A folded group stays mounted across completion, idle, and a boundary.

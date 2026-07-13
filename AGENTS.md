@@ -2,6 +2,8 @@
 
 This document provides context to understand the Deep Agents Python project and assist with development.
 
+For environment setup, pre-commit installation, and the standard edit-test-lint loop, see [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md). The rest of this document covers conventions and architecture reference.
+
 ## Project architecture and context
 
 ### Monorepo structure

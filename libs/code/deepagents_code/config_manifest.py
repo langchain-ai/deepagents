@@ -71,12 +71,13 @@ class OptionKind(Enum):
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
     `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
-    and `PTC_DELEGATE` defer to a bespoke parser (their semantics — colon-split
-    Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
-    do not compress into a generic coercion). `THEME_DELEGATE` is resolved
-    separately at the top of `resolve_scalar` and never reaches the inline
-    coercers. `STRUCTURED` marks user-defined tables that the scalar resolver
-    only passes through for display.
+    `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to bespoke parsers (their
+    semantics — colon-split Path resolution, comma + `recommended`/`all`
+    sentinels, the PTC/startup-mode allowlists — do not compress into a generic
+    coercion). `THEME_DELEGATE` is resolved separately at the top of
+    `resolve_scalar` and never reaches the inline coercers. `STRUCTURED` marks
+    user-defined tables that the scalar resolver only passes through for
+    display.
     """
 
     BOOL = "bool"
@@ -101,6 +102,9 @@ class OptionKind(Enum):
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
 
+    STARTUP_MODE_DELEGATE = "startup_mode"
+    """Delegates to the `[startup].mode` runtime allowlist."""
+
     THEME_DELEGATE = "theme"
     """Delegates to the app theme-preference loader semantics."""
 
@@ -117,6 +121,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
 }
@@ -137,6 +142,7 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
 
@@ -420,6 +426,17 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # validation. Falling back to the validated default is the safe choice.
         logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
         return _INVALID
+    if kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            name,
+            raw,
+        )
+        return _INVALID
     assert_never(kind)
 
 
@@ -467,6 +484,17 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
@@ -862,6 +890,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
     ),
     ConfigOption(
+        key="display.hide_splash_tips",
+        group="Display",
+        summary="Hide the startup tip shown above the chat input.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.HIDE_SPLASH_TIPS,
+    ),
+    ConfigOption(
         key="display.hide_splash_version",
         group="Display",
         summary="Hide version and local-install details in the splash screen.",
@@ -1190,6 +1226,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         default="managed",
         env_var=_env_vars.RIPGREP_INSTALLER,
+    ),
+    # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.mode",
+        group="Startup",
+        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        kind=OptionKind.STARTUP_MODE_DELEGATE,
+        default="manual",
+        toml_keys=("startup", "mode"),
+        cli_flag="--auto-approve",
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(

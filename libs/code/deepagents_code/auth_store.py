@@ -110,6 +110,39 @@ class WriteOutcome:
     """User-visible warning strings (e.g., chmod failures). Empty on success."""
 
 
+@dataclass(frozen=True, slots=True)
+class DeleteOutcome:
+    """Result of a credential delete that may have warnings to surface.
+
+    A delete rewrites the whole store, so it can hit the same chmod failures as
+    a write. `warnings` carries them symmetrically with `WriteOutcome` so a
+    caller's "removed" confirmation doesn't paper over a store the delete
+    failed to lock down to owner-only.
+    """
+
+    removed: bool
+    """`True` if a credential was removed, `False` if none was stored."""
+
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+    """chmod-failure warnings from the rewrite. Always empty for a no-op delete
+    (`removed=False`), which performs no write."""
+
+    def __post_init__(self) -> None:
+        """Reject the one field combination the docstring forbids.
+
+        A no-op delete performs no write, so it can raise no chmod warnings.
+        Enforcing it here makes "no warnings when nothing was removed" a
+        construction-time guarantee rather than a producer-side convention a
+        future edit (or a second producer) could quietly break.
+
+        Raises:
+            ValueError: If `warnings` is non-empty while `removed` is `False`.
+        """
+        if self.warnings and not self.removed:
+            msg = "DeleteOutcome cannot carry warnings when removed=False"
+            raise ValueError(msg)
+
+
 def auth_path() -> Path:
     """Return the resolved path to the credential store (`auth.json`).
 
@@ -473,14 +506,16 @@ def set_stored_key(
     return WriteOutcome(warnings=warnings)
 
 
-def delete_stored_key(provider: str) -> bool:
+def delete_stored_key(provider: str) -> DeleteOutcome:
     """Remove a stored credential for `provider`.
 
     Args:
         provider: Provider identifier.
 
     Returns:
-        `True` if a credential was removed, `False` if none was stored.
+        A `DeleteOutcome` whose `removed` flag reports whether a credential was
+        present, and whose `warnings` tuple lists chmod failures from the
+        rewrite (empty for a no-op delete, which performs no write).
 
     Raises:
         RuntimeError: If the credential file is corrupt and cannot be read, or
@@ -489,16 +524,16 @@ def delete_stored_key(provider: str) -> bool:
     """  # noqa: DOC502 - re-raised from `_read_raw`/`_write_raw_or_raise`
     data = _read_raw()
     if data is None:
-        return False
+        return DeleteOutcome(removed=False)
     creds = data.get("credentials")
     if not isinstance(creds, dict) or provider not in creds:
-        return False
+        return DeleteOutcome(removed=False)
     del creds[provider]
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds
-    _write_raw_or_raise(data)
+    warnings = _write_raw_or_raise(data)
     logger.debug("Deleted credential for provider %s", provider)
-    return True
+    return DeleteOutcome(removed=True, warnings=warnings)
 
 
 def list_configured_providers() -> list[str]:

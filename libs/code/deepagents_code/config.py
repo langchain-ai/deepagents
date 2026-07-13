@@ -577,9 +577,9 @@ def _build_orphaned_tracing_disabled_notice() -> str:
     if shutil.which("langsmith"):
         return (
             f"{base} Set LANGSMITH_API_KEY or run `langsmith auth login`, "
-            "then restart Deep Agents Code."
+            "then restart dcode."
         )
-    return f"{base} Set LANGSMITH_API_KEY, then restart Deep Agents Code."
+    return f"{base} Set LANGSMITH_API_KEY, then restart dcode."
 
 
 def consume_orphaned_tracing_disabled_notice() -> str | None:

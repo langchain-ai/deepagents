@@ -78,7 +78,6 @@ class TestServerGraph:
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []
         create_model_thread_ids: list[int] = []
-        warm_import_thread_ids: list[int] = []
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
@@ -87,9 +86,6 @@ class TestServerGraph:
         def create_model_side_effect(*_: object, **__: object) -> object:
             create_model_thread_ids.append(threading.get_ident())
             return model_result
-
-        def warm_import_side_effect() -> None:
-            warm_import_thread_ids.append(threading.get_ident())
 
         create_cli_agent = MagicMock(side_effect=create_cli_agent_side_effect)
         agent_module = _module_with_attrs(
@@ -164,17 +160,10 @@ class TestServerGraph:
 
             module = _import_fresh_server_graph()
             resolve_mcp_tools.assert_not_awaited()
-            with patch.object(
-                module,
-                "_warm_mcp_adapter_imports",
-                side_effect=warm_import_side_effect,
-            ):
-                assert await module.make_graph() is graph_obj
+            assert await module.make_graph() is graph_obj
 
         configure_redaction.assert_called_once_with()
         resolve_mcp_tools.assert_awaited_once()
-        assert warm_import_thread_ids
-        assert warm_import_thread_ids[0] != loop_thread_id
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
         # `create_model` must run off the loop thread: it does blocking disk IO
@@ -214,7 +203,7 @@ class TestServerGraph:
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
-        """`no_mcp=True` should not warm imports or call the MCP resolver."""
+        """`no_mcp=True` should not call the MCP resolver at all."""
         fetch_tool = object()
         thread_tool = object()
         resolve_mcp_tools = AsyncMock()
@@ -242,16 +231,13 @@ class TestServerGraph:
             },
         ):
             module = _import_fresh_server_graph()
-            warm_imports = MagicMock(side_effect=AssertionError("MCP warmup ran"))
-            with patch.object(module, "_warm_mcp_adapter_imports", warm_imports):
-                tools, mcp_server_info = await module._build_tools(
-                    ServerConfig(no_mcp=True),
-                    None,
-                )
+            tools, mcp_server_info = await module._build_tools(
+                ServerConfig(no_mcp=True),
+                None,
+            )
 
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info is None
-        warm_imports.assert_not_called()
         resolve_mcp_tools.assert_not_awaited()
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
@@ -332,18 +318,20 @@ class TestServerGraph:
             "enable_interpreter": True,
         }
 
-    async def test_mcp_adapter_warmup_runs_before_mcp_resolver(self) -> None:
-        """MCP imports must be warmed before resolver imports adapter modules."""
-        events: list[str] = []
+    async def test_build_tools_delegates_mcp_loading_to_resolver(self) -> None:
+        """`_build_tools` should defer all MCP work to the resolver.
+
+        Adapter warmup now lives inside `_load_tools_from_config` (gated on
+        active servers existing), so `_build_tools` no longer warms imports
+        itself — it just calls the resolver and appends the returned tools.
+        """
         fetch_tool = object()
         thread_tool = object()
 
-        def resolve_mcp_tools(
-            **_: object,
-        ) -> tuple[list[object], None, list[object]]:
-            events.append("resolver")
-            return [], None, []
+        class FakeSessionManager:
+            pass
 
+        resolve_mcp_tools = AsyncMock(return_value=([], None, []))
         config_module = _module_with_attrs(
             "deepagents_code.config",
             settings=SimpleNamespace(has_tavily=False),
@@ -354,14 +342,10 @@ class TestServerGraph:
             get_current_thread_id=thread_tool,
             web_search=object(),
         )
-
-        class FakeSessionManager:
-            pass
-
         mcp_module = _module_with_attrs(
             "deepagents_code.mcp_tools",
             MCPSessionManager=FakeSessionManager,
-            resolve_and_load_mcp_tools=AsyncMock(side_effect=resolve_mcp_tools),
+            resolve_and_load_mcp_tools=resolve_mcp_tools,
         )
 
         with patch.dict(
@@ -373,17 +357,13 @@ class TestServerGraph:
             },
         ):
             module = _import_fresh_server_graph()
+            assert not hasattr(module, "_warm_mcp_adapter_imports")
+            tools, mcp_server_info = await module._build_tools(
+                ServerConfig(no_mcp=False),
+                None,
+            )
 
-            def warm_imports() -> None:
-                events.append("warmup")
-
-            with patch.object(module, "_warm_mcp_adapter_imports", warm_imports):
-                tools, mcp_server_info = await module._build_tools(
-                    ServerConfig(no_mcp=False),
-                    None,
-                )
-
-        assert events == ["warmup", "resolver"]
+        resolve_mcp_tools.assert_awaited_once()
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info == []
 

@@ -127,6 +127,26 @@ class TestTextualUIAdapterInit:
         )
         assert adapter._on_tool_complete is callback
 
+    def test_on_user_visible_output_started_defaults_to_none_and_accepts_callback(
+        self,
+    ) -> None:
+        """Verify the user-visible-output callback can be assigned."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._on_user_visible_output_started is None
+
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=callback,
+        )
+        assert adapter._on_user_visible_output_started is callback
+
     def test_set_token_callbacks(self) -> None:
         """Verify token callbacks can be assigned."""
         adapter = TextualUIAdapter(
@@ -2147,6 +2167,239 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+class TestExecuteTaskTextualUserVisibleOutputStarted:
+    """The callback fires once on the first output rendered for the user."""
+
+    async def test_fires_once_on_first_streamed_text(self) -> None:
+        """Streaming text triggers `on_user_visible_output_started` a single time."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("hello"), {})),
+            ((), "messages", (_text_message(" world"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_once_across_text_then_tool_call(self) -> None:
+        """Text followed by a tool call in one turn still fires exactly once."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("thinking"), {})),
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_on_first_tool_call_without_text(self) -> None:
+        """A turn that opens with a tool call still reports output started."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_on_synthesized_ask_user_tool_call(self) -> None:
+        """An updates-only `ask_user` row reports visible output after mounting."""
+        user_visible_output_started = MagicMock()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_not_fired_when_no_output_is_produced(self) -> None:
+        """A turn that streams no text or tool call never reports output."""
+        user_visible_output_started = MagicMock()
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent([]),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_for_subagent_output(self) -> None:
+        """Text and tool calls hidden in a subagent namespace do not count."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            (("subagent",), "messages", (_text_message("hidden"), {})),
+            (
+                ("subagent",),
+                "messages",
+                (_tool_call_message("read_file", {"path": "x"}, "t-a"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_for_hidden_summarization_output(self) -> None:
+        """Hidden main-namespace summarization text does not count."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            (
+                (),
+                "messages",
+                (_text_message("hidden summary"), {"lc_source": "summarization"}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_when_tool_widget_does_not_mount(self) -> None:
+        """A tool call that never reaches the transcript does not count."""
+        user_visible_output_started = MagicMock()
+
+        async def fail_mount(_widget: object) -> None:
+            await asyncio.sleep(0)
+            msg = "mount failed"
+            raise RuntimeError(msg)
+
+        adapter = TextualUIAdapter(
+            mount_message=fail_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "messages",
+                        (_tool_call_message("read_file", {"path": "x"}, "t-a"), {}),
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
 
 
 class TestExecuteTaskTextualParallelToolSpinner:

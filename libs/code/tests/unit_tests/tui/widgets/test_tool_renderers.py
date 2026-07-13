@@ -4,7 +4,66 @@ from deepagents_code.tui.widgets.tool_renderers import get_renderer
 from deepagents_code.tui.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
+    WriteFileApprovalWidget,
 )
+
+
+def test_write_renderer_formats_non_string_content() -> None:
+    widget_class, data = get_renderer("write_file").get_approval_widget(
+        {"file_path": "data.json", "content": {"a": "b"}}
+    )
+
+    assert widget_class is WriteFileApprovalWidget
+    assert data["content"] == '{\n  "a": "b"\n}'
+
+
+def test_write_renderer_falls_back_to_str_for_unserializable_content() -> None:
+    widget_class, data = get_renderer("write_file").get_approval_widget(
+        {"file_path": "data.txt", "content": {1, 2, 3}}
+    )
+
+    assert widget_class is WriteFileApprovalWidget
+    assert data["content"] == str({1, 2, 3})
+
+
+def test_write_widget_formats_non_string_content() -> None:
+    widgets = list(
+        WriteFileApprovalWidget(
+            {"file_path": "data.json", "content": {"a": "b"}}
+        ).compose()
+    )
+
+    assert len(widgets) == 3
+
+
+def test_edit_renderer_formats_non_string_content() -> None:
+    widget_class, data = get_renderer("edit_file").get_approval_widget(
+        {
+            "file_path": "data.json",
+            "old_string": {"a": "b"},
+            "new_string": {"a": "c"},
+        }
+    )
+
+    assert widget_class is EditFileApprovalWidget
+    assert data["old_string"] == '{\n  "a": "b"\n}'
+    assert data["new_string"] == '{\n  "a": "c"\n}'
+    assert '-  "a": "b"' in data["diff_lines"]
+    assert '+  "a": "c"' in data["diff_lines"]
+
+
+def test_edit_widget_formats_non_string_content() -> None:
+    widgets = list(
+        EditFileApprovalWidget(
+            {
+                "file_path": "data.json",
+                "old_string": {"a": "b"},
+                "new_string": {"a": "c"},
+            }
+        ).compose()
+    )
+
+    assert widgets
 
 
 def test_delete_renderer_shows_removed_file_diff(tmp_path: Path) -> None:

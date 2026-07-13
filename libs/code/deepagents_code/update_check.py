@@ -1591,8 +1591,6 @@ async def _read_stream(
 
 async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
     """Terminate an install subprocess and its descendants when possible."""
-    if proc.returncode is not None:
-        return
     if os.name == "posix":
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -1601,7 +1599,7 @@ async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
         except PermissionError:
             with suppress(ProcessLookupError):
                 proc.kill()
-    else:
+    elif proc.returncode is None:
         with suppress(ProcessLookupError):
             proc.kill()
     with suppress(ProcessLookupError):

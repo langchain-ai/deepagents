@@ -3851,8 +3851,10 @@ class TestRunInstallSubprocessFailureModes:
         assert success is False
         assert "timed out" in output
 
-    async def test_timeout_kills_process_group_on_posix(self, tmp_path) -> None:
-        """Timeout cleanup terminates shell descendants on POSIX."""
+    async def test_timeout_kills_process_group_after_shell_exits(
+        self, tmp_path
+    ) -> None:
+        """Timeout cleanup kills descendants after the POSIX shell exits."""
         if os.name != "posix":
             pytest.skip("process groups are POSIX-specific")
         log_path = tmp_path / "install.log"
@@ -3868,7 +3870,7 @@ class TestRunInstallSubprocessFailureModes:
             ),
             patch(
                 "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value="sleep 5",
+                return_value="sleep 5 & exit 0",
             ),
             patch("deepagents_code.update_check.os.killpg", wraps=os.killpg) as killpg,
         ):

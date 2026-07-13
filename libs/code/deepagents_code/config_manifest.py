@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 # --- Canonical typed defaults ----------------------------------------------
-# These are the single source of truth for `[interpreter]` defaults. The
-# `Settings` dataclass references them so the default is defined once.
+# These are single sources of truth for defaults shared across the manifest and
+# their runtime consumers.
 
 INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
@@ -64,19 +64,27 @@ LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 Single source of truth shared by the `tracing.langsmith_project` option and
 `config.get_langsmith_project_name`."""
 
+CursorStyle = Literal["block", "underline"]
+"""Visual style for the chat input cursor (a block cell or an underline)."""
+
+CURSOR_STYLE_DEFAULT: CursorStyle = "block"
+VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
+"""Allowlist derived from `CursorStyle` so the two never drift."""
+
 
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
-    `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
-    and `PTC_DELEGATE` defer to a bespoke parser (their semantics — colon-split
-    Path resolution, comma + `recommended`/`all` sentinels, the PTC allowlist —
-    do not compress into a generic coercion). `THEME_DELEGATE` is resolved
-    separately at the top of `resolve_scalar` and never reaches the inline
-    coercers. `STRUCTURED` marks user-defined tables that the scalar resolver
-    only passes through for display.
+    `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
+    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
+    allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
+    resolved separately at the top of `resolve_scalar` and never reaches the
+    inline coercers. `STRUCTURED` marks user-defined tables that the scalar
+    resolver only passes through for display.
     """
 
     BOOL = "bool"
@@ -92,6 +100,9 @@ class OptionKind(Enum):
 
     STR = "str"
 
+    LOG_LEVEL_DELEGATE = "log_level"
+    """Validates log levels and resolves the default from debug mode."""
+
     SHELL_LIST_DELEGATE = "shell_list"
     """Delegates to `config.parse_shell_allow_list`."""
 
@@ -100,6 +111,12 @@ class OptionKind(Enum):
 
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
+
+    CURSOR_STYLE_DELEGATE = "cursor_style"
+    """Validates the `[ui].cursor_style` display allowlist."""
+
+    STARTUP_MODE_DELEGATE = "startup_mode"
+    """Delegates to the `[startup].mode` runtime allowlist."""
 
     THEME_DELEGATE = "theme"
     """Delegates to the app theme-preference loader semantics."""
@@ -114,9 +131,12 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.INT: "int",
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
+    OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.CURSOR_STYLE_DELEGATE: "str",
+    OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
 }
@@ -137,6 +157,8 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.CURSOR_STYLE_DELEGATE: (str,),
+    OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
 
@@ -377,6 +399,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         return bool(raw)
     if kind is OptionKind.STR:
         return raw
+    if kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._debug import LOG_LEVELS
+
+        level = raw.strip().upper()
+        if level in LOG_LEVELS:
+            return level
+        valid = ", ".join(LOG_LEVELS)
+        logger.warning("Ignoring %s=%r (expected one of %s)", name, raw, valid)
+        return _INVALID
     if kind is OptionKind.INT:
         try:
             return int(raw.strip())
@@ -411,6 +442,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # Resolved upstream in `resolve_scalar` and never reaches here; the raw
         # passthrough is a defensive fallback only.
         return raw
+    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'block' or 'underline')",
+            name,
+            raw,
+        )
+        return _INVALID
     if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
         # Neither kind declares an `env_var`, so the `if option.env_var` guard in
         # `resolve_scalar` means this is unreachable today. If a future option
@@ -419,6 +459,17 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # field (e.g. `interpreter_ptc`) would bypass the delegate parser's
         # validation. Falling back to the validated default is the safe choice.
         logger.warning("%s is not env-backed; ignoring %s=%r", option.key, name, raw)
+        return _INVALID
+    if kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            name,
+            raw,
+        )
         return _INVALID
     assert_never(kind)
 
@@ -467,6 +518,26 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'block' or 'underline')",
+            label,
+            raw,
+        )
+        return _INVALID
+    elif kind is OptionKind.STARTUP_MODE_DELEGATE:
+        from deepagents_code.model_config import VALID_STARTUP_MODES
+
+        if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STRUCTURED:
         # Passed through verbatim for display; parsed by a dedicated loader.
         return raw
@@ -582,6 +653,11 @@ def resolve_scalar(
             if value is not _INVALID:
                 return value, "config.toml"
 
+    if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+
+        return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
+
     return option.default, "default"
 
 
@@ -637,6 +713,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "huggingface": ("langchain_huggingface", "huggingface"),
     "ibm": ("langchain_ibm", "ibm"),
     "litellm": ("langchain_litellm", "litellm"),
+    "meta": ("langchain_meta", "meta"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
     "ollama": ("langchain_ollama", "ollama"),
@@ -781,6 +858,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "theme"),
     ),
     ConfigOption(
+        key="display.cursor_style",
+        group="Display",
+        summary="Chat input cursor style ('block' or 'underline').",
+        kind=OptionKind.CURSOR_STYLE_DELEGATE,
+        default=CURSOR_STYLE_DEFAULT,
+        env_var=_env_vars.CURSOR_STYLE,
+        toml_keys=("ui", "cursor_style"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",
@@ -860,6 +946,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
+    ),
+    ConfigOption(
+        key="display.hide_splash_tips",
+        group="Display",
+        summary="Hide the startup tip shown above the chat input.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.HIDE_SPLASH_TIPS,
     ),
     ConfigOption(
         key="display.hide_splash_version",
@@ -1180,6 +1274,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="managed",
         env_var=_env_vars.RIPGREP_INSTALLER,
     ),
+    # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.mode",
+        group="Startup",
+        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        kind=OptionKind.STARTUP_MODE_DELEGATE,
+        default="manual",
+        toml_keys=("startup", "mode"),
+        cli_flag="--auto-approve",
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",
@@ -1196,6 +1300,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+    ),
+    ConfigOption(
+        key="debug.log_level",
+        group="Debug",
+        summary=(
+            "Minimum runtime log level (DEBUG, INFO, WARNING, ERROR, or CRITICAL); "
+            "defaults to DEBUG in debug mode and INFO otherwise."
+        ),
+        kind=OptionKind.LOG_LEVEL_DELEGATE,
+        env_var=_env_vars.LOG_LEVEL,
     ),
     ConfigOption(
         key="debug.onboarding",

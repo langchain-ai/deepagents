@@ -44,6 +44,13 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
+"""Chat input cursor style (`block` or `underline`).
+
+Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
+through to the config file and then the default block cursor.
+"""
+
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -156,6 +163,9 @@ HIDE_GIT_BRANCH = "DEEPAGENTS_CODE_HIDE_GIT_BRANCH"
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CODE_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
+"""Hide the startup tip shown above the chat input when enabled."""
+
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
@@ -178,6 +188,12 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

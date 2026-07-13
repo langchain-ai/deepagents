@@ -20,6 +20,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -138,6 +139,9 @@ since that one-liner is the path we promote.
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
+_TERMINATE_WAIT_TIMEOUT = 5  # seconds
+"""Cap on reaping a killed install subprocess so cleanup cannot hang launch."""
+
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
 
@@ -149,6 +153,20 @@ UPDATE_LOG_RETENTION_DAYS = 14
 
 UPDATE_LOG_MAX_FILES = 10
 """Keep at most this many newest update logs."""
+
+STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN = CACHE_TTL
+"""Seconds to suppress same-version startup auto-update retries after failure."""
+
+RESUME_AUTO_UPDATE_GRACE_PERIOD = 7 * 24 * 60 * 60
+"""Seconds resumed sessions may bypass the startup auto-update path."""
+
+_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY = "startup_auto_update_failed_version"
+_STARTUP_AUTO_UPDATE_FAILED_AT_KEY = "startup_auto_update_failed_at"
+_STARTUP_AUTO_UPDATE_FAILURE_KEYS: tuple[str, ...] = (
+    _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY,
+    _STARTUP_AUTO_UPDATE_FAILED_AT_KEY,
+)
+_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY = "resume_auto_update_deferred_at"
 
 UpgradeProgressCallback = Callable[[str], Awaitable[None] | None]
 
@@ -928,6 +946,64 @@ def _write_update_state(
     return True
 
 
+def should_defer_startup_auto_update_for_resume() -> bool:
+    """Return whether a resumed session is still in its update grace period.
+
+    The first resumed launch starts a fixed grace period. Later resumes do not
+    extend it, so a resume-only workflow eventually follows the normal startup
+    auto-update path. If the marker cannot be persisted, fail closed and run
+    the update path rather than allowing an unbounded bypass.
+    """
+    data = _read_update_state()
+    now = time.time()
+    deferred_at = _coerce_checked_at(data.get(_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY))
+    if deferred_at is None or deferred_at > now:
+        return _write_update_state({_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY: now})
+    return now - deferred_at < RESUME_AUTO_UPDATE_GRACE_PERIOD
+
+
+def clear_resume_auto_update_deferral() -> None:
+    """Reset the resume grace period after a normal interactive launch."""
+    data = _read_update_state()
+    if _RESUME_AUTO_UPDATE_DEFERRED_AT_KEY not in data:
+        return
+    _write_update_state({}, remove_keys=(_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY,))
+
+
+def should_skip_startup_auto_update_after_failure(version: str) -> bool:
+    """Return whether startup auto-update should skip a recently failed version."""
+    data = _read_update_state()
+    failed_version = data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY)
+    failed_at = data.get(_STARTUP_AUTO_UPDATE_FAILED_AT_KEY)
+    return bool(
+        failed_version == version
+        and isinstance(failed_at, (int, float))
+        and time.time() - failed_at < STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN
+    )
+
+
+def mark_startup_auto_update_failed(version: str) -> bool:
+    """Persist a same-version startup auto-update retry cooldown marker.
+
+    Returns:
+        `True` if the marker was written, `False` otherwise.
+    """
+    return _write_update_state(
+        {
+            _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY: version,
+            _STARTUP_AUTO_UPDATE_FAILED_AT_KEY: time.time(),
+        }
+    )
+
+
+def clear_startup_auto_update_failure(version: str) -> None:
+    """Clear a startup auto-update failure marker for `version` if present."""
+    data = _read_update_state()
+    if data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY) != version:
+        return
+    _write_update_state({}, remove_keys=_STARTUP_AUTO_UPDATE_FAILURE_KEYS)
+
+
 def should_notify_update(latest: str) -> bool:
     """Return whether the user should be notified about version *latest*.
 
@@ -1544,6 +1620,37 @@ async def _read_stream(
         await _emit_progress(progress, line)
 
 
+async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort kill of an install subprocess and its descendants.
+
+    On POSIX the sole caller starts the child in its own session
+    (`start_new_session=True`), so `proc.pid` doubles as the process-group id
+    and `killpg` reaps descendants too; do not call this on a process not
+    started that way or it would signal the caller's own group.
+
+    This is teardown that runs *under* a timeout or cancellation, so it must
+    never raise — a stray error here would mask the failure it is cleaning up
+    after. Every step therefore swallows benign races (a process that already
+    exited, a group we cannot signal) and the final reap is time-bounded so an
+    unreapable child cannot hang startup before the TUI.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # e.g. EPERM if the group contains a privileged descendant; fall
+            # back to killing the direct child so at least it is reaped.
+            with suppress(OSError):
+                proc.kill()
+    elif proc.returncode is None:
+        with suppress(OSError):
+            proc.kill()
+    with suppress(OSError, TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+
+
 async def _run_install_subprocess(
     cmd: str,
     *,
@@ -1568,6 +1675,9 @@ async def _run_install_subprocess(
 
     Returns:
         `(success, output)` — *success* is `True` iff the subprocess exited 0.
+
+    Raises:
+        asyncio.CancelledError: If the calling task is cancelled.
     """
     timeout = _UPGRADE_TIMEOUT
     if log_path is None:
@@ -1591,12 +1701,21 @@ async def _run_install_subprocess(
         log_file = None
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
+        if os.name == "posix":
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
@@ -1617,8 +1736,7 @@ async def _run_install_subprocess(
         )
     except TimeoutError:
         if proc is not None:
-            proc.kill()
-            await proc.wait()
+            await _terminate_install_process(proc)
         msg = f"Command timed out after {timeout}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
@@ -1627,6 +1745,13 @@ async def _run_install_subprocess(
         await _emit_progress(progress, msg)
         logger.warning(msg)
         return False, msg
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _terminate_install_process(proc)
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.close()
+        raise
     except OSError as exc:
         if log_file is not None:
             with suppress(OSError):
@@ -2580,7 +2705,7 @@ def editable_package_hint(package: str) -> str:
     """
     return (
         f"Add '{package}' to your editable checkout's environment (the one your "
-        "editable install of Deep Agents Code runs from), then relaunch."
+        "editable install of dcode runs from), then relaunch."
     )
 
 
@@ -2700,21 +2825,21 @@ async def perform_install_package(
     if method == "brew":
         return False, (
             "Homebrew install detected — packages can't be added to a brew "
-            "install. Reinstall Deep Agents Code as a uv-managed tool (see the "
+            "install. Reinstall dcode as a uv-managed tool (see the "
             "installation docs) to enable adding packages."
         )
     if method == "other":
         return False, (
             "Unsupported install method detected — cannot add packages without "
-            "knowing which environment provides `dcode`. Reinstall Deep Agents "
-            "Code as a uv-managed tool (see the installation docs) to enable "
+            "knowing which environment provides `dcode`. Reinstall dcode "
+            "as a uv-managed tool (see the installation docs) to enable "
             "adding packages."
         )
 
     if not shutil.which("uv"):
         return False, (
-            "Package installs require uv, which was not found. Reinstall Deep "
-            "Agents Code following the installation docs so packages can be "
+            "Package installs require uv, which was not found. Reinstall "
+            "dcode following the installation docs so packages can be "
             "added."
         )
 

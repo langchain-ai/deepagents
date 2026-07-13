@@ -4,6 +4,8 @@ import pytest
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.message_store import (
+    DEFAULT_HEIGHT_HINT,
+    MIN_HEIGHT_HINT,
     MessageData,
     MessageStore,
     MessageType,
@@ -316,6 +318,28 @@ class TestMessageStore:
         assert store.total_count == 2
         assert store.visible_count == 2
 
+    def test_append_preserves_hidden_tail(self):
+        """Appending while scrolled up should keep newer messages hidden."""
+        store = MessageStore()
+        for i in range(6):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 1
+        store._visible_end = 3
+
+        store.append(MessageData(type=MessageType.USER, content="new", id="id-new"))
+
+        assert store.total_count == 7
+        assert store.get_visible_range() == (1, 3)
+        assert store.has_messages_below
+        assert [msg.id for msg in store.get_messages_to_hydrate_below(10)] == [
+            "id-3",
+            "id-4",
+            "id-5",
+            "id-new",
+        ]
+
     def test_window_exceeded(self):
         """Test window size detection."""
         store = MessageStore()
@@ -538,6 +562,28 @@ class TestMessageStore:
             scroll_position=800, viewport_height=100, content_height=1000
         )
 
+    def test_should_hydrate_below_uses_bottom_spacer_top(self):
+        """Hydration should start near mounted rows, not virtual transcript end."""
+        store = MessageStore()
+        for i in range(100):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 20
+        store._visible_end = 30
+
+        bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
+        assert store.should_hydrate_below(
+            scroll_position=bottom_spacer_top - 150,
+            viewport_height=100,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+        assert not store.should_hydrate_below(
+            scroll_position=bottom_spacer_top - 400,
+            viewport_height=100,
+            bottom_spacer_top=bottom_spacer_top,
+        )
+
     def test_visible_range(self):
         """Test getting visible range."""
         store = MessageStore()
@@ -722,6 +768,171 @@ class TestVirtualizationFlow:
         assert retrieved is not None
         assert retrieved.content == "Updated content"
         assert retrieved.is_streaming is False
+
+    def test_height_hints_drive_range_estimates(self):
+        """Height hints should drive the range-height estimates spacers use."""
+        store = MessageStore()
+        for i in range(5):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        # Unmeasured messages fall back to DEFAULT_HEIGHT_HINT.
+        assert store.range_height(0, 2) == 2 * DEFAULT_HEIGHT_HINT
+        assert store.estimate_height(store._messages[0]) == DEFAULT_HEIGHT_HINT
+
+        store.set_height_hint("id-0", 3)
+        store.set_height_hint("id-1", 7)
+
+        # id-0=3, id-1=7 measured; id-2 still the default → 3 + 7 + 5 == 15.
+        assert store.range_height(0, 3) == 10 + DEFAULT_HEIGHT_HINT
+        assert store.estimate_height(store._messages[0]) == 3
+
+    def test_set_height_hint_clamps_and_update_message_rejects(self):
+        """height_hint has a single clamping write path (set_height_hint)."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="msg", id="id-1"))
+
+        # set_height_hint clamps to the floor rather than storing 0/negatives.
+        assert store.set_height_hint("id-1", 0)
+        clamped = store.get_message("id-1")
+        assert clamped is not None
+        assert clamped.height_hint == MIN_HEIGHT_HINT
+
+        # The generic update path must not smuggle an unclamped height through.
+        with pytest.raises(ValueError, match="height_hint"):
+            store.update_message("id-1", height_hint=-4)
+
+    def test_height_hints_scale_and_clear(self):
+        """Width reflow can scale or clear cached height hints."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="msg", id="id-1"))
+        store.set_height_hint("id-1", 10)
+
+        store.invalidate_height_hints(scale=0.5)
+        msg = store.get_message("id-1")
+        assert msg is not None
+        assert msg.height_hint == 5
+
+        store.invalidate_height_hints()
+        assert msg.height_hint is None
+
+    def test_protected_messages_block_top_and_bottom_pruning(self):
+        """Live messages should not be pruned from either edge."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 3
+        for i in range(6):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+
+        # A protected message at the front blocks top pruning entirely.
+        store.protect_message("id-0")
+        assert store.get_messages_to_prune() == []
+        store.unprotect_message("id-0")
+
+        # Once released, the unprotected front messages prune normally.
+        assert [m.id for m in store.get_messages_to_prune()] == ["id-0", "id-1", "id-2"]
+
+        # A protected newest message blocks bottom pruning; releasing it lets
+        # the newest rows prune.
+        store.protect_message("id-5")
+        assert store.get_messages_to_prune_below() == []
+        store.unprotect_message("id-5")
+        assert [m.id for m in store.get_messages_to_prune_below()] == [
+            "id-3",
+            "id-4",
+            "id-5",
+        ]
+
+    def test_protection_reasons_are_independent(self):
+        """Independent protection sources must not clobber each other."""
+        store = MessageStore()
+        store.append(MessageData(type=MessageType.USER, content="msg", id="id-1"))
+
+        # Protect for two reasons: a live tool and the active stream.
+        store.protect_message("id-1")  # default _LIVE_REASON
+        store.set_active_message("id-1")  # _ACTIVE_REASON
+        assert store.is_protected("id-1")
+
+        # Releasing the live-tool reason must leave active protection intact.
+        store.unprotect_message("id-1")
+        assert store.is_protected("id-1")
+        assert store.is_active("id-1")
+
+        # Swapping the active message away releases only the active reason.
+        store.set_active_message(None)
+        assert not store.is_protected("id-1")
+        assert not store.is_active("id-1")
+
+    def test_active_swap_preserves_live_tool_protection(self):
+        """Changing the active message must not unprotect a still-live tool."""
+        store = MessageStore()
+        for msg_id in ("tool-1", "asst-1", "asst-2"):
+            store.append(MessageData(type=MessageType.USER, content=msg_id, id=msg_id))
+
+        store.protect_message("tool-1")  # live tool
+        store.set_active_message("asst-1")
+        # A new streaming message takes over; the live tool stays protected.
+        store.set_active_message("asst-2")
+        assert store.is_protected("tool-1")
+        assert not store.is_protected("asst-1")
+        assert store.is_protected("asst-2")
+
+    def test_hydrate_below_advances_visible_end(self):
+        """Hydrating below should mount the next block and advance the tail."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 3
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 0
+        store._visible_end = 3
+
+        to_hydrate = store.get_messages_to_hydrate_below(2)
+        assert [m.id for m in to_hydrate] == ["id-3", "id-4"]
+
+        store.mark_hydrated_below(len(to_hydrate))
+        assert store.get_visible_range() == (0, 5)
+
+        # Nothing left below once the tail is reached.
+        store.mark_hydrated_below(store.total_count)
+        assert store.get_visible_range() == (0, 10)
+        assert not store.has_messages_below
+        assert store.get_messages_to_hydrate_below() == []
+
+    def test_prune_below_returns_newest_and_marks_visible_end(self):
+        """Bottom pruning removes the newest rows and rewinds _visible_end."""
+        store = MessageStore()
+        store.WINDOW_SIZE = 3
+        for i in range(6):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 0
+        store._visible_end = 6
+
+        to_prune = store.get_messages_to_prune_below()  # back to WINDOW_SIZE
+        assert [m.id for m in to_prune] == ["id-3", "id-4", "id-5"]
+
+        store.mark_pruned_below([m.id for m in to_prune])
+        assert store.get_visible_range() == (0, 3)
+        assert store.has_messages_below
+
+    def test_mark_pruned_below_only_rewinds_contiguous_tail(self):
+        """A gap at the tail must not over-rewind _visible_end."""
+        store = MessageStore()
+        for i in range(6):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 0
+        store._visible_end = 6
+
+        # The newest row (id-5) was NOT removed from the DOM; only inner rows
+        # were. mark_pruned_below must stop at the still-mounted tail.
+        store.mark_pruned_below(["id-3", "id-4"])
+        assert store.get_visible_range() == (0, 6)
 
 
 class TestBulkLoad:

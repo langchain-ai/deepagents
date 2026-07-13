@@ -1,10 +1,12 @@
-# Required merge gate for curated deepagents-code release notes. This workflow
-# reads the release PR through the API and executes only automation from main.
+# Required merge gate for curated deepagents-code release notes. Pull-request runs
+# attach the native required status to the PR commit. Comment/manual runs execute
+# trusted automation from main and explicitly refresh that status on the validated
+# release head.
 
 name: "📝 dcode curated release notes check"
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
   issue_comment:
     types: [created, edited, deleted]
@@ -16,6 +18,7 @@ on:
         type: string
 
 permissions:
+  checks: write
   contents: read
   issues: write
   pull-requests: read
@@ -27,7 +30,7 @@ concurrency:
 jobs:
   curated-release-notes:
     if: github.event_name != 'issue_comment' || github.event.issue.pull_request
-    name: curated release notes
+    name: ${{ github.event_name == 'pull_request' && 'curated release notes' || 'Refresh curated release notes check' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -59,6 +62,21 @@ jobs:
               core.info('Not the deepagents-code release PR; curated release notes are not required.');
               return;
             }
+            let refreshCheck = null;
+            if (context.eventName !== 'pull_request') {
+              const { data: check } = await github.rest.checks.create({
+                owner,
+                repo,
+                name: 'curated release notes',
+                head_sha: pr.head.sha,
+                status: 'in_progress',
+                output: {
+                  title: 'Validating curated release notes',
+                  summary: 'Checking the latest curated release-note state.',
+                },
+              });
+              refreshCheck = check.id;
+            }
             try {
               const result = await checkCuratedState({
                 github,
@@ -70,6 +88,35 @@ jobs:
                 id: process.env.BOT_ID,
               });
               core.info(`Curated release-note state: ${result.status}.`);
+              if (refreshCheck !== null) {
+                const passing = new Set(['bypassed', 'draft', 'passed']);
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: refreshCheck,
+                  status: 'completed',
+                  conclusion: passing.has(result.status) ? 'success' : 'failure',
+                  output: {
+                    title: passing.has(result.status)
+                      ? 'Curated release notes are valid'
+                      : 'Curated release notes need attention',
+                    summary: `Validation result: ${result.status}.`,
+                  },
+                });
+              }
             } catch (error) {
+              if (refreshCheck !== null) {
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: refreshCheck,
+                  status: 'completed',
+                  conclusion: 'failure',
+                  output: {
+                    title: 'Curated release-note validation failed',
+                    summary: 'The validator encountered an unexpected workflow error.',
+                  },
+                });
+              }
               core.setFailed(error instanceof Error ? error.message : String(error));
             }

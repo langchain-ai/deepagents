@@ -15,7 +15,12 @@ RELEASE_PLEASE_WORKFLOW = ROOT / ".github/workflows/release-please.yml"
 def test_dcode_release_notes_node_tests() -> None:
     """Run native Node.js tests for the GitHub workflow helper."""
     result = subprocess.run(
-        ["node", "--test", ".github/scripts/dcode-release-notes.test.js"],
+        [
+            "node",
+            "--test",
+            ".github/scripts/dcode-release-notes.test.js",
+            ".github/scripts/draft-dcode-release-notes.test.js",
+        ],
         cwd=ROOT,
         check=False,
         text=True,
@@ -36,13 +41,13 @@ def _load_workflow(path: Path) -> dict:
     return workflow
 
 
-def test_required_check_uses_default_branch_workflow_definition() -> None:
-    """Keep the required gate controlled by the default branch."""
+def test_required_check_is_attached_to_the_validated_pr_head() -> None:
+    """Attach native PR checks and explicit refreshes to the release head."""
     workflow = _load_workflow(CHECK_WORKFLOW)
 
     assert set(workflow["on"]) == {
         "issue_comment",
-        "pull_request_target",
+        "pull_request",
         "workflow_dispatch",
     }
     assert set(workflow["on"]["issue_comment"]["types"]) == {
@@ -51,23 +56,29 @@ def test_required_check_uses_default_branch_workflow_definition() -> None:
         "deleted",
     }
     assert workflow["permissions"] == {
+        "checks": "write",
         "contents": "read",
         "issues": "write",
         "pull-requests": "read",
     }
     job = workflow["jobs"]["curated-release-notes"]
-    assert job["name"] == "curated release notes"
+    assert "github.event_name == 'pull_request'" in job["name"]
+    assert "curated release notes" in job["name"]
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "main"
     assert checkout["with"]["persist-credentials"] is False
     assert "environment" not in job
     check_workflow = CHECK_WORKFLOW.read_text()
     assert "expectedHead: pr.head.sha" in check_workflow
-    assert "head_sha: pr.head.sha" not in check_workflow
-    assert "github.rest.checks" not in check_workflow
-    # The workflow job itself reports the required `curated release notes` status.
-    # Non-release PRs exit successfully, including fork PRs whose head SHAs cannot
-    # receive base-repository check runs through the Checks API.
+    assert "head_sha: pr.head.sha" in check_workflow
+    assert "github.rest.checks.create" in check_workflow
+    assert "github.rest.checks.update" in check_workflow
+    # Pull-request runs publish the native required status. Refresh triggers only
+    # create a head check for the same-repository release PR, after the strict
+    # release-branch identity check has passed.
+    assert check_workflow.index("if (!isReleaseBranchPr(pr))") < check_workflow.index(
+        "github.rest.checks.create"
+    )
     assert "isReleaseBranchPr(pr)" in check_workflow
     release_please = RELEASE_PLEASE_WORKFLOW.read_text()
     assert "--ref main" in release_please
@@ -144,17 +155,33 @@ def test_mutation_workflow_commands_are_target_only() -> None:
 
     assert "DCODE_RELEASE_BOT_TOKEN" not in automation
 
-    # The drafting agent must stay sandboxed: no GitHub token and shell/MCP/
-    # interpreter/memory off. Flipping shell_allow_list to a non-empty value would
-    # hand a prompt-injected agent shell access, so assert the containment by value.
+    # Untrusted release text goes through a deterministic one-request helper, not
+    # dcode's agent/tool loop. Only the selected model key is placed in that
+    # process, under a provider-neutral variable that the model never sees.
     agent_step = next(
         step
         for step in workflow["jobs"]["draft"]["steps"]
-        if step.get("uses") == "./trusted-source"
+        if step.get("id") == "agent"
     )
-    agent_with = agent_step["with"]
-    assert agent_with["github_token"] == ""
-    assert agent_with["shell_allow_list"] == ""
-    assert agent_with["no_mcp"] == "true"
-    assert agent_with["interpreter"] == "false"
-    assert agent_with["enable_memory"] == "false"
+    assert "uses" not in agent_step
+    assert agent_step["run"] == (
+        "node ./trusted-source/.github/scripts/draft-dcode-release-notes.js"
+    )
+    assert set(agent_step["env"]) == {
+        "INPUT_FILE",
+        "MODEL_API_KEY",
+        "MODEL_SPEC",
+        "OUTPUT_FILE",
+    }
+    selected_key = agent_step["env"]["MODEL_API_KEY"]
+    assert "secrets.OPENAI_API_KEY" in selected_key
+    assert "secrets.ANTHROPIC_API_KEY" in selected_key
+    assert "secrets.GOOGLE_API_KEY" in selected_key
+    assert "./trusted-source" not in {
+        step.get("uses") for step in workflow["jobs"]["draft"]["steps"]
+    }
+    helper = (ROOT / ".github/scripts/draft-dcode-release-notes.js").read_text()
+    assert "child_process" not in helper
+    assert "https://api.openai.com/v1/chat/completions" in helper
+    assert "https://api.anthropic.com/v1/messages" in helper
+    assert "https://generativelanguage.googleapis.com/" in helper

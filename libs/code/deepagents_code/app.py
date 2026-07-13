@@ -29,13 +29,14 @@ from textual.css.query import NoMatches
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -1911,6 +1912,29 @@ class _ChatScroll(VerticalScroll):
         return self.max_scroll_y > 0
 
 
+class _MainScreen(Screen[None]):
+    """Default screen containing the main chat interface.
+
+    Exists so `AUTO_FOCUS` can be scoped to this screen rather than the `App`.
+    An App-level `AUTO_FOCUS` is the fallback for *every* screen, so a
+    `"#chat-input"` selector there resolves to nothing on modals (whose DOM has
+    no such widget) and leaves them opening with no focused control. Keeping it
+    on the main screen lets modals retain Textual's default first-focusable
+    behavior.
+    """
+
+    AUTO_FOCUS = "#chat-input"
+    """Focus the chat text area whenever this screen needs a focus target.
+
+    Overrides Textual's default `"*"`, which would focus the earlier-composed,
+    still-focusable `_ChatScroll` (`#chat`) instead. The first automatic focus
+    pass runs before the nested chat text area is mounted, so
+    `DeepAgentsApp.on_mount` applies the startup focus synchronously once the
+    input exists. This selector remains the focus target when the screen later
+    resumes without a focused widget.
+    """
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-code."""
 
@@ -2000,6 +2024,11 @@ class DeepAgentsApp(App):
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
+
+    @override
+    def get_default_screen(self) -> Screen[None]:
+        """Return the main screen with chat-specific startup focus."""
+        return _MainScreen(id="_default")
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""
@@ -3043,8 +3072,12 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Focus the input immediately so the cursor is visible on first paint
-        self._chat_input.focus_input()
+        # `Widget.focus()` defers the actual focus change by posting a callback.
+        # Terminal keys may already be ahead of that callback in the app queue,
+        # so set focus synchronously while startup is still handling Mount.
+        input_widget = self._chat_input.input_widget
+        if input_widget is not None:
+            self.screen.set_focus(input_widget)
 
         if self._launch_init_requested:
             dependency_screen, dependency_result = (
@@ -14617,15 +14650,16 @@ class DeepAgentsApp(App):
         is either a competing screen binding or default key handling:
 
         - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
-          priority `ctrl+n -> toggle_names` binding that then wins.
+            priority `ctrl+n -> toggle_names` binding that then wins.
         - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
-          binding for the key; stepping aside lets it fall through to the
-          console's `key_shift_tab` reverse-focus traversal. Without this the
-          binding fires `action_toggle_auto_approve`, which no-ops under any
-          `ModalScreen`, so the key would be silently swallowed. Note this keys
-          on the action, and `toggle_auto_approve` is also bound to `ctrl+t`, so
-          that (harmless, already a no-op under modals) binding is stepped aside
-          too while the console is open.
+            binding for the key; stepping aside lets it fall through to the
+            console's `key_shift_tab` reverse-focus traversal. Without this the
+            binding fires `action_toggle_auto_approve`, which no-ops under a
+            `ModalScreen` that lacks dedicated `shift+tab` handling (as
+            `DebugConsoleScreen` does), so the key would be silently swallowed.
+            Note this keys on the action, and `toggle_auto_approve` is
+            also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is open.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.

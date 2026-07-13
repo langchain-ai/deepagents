@@ -1,0 +1,21 @@
+docs/superpowers/specs/2026-07-10-unified-evals-ci-design.md
+  s_09801fcd8c0b85::t_7e2c8cce7c045b 173-175
+  s_09801fcd8c0b85::t_b7d821b9bf327f 1-137,139-142,153-172,176-207
+  s_09801fcd8c0b85::t_2cbdbf74cebf43 138,143-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "4d54bf65be87c2f269239c512a94308f643dc667",
+  "prompts": {},
+  "sessions": {
+    "s_09801fcd8c0b85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53b777ce-508f-4b08-86a6-258f3eb988c5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

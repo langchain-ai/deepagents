@@ -1,0 +1,26 @@
+libs/code/tests/unit_tests/test_agent.py
+  s_4092bfefcbf6c5::t_993e3a22dee3ef 3296,3317-3318,3320-3321,3331-3332,3336
+  s_4092bfefcbf6c5::t_e29611bc689313 3334
+libs/code/tests/unit_tests/test_glm_5p2_profile.py
+  s_4092bfefcbf6c5::t_993e3a22dee3ef 161,166-172,175,177-183
+libs/code/deepagents_code/_glm_5p2_profile.py
+  s_4092bfefcbf6c5::t_afa93636f74714 47-52,59-60,62-63,70-72,75-76
+  s_4092bfefcbf6c5::t_e29611bc689313 42
+  s_4092bfefcbf6c5::t_f6429c80d2003c 43-46,53-58,61,64-67,78-79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "71d240a7e779cf7560f410f6a15128d7c8c9c23e",
+  "prompts": {},
+  "sessions": {
+    "s_4092bfefcbf6c5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5186-ae68-7680-a64d-4f7f1e4f978e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

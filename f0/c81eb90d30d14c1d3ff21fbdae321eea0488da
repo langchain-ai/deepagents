@@ -1,0 +1,26 @@
+.github/scripts/aggregate_shards.py
+  s_10479b16728ab1::t_4f095c86cb122c 12-15
+  s_10479b16728ab1::t_759e57a07422cc 231,233-237,247-249,257-258,275,277,283,291-292
+  s_10479b16728ab1::t_f976d309ac65e3 176
+.github/scripts/test_aggregate_shards.py
+  s_10479b16728ab1::t_94f72fccd52f9b 118-136,139,144
+.github/workflows/harbor.yml
+  s_10479b16728ab1::t_114c166b5e7e88 741,754-757
+  s_10479b16728ab1::t_9eab6405b8fd14 794
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "f0c81eb90d30d14c1d3ff21fbdae321eea0488da",
+  "prompts": {},
+  "sessions": {
+    "s_10479b16728ab1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "79b4670e-d763-4f74-9a3c-be7c4233f971",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

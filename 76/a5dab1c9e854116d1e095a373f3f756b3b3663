@@ -1,0 +1,29 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_f257dbd60d7f74::t_5372a6ddc2dabc 183-237
+  s_f257dbd60d7f74::t_90fe46a0df7c6a 14,16
+.github/workflows/harbor.yml
+  s_f257dbd60d7f74::t_73b8c1f0d1dd2e 136
+libs/evals/Makefile
+  s_f257dbd60d7f74::t_a85b45fb5ade7b 45
+.github/workflows/_harbor_run.yml
+  s_f257dbd60d7f74::t_409050aa353219 520-523
+  s_f257dbd60d7f74::t_117a2cd8049f2b 221-225
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_f257dbd60d7f74::t_6718d3f0dbb15a 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "76a5dab1c9e854116d1e095a373f3f756b3b3663",
+  "prompts": {},
+  "sessions": {
+    "s_f257dbd60d7f74": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b9e1a1e0-9469-4f08-9d91-0d533716695d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

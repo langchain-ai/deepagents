@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-07-11-glm-5p2-profile-v3-design.md
+  s_4092bfefcbf6c5::t_696283c730a43f 1-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "62c5206ce440a0034781bbe4ef6a90e5f81897c2",
+  "prompts": {},
+  "sessions": {
+    "s_4092bfefcbf6c5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5186-ae68-7680-a64d-4f7f1e4f978e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

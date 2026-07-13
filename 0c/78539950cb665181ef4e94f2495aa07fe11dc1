@@ -1,0 +1,19 @@
+libs/evals/tests/unit_tests/test_contextbench_adapter.py
+  s_53148de8b11b40::t_9002f558c0e2a3 97,103-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "0c78539950cb665181ef4e94f2495aa07fe11dc1",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

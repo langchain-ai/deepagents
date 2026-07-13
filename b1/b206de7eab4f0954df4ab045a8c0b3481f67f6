@@ -1,0 +1,28 @@
+libs/evals/deepagents_evals/tau3_subset.py
+  s_433a3ff78cd19b::t_f2862a917f12e5 1-190
+.github/workflows/harbor.yml
+  s_433a3ff78cd19b::t_24097f01e70850 38
+  s_433a3ff78cd19b::t_d1c1ea1eb72ab4 591
+  s_433a3ff78cd19b::t_42daa5820dba80 385-401
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_433a3ff78cd19b::t_e807cdc1c91588 8-9
+  s_433a3ff78cd19b::t_023c3852666435 115
+  s_433a3ff78cd19b::t_80f3659aa18f0c 114,116
+  s_433a3ff78cd19b::t_88a1457541f45a 246-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b1b206de7eab4f0954df4ab045a8c0b3481f67f6",
+  "prompts": {},
+  "sessions": {
+    "s_433a3ff78cd19b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "625c7c60-9d7d-4679-8118-19a1ddde1a08",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-06-25-deepagents-continual-learning-design.md
+  s_ff1d954e22bc10::t_ffdf72d9335e3c 185
+  s_ff1d954e22bc10::t_dae9b717177ec3 182-184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "7f2050a1f4fadc9a8057d21cdd9d0c29ad07cb0c",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

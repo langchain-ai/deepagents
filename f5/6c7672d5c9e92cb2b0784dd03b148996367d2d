@@ -1,0 +1,177 @@
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/instruction.md
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/.dockerignore
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/Dockerfile
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/instruction.md
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/solution/solve.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/instruction.md
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/tests/test.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/Dockerfile
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/Dockerfile
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/instruction.md
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/tests/test.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/.dockerignore
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/tests/test.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/task.toml
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/.dockerignore
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/instruction.md
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/task.toml
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/.dockerignore
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/tests/test.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/.dockerignore
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/task.toml
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/solution/solve.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/task.toml
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/solution/solve.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/Dockerfile
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/tests/test.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-9
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/solution/solve.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/solution/solve.sh
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-3
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/task.toml
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-11
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/Dockerfile
+  s_53148de8b11b40::t_8cc0d94c26fc9d 1-10
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/addresses.txt
+  s_53148de8b11b40::t_bb9be991212795 1-8136
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/bank_accounts.txt
+  s_53148de8b11b40::t_37145c98e2a535 1-14096
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/credit_cards.txt
+  s_53148de8b11b40::t_63f7d96a549060 1-8869
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/employments.txt
+  s_53148de8b11b40::t_a55a7d7824bc89 1-4176
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/insurance_policies.txt
+  s_53148de8b11b40::t_02d927f872d0a5 1-6825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/internet_accounts.txt
+  s_53148de8b11b40::t_1069b1e70855b2 1-7035
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/medical_records.txt
+  s_53148de8b11b40::t_a304437ce9fd1c 1-1530
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/people.txt
+  s_53148de8b11b40::t_d0bd39b91bb35f 1-1500
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/pets.txt
+  s_53148de8b11b40::t_f38d0e7ee1b23e 1-5742
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/environment/files/vehicles.txt
+  s_53148de8b11b40::t_d159980fc9aa97 1-6748
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/addresses.txt
+  s_53148de8b11b40::t_eb3469ce853723 1-8136
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/bank_accounts.txt
+  s_53148de8b11b40::t_04eab28a398e6f 1-14096
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/credit_cards.txt
+  s_53148de8b11b40::t_6518b1db154afd 1-8869
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/employments.txt
+  s_53148de8b11b40::t_62cbd58e841b99 1-4176
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/insurance_policies.txt
+  s_53148de8b11b40::t_453d3f2d72af10 1-6825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/internet_accounts.txt
+  s_53148de8b11b40::t_8bc1c631af873b 1-7035
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/medical_records.txt
+  s_53148de8b11b40::t_d4f3fb3b703311 1-1530
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/people.txt
+  s_53148de8b11b40::t_75cfe5599c5298 1-1500
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/pets.txt
+  s_53148de8b11b40::t_f6d106f79291ac 1-5742
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/environment/files/vehicles.txt
+  s_53148de8b11b40::t_efaf2c815ac496 1-6748
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/addresses.txt
+  s_53148de8b11b40::t_481d3bf19743d5 1-8136
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/bank_accounts.txt
+  s_53148de8b11b40::t_67718e9b2be530 1-14096
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/credit_cards.txt
+  s_53148de8b11b40::t_f6b33272a297c4 1-8869
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/employments.txt
+  s_53148de8b11b40::t_d459ba86f5d654 1-4176
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/insurance_policies.txt
+  s_53148de8b11b40::t_345f5839aca492 1-6825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/internet_accounts.txt
+  s_53148de8b11b40::t_8f41740e31ca8f 1-7035
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/medical_records.txt
+  s_53148de8b11b40::t_b95301c639e617 1-1530
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/people.txt
+  s_53148de8b11b40::t_835a0cd7ca3090 1-1500
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/pets.txt
+  s_53148de8b11b40::t_787b12809ac8ec 1-5742
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/environment/files/vehicles.txt
+  s_53148de8b11b40::t_3e1bbb9a80e708 1-6748
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/addresses.txt
+  s_53148de8b11b40::t_0a50c5c1a1e290 1-8136
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/bank_accounts.txt
+  s_53148de8b11b40::t_64a1e0289a50cf 1-14096
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/credit_cards.txt
+  s_53148de8b11b40::t_2e8e09157a65bc 1-8869
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/employments.txt
+  s_53148de8b11b40::t_e8ec81b0a118cd 1-4176
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/insurance_policies.txt
+  s_53148de8b11b40::t_bb112d297ec3ca 1-6825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/internet_accounts.txt
+  s_53148de8b11b40::t_fae655cb47a881 1-7035
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/medical_records.txt
+  s_53148de8b11b40::t_ef75a3dea71f3f 1-1530
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/people.txt
+  s_53148de8b11b40::t_b02902ab258db2 1-1500
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/pets.txt
+  s_53148de8b11b40::t_8f0d22985aaaa9 1-5742
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/environment/files/vehicles.txt
+  s_53148de8b11b40::t_0480f3f7fae34b 1-6748
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/addresses.txt
+  s_53148de8b11b40::t_0501d6092b6399 1-8136
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/bank_accounts.txt
+  s_53148de8b11b40::t_0ec53d5df76898 1-14096
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/credit_cards.txt
+  s_53148de8b11b40::t_eff3cd867494f2 1-8869
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/employments.txt
+  s_53148de8b11b40::t_2f96d834e72b82 1-4176
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/insurance_policies.txt
+  s_53148de8b11b40::t_f3eea0a728db8a 1-6825
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/internet_accounts.txt
+  s_53148de8b11b40::t_5fb2bae3d1ba93 1-7035
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/medical_records.txt
+  s_53148de8b11b40::t_3c3faaaa378d70 1-1530
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/people.txt
+  s_53148de8b11b40::t_4928e398a7c4ef 1-1500
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/pets.txt
+  s_53148de8b11b40::t_589205f1cca20e 1-5742
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/environment/files/vehicles.txt
+  s_53148de8b11b40::t_89ee18d28e48b6 1-6748
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f56c7672d5c9e92cb2b0784dd03b148996367d2d",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

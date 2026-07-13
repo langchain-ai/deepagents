@@ -1,0 +1,21 @@
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_433a3ff78cd19b::t_fdf01a0721beb1 265-267
+libs/evals/deepagents_evals/tau3_subset.py
+  s_433a3ff78cd19b::t_2a4acfbbf6eb40 3-6,8-15,39,41,44,46,48,51-52,55,57,60,62,67,70,72,75,77,80,82,84,86-88,91-93,96-98,101-103,106-118,122-123,126-128,131-133,136-138,141,143,148,153,156,158,161,163,168-173,178,181,183,186,188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "70185e81babb1db47096e6090f61c51a53842c9f",
+  "prompts": {},
+  "sessions": {
+    "s_433a3ff78cd19b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "625c7c60-9d7d-4679-8118-19a1ddde1a08",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_53148de8b11b40::t_f4ce28d9db7eda 140-142
+libs/evals/tests/unit_tests/test_contextbench_adapter.py
+  s_53148de8b11b40::t_5e50a096bc8865 100-102
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/task.toml
+  s_53148de8b11b40::t_9a7c36e0ea4f87 26
+libs/evals/datasets/context-retrieval-evals/dataset.toml
+  s_53148de8b11b40::t_b3f3bff83c670d 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "512a6b8267330365136457b6c5176ae8d8999ab8",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

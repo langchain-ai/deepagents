@@ -1,0 +1,29 @@
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_53148de8b11b40::t_58da607692629b 87-94
+  s_53148de8b11b40::t_fb9bfa3bfd88d0 135-142
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/environment/Dockerfile
+  s_53148de8b11b40::t_f9d961ddf6d825 3-9
+libs/evals/datasets/context-retrieval-evals/dataset.toml
+  s_53148de8b11b40::t_165b52776f53ed 13-14
+libs/evals/tests/unit_tests/test_contextbench_adapter.py
+  s_53148de8b11b40::t_0c707bda4cb02c 99-102
+  s_53148de8b11b40::t_09cef100a5dd01 61-68
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/task.toml
+  s_53148de8b11b40::t_e0e4e18f273339 25-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51f6de3472c75b0e9cd1a87c94e578295aeaa2cd",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

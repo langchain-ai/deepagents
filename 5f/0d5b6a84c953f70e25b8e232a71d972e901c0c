@@ -1,0 +1,22 @@
+libs/code/deepagents_code/agent.py
+  s_4092bfefcbf6c5::t_9411b6ce17fbed 1823-1824
+libs/code/deepagents_code/_glm_5p2_completion.py
+  s_4092bfefcbf6c5::t_9411b6ce17fbed 1,22-25,49-50,52-57,91-95,409,418-430,479,486-488,663,675,679-680,682,684,687-693,700,712,714,719-720,722,724,727-733
+  s_4092bfefcbf6c5::t_8314dfe68b4489 88-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5f0d5b6a84c953f70e25b8e232a71d972e901c0c",
+  "prompts": {},
+  "sessions": {
+    "s_4092bfefcbf6c5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5186-ae68-7680-a64d-4f7f1e4f978e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

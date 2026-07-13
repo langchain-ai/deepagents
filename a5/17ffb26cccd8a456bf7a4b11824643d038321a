@@ -1,0 +1,22 @@
+.github/scripts/test_aggregate_unified.py
+  s_09801fcd8c0b85::t_acdd7cb23b4d28 74-88
+.github/scripts/aggregate_unified.py
+  s_09801fcd8c0b85::t_6608b730f78194 10,12-13
+  s_09801fcd8c0b85::t_04ae2b8d72fad9 116-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "a517ffb26cccd8a456bf7a4b11824643d038321a",
+  "prompts": {},
+  "sessions": {
+    "s_09801fcd8c0b85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53b777ce-508f-4b08-86a6-258f3eb988c5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

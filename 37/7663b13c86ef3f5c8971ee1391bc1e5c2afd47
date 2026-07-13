@@ -1,0 +1,23 @@
+libs/evals/datasets/context-retrieval-evals/dataset.toml
+  s_53148de8b11b40::t_d08a90dc07659a 1-4
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/environment/Dockerfile
+  s_53148de8b11b40::t_17721e82a29007 3-5
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/task.toml
+  s_53148de8b11b40::t_17721e82a29007 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "377663b13c86ef3f5c8971ee1391bc1e5c2afd47",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

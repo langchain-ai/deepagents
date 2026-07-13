@@ -1,0 +1,21 @@
+.github/scripts/prune_agent_deps.py
+  s_965e75b1ea2124::t_bb058a2ba43a10 131-142
+.github/scripts/test_prune_agent_deps.py
+  s_965e75b1ea2124::t_b511df800014ec 168,171-176,183-184
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3c3e8ccf5ee86980833031fc4101b431525e3085",
+  "prompts": {},
+  "sessions": {
+    "s_965e75b1ea2124": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ddd397b-2b84-4b35-b980-88905441f22d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

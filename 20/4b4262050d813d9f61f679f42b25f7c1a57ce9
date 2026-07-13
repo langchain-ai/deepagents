@@ -1,0 +1,19 @@
+.github/workflows/harbor.yml
+  s_fdaf0f43764134::t_028440620cd2d9 573-577
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "204b4262050d813d9f61f679f42b25f7c1a57ce9",
+  "prompts": {},
+  "sessions": {
+    "s_fdaf0f43764134": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "94f46a8f-f0aa-4f5b-ae2d-b120cfbf0eda",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,41 @@
+.github/workflows/_harbor_run.yml
+  s_09801fcd8c0b85::t_89737a77e926b9 523-526
+  s_09801fcd8c0b85::t_19b9a960b728b7 679
+  s_09801fcd8c0b85::t_32cfc2ee3f0113 768
+  s_09801fcd8c0b85::t_bf1a3359ae6bea 669-672
+  s_09801fcd8c0b85::t_130f3f018a1a4a 663-664
+  s_09801fcd8c0b85::t_506c4ec7f0a842 22
+  s_09801fcd8c0b85::t_7b713ff1033176 710-711
+  s_09801fcd8c0b85::t_b3c7915a0f7706 716-719
+.github/scripts/test_unified_prep.py
+  s_09801fcd8c0b85::t_c9e33cd6f0cf2c 42-43,47-67
+  s_09801fcd8c0b85::t_ced48851bf43e0 68-69
+.github/scripts/unified_prep.py
+  s_09801fcd8c0b85::t_0b17c45078f96d 98
+  s_09801fcd8c0b85::t_61e0053e51bb71 59-65
+  s_09801fcd8c0b85::t_04c3f68ec55e4f 14
+  s_09801fcd8c0b85::t_ce6d5285a21ce9 120-130
+.github/workflows/harbor.yml
+  s_09801fcd8c0b85::t_70eb7242aacbb4 311,315
+  s_09801fcd8c0b85::t_39d7c3ca892dae 186-187
+.github/workflows/unified_evals.yml
+  s_09801fcd8c0b85::t_1e07a1d41606a3 38-39
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_09801fcd8c0b85::t_97d0e48cf184e0 229,233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "82eeacab5c7a79bcff9e3ab811408aa10a6975ec",
+  "prompts": {},
+  "sessions": {
+    "s_09801fcd8c0b85": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53b777ce-508f-4b08-86a6-258f3eb988c5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

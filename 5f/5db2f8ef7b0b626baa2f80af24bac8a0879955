@@ -1,0 +1,20 @@
+.github/workflows/harbor.yml
+  s_7d027884b4835d::t_928b8f120f50f1 180
+  s_7d027884b4835d::t_b3662c82e53b3c 393-411
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "5f5db2f8ef7b0b626baa2f80af24bac8a0879955",
+  "prompts": {},
+  "sessions": {
+    "s_7d027884b4835d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72d2b1ca-bff3-4b3b-9f64-8d4b43b8ea3d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

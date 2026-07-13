@@ -1,0 +1,19 @@
+.github/scripts/test_langsmith_experiment_matrix.py
+  s_53148de8b11b40::t_d55f3bb72d9567 1-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "40978ea181bf80ffa18b10c9796a1d91f2ddd3bf",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "unknown"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

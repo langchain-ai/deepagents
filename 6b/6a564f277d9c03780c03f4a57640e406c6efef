@@ -1,0 +1,90 @@
+libs/evals/datasets/context-retrieval-evals/cb-cloud-18/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/harbor_adapters/contextbench/adapter.py
+  s_53148de8b11b40::t_3f9121f46617da 284-287,289,293-297,301-304
+  s_53148de8b11b40::t_a223eeb98e7b4d 163-213
+  s_53148de8b11b40::t_69791edc329fa9 99-103
+libs/evals/datasets/context-retrieval-evals/cb-cloud-49/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/harbor_adapters/contextbench/main.py
+  s_53148de8b11b40::t_2c5be95dcabbce 45-59
+  s_53148de8b11b40::t_8cfb210a5df1d4 93-103
+libs/evals/datasets/context-retrieval-evals/cb-cloud-32/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-16/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-10/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-37/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-55/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/tests/unit_tests/test_contextbench_main.py
+  s_53148de8b11b40::t_6bfd371b0b7180 117-166
+libs/evals/datasets/context-retrieval-evals/cb-cloud-22/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-24/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-38/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-56/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/calibration.json
+  s_53148de8b11b40::t_2672957bd0321d 1-193
+libs/evals/datasets/context-retrieval-evals/cb-cloud-36/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-64/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-35/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/README.md
+  s_53148de8b11b40::t_761593afb7e0f7 41-45
+libs/evals/datasets/context-retrieval-evals/cb-cloud-15/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-1/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-31/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-11/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-13/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-0/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-5/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-48/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-2/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-42/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-50/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-78/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-47/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-26/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-41/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 7,12
+libs/evals/datasets/context-retrieval-evals/cb-cloud-7/task.toml
+  s_53148de8b11b40::t_fbcf59cdeee5e8 6-7,12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "6b6a564f277d9c03780c03f4a57640e406c6efef",
+  "prompts": {},
+  "sessions": {
+    "s_53148de8b11b40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec26eb1d-8f9e-4c27-b528-3d626a2d45b2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

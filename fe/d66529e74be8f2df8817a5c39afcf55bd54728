@@ -1,0 +1,131 @@
+.github/workflows/harbor.yml
+  s_433a3ff78cd19b::t_addf61eff9d601 402-414,605-609,643,720
+.release-please-manifest.json
+  s_433a3ff78cd19b::t_addf61eff9d601 5
+libs/code/deepagents_code/model_config.py
+  s_433a3ff78cd19b::t_addf61eff9d601 597-599
+libs/code/tests/unit_tests/test_server_manager.py
+  s_433a3ff78cd19b::t_addf61eff9d601 5,283-386
+  s_433a3ff78cd19b::t_122a6061cc9e8b 387
+.github/scripts/prune_agent_deps.py
+  s_433a3ff78cd19b::t_addf61eff9d601 1-181
+libs/code/tests/unit_tests/tui/widgets/test_model_selector.py
+  s_433a3ff78cd19b::t_addf61eff9d601 2258-2263
+.github/workflows/release-please.yml
+  s_433a3ff78cd19b::t_addf61eff9d601 324-328,400-418
+libs/code/deepagents_code/ui.py
+  s_433a3ff78cd19b::t_addf61eff9d601 143
+libs/deepagents/tests/unit_tests/test_subagents.py
+  s_433a3ff78cd19b::t_addf61eff9d601 24,30,494-594
+  s_433a3ff78cd19b::t_678f0a7c652c02 595
+libs/evals/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 22,32,35-36,38-39,41-42
+.github/RELEASING.md
+  s_433a3ff78cd19b::t_addf61eff9d601 36,44,46,52,54-74,109-110,154,436,523-531
+  s_433a3ff78cd19b::t_9e30107c2b2c83 532
+libs/code/deepagents_code/main.py
+  s_433a3ff78cd19b::t_addf61eff9d601 605,607,1643-1649,2780-2793
+  s_433a3ff78cd19b::t_b3f8101f2de2ac 2794
+libs/code/deepagents_code/reasoning_effort.py
+  s_433a3ff78cd19b::t_addf61eff9d601 56,61-63,138,140,145-147
+libs/deepagents/deepagents/graph.py
+  s_433a3ff78cd19b::t_addf61eff9d601 975-977
+libs/code/CHANGELOG.md
+  s_433a3ff78cd19b::t_addf61eff9d601 5-15
+ACTION.md
+  s_433a3ff78cd19b::t_addf61eff9d601 1-59
+libs/code/tests/unit_tests/test_model_config.py
+  s_433a3ff78cd19b::t_addf61eff9d601 5818-5824
+.github/scripts/test_prune_agent_deps.py
+  s_433a3ff78cd19b::t_addf61eff9d601 1-366
+examples/nvidia_deep_agent/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 8-13
+action.yml
+  s_433a3ff78cd19b::t_addf61eff9d601 2,13,15-26,68-147,149,198,219-220,232-236,245,247,302,312-314,320-339,341-397,399,401,404-457,459-464,467-468,475-480,482-495,497-525,527,536-537
+libs/deepagents/deepagents/middleware/subagents.py
+  s_433a3ff78cd19b::t_addf61eff9d601 613
+examples/deep_research/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 7-11
+libs/code/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 7-8,30,40,42,90,92,95,101,107-108
+libs/code/deepagents_code/client/launch/server_manager.py
+  s_433a3ff78cd19b::t_addf61eff9d601 404,408-431
+libs/code/deepagents_code/_version.py
+  s_433a3ff78cd19b::t_addf61eff9d601 5
+examples/text-to-sql-agent/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 9-10
+libs/cli/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 29
+libs/code/tests/unit_tests/test_server.py
+  s_433a3ff78cd19b::t_addf61eff9d601 5-6,8,422,425-429,467,475-587
+  s_433a3ff78cd19b::t_0e6b33f9d7fb7f 588
+examples/async-subagent-server/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 10-11
+release-please-config.json
+  s_433a3ff78cd19b::t_addf61eff9d601 55-56
+libs/partners/quickjs/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 28-30
+libs/acp/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 27,33
+libs/code/tests/unit_tests/test_main_args.py
+  s_433a3ff78cd19b::t_addf61eff9d601 175-267
+libs/deepagents/pyproject.toml
+  s_433a3ff78cd19b::t_addf61eff9d601 23-26,32
+.github/scripts/test_github_action.py
+  s_433a3ff78cd19b::t_addf61eff9d601 1-427
+libs/code/deepagents_code/tui/widgets/model_selector.py
+  s_433a3ff78cd19b::t_addf61eff9d601 92-94,100-102
+libs/code/deepagents_code/client/launch/server.py
+  s_433a3ff78cd19b::t_addf61eff9d601 531,540-557,653-657,659,666-675
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_433a3ff78cd19b::t_addf61eff9d601 42-57,60,117-120,122,147-148
+  s_433a3ff78cd19b::t_013d2aad4a607e 149
+examples/async-subagent-server/uv.lock
+  s_433a3ff78cd19b::t_adda25b0c10776 80-81,88,363-367,641,648,650,655,662,664,669,682,684,689,697,699,716,726,728
+examples/deep_research/uv.lock
+  s_433a3ff78cd19b::t_606465360dda6e 721-723,1701,1708,1710,1715,1728,1730,1735,1743,1745,1750,1757,1759,2163,2165,2167,3581,3583,3585
+examples/llm-wiki/uv.lock
+  s_433a3ff78cd19b::t_fe2c2f15610c05 298-302,556,563,565,570,577,579,584,597,599,604,612,614
+examples/nvidia_deep_agent/uv.lock
+  s_433a3ff78cd19b::t_1e648eccd90e10 20,29,32-133,1131,1138,1140,1145,1152,1154,1159,1172,1174,1207,1214,1216,1233,1243,1245,1599-1600,1602-1603,2371,2373,2375
+examples/text-to-sql-agent/uv.lock
+  s_433a3ff78cd19b::t_31d04b2596f3bb 812,819,821,826,833,835,880,893,895,1929-1930
+libs/acp/uv.lock
+  s_433a3ff78cd19b::t_c7ea41a3edc401 447-451,517,760,767,769,774,781,783,802,815,817,822,830,832,837,844,846
+libs/cli/uv.lock
+  s_433a3ff78cd19b::t_2c97f23aabbbca 424-428,491,848,855,857,862,869,871,876,889,891,896,904,906
+libs/code/uv.lock
+  s_433a3ff78cd19b::t_2d28ec21c15806 1065-1069,1114,1296,1298-1300,1305,1314,1318-1320,2687,2694,2696,2715,2722,2724,2729,2738,2740,2774,2787,2789,2835,2844,2846,2958,2967,2969,3029,3036,3038,3043,3049,3051,3096-3098,3213,3223,3225
+libs/deepagents/uv.lock
+  s_433a3ff78cd19b::t_a86d6b694f7506 568-572,748,944,951,953,958,965,967,972,980,982,987,1000,1002,1007,1015,1017,2170-2171
+libs/evals/uv.lock
+  s_433a3ff78cd19b::t_7fde41ad4d5be8 412-416,461,510,512-514,519,528,532-534,644-645,648-649,651-652,654-655,1355,1362,1364,1369,1376,1378,1397,1410,1412,1430,1439,1441,1488,1497,1499,1504,1511,1513,1531,1538,1540,1545,1551,1553,1585-1587,1628,1638,1640,2812,2814,2816
+libs/partners/daytona/uv.lock
+  s_433a3ff78cd19b::t_d81dcee00e0f50 661-665,1086,1093,1095,1100,1107,1109,1114,1127,1129,1175,1183,1185
+libs/partners/modal/uv.lock
+  s_433a3ff78cd19b::t_0447f9be0eca2f 607-611,1027,1034,1036,1041,1048,1050,1055,1068,1070,1075,1083,1085
+libs/partners/quickjs/uv.lock
+  s_433a3ff78cd19b::t_7aa584c0105f88 484-488,870,877,879,884,891,893,898,911,913,918,926,928,980-982,1008,1018,1020
+libs/partners/runloop/uv.lock
+  s_433a3ff78cd19b::t_6ad6b2b628b515 399-403,670,677,679,684,691,693,698,711,713,718,726,728
+libs/partners/vercel/uv.lock
+  s_433a3ff78cd19b::t_92745b4a0c8423 456-460,732,739,741,746,753,755,760,773,775,780,788,790
+libs/talon/uv.lock
+  s_433a3ff78cd19b::t_215c283c03b6d2 766-770,815,870,872-874,879,888,892-894,1596,1603,1605,1610,1617,1619,1624,1637,1639,1673,1680,1682,1714-1716,1742,1752,1754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "fed66529e74be8f2df8817a5c39afcf55bd54728",
+  "prompts": {},
+  "sessions": {
+    "s_433a3ff78cd19b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "625c7c60-9d7d-4679-8118-19a1ddde1a08",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

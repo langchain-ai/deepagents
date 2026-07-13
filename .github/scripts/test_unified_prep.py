@@ -103,6 +103,21 @@ def test_agent_impl_override_applies_only_to_deepagent_categories():
     }
 
 
+def test_build_provider_matrices_rejects_unknown_agent_impl():
+    # Defense in depth: a truthy-but-unknown harness must not flow silently into
+    # a matrix entry, even for a caller that bypasses main()'s validation.
+    import pytest
+
+    with pytest.raises(ValueError, match="agent_impl"):
+        up.build_provider_matrices(
+            ["anthropic:opus"],
+            ["autonomous"],
+            shard_parallel=10,
+            n_shards_by_cat={"autonomous": 10},
+            agent_impl="garbage",
+        )
+
+
 def test_langsmith_dataset_is_collision_resistant():
     # slugify is lossy: these two distinct specs slugify to the same string, so
     # the hash suffix must keep their langsmith_dataset names distinct.
@@ -258,12 +273,45 @@ def test_main_accepts_category_shard_count_boundaries(tmp_path, monkeypatch):
 def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
-    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "tau3")  # valid harness, not selectable here
+    monkeypatch.setenv(
+        "UNIFIED_AGENT_IMPL", "tau3"
+    )  # valid harness, not selectable here
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
     import pytest
 
     with pytest.raises(SystemExit, match="UNIFIED_AGENT_IMPL"):
         up.main([])
+
+
+def test_main_agent_impl_override_reaches_matrix(tmp_path, monkeypatch):
+    # Guards the main() -> build_provider_matrices wiring: a dropped agent_impl
+    # argument would fall back to category defaults and go undetected otherwise.
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "dcode")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert up.main([]) == 0
+    import json as _j
+
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    matrix = _j.loads(lines["anthropic_matrix"])
+    assert {e["agent_impl"] for e in matrix["include"]} == {"dcode"}
+
+
+def test_main_blank_agent_impl_falls_back_to_default(tmp_path, monkeypatch):
+    # A whitespace-only env value must fall back to bare, not raise.
+    out = tmp_path / "o"
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPL", "   ")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    assert up.main([]) == 0
+    import json as _j
+
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+    matrix = _j.loads(lines["anthropic_matrix"])
+    assert {e["agent_impl"] for e in matrix["include"]} == {"bare"}
 
 
 def test_main_rejects_bad_spec(tmp_path, monkeypatch):

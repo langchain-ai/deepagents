@@ -48,7 +48,7 @@ truth in [`unified_prep.py`](../../.github/scripts/unified_prep.py) (`CATEGORY_M
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
 
 The default run exercises all three (`categories: "autonomous,conversation,context"`). A radar
-chart is only meaningful with the full set, so it is emitted only when ≥3 categories run.
+chart is only meaningful with the full set, so it is emitted only when all three categories run.
 
 The `autonomous` and `context` categories run a deep-agents graph: by default the **bare**
 `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure
@@ -109,8 +109,8 @@ simulated user, call domain tools, and follow a written policy to resolve the us
 **Why this benchmark.** [τ³-bench](https://github.com/sierra-research/tau2-bench) (the Harbor
 dataset `sierra-research/tau3-bench`; τ³ ships inside the `tau2-bench` repo) is a standard for
 tool-using conversational agents. The `conversation` category runs it through the `tau3` harness,
-whose user simulator (running on `gpt-5.2`) drives a live back-and-forth — this is the only
-category that scores *dialogue* rather than a single-shot task.
+whose user simulator (an OpenAI model, currently `gpt-5.2`) drives a live back-and-forth — this is
+the only category that scores *dialogue* rather than a single-shot task.
 
 **Why these tasks.** We run a curated **30-task subset**
 ([`tau3_subset.py`](deepagents_evals/tau3_subset.py)) drawn from two τ³ domains that exercise

@@ -67,6 +67,16 @@ DEEPAGENT_IMPLS = {"bare", "dcode"}
 DEFAULT_AGENT_IMPL = "bare"
 """Deep-agent harness used when `UNIFIED_AGENT_IMPL` is not set."""
 
+KNOWN_AGENT_IMPLS = DEEPAGENT_IMPLS | {"tau3"}
+"""Every harness a category may pin (deep-agent harnesses plus `tau3`)."""
+
+# A typo in a CATEGORY_MAP `agent_impl` (e.g. "bear") would silently make that
+# category ineligible for the override *and* run it on a nonexistent harness.
+# Fail loudly at import instead.
+assert all(cm["agent_impl"] in KNOWN_AGENT_IMPLS for cm in CATEGORY_MAP.values()), (
+    f"every CATEGORY_MAP agent_impl must be one of {sorted(KNOWN_AGENT_IMPLS)}"
+)
+
 
 def parse_int_input(
     name: str,
@@ -133,6 +143,14 @@ def build_provider_matrices(
     n_shards_by_cat: dict[str, int],
     agent_impl: str | None = None,
 ) -> dict[str, list[dict]]:
+    # Defense in depth for direct callers: main() validates UNIFIED_AGENT_IMPL,
+    # but this public helper must not silently route a run to an unknown harness.
+    if agent_impl and agent_impl not in DEEPAGENT_IMPLS:
+        msg = (
+            f"agent_impl must be one of {sorted(DEEPAGENT_IMPLS)} or None, "
+            f"got {agent_impl!r}"
+        )
+        raise ValueError(msg)
     matrices: dict[str, list[dict]] = {}
     for spec in models_list:
         prov = provider_of(spec)

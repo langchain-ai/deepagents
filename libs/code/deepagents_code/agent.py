@@ -66,6 +66,7 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _ShellAllowAll,
@@ -100,6 +101,36 @@ logger = logging.getLogger(__name__)
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+
+class _NoTodoListMiddleware(AgentMiddleware):
+    """No-op stand-in that drops the SDK's `TodoListMiddleware` by name.
+
+    `create_deep_agent` always injects `TodoListMiddleware` and exposes no
+    parameter to disable it. Its `_apply_custom_middleware` merge replaces a
+    default middleware in place when a caller-supplied middleware shares its
+    `.name`, so threading this tool-less stand-in (which matches
+    `TodoListMiddleware.name`) into the agent and subagent middleware lists
+    removes the real middleware — and its `write_todos` tool — without touching
+    the SDK. Gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`; see
+    `_todo_list_middleware_override`.
+    """
+
+    name = "TodoListMiddleware"
+
+
+def _todo_list_middleware_override() -> list[AgentMiddleware]:
+    """Return the middleware needed to strip `TodoListMiddleware`, if enabled.
+
+    Returns a single-element list with `_NoTodoListMiddleware` when the
+    experimental flag is set, else an empty list. Callers splice the result
+    into the middleware list they pass to `create_deep_agent` so the SDK's
+    name-based merge drops the real `TodoListMiddleware`.
+    """
+    if is_env_truthy(EXPERIMENTAL):
+        return [_NoTodoListMiddleware()]
+    return []
+
 
 _RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
 _RUBRIC_GRADER_SYSTEM_PROMPT = (
@@ -1506,6 +1537,9 @@ def create_cli_agent(
 
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
+        # Experimental: mirror the main agent and drop TodoListMiddleware /
+        # write_todos from subagent stacks too. No-op unless the flag is set.
+        middleware.extend(_todo_list_middleware_override())
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
@@ -1567,6 +1601,9 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
+        # Experimental: drop the SDK's TodoListMiddleware / write_todos tool.
+        # No-op unless DEEPAGENTS_CODE_EXPERIMENTAL is truthy.
+        *_todo_list_middleware_override(),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

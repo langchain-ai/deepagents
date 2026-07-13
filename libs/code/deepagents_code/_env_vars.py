@@ -129,6 +129,15 @@ When set, this replaces (takes precedence over) the
 is never silently emptied.)
 """
 
+EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
+"""Opt into experimental, unstable dcode behavior.
+
+Off by default. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on`
+(case-insensitive) as enabled. Currently gates dropping the SDK's
+`TodoListMiddleware` (and its `write_todos` tool) from the agent and its
+subagents. Behavior behind this flag may change or be removed without notice.
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 

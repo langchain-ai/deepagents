@@ -1,7 +1,16 @@
-"""Integration coverage for resumed-thread compaction."""
+"""Integration coverage for the server-side `/offload` path.
+
+`/offload` drives the agent's own `compact_conversation` tool (with
+`force=True`) server-side, so the offloaded archive lands in the agent's
+composite backend and is readable via `read_file` in every run mode — not in a
+client-local directory the server can never read. These tests construct the app
+the PRODUCTION way (`backend=None`) and prove the archive is readable *through
+the agent*.
+"""
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -60,12 +69,13 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
     """Read `file_path` via the running agent's own `read_file` tool.
 
     Seeds a `read_file` tool call attributed to the model node and advances the
-    graph so the agent's `ToolNode` executes the read against its own backend,
-    proving the offloaded archive exists server-side (not in a client dir).
-    Auto-approves any HITL interrupt the read raises.
-    """
-    import uuid
+    graph so the agent's `ToolNode` executes the read against its own backend.
+    This proves the offloaded archive exists server-side (not merely in a
+    client-local directory). Auto-approves any HITL interrupt the read raises.
 
+    Returns:
+        The concatenated content of every `ToolMessage` produced by the run.
+    """
     from langchain.agents.middleware.human_in_the_loop import ApproveDecision
     from langchain_core.messages import AIMessage
     from langgraph.types import Command
@@ -116,25 +126,29 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
     return "\n".join(tool_contents)
 
 
-@pytest.mark.timeout(180)
-async def test_compact_resumed_thread_uses_persisted_history(
+@pytest.mark.timeout(240)
+async def test_offload_runs_server_side_and_is_agent_readable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Offloads a resumed thread after restart using remote server state.
+    """`/offload` compacts server-side with `backend=None` and stays readable.
 
-    The test seeds a real persisted thread on one server instance, restarts the
-    server, resumes that thread in a fresh `DeepAgentsApp` constructed the
-    PRODUCTION way (`backend=None`), and verifies that `/offload` succeeds
-    server-side and the archive stays readable through the agent's own backend.
+    Constructs the app the production way (`backend=None`), seeds a thread with
+    enough content, runs `/offload`, and asserts:
+
+    - no `ErrorMessage` and an "Offloaded " success message,
+    - a persisted `_summarization_event` with `cutoff > 0` and
+      `file_path == /conversation_history/<thread>.md`,
+    - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
+      proving the bytes live in the agent's backend server-side, and
+    - nothing was written to the client-local offload fallback directory.
     """
     home_dir = tmp_path / "home"
     project_dir = tmp_path / "project"
-    assistant_id = "itest-compact"
+    assistant_id = "itest-offload"
 
     home_dir.mkdir()
     project_dir.mkdir()
 
-    # Keep config and the global sessions DB fully test-local.
     monkeypatch.setenv("HOME", str(home_dir))
     monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "1")
     monkeypatch.chdir(project_dir)
@@ -149,8 +163,6 @@ async def test_compact_resumed_thread_uses_persisted_history(
     from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
     config_path = home_dir / ".deepagents" / "config.toml"
-    # Some tests import `model_config` earlier in the session, so override the
-    # cached default paths explicitly before creating the model.
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_DIR", config_path.parent)
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
 
@@ -159,8 +171,6 @@ async def test_compact_resumed_thread_uses_persisted_history(
         create_model("itest:fake").apply_to_settings()
         thread_id = generate_thread_id()
 
-        # Server 1: create a real persisted thread with enough content to
-        # trigger compaction later.
         async with server_session(
             assistant_id=assistant_id,
             model_name="itest:fake",
@@ -177,19 +187,9 @@ async def test_compact_resumed_thread_uses_persisted_history(
                     prompt=_build_long_prompt(turn),
                 )
 
-        # Server 2: same SQLite DB, but a fresh server process.
-        async with server_session(
-            assistant_id=assistant_id,
-            model_name="itest:fake",
-            no_mcp=True,
-            enable_shell=False,
-            interactive=True,
-            sandbox_type="none",
-        ) as (agent, _server_proc):
             config = {"configurable": {"thread_id": thread_id}}
 
-            # Production construction: no client-owned backend. Offload runs
-            # server-side through the agent's own `compact_conversation` tool.
+            # Production construction: no client-owned backend.
             app = DeepAgentsApp(
                 agent=agent,  # ty: ignore
                 assistant_id=assistant_id,
@@ -199,9 +199,6 @@ async def test_compact_resumed_thread_uses_persisted_history(
             )
 
             async with app.run_test() as pilot:
-                # Let startup history loading settle before asserting on the UI.
-                # Use a 0.1 s delay per iteration (up to 12 s) so slow CI
-                # runners have enough time for the async I/O to complete.
                 for _ in range(120):
                     await pilot.pause(0.1)
                     if app._message_store.total_count > 0:
@@ -211,8 +208,6 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
                 await app._handle_offload()
 
-                # `/offload` posts a success message after the async state write
-                # and archive offload finish.
                 for _ in range(120):
                     await pilot.pause(0.1)
                     if any(
@@ -228,12 +223,11 @@ async def test_compact_resumed_thread_uses_persisted_history(
                     str(widget._content) for widget in app.query(ErrorMessage)
                 ]
 
+            assert not error_messages
             assert "Nothing to offload" not in "\n".join(app_messages)
             assert any("Offloaded " in content for content in app_messages)
-            assert not error_messages
 
-            # The summarization event must be visible through server state so
-            # subsequent turns see compacted context instead of full history.
+            # The summarization event must be visible through server state.
             state = await agent.aget_state(config)
             values = getattr(state, "values", None) or {}
             summarization_event = values.get("_summarization_event")
@@ -244,13 +238,20 @@ async def test_compact_resumed_thread_uses_persisted_history(
             archive_path = f"/conversation_history/{thread_id}.md"
             assert _event_field(summarization_event, "file_path") == archive_path
 
-            # The archive must be readable THROUGH THE AGENT, proving the bytes
-            # live in the agent's own composite backend server-side rather than
-            # in a client-local directory the server can never read.
+            # CRUCIAL: the archive must be readable THROUGH THE AGENT, proving
+            # the bytes exist in the agent's own backend server-side.
             read_back = await _read_file_through_agent(
                 agent, thread_id=thread_id, file_path=archive_path
             )
             assert "keeps enough unique detail" in read_back
+            # The SDK middleware writes a "## Summarized at" archive header.
             assert "Summarized at" in read_back
+
+        # With `backend=None` nothing should be written to the client-local
+        # offload fallback directory (`~/.deepagents/conversation_history`).
+        client_fallback = (
+            home_dir / ".deepagents" / "conversation_history" / f"{thread_id}.md"
+        )
+        assert not client_fallback.exists()
     finally:
         model_config.clear_caches()

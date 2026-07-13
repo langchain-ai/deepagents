@@ -265,6 +265,50 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     return discarded
 
 
+def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
+    """Return the absolute cutoff index of a `_summarization_event`.
+
+    Args:
+        event: A `_summarization_event` mapping (as persisted in state), or
+            `None`.
+
+    Returns:
+        The `cutoff_index`, or `0` when the event is missing or malformed.
+    """
+    if isinstance(event, dict):
+        cutoff = event.get("cutoff_index")
+        if isinstance(cutoff, int):
+            return cutoff
+    return 0
+
+
+def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
+    """Reconstruct the effective conversation the model would see.
+
+    Mirrors `SummarizationMiddleware._apply_event_to_messages`: when a prior
+    summarization event exists, the effective conversation is the summary
+    message followed by the messages from `cutoff_index` onward. Works on both
+    LangChain message objects and the serialized dicts returned by remote
+    state snapshots, since it only slices and prepends.
+
+    Args:
+        messages: Full message list from state.
+        event: The `_summarization_event` mapping, or `None`.
+
+    Returns:
+        The effective message list.
+    """
+    if not isinstance(event, dict):
+        return list(messages)
+    summary = event.get("summary_message")
+    cutoff = event.get("cutoff_index")
+    if summary is None or not isinstance(cutoff, int):
+        return list(messages)
+    if cutoff > len(messages):
+        return [summary]
+    return [summary, *messages[cutoff:]]
+
+
 def _create_model_with_deepagents_import_lock(
     model_spec: str | None = None,
     *,
@@ -10753,13 +10797,17 @@ class DeepAgentsApp(App):
             return None
 
     async def _handle_offload(self) -> None:
-        """Offload older messages to free context window space."""
-        from deepagents_code.config import settings
-        from deepagents_code.offload import (
-            OffloadModelError,
-            OffloadThresholdNotMet,
-            perform_offload,
-        )
+        """Offload older messages to free context window space.
+
+        Runs offload SERVER-SIDE by driving the agent's own
+        `compact_conversation` tool (with `force=True`) instead of
+        reimplementing summarization + persistence client-side. This keeps the
+        offloaded archive in the agent's composite backend so it is readable
+        via `read_file` in every run mode (server, sandbox, in-process). The
+        client only seeds the tool call, approves the resulting HITL interrupt,
+        drains the run, and renders the persisted `_summarization_event`.
+        """
+        from langchain_core.messages.utils import count_tokens_approximately
 
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -10797,83 +10845,67 @@ class DeepAgentsApp(App):
             await dispatch_hook("context.compact", {})
             await self._set_spinner("Offloading")
 
-            result = await perform_offload(
-                messages=state_values.get("messages", []),
-                prior_event=state_values.get("_summarization_event"),
-                thread_id=self._lc_thread_id,
-                model_spec=(f"{settings.model_provider}:{settings.model_name}"),
-                profile_overrides=self._profile_override,
-                context_limit=settings.model_context_limit,
-                total_context_tokens=self._context_tokens,
-                backend=self._backend,
+            prior_event = state_values.get("_summarization_event")
+            before_messages = state_values.get("messages", [])
+            prior_cutoff = _summarization_cutoff(prior_event)
+            tokens_before = count_tokens_approximately(
+                _effective_conversation(before_messages, prior_event)
             )
 
-            if isinstance(result, OffloadThresholdNotMet):
-                conv_str = format_token_count(result.conversation_tokens)
-                if (
-                    result.total_context_tokens > 0
-                    and result.context_limit is not None
-                    and result.total_context_tokens > result.context_limit
-                ):
-                    total_str = format_token_count(
-                        result.total_context_tokens,
-                    )
-                    await self._mount_message(
-                        AppMessage(
-                            f"Offload threshold not met \u2014 conversation "
-                            f"is only ~{conv_str} tokens.\n\n"
-                            f"The remaining context "
-                            f"({total_str} tokens) is system overhead "
-                            f"that can't be offloaded.\n\n"
-                            f"Use /tokens for a full breakdown.",
-                        ),
-                    )
-                else:
-                    await self._mount_message(
-                        AppMessage(
-                            f"Offload threshold not met \u2014 conversation "
-                            f"(~{conv_str} tokens) is within the "
-                            f"retention budget "
-                            f"({result.budget_str}).\n\n"
-                            f"Use /tokens for a full breakdown.",
-                        ),
-                    )
+            tool_error = await self._drive_server_side_compaction(config)
+            if tool_error is not None:
+                await self._mount_message(ErrorMessage(tool_error))
                 return
 
-            # OffloadResult — success
-            if result.offload_warning:
-                await self._mount_message(ErrorMessage(result.offload_warning))
+            # Read the persisted result back so the UI reflects server state
+            # (the archive now lives in the agent's own backend, not a
+            # client-local directory the server can never read).
+            new_state = await self._get_thread_state_values(self._lc_thread_id)
+            new_event = new_state.get("_summarization_event")
+            new_cutoff = _summarization_cutoff(new_event)
 
-            # Intentionally traced: the summarization event is a meaningful state
-            # transition that should surface in LangSmith alongside real agent turns.
-            # The new `_context_tokens` count rides along on the same update so it
-            # shares a checkpoint with the offload and doesn't create a separate
-            # `UpdateState` run.
-            await self._agent.aupdate_state(
-                config,
-                {
-                    "_summarization_event": result.new_event,
-                    "_context_tokens": result.tokens_after,
-                },
+            if new_event is None or new_cutoff <= prior_cutoff:
+                # `force=True` bypasses the eligibility gate, so the only no-op
+                # left is "cutoff == 0": nothing older than the retention window
+                # to summarize.
+                await self._mount_message(
+                    AppMessage(
+                        "Nothing to offload \u2014 the conversation is already "
+                        "compact.",
+                    ),
+                )
+                return
+
+            after_messages = new_state.get("messages", [])
+            tokens_after = count_tokens_approximately(
+                _effective_conversation(after_messages, new_event)
+            )
+            # Counts are derived purely from the absolute cutoff so the tool's
+            # own message-machinery artifacts (the seeded tool call, the tool
+            # result, and the follow-up model turn) are not mistaken for kept
+            # conversation.
+            messages_offloaded = max(0, new_cutoff - prior_cutoff)
+            messages_kept = max(0, len(before_messages) - new_cutoff)
+            pct = (
+                round((tokens_before - tokens_after) / tokens_before * 100)
+                if tokens_before > 0
+                else 0
             )
 
-            before = format_token_count(result.tokens_before)
-            after = format_token_count(result.tokens_after)
+            before = format_token_count(tokens_before)
+            after = format_token_count(tokens_after)
             await self._mount_message(
                 AppMessage(
-                    f"Offloaded {result.messages_offloaded} older messages, "
+                    f"Offloaded {messages_offloaded} older messages, "
                     f"freeing up context window space.\n"
                     f"Context: {before} \u2192 {after} tokens "
-                    f"({result.pct_decrease}% decrease), "
-                    f"{result.messages_kept} messages kept.",
+                    f"({pct}% decrease), "
+                    f"{messages_kept} messages kept.",
                 ),
             )
 
-            self._on_tokens_update(result.tokens_after)
+            self._on_tokens_update(tokens_after)
 
-        except OffloadModelError as exc:
-            logger.warning("Offload model creation failed: %s", exc, exc_info=True)
-            await self._mount_message(ErrorMessage(str(exc)))
         except Exception as exc:  # surface offload errors to user
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
@@ -10883,6 +10915,99 @@ class DeepAgentsApp(App):
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
+
+    async def _drive_server_side_compaction(self, config: RunnableConfig) -> str | None:
+        """Trigger the server-side `compact_conversation` tool with `force=True`.
+
+        Seeds an assistant `compact_conversation` tool call attributed to the
+        model node, then advances the graph so the agent's own `ToolNode`
+        executes the tool. The tool is HITL-gated, so the first `astream(None)`
+        surfaces an approval interrupt that is auto-approved here (this is an
+        explicit user-initiated `/offload`, not a model-proposed tool call) and
+        the run is resumed to completion.
+
+        A first-turn `Command(update=..., goto=...)` is intentionally avoided:
+        the LangGraph API server rebuilds it with `goto=None` and crashes
+        `_control_branch`. The `aupdate_state(as_node="model")` + `astream`
+        continuation is the stable path.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            An error string when the tool reported a compaction failure, or
+                `None` when the run completed (whether it compacted or was a
+                no-op — the caller distinguishes those from persisted state).
+        """
+        import uuid
+
+        from langchain.agents.middleware.human_in_the_loop import ApproveDecision
+        from langchain_core.messages import AIMessage
+        from langgraph.types import Command
+
+        agent = self._agent
+        if agent is None:
+            return None
+
+        tool_call_id = str(uuid.uuid4())
+        seed = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "compact_conversation",
+                    "args": {"force": True},
+                    "id": tool_call_id,
+                }
+            ],
+        )
+
+        # Remote dev servers separate checkpoint persistence from HTTP thread
+        # registration; register before mutating state so the write lands.
+        if remote := self._remote_agent():
+            await remote.aensure_thread(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        await agent.aupdate_state(config, {"messages": [seed]}, as_node="model")
+
+        interrupt_ids: list[str] = []
+        tool_error: str | None = None
+
+        async def _drain(stream_input: Any) -> None:  # noqa: ANN401
+            nonlocal tool_error
+            async for chunk in agent.astream(
+                stream_input,
+                stream_mode=["messages", "updates"],
+                subgraphs=True,
+                config=config,
+                durability="exit",
+            ):
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
+                    continue
+                _namespace, mode, data = chunk
+                if mode == "updates" and isinstance(data, dict):
+                    interrupts = data.get("__interrupt__")
+                    if interrupts:
+                        for interrupt_obj in interrupts:
+                            iid = getattr(interrupt_obj, "id", None)
+                            if iid:
+                                interrupt_ids.append(iid)
+                elif mode == "messages" and isinstance(data, tuple):
+                    msg = data[0]
+                    content = str(getattr(msg, "content", ""))
+                    if type(msg).__name__ == "ToolMessage" and content.startswith(
+                        "Compaction failed"
+                    ):
+                        tool_error = content
+
+        await _drain(None)
+        if interrupt_ids:
+            resume_payload = {
+                interrupt_id: {"decisions": [ApproveDecision(type="approve")]}
+                for interrupt_id in interrupt_ids
+            }
+            await _drain(Command(resume=resume_payload))
+
+        return tool_error
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

@@ -636,6 +636,46 @@ class TestIsEligibleForCompaction:
             result = mw._run_compact(runtime)
         assert "_summarization_event" in result.update
 
+    def test_force_bypasses_ineligible_gate_sync(self) -> None:
+        """`force=True` compacts even when usage is under the eligibility gate."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(1_000)]
+        runtime = _make_runtime(messages)
+        # Sanity: without force this is a no-op.
+        assert "Nothing to compact" in mw._run_compact(runtime).update["messages"][0].content
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_create_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None),
+        ):
+            result = mw._run_compact(runtime, force=True)
+        assert "_summarization_event" in result.update
+
+    async def test_force_bypasses_ineligible_gate_async(self) -> None:
+        """Async `force=True` compacts even when usage is under the gate."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(1_000)]
+        runtime = _make_runtime(messages)
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=1),
+            patch.object(mw._summarization, "_partition_messages", side_effect=lambda m, i: (m[:i], m[i:])),
+            patch.object(mw._summarization, "_acreate_summary", return_value="Summary."),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None),
+        ):
+            result = await mw._arun_compact(runtime, force=True)
+        assert "_summarization_event" in result.update
+
+    def test_force_still_noops_when_nothing_to_summarize(self) -> None:
+        """`force=True` is still a no-op when the cutoff is 0 (nothing older)."""
+        mw = _make_middleware_with_trigger(("tokens", 100_000))
+        messages = [HumanMessage(content="hi"), _ai_message_with_usage(1_000)]
+        runtime = _make_runtime(messages)
+        with patch.object(mw._summarization, "_determine_cutoff_index", return_value=0):
+            result = mw._run_compact(runtime, force=True)
+        assert "Nothing to compact" in result.update["messages"][0].content
+        assert "_summarization_event" not in result.update
+
     def test_dict_clause_requires_all_thresholds(self) -> None:
         """Dict trigger clauses use AND semantics for compact eligibility."""
         mw = _make_middleware_with_trigger(("tokens", 100_000))

@@ -13226,7 +13226,7 @@ class DeepAgentsApp(App):
             self.screen.action_move_up()
             return
         if isinstance(self.screen, MCPViewerScreen):
-            self.screen.action_move_up()
+            self.screen.action_jump_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.

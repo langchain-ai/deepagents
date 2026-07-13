@@ -1359,22 +1359,22 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if 0 <= target < len(self._row_widgets):
             self._move_to(target)
 
-    def _next_tool_row(self, start: int, step: int) -> int | None:
-        """Return the index of the next `MCPToolItem` row in `step` direction.
-
-        Used by `Tab` / `Shift+Tab` to skip server-header rows during
-        cross-tool navigation. Returns `None` when there is no tool row in
-        the requested direction.
+    def _next_server_header(self, start: int, step: int) -> int | None:
+        """Return the next server-header index in the requested direction.
 
         Args:
             start: Index to start searching from (exclusive).
             step: `+1` (forward) or `-1` (backward).
+
+        Returns:
+            The index of the nearest `MCPServerHeaderItem` in that direction,
+            or `None` when no server header exists there.
         """
-        idx = start + step
-        while 0 <= idx < len(self._row_widgets):
-            if isinstance(self._row_widgets[idx], MCPToolItem):
-                return idx
-            idx += step
+        index = start + step
+        while 0 <= index < len(self._row_widgets):
+            if isinstance(self._row_widgets[index], MCPServerHeaderItem):
+                return index
+            index += step
         return None
 
     def _scroll_widget_bottom_to_view(
@@ -1429,9 +1429,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
         to the previous row (header or tool), wrapping to the final row from
         the first. For rows taller than the viewport, pin the new selection's
         **bottom** to the viewport so the next `Up` resumes line-stepping
-        through that row; otherwise just
-        ensure the row is visible. `Tab` / `Shift+Tab` skip the smart check
-        AND skip header rows (see `action_jump_up`).
+        through that row; otherwise just ensure the row is visible. `Tab` /
+        `Shift+Tab` jump between server headers (see `action_jump_up`).
         """
         if not self._row_widgets:
             return
@@ -1457,8 +1456,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
         jump to the next row (header or tool), wrapping to the first row from
         the final one. For rows taller than the viewport, pin the new
         selection's top to the viewport; otherwise just ensure the row is
-        visible. `Tab` / `Shift+Tab` skip the smart check AND skip header rows
-        (see `action_jump_down`).
+        visible. `Tab` / `Shift+Tab` jump between server headers (see
+        `action_jump_down`).
         """
         if not self._row_widgets:
             return
@@ -1480,20 +1479,25 @@ class MCPViewerScreen(ModalScreen[str | None]):
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Jump to the previous tool (Shift+Tab); skips headers and wraps."""
-        target = self._next_tool_row(self._selected_index, -1)
+        """Jump backward to the nearest server header (Shift+Tab), wrapping.
+
+        From a tool row this lands on the current server's own header; from a
+        header it moves to the previous server. Wraps to the final header from
+        the top.
+        """
+        target = self._next_server_header(self._selected_index, -1)
         if target is None:
-            target = self._next_tool_row(len(self._row_widgets), -1)
+            target = self._next_server_header(len(self._row_widgets), -1)
         if target is None or target == self._selected_index:
             return
         self._move_to(target)
         self._reveal_selection(self._row_widgets[target], direction=-1)
 
     def action_jump_down(self) -> None:
-        """Jump to the next tool (Tab); skips headers and wraps."""
-        target = self._next_tool_row(self._selected_index, +1)
+        """Jump to the next server (Tab), wrapping at the end."""
+        target = self._next_server_header(self._selected_index, +1)
         if target is None:
-            target = self._next_tool_row(-1, +1)
+            target = self._next_server_header(-1, +1)
         if target is None or target == self._selected_index:
             return
         self._move_to(target)

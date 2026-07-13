@@ -17444,6 +17444,36 @@ class TestNotificationCenterIntegration:
             assert screen._selected != start
             assert app._auto_approve is False
 
+    async def test_mcp_viewer_shift_tab_jumps_to_previous_server(self) -> None:
+        """App-level shift+tab routes to MCPViewerScreen.jump_up."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
+
+        servers = [
+            MCPServerInfo(
+                name="first",
+                transport="stdio",
+                tools=(MCPToolInfo(name="first-tool", description=""),),
+            ),
+            MCPServerInfo(
+                name="second",
+                transport="stdio",
+                tools=(MCPToolInfo(name="second-tool", description=""),),
+            ),
+        ]
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = MCPViewerScreen(server_info=servers)
+            app.push_screen(screen)
+            await pilot.pause()
+            assert screen._selected_index == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
+            assert app._auto_approve is False
+
     async def test_toast_identity_warn_once_semantics(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

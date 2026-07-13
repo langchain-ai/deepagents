@@ -1026,6 +1026,47 @@ class TestModelSwitchBareModelName:
         assert settings.model_provider == "openai"
         assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
 
+    async def test_fireworks_qualified_id_gets_provider_prefix(self) -> None:
+        """A Fireworks `accounts/...` ID resolves to a `fireworks:` prefix.
+
+        Without provider inference the raw ID would surface unprefixed in the
+        confirmation message and the status bar (which reads
+        `settings.model_provider`). `detect_provider` recognizes the
+        fully-qualified Fireworks ID so both reflect the `fireworks` provider.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-sonnet-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        model_id = "accounts/fireworks/models/kimi-k2p7-code"
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_code.model_config.save_recent_model", return_value=True
+            ) as mock_save,
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(model_id)
+
+        mock_save.assert_called_once_with(f"fireworks:{model_id}")
+        assert app._model_override == f"fireworks:{model_id}"
+        assert settings.model_name == model_id
+        assert settings.model_provider == "fireworks"
+        assert any(f"Switched to fireworks:{model_id}" in m for m in captured_messages)
+
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""
         app = DeepAgentsApp()

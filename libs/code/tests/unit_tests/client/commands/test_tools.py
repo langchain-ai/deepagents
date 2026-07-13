@@ -496,9 +496,30 @@ class TestToolsList:
         assert code == 0
         assert "Unavailable MCP servers" in output
         assert "offsvc" in output
-        assert "disabled" in output
+        assert "disabled by user" in output
         # Empty detail → status stands alone, no trailing `: `.
         assert "disabled:" not in output
+
+    def test_pending_reenable_renders_reconnect_guidance(self) -> None:
+        catalog = ToolCatalog(
+            groups=(),
+            unavailable=(
+                UnavailableServer(
+                    name="notion",
+                    status="disabled",
+                    detail="Re-enabled — press Ctrl+R to load.",
+                ),
+            ),
+        )
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+
+        assert code == 0
+        assert "Re-enabled — press Ctrl+R to load." in output
+        assert "disabled by user" not in output
 
     def test_list_end_to_end_offline_renders_real_built_ins(self) -> None:
         """Real `collect_catalog` compiles the agent offline and renders it."""

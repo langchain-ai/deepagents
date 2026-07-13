@@ -14,6 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.loading import Spinner
@@ -27,11 +28,11 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
-    "fireworks": ("accounts/fireworks/models/",),
+    "fireworks": FIREWORKS_MODEL_ID_PREFIXES,
 }
 """Some providers (e.g. Fireworks) require fully-qualified IDs like
-`accounts/fireworks/models/...` that crowd out the rest of the status bar;
-strip the registered prefixes before display."""
+`accounts/fireworks/models/...` or `accounts/fireworks/routers/...` that crowd
+out the rest of the status bar; strip the registered prefixes before display."""
 
 ConnectionState = Literal["", "connecting", "reconnecting", "resuming"]
 """Connection states the status bar can display (`''` means cleared)."""
@@ -69,8 +70,10 @@ class ModelLabel(Widget):
         name = self.model
         if not name or not self.provider:
             return name
+        # Match on normalized text but slice the original to preserve its casing.
+        name_lower = name.lower()
         for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
-            if name.startswith(prefix):
+            if name_lower.startswith(prefix):
                 return name[len(prefix) :]
         return name
 

@@ -4233,6 +4233,31 @@ class TestScrollCursorVisibleDesync:
             assert result == Offset(0, 0)
 
 
+class TestSetCursorStyle:
+    """`ChatInput.set_cursor_style` updates the rendered cursor component."""
+
+    async def test_switches_between_underline_and_block(self) -> None:
+        """Underline adds its cursor class and block restores Textual's default."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.set_cursor_style(style="underline")
+            await pilot.pause()
+
+            assert chat._text_area.has_class("cursor-underline")
+            underline = chat._text_area.get_component_rich_style("text-area--cursor")
+            assert underline.underline is True
+
+            chat.set_cursor_style(style="block")
+            await pilot.pause()
+
+            assert not chat._text_area.has_class("cursor-underline")
+            block = chat._text_area.get_component_rich_style("text-area--cursor")
+            assert block.underline is not True
+
+
 class TestSetCursorBlink:
     """`ChatInput.set_cursor_blink` toggles cursor blink without changing focus."""
 

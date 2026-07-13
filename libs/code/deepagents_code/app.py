@@ -8341,11 +8341,12 @@ class DeepAgentsApp(App):
     async def _handle_tools_command(self, command: str) -> None:
         """List the tools available to the agent as a chat message.
 
-        Built-in tools are enumerated off the UI thread (a synchronous,
-        credential-free agent compile) via `asyncio.to_thread`; MCP tools reuse
-        the already-loaded `self._mcp_server_info` rather than re-discovering,
-        because the MCP discovery path in `tool_catalog.collect_catalog` uses
-        `asyncio.run`, which cannot run inside Textual's live event loop.
+        Managed sessions enumerate built-ins off the UI thread with a
+        credential-free agent compile; preconfigured local agents are inspected
+        directly so their custom tool set stays authoritative. MCP tools reuse
+        the metadata loaded for the running agent rather than re-discovering,
+        because discovery uses `asyncio.run`, which cannot run inside Textual's
+        live event loop.
 
         Args:
             command: The raw command text (displayed as a user message).
@@ -8354,29 +8355,66 @@ class DeepAgentsApp(App):
         from deepagents_code.tool_catalog import (
             build_catalog_from_server_info,
             collect_built_in_tools,
+            collect_tools_from_agent,
         )
 
         await self._mount_message(UserMessage(command))
 
-        server_kwargs = self._server_kwargs or {}
-        enable_interpreter = bool(server_kwargs.get("enable_interpreter"))
-        try:
-            built_in = await asyncio.to_thread(
-                collect_built_in_tools,
-                assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
-                enable_interpreter=enable_interpreter,
+        server_info = self._mcp_server_info_for_tools()
+        if self._server_kwargs is None:
+            active_tools = (
+                collect_tools_from_agent(self._agent)
+                if self._agent is not None
+                else None
             )
-        except Exception:
-            logger.exception("Failed to enumerate built-in tools for /tools")
-            built_in = []
-            await self._mount_message(
-                AppMessage(
-                    "Could not enumerate built-in tools; showing MCP tools only.",
-                ),
-            )
+            if active_tools is None:
+                built_in = []
+                await self._mount_message(
+                    AppMessage(
+                        "Built-in tools cannot be enumerated for this custom or "
+                        "remote agent; showing known MCP tools only.",
+                    ),
+                )
+            else:
+                mcp_names = {
+                    tool.name for server in server_info for tool in server.tools
+                }
+                built_in = [tool for tool in active_tools if tool.name not in mcp_names]
+        else:
+            enable_interpreter = bool(self._server_kwargs.get("enable_interpreter"))
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=enable_interpreter,
+                )
+            except Exception:
+                logger.exception("Failed to enumerate built-in tools for /tools")
+                built_in = []
+                await self._mount_message(
+                    AppMessage(
+                        "Could not enumerate built-in tools; showing MCP tools only.",
+                    ),
+                )
 
-        catalog = build_catalog_from_server_info(built_in, self._mcp_server_info or [])
+        catalog = build_catalog_from_server_info(built_in, server_info)
         await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+
+    def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
+        """Return MCP metadata matching the tools bound to the running agent.
+
+        The `/mcp` viewer optimistically replaces a newly disabled server with
+        a tool-less cosmetic entry before reconnect. Until reconnect actually
+        rebuilds the agent, its original tools remain callable, so `/tools`
+        must use the saved pre-toggle entry instead.
+
+        Returns:
+            MCP server metadata for the active agent tool set.
+        """
+        return [
+            self._mcp_optimistic_original_server_info.get(server.name, server)
+            for server in self._mcp_server_info or []
+        ]
 
     @staticmethod
     def _render_tool_catalog(catalog: ToolCatalog) -> Content:

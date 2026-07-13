@@ -19,6 +19,7 @@ from deepagents_code.tool_catalog import (
     collect_built_in_tools,
     collect_catalog,
     collect_mcp_catalog,
+    collect_tools_from_agent,
     split_mcp_server_info,
 )
 
@@ -98,6 +99,29 @@ class TestCollectBuiltInTools:
         assert tools == [ToolEntry(name="task", description="Run a subagent")]
         create.assert_called_once()
         assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+
+
+class TestCollectToolsFromAgent:
+    """Tests for inspecting the tool node of an already-running local graph."""
+
+    def test_reads_bound_tools(self) -> None:
+        tool_node = SimpleNamespace(
+            tools_by_name={
+                "custom_search": SimpleNamespace(
+                    description="Search custom data\nAdditional details"
+                )
+            }
+        )
+        agent = SimpleNamespace(nodes={"tools": SimpleNamespace(bound=tool_node)})
+
+        assert collect_tools_from_agent(agent) == [
+            ToolEntry(name="custom_search", description="Search custom data")
+        ]
+
+    def test_returns_none_for_remote_agent(self) -> None:
+        agent = SimpleNamespace(url="https://example.test")
+
+        assert collect_tools_from_agent(agent) is None
 
 
 class TestCollectMcpCatalog:

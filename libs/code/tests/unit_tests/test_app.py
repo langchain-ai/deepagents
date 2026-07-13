@@ -11190,7 +11190,7 @@ class TestToolsSlashCommand:
 
         app = DeepAgentsApp(agent=MagicMock())
         app._assistant_id = "agent"
-        app._server_kwargs = None
+        app._server_kwargs = {}
         app._mcp_server_info = [
             MCPServerInfo(
                 name="docs",
@@ -11213,6 +11213,92 @@ class TestToolsSlashCommand:
         catalog_msg = mount.await_args_list[-1].args[0]
         assert isinstance(catalog_msg, AppMessage)
         assert "search_docs" in catalog_msg._content.plain
+
+    async def test_custom_local_agent_uses_its_bound_tools(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        tool_node = SimpleNamespace(
+            tools_by_name={
+                "custom_search": SimpleNamespace(description="Search custom data"),
+                "search_docs": SimpleNamespace(description="Search docs"),
+            }
+        )
+        agent = MagicMock()
+        agent.nodes = {"tools": SimpleNamespace(bound=tool_node)}
+        app = DeepAgentsApp(
+            agent=agent,
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search docs"),),
+                    status="ok",
+                )
+            ],
+        )
+        app._server_kwargs = None
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch("deepagents_code.tool_catalog.collect_built_in_tools") as compile_,
+        ):
+            await app._handle_command("/tools")
+
+        compile_.assert_not_called()
+        assert mount.await_count == 2
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert rendered.count("custom_search") == 1
+        assert rendered.count("search_docs") == 1
+
+    async def test_remote_agent_reports_built_in_enumeration_unsupported(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        app = DeepAgentsApp(
+            agent=MagicMock(spec=[]),
+            mcp_server_info=[
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search"),),
+                    status="ok",
+                )
+            ],
+        )
+        app._server_kwargs = None
+
+        with patch.object(app, "_mount_message", new_callable=AsyncMock) as mount:
+            await app._handle_command("/tools")
+
+        assert mount.await_count == 3
+        notice = mount.await_args_list[1].args[0]
+        assert "cannot be enumerated" in str(notice._content)
+        assert "search_docs" in mount.await_args_list[-1].args[0]._content.plain
+
+    async def test_pending_mcp_disable_keeps_active_tools_visible(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="docs",
+            transport="http",
+            tools=(MCPToolInfo(name="search_docs", description="Search"),),
+            status="ok",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        app._server_kwargs = {"enable_interpreter": False}
+        app._apply_optimistic_disabled_state("docs", disabled=True)
+
+        with (
+            patch.object(app, "_mount_message", new_callable=AsyncMock) as mount,
+            patch(
+                "deepagents_code.tool_catalog.collect_built_in_tools",
+                return_value=[],
+            ),
+        ):
+            await app._handle_command("/tools")
+
+        rendered = mount.await_args_list[-1].args[0]._content.plain
+        assert "search_docs" in rendered
+        assert "Unavailable MCP servers" not in rendered
 
     def test_render_tool_catalog_reports_unavailable(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo

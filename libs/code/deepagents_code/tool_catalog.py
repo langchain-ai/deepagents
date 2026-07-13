@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -162,6 +163,9 @@ def collect_built_in_tools(
 
     Returns:
         Built-in tools in bind order.
+
+    Raises:
+        RuntimeError: If the compiled graph does not expose its bound tools.
     """
     from deepagents_code.agent import create_cli_agent
     from deepagents_code.config import settings
@@ -182,17 +186,50 @@ def collect_built_in_tools(
         enable_shell=True,
         enable_interpreter=enable_interpreter,
     )
-    # `agent.nodes["tools"].bound` reaches into langgraph's compiled graph; the
-    # "tools" node name and `ToolNode.tools_by_name` are langgraph conventions,
-    # not a documented contract. This real compile path is exercised by
-    # test_tool_catalog.py::TestCollectBuiltInTools, so a breaking langgraph
-    # change fails loudly there rather than silently emitting an empty list.
-    tool_node = cast("ToolNode", agent.nodes["tools"].bound)
-    tools_by_name = tool_node.tools_by_name
-    return [
-        ToolEntry(name=name, description=_first_line(tool.description))
-        for name, tool in tools_by_name.items()
-    ]
+    tools = collect_tools_from_agent(agent)
+    if tools is None:
+        msg = "Compiled agent does not expose a LangGraph tool node"
+        raise RuntimeError(msg)
+    return tools
+
+
+def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
+    """Read tools from a local compiled agent when its graph is inspectable.
+
+    LangGraph does not expose a public tool-enumeration API, so this reaches
+    through the compiled graph's conventional `nodes["tools"].bound` shape.
+    Returning `None` distinguishes an unsupported graph (including a remote
+    agent) from a local graph that validly binds zero tools.
+
+    Args:
+        agent: Active local or remote agent object.
+
+    Returns:
+        Bound tools in graph order, or `None` when the agent cannot be
+        inspected locally.
+    """
+    nodes = getattr(agent, "nodes", None)
+    if not isinstance(nodes, Mapping):
+        return None
+    node = nodes.get("tools")
+    tool_node = cast("ToolNode | None", getattr(node, "bound", None))
+    tools_by_name = getattr(tool_node, "tools_by_name", None)
+    if not isinstance(tools_by_name, Mapping):
+        return None
+    tools: list[ToolEntry] = []
+    for name, tool in tools_by_name.items():
+        if not isinstance(name, str):
+            continue
+        description = getattr(tool, "description", None)
+        tools.append(
+            ToolEntry(
+                name=name,
+                description=_first_line(
+                    description if isinstance(description, str) else None
+                ),
+            )
+        )
+    return tools
 
 
 def collect_mcp_catalog(

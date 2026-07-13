@@ -102,9 +102,17 @@ class TestBranchDisplay:
             assert bar.branch == ""
             assert display.render() == ""
 
-    async def test_branch_display_shows_branch_name(self) -> None:
-        """Setting branch reactive should update the display widget."""
-        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+    async def test_branch_display_shows_branch_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setting branch reactive should update the display widget.
+
+        `HIDE_CWD` removes the cwd from the layout so the branch region isn't
+        starved of width by a deep pytest cwd -- otherwise this assertion flakes
+        on the actual run directory's path length rather than any real behavior.
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
+        async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "main"
             await pilot.pause()
@@ -112,9 +120,16 @@ class TestBranchDisplay:
             rendered = str(display.render())
             assert "main" in rendered
 
-    async def test_branch_display_with_feature_branch(self) -> None:
-        """Feature branch names with slashes should display correctly."""
-        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+    async def test_branch_display_with_feature_branch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Feature branch names with slashes should display correctly.
+
+        `HIDE_CWD` keeps the branch region wide enough regardless of the pytest
+        cwd path length (see `test_branch_display_shows_branch_name`).
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
+        async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "feat/new-feature"
             await pilot.pause()
@@ -230,9 +245,16 @@ class TestBranchDisplay:
             monkeypatch.delenv("UI_CHARSET_MODE", raising=False)
             reset_glyphs_cache()
 
-    async def test_branch_display_contains_git_icon(self) -> None:
-        """Branch display should include the git branch glyph prefix."""
-        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+    async def test_branch_display_contains_git_icon(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Branch display should include the git branch glyph prefix.
+
+        `HIDE_CWD` keeps the branch region wide enough regardless of the pytest
+        cwd path length (see `test_branch_display_shows_branch_name`).
+        """
+        monkeypatch.setenv(HIDE_CWD, "1")
+        async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.branch = "develop"
             await pilot.pause()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import get_args
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
@@ -178,6 +179,16 @@ class TestCwdSwitchAbortOption:
             "Enter: switch · Esc: stay here · A: don't switch"
         )
         assert help_line(None) == "Enter: switch · Esc: stay here"
+
+    def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
+        """Abort-mode tokens never collide with prompt-outcome tokens.
+
+        The disjointness is a naming convention (input mode vs. outcome), not a
+        type guarantee. This pins it so a future member like a re-added
+        `"switch"` mode -- which would make a mode token ambiguous with a
+        `CwdSwitchChoice` outcome in logs and debuggers -- fails loudly.
+        """
+        assert not (set(get_args(CwdSwitchAbortMode)) & set(get_args(CwdSwitchChoice)))
 
     def test_action_abort_dismisses_abort_when_allowed(self) -> None:
         """Abort resolves the prompt to `abort` when offered."""

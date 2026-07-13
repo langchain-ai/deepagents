@@ -21757,7 +21757,12 @@ class TestResumeThreadCwdSwitch:
         # the transient toast `_replace_server_after_cwd_switch` already raised.
         mount.assert_awaited_once()
         assert mount.await_args is not None
-        assert getattr(mount.await_args.args[0], "_content", "") == (
+        # `AppMessage` stores its raw text in `_content` (its serialization
+        # field); read it directly so a rename fails loudly rather than
+        # defaulting to "" and masking the mismatch.
+        mounted = mount.await_args.args[0]
+        assert isinstance(mounted, AppMessage)
+        assert mounted._content == (
             "Could not switch to the thread's directory; staying on the current thread."
         )
 

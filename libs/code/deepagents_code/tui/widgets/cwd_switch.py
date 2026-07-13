@@ -30,8 +30,11 @@ CwdSwitchAbortMode = Literal["resume", "thread_switch"]
 Passed as the prompt's `abort` argument; `None` there means abort is not
 offered. `"resume"` is the launch-time `-r` resume (abort starts a new
 session); `"thread_switch"` is the in-session `/threads` switcher (abort keeps
-the current thread). Its members are deliberately disjoint from
-`CwdSwitchChoice` so the input mode and the outcome never share a token.
+the current thread). Its members are kept disjoint from `CwdSwitchChoice`'s as a
+naming convention -- not a type guarantee (these are distinct `Literal` types
+used at distinct sites, so a checker already keeps them apart) -- so a mode token
+is never mistaken for an outcome token in a log, test, or debugger.
+`test_abort_mode_tokens_disjoint_from_choice` enforces it.
 """
 
 
@@ -110,11 +113,15 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
         The in-session `/threads` switcher (`"thread_switch"`) asks about
         switching; every other flow (launch-time resume, or no abort mode) asks
-        about resuming.
+        about resuming. Structured for `assert_never` exhaustiveness so a new
+        mode fails statically here rather than silently inheriting the resume
+        wording.
         """
+        if self._abort is None or self._abort == "resume":
+            return "Resume from the thread's original directory?"
         if self._abort == "thread_switch":
             return "Switch to the thread's original directory?"
-        return "Resume from the thread's original directory?"
+        assert_never(self._abort)
 
     def _body_text(self) -> str:
         """Return the prompt body text."""
@@ -194,11 +201,15 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     ) -> bool | None:
         """Disable the `abort` binding unless the prompt was opened for it.
 
-        Makes the disabled state first-class: when `abort` is None, returning
-        `False` marks the `a` binding disabled so Textual consumes the key as an
-        unavailable no-op rather than dispatching `action_abort` to decline it.
-        (Returning `None` would instead let the key fall through unhandled; we
-        want it owned-but-inert here.)
+        Textual gates a binding's action on a truthy `check_action` result, so
+        both `False` and `None` stop `a` from dispatching `action_abort` -- in
+        neither case does the key fire the action, and it falls through the same
+        way. They differ only in footer presentation (`False` hides the binding,
+        `None` shows it grayed out), which is moot here anyway: every binding is
+        declared `show=False` and the modal renders its own help line instead of
+        a `Footer`. We return `False` to mark the disabled state explicitly; the
+        actual inertness backstop is `action_abort`'s own `self._abort is None`
+        guard, should the action ever be dispatched.
 
         Returns:
             `self._abort is not None` for the `abort` action, so the binding is

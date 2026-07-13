@@ -1034,6 +1034,32 @@ class TestGetProjectFiles:
 
         assert "a/b/c/d/e/deep.py" in files
 
+    def test_git_stderr_uses_stable_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git diagnostics must use the English locale expected by log filtering."""
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        captured: dict[str, object] = {}
+
+        def fake_run(*_args: object, **kwargs: object) -> _Result:
+            captured.update(kwargs)
+            return _Result()
+
+        monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
+        monkeypatch.setenv("AUTOCOMPLETE_TEST_ENV", "preserved")
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        _run_git_ls_files("git", tmp_path, [])
+
+        env = cast("dict[str, str]", captured["env"])
+        assert env["LC_ALL"] == "C"
+        assert env["AUTOCOMPLETE_TEST_ENV"] == "preserved"
+
     def test_non_repo_directory_is_quiet(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

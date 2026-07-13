@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 
 # S404: subprocess is required for git ls-files to get project file list
@@ -386,6 +387,8 @@ def _run_git_ls_files(
             text=True,
             timeout=5,
             check=False,
+            # Git localizes stderr; use C so the non-repo marker stays stable.
+            env={**os.environ, "LC_ALL": "C"},
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)

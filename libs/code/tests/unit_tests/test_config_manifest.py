@@ -99,6 +99,17 @@ def test_memory_auto_save_env_disables(monkeypatch) -> None:
     assert value is False
 
 
+def test_memory_auto_save_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env override disables automatic memory saving."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "")
+    assert resolve_scalar(option, toml_data={}) == (
+        False,
+        f"env ({_env_vars.MEMORY_AUTO_SAVE})",
+    )
+
+
 def test_memory_auto_save_toml_disables(monkeypatch) -> None:
     """`[memory].auto_save = false` in config.toml disables auto-save."""
     option = get_option("memory.auto_save")
@@ -116,6 +127,20 @@ def test_is_memory_auto_save_enabled_reads_env(monkeypatch) -> None:
     assert is_memory_auto_save_enabled() is True
 
     monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "false")
+    assert is_memory_auto_save_enabled() is False
+
+
+def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[memory].auto_save` from `config.toml` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_memory_auto_save_enabled
+
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"memory": {"auto_save": False}},
+    )
     assert is_memory_auto_save_enabled() is False
 
 

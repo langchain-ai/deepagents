@@ -186,6 +186,8 @@ MEMORY_READONLY_SYSTEM_PROMPT = """<agent_memory>
     **Automatic memory saving is disabled:**
     - Do not proactively persist learnings, preferences, or feedback to the memory files—automatic saving has been turned off for this session.
     - Only modify a memory file when the user explicitly asks you to record something in it (for example, an explicit "remember this" request).
+    - Never store API keys, access tokens, passwords, or any other credentials in any file, memory, or system prompt.
+    - If the user asks where to put API keys or provides an API key, do NOT echo or save it.
 </memory_guidelines>
 """
 """Read-only variant of `MEMORY_SYSTEM_PROMPT`.

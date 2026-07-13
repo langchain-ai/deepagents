@@ -119,8 +119,11 @@ def test_readonly_prompt_keeps_trust_and_drops_persistence() -> None:
     assert "**Learning from feedback:**" not in formatted
     assert "**When to update memories:**" not in formatted
     assert "top priority" not in formatted
-    # And it must explicitly signal saving is off.
-    assert "disabled" in formatted
+    # And it must explicitly signal saving is off via the stable section header.
+    assert "**Automatic memory saving is disabled:**" in formatted
+    # Explicit save requests must not bypass the credential safeguard.
+    assert "Never store API keys, access tokens, passwords" in formatted
+    assert "do NOT echo or save it" in formatted
 
 
 def test_readonly_prompt_is_accepted_by_middleware() -> None:

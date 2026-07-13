@@ -242,6 +242,9 @@ class ConfigOption:
     of `key`. `None` for every other option.
     """
 
+    empty_env_is_false: bool = False
+    """Whether an explicitly present empty env value disables a bool option."""
+
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
 
@@ -254,8 +257,9 @@ class ConfigOption:
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
-                strings, `default` is mutable, a `STRUCTURED` option declares a
-                default, or a scalar option's default has the wrong type.
+                strings, `empty_env_is_false` is set on a non-bool option,
+                `default` is mutable, a `STRUCTURED` option declares a default,
+                or a scalar option's default has the wrong type.
         """
         # Guard `fallback_env_vars` independently of `default` (which has its own
         # early-return path below): like `default`, it is shared by reference
@@ -269,6 +273,9 @@ class ConfigOption:
                 f"{self.key}: fallback_env_vars must be a tuple of non-empty "
                 f"strings, got {self.fallback_env_vars!r}"
             )
+            raise TypeError(msg)
+        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+            msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
         default = self.default
@@ -617,10 +624,11 @@ def resolve_scalar(
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
-        treated as unset (mirroring `resolve_env_var`), so it falls through to
-        the next env var, then `config.toml`/`default`, rather than counting as
-        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
-        `config.toml [ui.*]` sources.
+        normally treated as unset (mirroring `resolve_env_var`), so it falls
+        through to the next env var, then `config.toml`/`default`, rather than
+        counting as set. Options declaring `empty_env_is_false` instead resolve
+        an explicitly present empty value to `False`. Theme resolution
+        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -632,15 +640,18 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string counts as unset, matching `resolve_env_var`, so it is
-        # skipped and the loop continues to the next name. This keeps
-        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
-        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
-        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
-        # tried in order, so the primary `env_var` wins over any fallback.
+        # An empty string normally counts as unset, matching `resolve_env_var`,
+        # so it is skipped and the loop continues to the next name. Options
+        # with an explicitly documented empty-value opt-out declare
+        # `empty_env_is_false`. Names are tried in order, so the primary
+        # `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
+            if raw is None:
+                continue
             if not raw:
+                if option.empty_env_is_false:
+                    return False, f"env ({name})"
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -1085,6 +1096,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.MEMORY_AUTO_SAVE,
+        empty_env_is_false=True,
         toml_keys=("memory", "auto_save"),
     ),
     ConfigOption(

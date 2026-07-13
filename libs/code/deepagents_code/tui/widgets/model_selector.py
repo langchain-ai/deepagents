@@ -98,6 +98,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openai_codex:gpt-5.4": "GPT-5.4",
     "openai_codex:gpt-5.4-mini": "GPT-5.4 mini",
     "openai_codex:gpt-5.5": "GPT-5.5",
+    "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
     "openrouter:anthropic/claude-opus-4.6": "Claude Opus 4.6",

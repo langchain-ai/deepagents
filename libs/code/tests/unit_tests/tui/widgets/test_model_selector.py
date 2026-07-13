@@ -2479,6 +2479,7 @@ class TestGetModelDisplayName:
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
             ("xai:grok-4.5", "Grok 4.5"),
@@ -2492,12 +2493,6 @@ class TestGetModelDisplayName:
         screen._profiles = {}
         assert spec in model_selector._RECOMMENDED_MODELS
         assert screen._get_model_display_name(spec) == name
-
-    def test_luna_is_not_recommended_for_codex(self) -> None:
-        from deepagents_code.tui.widgets import model_selector
-
-        assert "openai:gpt-5.6-luna" in model_selector._RECOMMENDED_MODELS
-        assert "openai_codex:gpt-5.6-luna" not in model_selector._RECOMMENDED_MODELS
 
     def test_profile_name_wins_over_recommended_name(self) -> None:
         """A loaded profile's `name` takes precedence over the hardcoded one."""

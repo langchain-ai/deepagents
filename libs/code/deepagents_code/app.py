@@ -50,6 +50,7 @@ from deepagents_code._constants import (
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
+    read_git_head_stamp,
 )
 from deepagents_code._session_stats import (
     SessionStats,
@@ -393,6 +394,14 @@ state as the single app-wide progress indicator.
 
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for app updates."""
+
+_GIT_BRANCH_POLL_INTERVAL_SECONDS = 1.0
+"""How often to stat `.git/HEAD` so external branch switches update the footer.
+
+Event-driven refreshes (tool/shell/agent-turn completion) miss a `git checkout`
+made in another terminal while the session is idle. A once-a-second `stat` of a
+single file is negligible and only triggers a real refresh when `HEAD` changes.
+"""
 
 _MODAL_WATCHDOG_TIMEOUT_SECONDS = 600.0
 """Upper bound on awaiting a confirmation modal's dismissal.
@@ -2783,6 +2792,9 @@ class DeepAgentsApp(App):
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
+        self._git_head_stamp: tuple[int, int] | None = None
+        """Last-seen `(mtime_ns, size)` of `.git/HEAD`, tracked by the poller."""
+
         self._graceful_exit_task: asyncio.Task[None] | None = None
         """Fire-and-forget task for deferred exit after agent worker cancellation."""
 
@@ -3228,6 +3240,7 @@ class DeepAgentsApp(App):
         """
         try:
             cwd = self._cwd
+            self._git_head_stamp = read_git_head_stamp(cwd)
             branch = read_git_branch_from_filesystem(cwd)
             if branch is None:
                 branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
@@ -3300,6 +3313,28 @@ class DeepAgentsApp(App):
 
         refresh_task.add_done_callback(_finalize_git_branch_refresh)
 
+    def _poll_git_head_for_changes(self) -> None:
+        """Refresh the footer when `.git/HEAD` changed since the last check.
+
+        Runs on a Textual `set_interval` so a `git checkout` made in another
+        terminal while the session is idle is reflected within the poll
+        interval, not only after the next tool/shell/agent-turn event. The
+        `stat`-based token keeps the idle case to a single sub-millisecond
+        syscall and defers the actual branch read to `_schedule_git_branch_refresh`
+        only when `HEAD` actually moved.
+        """
+        if self._exit:
+            return
+        try:
+            stamp = read_git_head_stamp(self._cwd)
+        except Exception:
+            logger.warning("Git HEAD poll failed", exc_info=True)
+            return
+        if stamp == self._git_head_stamp:
+            return
+        self._git_head_stamp = stamp
+        self._schedule_git_branch_refresh()
+
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch, then schedule remaining init workers.
 
@@ -3359,6 +3394,14 @@ class DeepAgentsApp(App):
         )
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
+
+        # Keep the footer branch fresh when HEAD changes outside a tool/shell
+        # event (e.g. a `git checkout` in another terminal). The tick only stats
+        # a single file; the branch read happens solely when HEAD moved.
+        self.set_interval(
+            _GIT_BRANCH_POLL_INTERVAL_SECONDS,
+            self._poll_git_head_for_changes,
+        )
 
         # Server startup (model creation + server process)
         if self._server_kwargs is not None and not self._server_startup_deferred:

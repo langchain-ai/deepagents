@@ -1,5 +1,6 @@
 """Unit tests for the deepagents_code._git module."""
 
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +21,7 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
     read_git_commit_sha_from_filesystem,
     read_git_commit_sha_via_subprocess,
+    read_git_head_stamp,
     read_git_remote_url_from_filesystem,
     read_git_remote_url_via_subprocess,
     resolve_git_branch,
@@ -217,6 +219,40 @@ class TestReadGitBranchFromFilesystem:
 
     def test_read_not_in_repo(self, tmp_path: Path) -> None:
         assert read_git_branch_from_filesystem(tmp_path) == ""
+
+
+class TestReadGitHeadStamp:
+    def test_stamp_for_named_branch(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+
+        stamp = read_git_head_stamp(tmp_path)
+        assert stamp is not None
+        assert len(stamp) == 2
+
+    def test_stamp_changes_after_checkout(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        head_file = git_dir / "HEAD"
+        head_file.write_text("ref: refs/heads/main\n")
+        before = read_git_head_stamp(tmp_path)
+
+        # Simulate a checkout: rewrite HEAD with a bumped mtime.
+        head_file.write_text("ref: refs/heads/feature-branch\n")
+        stat = head_file.stat()
+        os.utime(head_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+        assert read_git_head_stamp(tmp_path) != before
+
+    def test_stamp_missing_head(self, tmp_path: Path) -> None:
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+
+        assert read_git_head_stamp(tmp_path) is None
+
+    def test_stamp_not_in_repo(self, tmp_path: Path) -> None:
+        assert read_git_head_stamp(tmp_path) is None
 
 
 class TestReadGitBranchViaSubprocess:

@@ -239,6 +239,33 @@ def resolve_git_branch(path: str | Path) -> str:
     return read_git_branch_via_subprocess(path)
 
 
+def read_git_head_stamp(path: str | Path) -> tuple[int, int] | None:
+    """Read a cheap change token for the repository's `HEAD` file.
+
+    Branch-name changes (`git checkout`, `git switch`) rewrite `.git/HEAD`, so
+    watching its modification time and size is enough to detect them without
+    re-parsing the file or shelling out to git on every poll. Git writes `HEAD`
+    atomically via a rename, which bumps the modification time even when the new
+    contents are the same length.
+
+    Args:
+        path: Directory or file path inside a repository.
+
+    Returns:
+        A `(mtime_ns, size)` token for the current `HEAD` file, or `None` when
+        `path` is not inside a repository or the file cannot be stat-ed.
+    """
+    git_dir = find_git_dir(path)
+    if git_dir is None:
+        return None
+    try:
+        stat = (git_dir / "HEAD").stat()
+    except OSError:
+        logger.debug("Failed to stat git HEAD in %s", git_dir, exc_info=True)
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 _GIT_SHA_RE = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
 """Matches a full 40-char SHA-1 (or 64-char SHA-256) git object id."""
 

@@ -2253,6 +2253,34 @@ class TestFilesystemMiddleware:
         tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
         assert tools_overrides == []
 
+    def test_enabled_tools_excluded_from_self_tools_not_just_request(self):
+        """Excluded tools are absent from `self.tools` itself, not just `request.tools`.
+
+        `self.tools` is what `create_agent` registers on the dispatchable
+        `ToolNode` — filtering only `request.tools` in `wrap_model_call` would
+        leave an excluded tool callable if a `ToolCall` for it ever appeared
+        (e.g. a stray/hallucinated tool call), since `ToolNode` dispatches by
+        name lookup independent of what was bound for a given request.
+        """
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            tools=["read_file", "ls"],
+        )
+        names = {tool.name for tool in middleware.tools}
+        assert names == {"ls", "read_file"}
+
+    def test_enabled_tools_none_default_keeps_all_self_tools(self):
+        """tools=None (default) still registers every filesystem tool."""
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        names = {tool.name for tool in middleware.tools}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+
+    def test_enabled_tools_all_keeps_all_self_tools(self):
+        """tools="all" registers every filesystem tool, same as the default."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), tools="all")
+        names = {tool.name for tool in middleware.tools}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+
     def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
         """Execute in tools list is still filtered when the backend doesn't support execution."""
         middleware = FilesystemMiddleware(

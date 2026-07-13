@@ -139,6 +139,66 @@ def _get_harness_tool_descriptions(
     return dict(_harness_profile_for_model(model, None).tool_description_overrides)
 
 
+def _inject_fs_tools_into_subagents(
+    custom_subagents: list[SubAgent | CompiledSubAgent],
+    *,
+    fs_tools: Literal["all"] | list[FsToolName],
+    backend: CompositeBackend,
+    main_tool_descriptions: dict[str, str],
+) -> None:
+    """Inject a filesystem-restricted `FilesystemMiddleware` into each subagent.
+
+    Mutates each sync subagent spec in place, appending a `FilesystemMiddleware`
+    bound to `fs_tools` so delegating via `task` cannot bypass the allowlist.
+    Each subagent keeps its own harness tool descriptions (by its `model`, or
+    `main_tool_descriptions` when it inherits the runtime model).
+
+    Args:
+        custom_subagents: Sync subagent specs to mutate. Must be raw `SubAgent`
+            dicts; see the `CompiledSubAgent` guard below.
+        fs_tools: The allowlist (`"all"` or an explicit list) to pass through to
+            each subagent's `FilesystemMiddleware`.
+        backend: Composite backend shared with the main agent's middleware.
+        main_tool_descriptions: Harness tool descriptions to use for a subagent
+            that inherits the runtime model (no explicit `model` key).
+
+    Raises:
+        ValueError: If a `CompiledSubAgent` (identified by a `"runnable"` key,
+            per the SDK's discriminator in `subagents._compile_subagent`) is
+            present. Such a spec is used as-is by the SDK and its `middleware`
+            key is never read, so we cannot enforce the restriction on it. dcode
+            adds only raw `SubAgent` dicts today, but the declared type admits
+            compiled specs: fail loud rather than silently exposing an
+            unrestricted filesystem via `task` delegation.
+    """
+    for subagent in custom_subagents:
+        if "runnable" in subagent:
+            msg = (
+                "Cannot enforce --allow-fs-tools on compiled subagent "
+                f"{subagent.get('name', '<unnamed>')!r}: its middleware is "
+                "not configurable, so the filesystem restriction would be "
+                "silently bypassed."
+            )
+            raise ValueError(msg)
+        # `"runnable" in subagent` above narrows the union to `SubAgent`.
+        subagent_tool_descriptions = (
+            _get_harness_tool_descriptions(subagent["model"])
+            if "model" in subagent
+            else main_tool_descriptions
+        )
+        subagent["middleware"] = cast(
+            "list[AgentMiddleware]",
+            [
+                *subagent.get("middleware", []),
+                FilesystemMiddleware(
+                    backend=backend,
+                    tools=fs_tools,
+                    custom_tool_descriptions=subagent_tool_descriptions,
+                ),
+            ],
+        )
+
+
 def _validate_rubric_grader_read_path(file_path: str) -> str | None:
     normalized = file_path.replace("\\", "/")
     if not normalized.startswith(_RUBRIC_GRADER_READ_FILE_PREFIX):
@@ -1896,29 +1956,18 @@ def create_cli_agent(
                 custom_tool_descriptions=main_tool_descriptions,
             )
         )
-        # The SDK auto-inherits the main agent's `middleware=` only into the
-        # *auto-created* `general-purpose` subagent; dcode always supplies its
-        # own subagents (including `general-purpose`), so that inheritance path
-        # never fires and no sync subagent picks up the restriction on its own.
-        # Inject it into each so delegating via `task` can't bypass
-        # `--allow-fs-tools`.
-        for subagent in cast("list[SubAgent]", custom_subagents):
-            subagent_tool_descriptions = (
-                _get_harness_tool_descriptions(subagent["model"])
-                if "model" in subagent
-                else main_tool_descriptions
-            )
-            subagent["middleware"] = cast(
-                "list[AgentMiddleware]",
-                [
-                    *subagent.get("middleware", []),
-                    FilesystemMiddleware(
-                        backend=composite_backend,
-                        tools=fs_tools,
-                        custom_tool_descriptions=subagent_tool_descriptions,
-                    ),
-                ],
-            )
+        # Caller-supplied subagents never inherit the main agent's `middleware=`
+        # (the SDK only auto-inherits it into the *auto-created* `general-purpose`
+        # subagent, which dcode always supplies itself — see the general-purpose
+        # subagent assembly / `_gp_inheritable` in `deepagents.graph`). So the
+        # restriction must be injected into each subagent's own `middleware` list,
+        # or delegating via `task` could bypass `--allow-fs-tools`.
+        _inject_fs_tools_into_subagents(
+            custom_subagents,
+            fs_tools=fs_tools,
+            backend=composite_backend,
+            main_tool_descriptions=main_tool_descriptions,
+        )
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware
 

@@ -89,11 +89,22 @@ class TestServerConfigRoundTrip:
     def test_from_env_rejects_invalid_allow_fs_tools_shape(self) -> None:
         """A tampered/skewed ALLOW_FS_TOOLS value fails closed rather than open.
 
-        Well-formed JSON of an unexpected type (a bare string, number, or
-        object) must raise instead of falling through to an unrestricted
-        filesystem — see `_read_env_allow_fs_tools`.
+        Well-formed JSON of an unexpected type must raise instead of falling
+        through to an unrestricted filesystem — see `_read_env_allow_fs_tools`.
+        Covers non-list scalars/objects, a list containing non-strings (the
+        `all(isinstance(...))` guard), and the empty list (rejected directly so
+        the fail-closed guarantee is self-contained, not SDK-dependent).
         """
-        for bad in ('"read_file"', "42", "true", "{}"):
+        bad_values = (
+            '"read_file"',  # bare string that is not "all"
+            "42",  # number
+            "true",  # boolean
+            "{}",  # object
+            "[1, 2]",  # list of non-strings
+            '["ls", null]',  # list with a null element
+            "[]",  # empty list
+        )
+        for bad in bad_values:
             with (
                 patch.dict(
                     os.environ,
@@ -266,6 +277,60 @@ class TestStartServerAndGetAgent:
             )
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
+
+    async def test_forwards_allow_fs_tools_into_server_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """`allow_fs_tools` reaches the `ServerConfig` written to the subprocess.
+
+        The higher-level TUI/non-interactive forwarding tests mock this function
+        out, so without this a dropped kwarg here would disable the feature for
+        every server-backed session with no failing test.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        captured: list[ServerConfig] = []
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._write_checkpointer"),
+            patch("deepagents_code.client.launch.server_manager._write_pyproject"),
+            patch(
+                "deepagents_code.client.launch.server_manager._apply_server_config",
+                side_effect=captured.append,
+            ),
+            patch("deepagents_code.client.launch.server.generate_langgraph_json"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=mock_server,
+            ),
+            patch(
+                "deepagents_code.client.remote_client.RemoteAgent",
+                return_value=object(),
+            ),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+                allow_fs_tools=["ls", "read_file"],
+            )
+
+        assert len(captured) == 1
+        assert captured[0].allow_fs_tools == ["ls", "read_file"]
 
     async def test_stops_server_when_graph_readiness_fails(
         self, tmp_path: Path, monkeypatch

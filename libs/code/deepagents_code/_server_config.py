@@ -73,32 +73,37 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
 def _read_env_allow_fs_tools() -> Literal["all"] | list[FsToolName] | None:
     """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
 
-    The parent process writes only `None`, `"all"`, or a list (produced by
-    `main._parse_allow_fs_tools_flag`), but this runs in the server subprocess
-    where the variable could be tampered with or arrive from a skewed
+    The parent process writes only `None`, `"all"`, or a non-empty list
+    (produced by `main._parse_allow_fs_tools_flag`), but this runs in the server
+    subprocess where the variable could be tampered with or arrive from a skewed
     serialization format. Because the value is a security control, an
     unrecognized shape must fail closed (raise) rather than falling through to
-    an unrestricted filesystem: a truthy non-list, non-`"all"` value would
-    otherwise reach `FilesystemMiddleware`, whose `else` branch enables *all*
-    tools. (`_read_env_json` already fails closed on malformed JSON.)
+    an unrestricted filesystem: any non-list, non-`"all"` value would otherwise
+    reach `FilesystemMiddleware`, which treats such a value as *unrestricted*
+    (all tools). (`_read_env_json` already fails closed on malformed JSON.)
+
+    The empty list is rejected here too so the fail-closed guarantee is
+    self-contained rather than relying on downstream behavior: a legitimate
+    allowlist is always non-empty (it must include `"read_file"`), so `[]` can
+    only be tampering. Per-name validity and the `"read_file"` requirement
+    remain enforced downstream by `FilesystemMiddleware`.
 
     Returns:
-        `None` (absent), `"all"`, or a list of filesystem tool-name strings.
+        `None` (absent), `"all"`, or a non-empty list of filesystem tool-name
+        strings.
 
     Raises:
         ValueError: If the variable parses to anything other than `None`,
-            `"all"`, or a list of strings. Per-name validity and the
-            `"read_file"` requirement are enforced downstream by
-            `FilesystemMiddleware`.
+            `"all"`, or a non-empty list of strings.
     """
     raw = _read_env_json("ALLOW_FS_TOOLS")
     if raw is None or raw == "all":
         return raw
-    if isinstance(raw, list) and all(isinstance(name, str) for name in raw):
+    if isinstance(raw, list) and raw and all(isinstance(name, str) for name in raw):
         return cast("list[FsToolName]", raw)
     msg = (
         f"Invalid {SERVER_ENV_PREFIX}ALLOW_FS_TOOLS value: {raw!r}; expected "
-        "'all' or a list of filesystem tool names."
+        "'all' or a non-empty list of filesystem tool names."
     )
     raise ValueError(msg)
 
@@ -297,9 +302,12 @@ class ServerConfig:
     """Allowlist for `FilesystemMiddleware`'s `tools` param, from
     `--allow-fs-tools`.
 
-    `None` leaves the SDK default (all filesystem tools). A string is
-    `"all"`; a list is an explicit allowlist of filesystem tool names and
-    must include `"read_file"`.
+    `None` and `"all"` both mean "all filesystem tools" but differ
+    behaviorally downstream (see `create_cli_agent`): `None` inherits the SDK's
+    own default `FilesystemMiddleware` (no replacement), while `"all"` actively
+    reinstalls an unrestricted instance. A list is an explicit allowlist of
+    filesystem tool names and must include `"read_file"`. Do not collapse
+    `"all"` into `None`: they install different middleware.
     """
 
     rubric_model: str | None = None

@@ -684,7 +684,9 @@ def _parse_allow_fs_tools_flag(
 
     Returns:
         `None` when the flag is absent, the literal string `"all"`, or a
-        list of trimmed tool names.
+        list of trimmed, lower-cased tool names. Tool names are matched
+        case-insensitively (like the `"all"` sentinel), so `READ_FILE` and
+        `read_file` are equivalent.
 
         Calls `sys.exit(2)` when the value is empty, contains only blank
         tokens, combines the `"all"` sentinel with other tool names, includes
@@ -703,7 +705,9 @@ def _parse_allow_fs_tools_flag(
     normalized = text.lower()
     if normalized == "all":
         return "all"
-    names = [token.strip() for token in text.split(",") if token.strip()]
+    # Lower-case each token so tool names are case-insensitive, matching the
+    # `"all"` sentinel above. SDK `FsToolName` members are all lower-case.
+    names = [token.strip().lower() for token in text.split(",") if token.strip()]
     if not names:
         sys.stderr.write(
             "Error: --allow-fs-tools list must contain at least one "

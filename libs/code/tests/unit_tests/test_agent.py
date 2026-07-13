@@ -3155,6 +3155,26 @@ class TestCreateCliAgentFsToolsWiring:
         mock_settings.shell_allow_list = None
         return mock_settings
 
+    @staticmethod
+    def _fs_middleware_spy() -> tuple[list[dict[str, Any]], Any]:
+        """Return `(recorded_calls, factory)` for spying the FS-middleware ctor.
+
+        `factory` records each call's kwargs and returns a *real*
+        `FilesystemMiddleware`, so `isinstance` checks on the agent's middleware
+        still hold while tests assert dcode's actual contract — the `tools=` it
+        passes — instead of the SDK-private `_enabled_tools` attribute (which an
+        SDK-internal rename could silently break).
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        calls: list[dict[str, Any]] = []
+
+        def factory(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            calls.append(dict(kwargs))
+            return FilesystemMiddleware(*args, **kwargs)
+
+        return calls, factory
+
     def test_restricted_middleware_replaces_sdk_default_by_name(self) -> None:
         """The security guarantee rests on the SDK's replace-by-name merge.
 
@@ -3178,8 +3198,11 @@ class TestCreateCliAgentFsToolsWiring:
 
         fs_middleware = [m for m in merged if isinstance(m, FilesystemMiddleware)]
         assert len(fs_middleware) == 1
+        # Identity is the contract: the restricted instance replaced the default
+        # rather than a second instance being appended. (No need to read the
+        # SDK-private `_enabled_tools` — that the *restricted* instance survived
+        # is exactly what proves replace-by-name.)
         assert fs_middleware[0] is restricted
-        assert fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
 
     def test_none_does_not_add_filesystem_middleware(self, tmp_path: Path) -> None:
         """`fs_tools=None` (default) leaves the SDK's own default in place."""
@@ -3227,11 +3250,16 @@ class TestCreateCliAgentFsToolsWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fs_calls, fs_factory = self._fs_middleware_spy()
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.FilesystemMiddleware",
+                side_effect=fs_factory,
+            ),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3255,7 +3283,14 @@ class TestCreateCliAgentFsToolsWiring:
             m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
         ]
         assert len(fs_middleware) == 1
-        assert fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
+        # dcode's contract: it constructs each allowlist FS middleware with the
+        # exact tool list. Asserting the ctor `tools=` kwarg avoids coupling to
+        # the SDK-private `_enabled_tools`. Filter to allowlist-driven
+        # constructions (those passing `tools=`); unrelated FS middleware — e.g.
+        # the rubric grader's — is built without it.
+        allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
+        assert allowlisted
+        assert all(tools == ["ls", "read_file"] for tools in allowlisted)
 
     def test_all_adds_unrestricted_filesystem_middleware(self, tmp_path: Path) -> None:
         """`fs_tools="all"` installs a `FilesystemMiddleware` with every tool."""
@@ -3266,11 +3301,16 @@ class TestCreateCliAgentFsToolsWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fs_calls, fs_factory = self._fs_middleware_spy()
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.FilesystemMiddleware",
+                side_effect=fs_factory,
+            ),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3294,8 +3334,11 @@ class TestCreateCliAgentFsToolsWiring:
             m for m in kwargs["middleware"] if isinstance(m, FilesystemMiddleware)
         ]
         assert len(fs_middleware) == 1
-        assert "read_file" in fs_middleware[0]._enabled_tools
-        assert "execute" in fs_middleware[0]._enabled_tools
+        # `"all"` is forwarded verbatim as the SDK's unrestricted sentinel.
+        # Filter to allowlist-driven constructions (see the restricted-list test).
+        allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
+        assert allowlisted
+        assert all(tools == "all" for tools in allowlisted)
 
     def test_all_preserves_harness_descriptions_for_main_and_subagent(
         self, tmp_path: Path
@@ -3373,11 +3416,16 @@ class TestCreateCliAgentFsToolsWiring:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
 
+        fs_calls, fs_factory = self._fs_middleware_spy()
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.FilesystemMiddleware",
+                side_effect=fs_factory,
+            ),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3405,7 +3453,161 @@ class TestCreateCliAgentFsToolsWiring:
             if isinstance(m, FilesystemMiddleware)
         ]
         assert len(gp_fs_middleware) == 1
-        assert gp_fs_middleware[0]._enabled_tools == frozenset({"ls", "read_file"})
+        # Each allowlist-driven FS middleware (main agent + every subagent) uses
+        # the same tool list. Filter to `tools=`-bearing constructions so an
+        # unrelated FS middleware (e.g. the rubric grader's) doesn't interfere.
+        allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
+        assert len(allowlisted) >= 2
+        assert all(tools == ["ls", "read_file"] for tools in allowlisted)
+
+    def test_restricts_every_sync_subagent_including_user_defined(
+        self, tmp_path: Path
+    ) -> None:
+        """The restriction is injected into *every* sync subagent, not just GP.
+
+        `_build_mock_settings` yields no user subagents, so the other tests
+        exercise only the auto-added `general-purpose` spec. Here a user-defined
+        subagent (with its own explicit model, exercising the per-subagent
+        harness-description branch) is injected via `list_subagents`, proving the
+        "inject into each" contract for >1 subagent. A regression narrowing
+        injection to general-purpose-by-name would let `task` delegate to the
+        user subagent with an unrestricted filesystem — exactly the bypass this
+        feature prevents.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        user_subagent = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "You research.",
+            "model": "anthropic:claude-haiku-4-5-20251001",
+        }
+
+        fs_calls, fs_factory = self._fs_middleware_spy()
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[user_subagent],
+            ),
+            patch(
+                "deepagents_code.agent.FilesystemMiddleware",
+                side_effect=fs_factory,
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        names = {subagent["name"] for subagent in subagents}
+        assert {"researcher", "general-purpose"} <= names
+        # Every sync subagent must carry exactly one restricted FS middleware.
+        for subagent in subagents:
+            fs = [
+                middleware
+                for middleware in subagent.get("middleware", [])
+                if isinstance(middleware, FilesystemMiddleware)
+            ]
+            assert len(fs) == 1, f"{subagent['name']} missing FS middleware"
+        allowlisted = [call["tools"] for call in fs_calls if "tools" in call]
+        assert all(tools == ["ls", "read_file"] for tools in allowlisted)
+
+    def test_compiled_subagent_raises_rather_than_bypassing(self) -> None:
+        """A compiled subagent can't carry injected middleware → fail loud.
+
+        `_inject_fs_tools_into_subagents` cannot enforce the allowlist on a
+        `CompiledSubAgent` (its `middleware` key is ignored by the SDK). dcode
+        never adds one today, but the guard must raise rather than silently
+        delegate `task` to it with an unrestricted filesystem.
+        """
+        from deepagents_code.agent import _inject_fs_tools_into_subagents
+
+        compiled = {"name": "precompiled", "runnable": object()}
+        with pytest.raises(ValueError, match="compiled subagent"):
+            _inject_fs_tools_into_subagents(
+                [compiled],  # ty: ignore[invalid-argument-type]
+                fs_tools=["ls", "read_file"],
+                backend=Mock(),
+                main_tool_descriptions={},
+            )
+
+    def test_async_subagents_are_not_restricted(self, tmp_path: Path) -> None:
+        """Async subagents run on a remote backend, so they get no FS middleware.
+
+        The injection loop mutates only `custom_subagents`; async specs are
+        merged in separately. This pins the documented "async subagents are
+        unaffected" invariant so a future refactor that widened the loop to all
+        subagents would fail here.
+        """
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        async_subagent = {
+            "name": "remote-researcher",
+            "description": "Remote research",
+            "graph_id": "research-graph",
+        }
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                fs_tools=["ls", "read_file"],
+                async_subagents=[async_subagent],  # ty: ignore[invalid-argument-type]
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        remote = next(
+            subagent
+            for subagent in kwargs["subagents"]
+            if subagent["name"] == "remote-researcher"
+        )
+        assert not [
+            middleware
+            for middleware in remote.get("middleware", [])
+            if isinstance(middleware, FilesystemMiddleware)
+        ]
 
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:

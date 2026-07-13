@@ -2485,26 +2485,38 @@ class TestParseAllowFsToolsFlag:
             "grep",
         ]
 
-    def test_empty_value_exits(self) -> None:
+    def test_empty_value_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
         with pytest.raises(SystemExit) as exc_info:
             _parse_allow_fs_tools_flag("   ")
         assert exc_info.value.code == 2
+        # Distinct message, not one of the other exit paths.
+        assert "requires a value" in capsys.readouterr().err
 
-    def test_unknown_tool_name_exits(self) -> None:
+    def test_unknown_tool_name_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
         with pytest.raises(SystemExit) as exc_info:
             _parse_allow_fs_tools_flag("read_file,bogus")
         assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "unknown tool name" in err
+        assert "bogus" in err
 
-    def test_missing_read_file_exits(self) -> None:
+    def test_missing_read_file_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
 
         with pytest.raises(SystemExit) as exc_info:
             _parse_allow_fs_tools_flag("ls,grep")
         assert exc_info.value.code == 2
+        assert "must include 'read_file'" in capsys.readouterr().err
+
+    def test_tool_names_are_case_insensitive(self) -> None:
+        """Tool names are matched case-insensitively (like the `all` sentinel)."""
+        from deepagents_code.main import _parse_allow_fs_tools_flag
+
+        assert _parse_allow_fs_tools_flag("LS,Read_File") == ["ls", "read_file"]
 
     def test_all_inside_list_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         from deepagents_code.main import _parse_allow_fs_tools_flag
@@ -2559,6 +2571,40 @@ class TestAllowFsToolsArgument:
         with mock_argv("-n", "task", "--allow-fs-tools", "ls,read_file"):
             parsed = parse_args()
             assert parsed.allow_fs_tools == "ls,read_file"
+
+    def test_help_lists_every_fs_tool_name(self, mock_argv: MockArgvType) -> None:
+        """The `--allow-fs-tools` help text must name every SDK filesystem tool.
+
+        The help string hardcodes the tool-name list (`deepagents` must not be
+        imported on the arg-parsing path), so — unlike `_FS_TOOL_NAMES`, which a
+        drift test pins — it could silently go stale when the SDK adds a tool.
+        Spy the argparse registration to capture that specific help string and
+        guard it against `FsToolName`.
+        """
+        import argparse
+        from typing import Any, get_args
+
+        from deepagents import FsToolName
+
+        captured: dict[str, str] = {}
+        real_add_argument = argparse.ArgumentParser.add_argument
+
+        def spy(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            # args[0] is the bound ArgumentParser instance; the flag strings
+            # follow. Match the registration for `--allow-fs-tools`.
+            if "--allow-fs-tools" in args:
+                captured["help"] = str(kwargs.get("help", ""))
+            return real_add_argument(*args, **kwargs)
+
+        with (
+            patch.object(argparse.ArgumentParser, "add_argument", spy),
+            mock_argv("-n", "task"),
+        ):
+            parse_args()
+
+        assert "help" in captured, "--allow-fs-tools argument was not registered"
+        for name in get_args(FsToolName):
+            assert name in captured["help"], f"--allow-fs-tools help omits {name!r}"
 
     def test_forwarded_to_run_non_interactive(self) -> None:
         """--allow-fs-tools is parsed and forwarded as allow_fs_tools."""

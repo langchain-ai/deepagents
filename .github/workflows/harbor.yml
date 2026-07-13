@@ -9,8 +9,7 @@
 #   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
-#   LANGSMITH_API_KEY          — experiment tracking (always required)
-#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   LANGSMITH_API_KEY          — experiment tracking + LangSmith sandbox (always required)
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
 #   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models

@@ -164,7 +164,6 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
@@ -181,8 +180,7 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
-              ;;
+              ;; # Uses LANGSMITH_API_KEY (already required above)
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1
@@ -320,7 +318,6 @@ jobs:
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          LANGSMITH_SANDBOX_API_KEY: ${{ inputs.sandbox_env == 'langsmith' && secrets.LANGSMITH_SANDBOX_API_KEY || '' }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}

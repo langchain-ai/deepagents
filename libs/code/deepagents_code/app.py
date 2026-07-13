@@ -9730,6 +9730,22 @@ class DeepAgentsApp(App):
                 )
                 previous_thread_id = self._session_state.previous_thread_id
                 if previous_thread_id:
+                    from deepagents_code.sessions import thread_exists
+
+                    try:
+                        previous_thread_is_resumable = await thread_exists(
+                            previous_thread_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Could not check whether previous thread %s is resumable",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                else:
+                    previous_thread_is_resumable = False
+                if previous_thread_id and previous_thread_is_resumable:
                     previous_msg_widget = AppMessage(
                         f"Previous thread: {previous_thread_id}"
                     )
@@ -16323,13 +16339,29 @@ class DeepAgentsApp(App):
         from deepagents_code.sessions import (
             find_similar_threads,
             get_most_recent,
+            get_thread_agent,
             thread_exists,
         )
 
         try:
+            active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
             if requested_id is not None:
                 if await thread_exists(requested_id):
-                    return requested_id
+                    owner = await get_thread_agent(requested_id)
+                    if owner == active_agent:
+                        return requested_id
+                    if owner:
+                        msg = (
+                            f"Thread '{requested_id}' belongs to agent '{owner}', not "
+                            f"the active agent '{active_agent}'. Switch agents first."
+                        )
+                    else:
+                        msg = (
+                            f"Could not verify which agent owns thread "
+                            f"'{requested_id}', so it was not resumed."
+                        )
+                    await self._mount_message(AppMessage(msg))
+                    return None
                 hint = f"Thread '{requested_id}' not found."
                 similar = await find_similar_threads(requested_id)
                 if similar:
@@ -16343,25 +16375,19 @@ class DeepAgentsApp(App):
                 self._session_state.previous_thread_id if self._session_state else None
             )
             if previous and await thread_exists(previous):
-                return previous
+                owner = await get_thread_agent(previous)
+                if owner == active_agent:
+                    return previous
 
-            agent_filter = (
-                self._assistant_id
-                if self._assistant_id != DEFAULT_ASSISTANT_ID
-                else None
-            )
             current = self._session_state.thread_id if self._session_state else None
             candidate = await get_most_recent(
-                agent_filter,
+                active_agent,
                 exclude_thread_id=current,
             )
             if candidate:
                 return candidate
 
-            if agent_filter:
-                msg = f"No previous threads for '{agent_filter}' to resume."
-            else:
-                msg = "No previous threads to resume."
+            msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
         except Exception:
             logger.debug(

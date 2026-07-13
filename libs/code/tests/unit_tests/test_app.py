@@ -4826,6 +4826,10 @@ class TestClearCommand:
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -4847,6 +4851,30 @@ class TestClearCommand:
                 "prefix": "Previous thread",
                 "thread_id": "old-thread",
             }
+
+    async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
+        """/clear should not advertise a thread that cannot be resumed."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert "Previous thread: old-thread" not in contents
+            assert not any("Resume it with /threads -r" in text for text in contents)
+            schedule.assert_called_once()
 
 
 class TestCopyCommand:

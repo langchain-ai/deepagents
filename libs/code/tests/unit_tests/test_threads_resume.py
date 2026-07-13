@@ -94,12 +94,36 @@ class TestResolveResumeTarget:
 
     async def test_specific_id_exists(self) -> None:
         app = _make_app()
-        with patch(
-            "deepagents_code.sessions.thread_exists",
-            AsyncMock(return_value=True),
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
         ):
             target = await app._resolve_threads_resume_target("abc")
         assert target == "abc"
+
+    async def test_specific_id_for_another_agent_is_rejected(self) -> None:
+        app = _make_app()
+        app._assistant_id = "coder"
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="researcher"),
+            ),
+        ):
+            target = await app._resolve_threads_resume_target("abc")
+        assert target is None
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "belongs to agent 'researcher'" in str(message._content)
 
     async def test_specific_id_missing_notifies(self) -> None:
         app = _make_app()
@@ -138,12 +162,45 @@ class TestResolveResumeTarget:
         state = TextualSessionState(thread_id="cur")
         state.previous_thread_id = "prev"
         app._session_state = state
-        with patch(
-            "deepagents_code.sessions.thread_exists",
-            AsyncMock(return_value=True),
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
         ):
             target = await app._resolve_threads_resume_target(None)
         assert target == "prev"
+
+    async def test_bare_skips_previous_thread_from_another_agent(self) -> None:
+        app = _make_app()
+        app._assistant_id = "coder"
+        state = TextualSessionState(thread_id="cur")
+        state.previous_thread_id = "research-thread"
+        app._session_state = state
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="researcher"),
+            ),
+            patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value="coder-thread"),
+            ) as most_recent,
+        ):
+            target = await app._resolve_threads_resume_target(None)
+        assert target == "coder-thread"
+        most_recent.assert_awaited_once_with(
+            "coder",
+            exclude_thread_id="cur",
+        )
 
     async def test_bare_falls_back_to_most_recent(self) -> None:
         app = _make_app()
@@ -182,6 +239,25 @@ class TestResolveResumeTarget:
             target = await app._resolve_threads_resume_target(None)
         assert target is None
         app._mount_message.assert_awaited()  # ty: ignore
+
+    async def test_bare_default_agent_fallback_is_filtered(self) -> None:
+        app = _make_app()
+        app._session_state = TextualSessionState(thread_id="cur")
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ) as most_recent,
+        ):
+            await app._resolve_threads_resume_target(None)
+        most_recent.assert_awaited_once_with(
+            "agent",
+            exclude_thread_id="cur",
+        )
 
     async def test_bare_database_failure_notifies(self) -> None:
         app = _make_app()

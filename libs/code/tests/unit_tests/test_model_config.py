@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -2764,6 +2764,31 @@ class _BytesContext:
 class TestFetchOllamaInstalledModels:
     """Tests for the `_fetch_ollama_installed_models` HTTP probe."""
 
+    @pytest.fixture(autouse=True)
+    def _assume_host_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bypass the TCP presence preflight so HTTP parsing paths are exercised."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: True,
+        )
+
+    def test_skips_http_probe_when_host_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreachable daemon short-circuits before any HTTP request."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: False,
+        )
+
+        with patch("urllib.request.urlopen") as fake:
+            assert (
+                model_config._fetch_ollama_installed_models("http://localhost:11434")
+                == []
+            )
+
+        fake.assert_not_called()
+
     def test_returns_sorted_names_from_payload(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2934,6 +2959,76 @@ class TestFetchOllamaInstalledModels:
                 == []
             )
         fake.assert_not_called()
+
+
+class TestOllamaHostReachable:
+    """Tests for the `_ollama_host_reachable` TCP presence preflight."""
+
+    def test_true_when_connection_succeeds(self) -> None:
+        """A successful TCP connection reports the daemon as present."""
+        captured: list[tuple[str, int]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],
+            timeout: float,  # noqa: ARG001
+        ) -> MagicMock:
+            captured.append(address)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert model_config._ollama_host_reachable("http://localhost:11434") is True
+
+        assert captured == [("localhost", 11434)]
+
+    def test_false_when_connection_refused(self) -> None:
+        """Connection refused reports the daemon as absent."""
+        refused = ConnectionRefusedError(61, "Connection refused")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise refused
+
+        with patch("socket.create_connection", side_effect=boom):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+    def test_false_when_sockets_blocked(self) -> None:
+        """Non-`OSError` failures (e.g. blocked sockets) are treated as absent."""
+        blocked = RuntimeError("sockets disabled")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise blocked
+
+        with patch("socket.create_connection", side_effect=boom):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+    def test_defers_to_probe_when_host_unparseable(self) -> None:
+        """A URL without a host defers to the HTTP probe instead of blocking it."""
+        with patch("socket.create_connection") as fake:
+            assert model_config._ollama_host_reachable("http://") is True
+
+        fake.assert_not_called()
+
+    def test_defaults_https_port_when_absent(self) -> None:
+        """A schemed URL without an explicit port falls back to the scheme default."""
+        captured: list[tuple[str, int]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],
+            timeout: float,  # noqa: ARG001
+        ) -> MagicMock:
+            captured.append(address)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert (
+                model_config._ollama_host_reachable("https://ollama.example.com")
+                is True
+            )
+
+        assert captured == [("ollama.example.com", 443)]
 
 
 class TestFetchOllamaInstalledModelProfiles:

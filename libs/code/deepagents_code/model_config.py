@@ -1435,6 +1435,48 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     return list(models)
 
 
+def _ollama_host_reachable(
+    base: str, *, timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS
+) -> bool:
+    """Return whether a TCP listener is accepting connections at `base`.
+
+    A lightweight presence preflight so Ollama discovery can skip the HTTP
+    probe entirely when no daemon is running (e.g. Ollama is not installed).
+    The check opens and immediately closes a TCP connection to the endpoint's
+    host and port. Any failure -- connection refused, DNS error, timeout, or
+    sockets blocked under `pytest-socket` -- is treated as "not reachable" so
+    discovery falls back gracefully.
+
+    Args:
+        base: Base URL of the Ollama daemon, e.g. `http://localhost:11434`.
+        timeout: Socket connection timeout in seconds.
+
+    Returns:
+        `True` when a connection is established (a daemon appears present) or
+            when the target cannot be determined (deferring to the HTTP probe);
+            `False` when the connection cannot be made.
+    """
+    import socket
+    from contextlib import closing
+
+    parsed = urlparse(base)
+    host = parsed.hostname
+    if not host:
+        # Can't determine a target host; let the HTTP probe make the decision.
+        return True
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    # Catch-all mirrors the discovery probe: presence detection is best-effort
+    # and must never break the model selector. Notably catches `pytest-socket`'s
+    # `SocketBlockedError`, which inherits from `Exception` (not `OSError`).
+    try:
+        with closing(socket.create_connection((host, port), timeout=timeout)):
+            return True
+    except Exception:  # noqa: BLE001  # best-effort presence check; see above
+        return False
+
+
 def _fetch_ollama_installed_models(
     endpoint: str | None,
     *,
@@ -1472,6 +1514,15 @@ def _fetch_ollama_installed_models(
             base,
         )
         return []
+
+    # Presence preflight: a dead/absent daemon (the common case when Ollama is
+    # not installed) refuses the connection. Detecting that here lets us skip
+    # the HTTP probe and log a quiet "not detected" line instead of a
+    # misleading "discovery failed ... Connection refused" error.
+    if not _ollama_host_reachable(base, timeout=timeout):
+        logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
+        return []
+
     url = f"{base}/api/tags"
 
     headers = _ollama_discovery_headers(base, content_type=False)

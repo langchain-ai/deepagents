@@ -4808,14 +4808,73 @@ class TestClearCommand:
                 str(widget._content) == "Started new thread: new-thread"
                 for widget in app_msgs
             )
-            schedule.assert_called_once()
-            widget = schedule.call_args.args[0]
-            assert isinstance(widget, AppMessage)
-            assert widget in app_msgs
-            assert schedule.call_args.kwargs == {
+            started_widget = schedule.call_args_list[0].args[0]
+            assert isinstance(started_widget, AppMessage)
+            assert started_widget in app_msgs
+            assert schedule.call_args_list[0].kwargs == {
                 "prefix": "Started new thread",
                 "thread_id": "new-thread",
             }
+
+    async def test_clear_points_back_to_previous_thread(self) -> None:
+        """/clear should surface the abandoned thread and a resume hint."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            assert app._session_state.previous_thread_id == "old-thread"
+
+            app_msgs = list(app.query(AppMessage))
+            assert any(
+                str(widget._content) == "Previous thread: old-thread"
+                for widget in app_msgs
+            )
+            assert any(
+                str(widget._content)
+                == "Resume it with /threads -r (or /threads -r old-thread)"
+                for widget in app_msgs
+            )
+            assert schedule.call_args_list[1].kwargs == {
+                "prefix": "Previous thread",
+                "thread_id": "old-thread",
+            }
+
+    async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
+        """/clear should not advertise a thread that cannot be resumed."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert "Previous thread: old-thread" not in contents
+            assert not any("Resume it with /threads -r" in text for text in contents)
+            schedule.assert_called_once()
 
 
 class TestCopyCommand:
@@ -15211,7 +15270,7 @@ class TestResolveResumeThread:
             assert app._status_bar.connection_state == "connecting"
 
     async def test_resume_offers_abort_option_at_launch(self) -> None:
-        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        """The launch-time cwd prompt is invoked with the `resume` abort mode."""
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
@@ -15232,7 +15291,7 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert offer.await_args is not None
-            assert offer.await_args.kwargs["allow_abort"] is True
+            assert offer.await_args.kwargs["abort"] == "resume"
             assert app._lc_thread_id == "some-thread"
 
     async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
@@ -21715,6 +21774,93 @@ class TestResumeThreadCwdSwitch:
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
 
+    async def test_offer_switch_failure_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An accepted server-backed switch that fails to restart returns `abort`.
+
+        With `abort="thread_switch"` set, both abort sources (user-declined and
+        switch-failed) are reachable for a single call configuration -- not
+        concurrently, but the return value alone cannot say which fired. This
+        pins the switch-failed source end-to-end through the real method (the
+        other abort tests either use `restart_server=False` or mock the whole
+        method out) and checks it leaves a persistent in-chat record.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="abort")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+        mount = AsyncMock()
+        app._mount_message = mount  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        replace.assert_awaited_once()
+        # The failed switch must be surfaced as a durable message, distinct from
+        # the transient toast `_replace_server_after_cwd_switch` already raised.
+        mount.assert_awaited_once()
+        assert mount.await_args is not None
+        # `AppMessage` stores its raw text in `_content` (its serialization
+        # field); read it directly so a rename fails loudly rather than
+        # defaulting to "" and masking the mismatch.
+        mounted = mount.await_args.args[0]
+        assert isinstance(mounted, AppMessage)
+        assert mounted._content == (
+            "Could not switch to the thread's directory; staying on the current thread."
+        )
+
+    async def test_offer_user_declined_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user-declined abort returns `abort` without attempting a switch.
+
+        Complements `test_offer_switch_failure_returns_abort`: that pins the
+        switch-failed abort source through the real method; this pins the
+        user-declined source (the `choice == "abort"` early return), which every
+        other abort test reaches only by mocking `_offer_thread_cwd_switch` out.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="abort")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="continue")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        # A declined abort must not touch the server.
+        replace.assert_not_awaited()
+
     async def test_no_prompt_when_thread_cwd_matches_current(
         self,
         tmp_path: Path,
@@ -21782,6 +21928,57 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
+
+    async def test_threads_switch_offers_abort_and_cancels(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The `/threads` switcher offers abort; aborting keeps the current thread."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        app._lc_thread_id = "old-thread"
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        fetch = AsyncMock()
+        app._fetch_thread_history_data = fetch  # ty: ignore[invalid-assignment]
+        offer = AsyncMock(return_value="abort")
+        app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+
+        await app._resume_thread("new-thread")
+
+        assert offer.await_args is not None
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
+        # Aborting must not switch threads or load history.
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        fetch.assert_not_awaited()
+        # Abort returns before the switch lock is acquired; leaving it set would
+        # permanently block `/threads` for the session.
+        assert app._thread_switching is False
+
+    async def test_threads_reselect_offers_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reselecting the current thread also offers abort and cancels silently."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        mount = AsyncMock()
+        app._mount_message = mount  # ty: ignore[invalid-assignment]
+        offer = AsyncMock(return_value="abort")
+        app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+
+        await app._resume_thread("thread-1")
+
+        assert offer.await_args is not None
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
+        mount.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---
 

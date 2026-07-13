@@ -3132,7 +3132,8 @@ class TestExperimentalTodoMiddlewareWiring:
     `collect_built_in_tools` (see `test_tool_catalog.py`) only inspects the main
     agent's bound tools, so the subagent splice needs its own coverage: these
     tests capture the `create_deep_agent` kwargs and assert the stand-in reaches
-    the main agent, custom subagents, and the auto general-purpose subagent.
+    the main agent, custom subagents, and the general-purpose subagent that
+    dcode auto-adds.
     """
 
     @staticmethod
@@ -3161,11 +3162,15 @@ class TestExperimentalTodoMiddlewareWiring:
         mock_settings.shell_allow_list = ["ls", "cat"]
         return mock_settings
 
-    def _capture_create_deep_agent_kwargs(self, tmp_path: Path) -> dict[str, Any]:
+    def _capture_create_deep_agent_kwargs(
+        self, tmp_path: Path, *, subagent_model: str | None = None
+    ) -> dict[str, Any]:
         """Build a default agent + custom subagent; capture `create_deep_agent` kwargs.
 
         Returns the kwargs dcode forwards to `create_deep_agent` so callers can
         assert on both the main `middleware` list and each `subagents` spec.
+        `subagent_model` sets the custom subagent's `model:` frontmatter, which
+        drives the `has_explicit_model` branch in `_subagent_cli_middleware`.
         """
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3176,7 +3181,7 @@ class TestExperimentalTodoMiddlewareWiring:
             "name": "researcher",
             "description": "Researches things",
             "system_prompt": "Investigate the task thoroughly.",
-            "model": None,
+            "model": subagent_model,
         }
 
         with (
@@ -3238,6 +3243,29 @@ class TestExperimentalTodoMiddlewareWiring:
             assert self._has_todo_standin(spec.get("middleware", [])), (
                 f"Expected TodoListMiddleware stand-in on subagent {name!r}"
             )
+
+    def test_dropped_from_explicit_model_subagent_when_experimental(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The splice must survive the `has_explicit_model` branch.
+
+        `_subagent_cli_middleware` extends the stand-in in *before* the
+        `if not has_explicit_model:` model-middleware check, so a subagent with
+        an explicit `model:` in frontmatter must still receive it. The other
+        wiring cases only exercise the `model: None` branch, so without this a
+        regression that moved the splice inside that `if` would pass unnoticed.
+        """
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(
+            tmp_path, subagent_model="fake-model"
+        )
+
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        researcher = subagents_by_name["researcher"]
+        # Guards the premise: an explicit model must reach the spec, else the
+        # subagent would take the `model: None` path and the test proves nothing.
+        assert researcher.get("model"), "explicit subagent model was not forwarded"
+        assert self._has_todo_standin(researcher.get("middleware", []))
 
     def test_absent_from_all_stacks_by_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

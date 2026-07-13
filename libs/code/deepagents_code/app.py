@@ -16758,7 +16758,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage(
                             "Could not switch to the thread's directory; staying "
-                            "on the current thread and directory.",
+                            "on the current thread.",
                         )
                     )
                 return outcome

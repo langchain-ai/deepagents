@@ -21757,8 +21757,8 @@ class TestResumeThreadCwdSwitch:
         # the transient toast `_replace_server_after_cwd_switch` already raised.
         mount.assert_awaited_once()
         assert mount.await_args is not None
-        assert "Could not switch" in str(
-            getattr(mount.await_args.args[0], "_content", "")
+        assert getattr(mount.await_args.args[0], "_content", "") == (
+            "Could not switch to the thread's directory; staying on the current thread."
         )
 
     async def test_offer_user_declined_returns_abort(

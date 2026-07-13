@@ -24,11 +24,6 @@ on:
         required: false
         type: boolean
         default: false
-      advisory:
-        description: "Whether benchmark failures should be non-blocking"
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -40,7 +35,6 @@ jobs:
   benchmark:
     name: "CodSpeed"
     runs-on: codspeed-macro
-    continue-on-error: ${{ inputs.advisory }}
     permissions:
       contents: read
       id-token: write

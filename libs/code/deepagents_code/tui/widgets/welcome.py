@@ -143,10 +143,11 @@ class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
     Renders a bordered box with the product title and optional version. A
-    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is set, even when
-    the version is hidden. A `(local)` tag appears for editable installs only
-    when the version is shown. Rows follow that appear only when their data (and
-    any env gate) is present. In render order: the active model
+    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is enabled
+    (truthy), even when the version is hidden. A `(local)` tag appears for
+    editable installs only when the version is shown. Rows follow that appear
+    only when their data (and any env gate) is present. In render order: the
+    active model
     (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
     opt-in), LangSmith tracing project and its replica (each clickable once its
     URL resolves), thread ID (debug mode only), and the MCP tool count. MCP

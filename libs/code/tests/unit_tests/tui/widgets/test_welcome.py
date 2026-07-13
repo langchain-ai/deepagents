@@ -38,11 +38,12 @@ _LOCAL_STYLE = "deepagents_code.tui.widgets.welcome._local_tag_style"
 def _raw_style_covering(content: Content, needle: str) -> str | TStyle:
     """Return the style of the single span whose text contains `needle`.
 
-    The style may be a parsed `TStyle` (from a themed style) or a raw `str`
-    (ANSI string markup, which `Content.assemble` preserves verbatim — see
-    `test_debug_tag_uses_ansi_markup_under_ansi_theme`). Use `_style_covering`
-    when the style must be a `TStyle`. Indexes the public `content.plain` and
-    reads the public `Span.style` field; update if Textual's span model changes.
+    The style may be a `TStyle` (built from a themed style) or a raw `str` style
+    string (used under the ANSI theme branch, which `Content.assemble` preserves
+    verbatim — see `test_debug_tag_uses_ansi_markup_under_ansi_theme`). Use
+    `_style_covering` when the style must be a `TStyle`. Indexes the public
+    `content.plain` and reads the public `Span.style` field; update if Textual's
+    span model changes.
 
     Args:
         content: Assembled banner content to inspect.
@@ -60,8 +61,9 @@ def _style_covering(content: Content, needle: str) -> TStyle:
     """Return the `TStyle` of the single span whose text contains `needle`.
 
     Only usable for spans whose style resolves to a `TStyle` (i.e. built from a
-    themed `TStyle`, not ANSI string markup, which `Content.assemble` preserves
-    as a raw `str` — see `test_debug_tag_uses_ansi_markup_under_ansi_theme`).
+    themed `TStyle`, not a raw `str` style string as used under the ANSI theme
+    branch, which `Content.assemble` preserves as a raw `str` — see
+    `test_debug_tag_uses_ansi_markup_under_ansi_theme`).
 
     Args:
         content: Assembled banner content to inspect.
@@ -219,7 +221,6 @@ class TestLocalTagStyle:
     def test_non_ansi_uses_themed_color(self) -> None:
         """Non-ANSI themes color the tag with the theme's tool color."""
         from textual.color import Color as TColor
-        from textual.style import Style as TStyle
 
         from deepagents_code.theme import DARK_COLORS
 
@@ -312,6 +313,20 @@ class TestTitle:
         assert "(local)" in plain
         assert plain.index("(debug enabled)") < plain.index("(local)")
 
+    def test_version_debug_local_render_in_order(self) -> None:
+        """Version, `(debug enabled)`, and `(local)` render in that fixed order.
+
+        The pairwise ordering assertions each pin only two of the three segments,
+        and under different editable states; this locks all three in one banner.
+        """
+        with patch(_EDITABLE, return_value=True):
+            plain = _make_banner(env={DEBUG: "1"})._build_banner().plain
+        assert (
+            plain.index(f"v{__version__}")
+            < plain.index("(debug enabled)")
+            < plain.index("(local)")
+        )
+
     def test_debug_tag_when_version_hidden(self) -> None:
         """The debug tag remains visible without exposing local-install details."""
         with patch(_EDITABLE, return_value=True):
@@ -367,6 +382,27 @@ class TestTitle:
         finally:
             app.theme = previous_theme
         assert _raw_style_covering(content, "(debug enabled)") == "bold yellow"
+
+    def test_debug_tag_uses_themed_warning_color_when_assembled(self) -> None:
+        """The real themed warning color reaches the assembled debug span.
+
+        `TestDebugTagStyle` checks `_debug_tag_style` in isolation and
+        `test_title_tags_carry_their_own_styles` patches it with a sentinel;
+        neither confirms the unpatched helper's themed color lands on the span
+        under the default (non-ANSI) theme. Anchored to the banner's resolved
+        theme colors so it tracks whatever palette the active theme provides.
+        """
+        from textual.color import Color as TColor
+
+        from deepagents_code.theme import get_theme_colors
+
+        with patch(_EDITABLE, return_value=False):
+            banner = _make_banner(env={DEBUG: "1"})
+            content = banner._build_banner()
+        warning = get_theme_colors(banner).warning
+        assert _style_covering(content, "(debug enabled)").foreground == TColor.parse(
+            warning
+        )
 
 
 class TestModelLine:
@@ -473,8 +509,6 @@ class TestTracingLine:
 
     def test_project_name_is_clickable_when_url_resolved(self) -> None:
         """The project name is a hyperlink when the URL has been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(
             project_name="dcode-johannes",
             project_urls={
@@ -491,8 +525,6 @@ class TestTracingLine:
 
     def test_project_name_not_clickable_without_url(self) -> None:
         """The project name has no link when the URL has not been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(project_name="dcode-johannes")
         content = widget._build_banner()
         linked = [
@@ -596,8 +628,6 @@ class TestReplicaTracingLine:
 
     def test_replica_project_is_clickable_when_url_resolved(self) -> None:
         """The replica project is a hyperlink when the URL has been fetched."""
-        from textual.style import Style as TStyle
-
         widget = _make_banner(
             project_name="dcode-primary",
             replica_project="dcode-replica",

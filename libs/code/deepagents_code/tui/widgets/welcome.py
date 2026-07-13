@@ -98,6 +98,23 @@ def _local_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
     return TStyle(foreground=TColor.parse(colors.tool), bold=True)
 
 
+def _debug_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
+    """Build the style for the `(debug enabled)` tag.
+
+    Args:
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        A bold yellow markup style under ANSI themes (whose palette the terminal
+            owns, so a parsed color could be invisible) or a bold themed warning
+            color otherwise.
+    """
+    if ansi:
+        return "bold yellow"
+    return TStyle(foreground=TColor.parse(colors.warning), bold=True)
+
+
 def _home_prefixed(cwd: str) -> str:
     """Format a directory path, using `~` for the home directory when possible.
 
@@ -125,12 +142,16 @@ def _home_prefixed(cwd: str) -> str:
 class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
-    Renders a bordered box with the product title and version, followed by rows
-    that appear only when their data (and any env gate) is present. In render
-    order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
-    (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
-    clickable once its URL resolves), thread ID (debug mode only), and the MCP
-    tool count. MCP server warnings and the editable-install path follow.
+    Renders a bordered box with the product title and optional version. A
+    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is enabled
+    (truthy), even when the version is hidden. A `(local)` tag appears for
+    editable installs only when the version is shown. Rows follow that appear
+    only when their data (and any env gate) is present. In render order: the
+    active model
+    (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
+    opt-in), LangSmith tracing project and its replica (each clickable once its
+    URL resolves), thread ID (debug mode only), and the MCP tool count. MCP
+    server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -208,7 +229,8 @@ class WelcomeBanner(Static):
             else None
         )
         self._project_urls: dict[str, str] = {}
-        self._show_thread_id = is_env_truthy(DEBUG)
+        self._debug_enabled = is_env_truthy(DEBUG)
+        self._show_thread_id = self._debug_enabled
         super().__init__(self._build_banner(), **kwargs)
 
     def on_mount(self) -> None:
@@ -328,7 +350,9 @@ class WelcomeBanner(Static):
         """Build the banner content.
 
         Returns:
-            Content with the title and version, followed by any applicable rows
+            Content with the title, optional version, and any applicable header
+            tags (`(debug enabled)` when debug is on; `(local)` for editable
+            installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
             resolves), thread ID (debug only), MCP tool count, MCP server
@@ -350,8 +374,15 @@ class WelcomeBanner(Static):
         ]
         if not self._hide_version:
             parts.append((f"  v{__version__}", "dim"))
-            if _is_editable_install():
-                parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
+        if self._debug_enabled:
+            parts.append(
+                (
+                    " (debug enabled)",
+                    _debug_tag_style(ansi=ansi, colors=colors),
+                )
+            )
+        if not self._hide_version and _is_editable_install():
+            parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
 
         # Row labels share a common column width so values stay aligned; the
         # longest label ("directory:") needs 11 columns including its space.

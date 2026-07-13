@@ -280,8 +280,10 @@ class ContextHubBackend(BackendProtocol):
     ) -> GrepResult:
         """Search contents for `pattern` (optional `path` / `glob` filters).
 
-        When `max_count` is set, the search stops once that many total matches
-        have been collected and the result is flagged `truncated=True`.
+        When `max_count` is set, at most that many matches are returned; if more
+        exist the search stops and the result is flagged `truncated=True`.
+        Exactly `max_count` matches with none dropped is reported complete
+        (`truncated=False`).
         """
         try:
             cache = self._ensure_cache()
@@ -306,9 +308,12 @@ class ContextHubBackend(BackendProtocol):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):
-                    matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
                     if max_count is not None and len(matches) >= max_count:
+                        # A further match beyond `max_count` proves more exist;
+                        # stop and flag truncation. Checked before appending so
+                        # exactly `max_count` matches is reported complete.
                         return GrepResult(matches=matches, truncated=True)
+                    matches.append(GrepMatch(path=f"/{file_path}", line=i, text=line))
 
         return GrepResult(matches=matches)
 

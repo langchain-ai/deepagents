@@ -471,6 +471,9 @@ class CompositeBackend(BackendProtocol):
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Defense-in-depth: the budget split above already keeps the total at
+            # or under `max_count`, so this only trims a non-compliant backend
+            # that returned more than its allotted budget.
             if max_count is not None and len(all_matches) > max_count:
                 all_matches = all_matches[:max_count]
                 truncated = True
@@ -528,6 +531,9 @@ class CompositeBackend(BackendProtocol):
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Defense-in-depth: the budget split above already keeps the total at
+            # or under `max_count`, so this only trims a non-compliant backend
+            # that returned more than its allotted budget.
             if max_count is not None and len(all_matches) > max_count:
                 all_matches = all_matches[:max_count]
                 truncated = True

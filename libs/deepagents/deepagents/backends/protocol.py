@@ -482,17 +482,18 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 across all files.
 
                 `None` (the default) preserves existing backend behavior and
-                returns every match. When set to an int, the search stops once
-                that many matches have been collected and the result is flagged
-                with `GrepResult.truncated=True`. Interpreted as a total cap, not
-                a per-file cap.
+                returns every match. When set to an int, at most that many
+                matches are returned; if more exist the search stops and the
+                result is flagged with `GrepResult.truncated=True`. Exactly
+                `max_count` matches with none dropped is reported complete
+                (`truncated=False`). Interpreted as a total cap, not a per-file
+                cap.
 
         Examples:
             - `'*.py'` - only search Python files
             - `'**/*.txt'` - search all `.txt` files recursively
             - `'src/**/*.js'` - search JS files under src/
             - `'test[0-9].txt'` - search `test0.txt`, `test1.txt`, etc.
-
 
         Returns:
             `GrepResult` with matches or error.
@@ -532,10 +533,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Wraps the sync call with an async timeout as a safety net. The timeout
         bounds how long the caller waits; it does not stop the worker thread
         created by `asyncio.to_thread`.
+
+        `max_count` is forwarded when the concrete `grep` accepts it; otherwise
+        the cap is applied post-hoc via `_apply_grep_max_count`, so callers get
+        the same guarantee regardless of which path runs.
         """
-        grep_call = partial(self.grep, pattern, path, glob)
-        if _method_accepts_max_count(type(self), "grep"):
-            grep_call = partial(self.grep, pattern, path, glob, max_count=max_count)
+        grep_kwargs = {"max_count": max_count} if _method_accepts_max_count(type(self), "grep") else {}
+        grep_call = partial(self.grep, pattern, path, glob, **grep_kwargs)
         try:
             result = await asyncio.wait_for(
                 asyncio.to_thread(grep_call),
@@ -973,7 +977,9 @@ def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["
         sig = inspect.signature(getattr(cls, method_name))
     except (AttributeError, ValueError, TypeError):
         logger.warning(
-            "Could not inspect signature of %s.%s; assuming max_count is not supported.",
+            "Could not inspect signature of %s.%s; assuming max_count is not supported. "
+            "The cap will be enforced after the search instead of bounding it, so a huge "
+            "result set is fully materialized before being trimmed.",
             cls.__qualname__,
             method_name,
             exc_info=True,

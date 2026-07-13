@@ -1145,8 +1145,11 @@ def test_ripgrep_streaming_caps_total_and_terminates(tmp_path: Path, monkeypatch
     created: dict[str, _FakePopen] = {}
 
     def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
-        # `-m <cap>` is passed to ripgrep as a secondary per-file guard.
-        assert "-m" in cmd and str(2) in cmd
+        # `-m <cap + 1>` is passed to ripgrep as a secondary per-file guard; the
+        # `+ 1` lets a single file emit one match past the cap so truncation is
+        # detectable.
+        assert "-m" in cmd
+        assert cmd[cmd.index("-m") + 1] == "3"
         proc = _FakePopen(stdout_lines=frames)
         created["proc"] = proc
         return proc
@@ -1181,6 +1184,29 @@ def test_ripgrep_streaming_below_cap_not_truncated(tmp_path: Path, monkeypatch: 
     assert result.truncated is False
     assert result.matches is not None
     assert len(result.matches) == 1
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_exact_cap_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    # Exactly `max_count` frames and no more: ripgrep (`-m cap + 1`) would have
+    # emitted a third if one existed, so the stream ending at the cap proves the
+    # result is complete.
+    frames = [_rg_match_frame("a.txt", 1, "hello\n"), _rg_match_frame("a.txt", 2, "hello\n")]
+
+    def fake_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=frames)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
 
 
 def test_python_fallback_caps_total_matches_across_files(tmp_path: Path) -> None:
@@ -1221,6 +1247,19 @@ def test_python_fallback_below_cap_not_truncated(tmp_path: Path) -> None:
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     result = be.grep("needle", path=str(tmp_path), max_count=100)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_python_fallback_exact_cap_not_truncated(tmp_path: Path) -> None:
+    """The Python fallback reports exactly `max_count` matches as complete."""
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=2)
 
     assert result.truncated is False
     assert result.matches is not None

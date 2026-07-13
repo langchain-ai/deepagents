@@ -142,6 +142,10 @@ for open_path, display_path in targets:
                     # line lacks a final newline.
                     sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
                     match_count += 1
+                    # Emit one record past the cap (match_count > max_count, not
+                    # >=) so the parser can tell "exactly at the cap" (complete)
+                    # from "capped early" (truncated). Mirrors the `head -n
+                    # max_count+1` route in `_build_grep_cmd`.
                     if max_count is not None and match_count > max_count:
                         sys.exit(0)
     except OSError:

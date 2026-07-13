@@ -683,9 +683,9 @@ class FilesystemBackend(BackendProtocol):
 
         Streams ripgrep's newline-delimited `--json` output line-by-line via
         `subprocess.Popen` instead of buffering all of stdout, so a pathological
-        pattern on a huge repository cannot spike memory. Once `max_count` total
-        matches have been collected the process is terminated and the search
-        stops early.
+        pattern on a huge repository cannot spike memory. Once more than
+        `max_count` matches are found the process is terminated and the search
+        stops early, returning exactly `max_count` matches flagged truncated.
 
         Args:
             pattern: Literal string to search for (unescaped).
@@ -711,11 +711,13 @@ class FilesystemBackend(BackendProtocol):
 
         cmd = [rg_path, "--json", "-F"]  # -F enables fixed-string (literal) mode
         if max_count is not None:
-            # Secondary, cheap per-file guard. `rg -m` is per file so it does
-            # not bound the total on its own (a repo with many files each
-            # contributing one match still overflows) — the total cap below is
-            # what actually stops the search — but it trims runaway single files.
-            cmd.extend(["-m", str(max_count)])
+            # Per-file guard set to `max_count + 1`, not `max_count`. `rg -m` is
+            # per file, so it can't bound the total on its own — the streaming
+            # total cap below is what actually stops the search. The `+ 1` lets a
+            # single file emit one match past the cap, which is the signal the
+            # loop needs to distinguish "exactly at the cap" (complete) from
+            # "more exist" (truncated) without scanning the whole file.
+            cmd.extend(["-m", str(max_count + 1)])
         if include_glob:
             cmd.extend(["--glob", include_glob])
         # When rg is given an absolute search path, directory-component
@@ -755,8 +757,8 @@ class FilesystemBackend(BackendProtocol):
         total = 0
         truncated = False
         # A watchdog kills ripgrep if it outruns the time budget; a blocking
-        # `readline` cannot honor a deadline on its own, so the timer is what
-        # bounds a hang that never reaches the cap.
+        # read on `proc.stdout` cannot honor a deadline on its own, so the timer
+        # is what bounds a hang that never reaches the cap.
         timed_out = threading.Event()
 
         def _kill_on_timeout() -> None:
@@ -771,65 +773,20 @@ class FilesystemBackend(BackendProtocol):
             # `stdout=PIPE` guarantees a stream; narrow it for the type checker.
             assert proc.stdout is not None  # noqa: S101
             for line in proc.stdout:
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
+                parsed = self._parse_rg_match(line, base_full, base_resolved)
+                if parsed is None:
                     continue
-                data_type = data.get("type")
-                if data_type == "error":
-                    # Per-file errors in `--json` mode (e.g., non-UTF-8 file
-                    # ripgrep refused to read). Surface at DEBUG so debugging is
-                    # possible without spamming WARNING for every binary file.
-                    logger.debug("ripgrep per-file error frame: %s", data.get("data"))
-                    continue
-                if data_type != "match":
-                    continue
-                pdata = data.get("data", {})
-                ftext = pdata.get("path", {}).get("text")
-                if not ftext:
-                    continue
-                # When rg ran from cwd=base_full it emits paths relative to that
-                # cwd; join (don't `.resolve()`) so symlink form is preserved for
-                # callers. When rg searched a single file it emits the absolute
-                # path we passed in.
-                raw = Path(ftext)
-                p = raw if raw.is_absolute() else (base_full / raw)
-                # Defensive containment check: resolve both sides only for the
-                # comparison so symlinks that resolve to paths outside `base_full`
-                # can't leak results, while `p` itself keeps its original shape.
-                # OSError guards against unresolvable symlink targets.
-                try:
-                    p.resolve().relative_to(base_resolved)
-                except (ValueError, OSError):
-                    logger.warning(
-                        "Skipping ripgrep result outside search root: path=%s root=%s",
-                        p,
-                        base_full,
-                    )
-                    continue
-                if self.virtual_mode:
-                    try:
-                        virt = self._to_virtual_path(p)
-                    except ValueError:
-                        logger.debug("Skipping grep result outside root: %s", p)
-                        continue
-                    except (OSError, RuntimeError):
-                        logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
-                        continue
-                else:
-                    virt = str(p)
-                ln = pdata.get("line_number")
-                lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
-                if ln is None:
-                    continue
-                results.setdefault(virt, []).append((int(ln), lt))
-                total += 1
+                virt, ln, lt = parsed
                 if max_count is not None and total >= max_count:
-                    # Stop the process so it cannot keep buffering/emitting
-                    # output once the caller's cap is satisfied.
+                    # We already hold `max_count` matches and ripgrep emitted
+                    # another (we asked for one past the cap via `-m`), proving
+                    # more exist than requested. Stop without keeping the extra
+                    # so the result is exactly `max_count`, flagged truncated.
                     truncated = True
                     proc.terminate()
                     break
+                results.setdefault(virt, []).append((ln, lt))
+                total += 1
         finally:
             timer.cancel()
             stderr = self._drain_and_reap(proc)
@@ -855,6 +812,71 @@ class FilesystemBackend(BackendProtocol):
 
         return results, truncated
 
+    def _parse_rg_match(  # noqa: PLR0911
+        self,
+        line: str,
+        base_full: Path,
+        base_resolved: Path,
+    ) -> tuple[str, int, str] | None:
+        """Parse one ripgrep `--json` line into `(virtual_path, line_no, text)`.
+
+        Returns `None` for non-match frames, unparseable lines, matches missing a
+        path or line number, and matches whose resolved path escapes `base_full`
+        (each logged and skipped). Extracted from the streaming loop so the
+        cap/watchdog bookkeeping there stays readable.
+        """
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        data_type = data.get("type")
+        if data_type == "error":
+            # Per-file errors in `--json` mode (e.g., non-UTF-8 file ripgrep
+            # refused to read). Surface at DEBUG so debugging is possible
+            # without spamming WARNING for every binary file.
+            logger.debug("ripgrep per-file error frame: %s", data.get("data"))
+            return None
+        if data_type != "match":
+            return None
+        pdata = data.get("data", {})
+        ftext = pdata.get("path", {}).get("text")
+        if not ftext:
+            return None
+        # When rg ran from cwd=base_full it emits paths relative to that cwd;
+        # join (don't `.resolve()`) so symlink form is preserved for callers.
+        # When rg searched a single file it emits the absolute path we passed in.
+        raw = Path(ftext)
+        p = raw if raw.is_absolute() else (base_full / raw)
+        # Defensive containment check: resolve both sides only for the comparison
+        # so symlinks that resolve to paths outside `base_full` can't leak
+        # results, while `p` itself keeps its original shape. OSError guards
+        # against unresolvable symlink targets.
+        try:
+            p.resolve().relative_to(base_resolved)
+        except (ValueError, OSError):
+            logger.warning(
+                "Skipping ripgrep result outside search root: path=%s root=%s",
+                p,
+                base_full,
+            )
+            return None
+        if self.virtual_mode:
+            try:
+                virt = self._to_virtual_path(p)
+            except ValueError:
+                logger.debug("Skipping grep result outside root: %s", p)
+                return None
+            except (OSError, RuntimeError):
+                logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
+                return None
+        else:
+            virt = str(p)
+        ln = pdata.get("line_number")
+        if ln is None:
+            return None
+        lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
+        return virt, int(ln), lt
+
     @staticmethod
     def _drain_and_reap(proc: "subprocess.Popen[str]") -> str:
         """Read any remaining stderr, close pipes, and reap `proc`.
@@ -863,14 +885,20 @@ class FilesystemBackend(BackendProtocol):
         Reaping avoids leaking a zombie/handle after the stdout loop stops
         (whether via EOF, the match cap, or the timeout watchdog).
         """
+        # Close stdout first: on the cap path we stopped reading it, so a child
+        # still writing gets EPIPE and can exit. Draining stderr before that
+        # could otherwise block on a child wedged on a full stdout pipe.
+        if proc.stdout is not None:
+            proc.stdout.close()
         stderr = ""
         try:
             if proc.stderr is not None:
                 stderr = proc.stderr.read() or ""
         except (OSError, ValueError):
+            # Losing the stderr text only costs diagnostics, but log why so a
+            # missing hard-error message in the caller isn't a dead end.
+            logger.debug("Failed to read ripgrep stderr during cleanup", exc_info=True)
             stderr = ""
-        if proc.stdout is not None:
-            proc.stdout.close()
         if proc.stderr is not None:
             proc.stderr.close()
         try:
@@ -990,13 +1018,16 @@ class FilesystemBackend(BackendProtocol):
                                 return results, True, None
                             if pattern not in raw_line:
                                 continue
+                            if max_count is not None and total >= max_count:
+                                # Already collected `max_count` and found another
+                                # match, so more exist than requested: stop and
+                                # report the partial result as truncated. Checked
+                                # before appending so exactly `max_count` matches
+                                # is reported complete, not truncated.
+                                return results, True, _file_errors_msg()
                             line = raw_line.rstrip("\n")
                             results.setdefault(virt_path, []).append((line_num, line))
                             total += 1
-                            if max_count is not None and total >= max_count:
-                                # Hit the total match cap; stop scanning and
-                                # report the partial result as truncated.
-                                return results, True, _file_errors_msg()
                 except UnicodeDecodeError as e:
                     # A file that fails to decode before any line is scanned is
                     # treated as binary and skipped silently, mirroring ripgrep's

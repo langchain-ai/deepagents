@@ -1978,8 +1978,8 @@ class TestCtrlDChatInput:
             # A draft swallows the quit rather than half-arming the double-tap.
             assert app._quit_pending is False
 
-    async def test_ctrl_d_does_not_quit_at_end_of_non_empty_input(self) -> None:
-        """Ctrl+D should be a no-op at the end of a non-empty draft."""
+    async def test_ctrl_d_quits_at_end_of_non_empty_input(self) -> None:
+        """Ctrl+D should quit at the end of a non-empty draft."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
@@ -1988,13 +1988,83 @@ class TestCtrlDChatInput:
             text_area.focus()
             await pilot.press("h", "i")
 
+            # Precondition for the quit path: cursor at document end, no
+            # selection. Asserted explicitly so the test documents why this
+            # configuration quits and survives any future default that would
+            # pre-select or reposition the input.
+            assert text_area.selection.is_empty
+            assert text_area.cursor_location == text_area.document.end
+
             with patch.object(app, "exit") as exit_mock:
                 await pilot.press("ctrl+d")
                 await pilot.pause()
 
             assert chat_input.value == "hi"
-            exit_mock.assert_not_called()
+            exit_mock.assert_called_once()
             assert app._quit_pending is False
+
+    async def test_ctrl_d_deletes_selection_at_end_of_input(self) -> None:
+        """Ctrl+D should delete a selection reaching document end, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "i")
+            # select_all leaves a non-empty selection with the cursor at
+            # document end, so only the `selection.is_empty` branch — not the
+            # end-of-document check — keeps Ctrl+D from quitting here.
+            text_area.select_all()
+            assert not text_area.selection.is_empty
+            assert text_area.cursor_location == text_area.document.end
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_right_at_end_of_non_final_line(self) -> None:
+        """Ctrl+D mid-draft (end of a non-final line) should join lines, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "ab\ncd"
+            text_area.focus()
+            # End of the first line: not document end, so delete-right removes
+            # the newline and joins the two lines instead of quitting.
+            text_area.move_cursor((0, 2))
+            assert text_area.cursor_location != text_area.document.end
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "abcd"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_document_end_of_multiline_input(self) -> None:
+        """Ctrl+D at the true end of a multi-line draft should quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "ab\ncd"
+            text_area.focus()
+            text_area.move_cursor(text_area.document.end)
+            assert text_area.selection.is_empty
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "ab\ncd"
+            exit_mock.assert_called_once()
 
     @pytest.mark.parametrize("kind", ["image", "video"])
     async def test_ctrl_d_deletes_bound_media_placeholder_atomically(

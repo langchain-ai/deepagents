@@ -89,7 +89,9 @@ class TestChatScrollNotifies:
             await pilot.pause()
             app.scroll_notifications = 0
 
-            chat._vertical_scrollbar.action_scroll_down()
+            scrollbar = chat._vertical_scrollbar
+            assert scrollbar is not None
+            scrollbar.action_scroll_down()
             await pilot.pause()
             await pilot.pause()
 

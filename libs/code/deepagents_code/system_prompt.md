@@ -48,11 +48,7 @@ CRITICAL: Match what the user asked for EXACTLY.
 
 IMPORTANT: Use specialized tools instead of shell commands:
 
-- `read_file` over `cat`/`head`/`tail`
-- `edit_file` over `sed`/`awk`
-- `write_file` over `echo`/heredoc
-- `grep` tool over shell `grep`/`rg`
-- `glob` over shell `find`/`ls`
+{filesystem_tool_guidance}
 
 When performing multiple independent operations, make all tool calls in a single response — don't make sequential calls when parallel is possible.
 
@@ -64,18 +60,6 @@ read_file("/path/a.py"), read_file("/path/b.py"), read_file("/path/c.py")
 <bad-example>
 Reading sequentially when parallel is possible:
 read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
-</bad-example>
-
-### shell
-
-Execute shell commands. Always quote paths with spaces. The bash command will be run from your current working directory. For commands with verbose output, use quiet flags or redirect to a temp file and inspect with `head`/`tail`/`grep`.
-
-<good-example>
-pytest /foo/bar/tests
-</good-example>
-
-<bad-example>
-cd /foo/bar && pytest tests
 </bad-example>
 
 When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.

@@ -334,12 +334,13 @@ class TestToolsList:
         assert "showing built-in tools only" in output
 
     def test_list_forwards_runtime_options(self) -> None:
-        """`--no-mcp`, `--mcp-config`, and interpreter resolution reach the catalog."""
+        """Agent tool options reach the catalog."""
         args = argparse.Namespace(
             tools_command="list",
             output_format="json",
             interpreter=True,
             sandbox="none",
+            allow_fs_tools="ls,read_file",
             no_mcp=True,
             mcp_config="/tmp/mcp.json",
             trust_project_mcp=True,
@@ -355,6 +356,7 @@ class TestToolsList:
         collect.assert_called_once_with(
             assistant_id="agent",
             enable_interpreter=True,
+            fs_tools=["ls", "read_file"],
             include_mcp=False,
             mcp_config_path="/tmp/mcp.json",
             trust_project_mcp=True,
@@ -379,6 +381,7 @@ class TestToolsList:
         collect.assert_called_once_with(
             assistant_id="agent",
             enable_interpreter=False,
+            fs_tools=None,
             include_mcp=True,
             mcp_config_path=None,
             trust_project_mcp=None,

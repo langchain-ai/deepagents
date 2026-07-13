@@ -67,6 +67,23 @@ class TestCollectBuiltInTools:
             assert tool.description
             assert "\n" not in tool.description
 
+    def test_respects_filesystem_allowlist(self) -> None:
+        names = {
+            tool.name for tool in collect_built_in_tools(fs_tools=["ls", "read_file"])
+        }
+        assert {"ls", "read_file", "task"} <= names
+        assert (
+            not {
+                "write_file",
+                "edit_file",
+                "delete",
+                "glob",
+                "grep",
+                "execute",
+            }
+            & names
+        )
+
     def test_web_search_present_with_tavily(self) -> None:
         with patch.object(
             Settings, "has_tavily", new_callable=PropertyMock, return_value=True
@@ -98,10 +115,13 @@ class TestCollectBuiltInTools:
             "deepagents_code.agent.create_cli_agent",
             return_value=(agent, None),
         ) as create:
-            tools = collect_built_in_tools(assistant_id="custom-agent")
+            tools = collect_built_in_tools(
+                assistant_id="custom-agent", fs_tools=["ls", "read_file"]
+            )
         assert tools == [ToolEntry(name="task", description="Run a subagent")]
         create.assert_called_once()
         assert create.call_args.kwargs["assistant_id"] == "custom-agent"
+        assert create.call_args.kwargs["fs_tools"] == ["ls", "read_file"]
 
     def test_raises_when_compiled_agent_not_inspectable(self) -> None:
         # A compiled agent whose graph does not expose the conventional tool
@@ -495,7 +515,9 @@ class TestCollectCatalog:
         ):
             catalog = collect_catalog(include_mcp=False)
         mock_mcp.assert_not_called()
-        built_in.assert_called_once_with(assistant_id="agent", enable_interpreter=False)
+        built_in.assert_called_once_with(
+            assistant_id="agent", enable_interpreter=False, fs_tools=None
+        )
         assert len(catalog.groups) == 1
         assert catalog.groups[0].label == BUILT_IN_GROUP
         assert catalog.groups[0].source == "built-in"
@@ -523,11 +545,14 @@ class TestCollectCatalog:
         ):
             catalog = collect_catalog(
                 assistant_id="custom-agent",
+                fs_tools=["ls", "read_file"],
                 include_mcp=True,
                 mcp_config_path="/tmp/mcp.json",
             )
         built_in.assert_called_once_with(
-            assistant_id="custom-agent", enable_interpreter=False
+            assistant_id="custom-agent",
+            enable_interpreter=False,
+            fs_tools=["ls", "read_file"],
         )
         # Built-in group stays first; MCP groups follow.
         assert catalog.groups[0].label == BUILT_IN_GROUP

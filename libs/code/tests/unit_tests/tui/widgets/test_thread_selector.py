@@ -19,6 +19,7 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
+from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -3151,6 +3152,7 @@ class TestResumeThread:
         offer_cwd_switch.assert_awaited_once_with(
             "thread-123",
             restart_server=True,
+            abort="thread_switch",
         )
         assert len(mounted) == 1
         assert "Already on thread" in _get_widget_text(mounted[0])
@@ -3174,9 +3176,11 @@ class TestResumeThread:
             thread_id: str,
             *,
             restart_server: bool,
+            abort: CwdSwitchAbortMode | None,
         ) -> str:
             assert thread_id == "thread-123"
             assert restart_server is True
+            assert abort == "thread_switch"
             app._cwd = str(target)
             return "continue"
 
@@ -3217,11 +3221,10 @@ class TestResumeThread:
 
         await app._resume_thread("new-thread")
 
-        # In-session switches never offer abort — that is launch-time only.
-        # Exact-args match fails if `allow_abort=True` ever leaks in here.
         offer_cwd_switch.assert_awaited_once_with(
             "new-thread",
             restart_server=True,
+            abort="thread_switch",
         )
         assert app._lc_thread_id == "new-thread"
         assert app._session_state.thread_id == "new-thread"

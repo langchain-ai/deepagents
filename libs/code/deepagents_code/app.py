@@ -365,6 +365,7 @@ if TYPE_CHECKING:
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
     from deepagents_code.tui.widgets.auth import AuthManagerScreen
+    from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
@@ -3795,7 +3796,7 @@ class DeepAgentsApp(App):
                 cwd_choice = await self._offer_thread_cwd_switch(
                     candidate,
                     restart_server=False,
-                    allow_abort=True,
+                    abort="resume",
                 )
             except Exception:
                 logger.exception(
@@ -16900,7 +16901,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
-        allow_abort: bool = False,
+        abort: CwdSwitchAbortMode | None = None,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -16910,16 +16911,16 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
-            allow_abort: When True (launch-time `-r` resume), the prompt offers a
-                third "abort" option that declines the resume entirely.
+            abort: When set, the prompt offers a third "abort" option that
+                declines the resume/switch entirely; the mode selects its
+                wording (see `CwdSwitchAbortMode`). `None` hides the option.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
-                declined the resume or a requested switch was accepted but
-                failed (the caller should stop the resume). The two abort
-                sources are mode-exclusive: the user-declined abort fires only
-                when `allow_abort` is True, and the switch-failed abort only
-                when `restart_server` is True.
+                declined the resume/switch or a requested switch was accepted but
+                failed (the caller should stop the resume). The user-declined
+                abort fires only when `abort` is set, and the switch-failed
+                abort only when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -16935,14 +16936,28 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
-                allow_abort=allow_abort,
+                abort=abort,
             )
         )
         if choice == "abort":
             return "abort"
         if choice == "switch":
             if restart_server:
-                return await self._replace_server_after_cwd_switch(target)
+                outcome = await self._replace_server_after_cwd_switch(target)
+                if outcome == "abort":
+                    # A failed restart returns "abort" just like a user-declined
+                    # abort, so the caller cannot tell them apart.
+                    # `_replace_server_after_cwd_switch` already rolled back and
+                    # notified, but that toast is transient -- leave a persistent
+                    # in-chat record so a failed switch is not mistaken for a
+                    # deliberate cancel.
+                    await self._mount_message(
+                        AppMessage(
+                            "Could not switch to the thread's directory; staying "
+                            "on the current thread.",
+                        )
+                    )
+                return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
             return "continue"
@@ -17039,6 +17054,7 @@ class DeepAgentsApp(App):
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
                 restart_server=True,
+                abort="thread_switch",
             )
             if cwd_choice == "abort":
                 return
@@ -17059,7 +17075,11 @@ class DeepAgentsApp(App):
         prev_session_thread = self._session_state.thread_id
         prev_cwd = Path(self._cwd)
 
-        cwd_choice = await self._offer_thread_cwd_switch(thread_id, restart_server=True)
+        cwd_choice = await self._offer_thread_cwd_switch(
+            thread_id,
+            restart_server=True,
+            abort="thread_switch",
+        )
         if cwd_choice == "abort":
             return
 

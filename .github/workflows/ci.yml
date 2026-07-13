@@ -471,10 +471,8 @@ jobs:
   #     has-memory-benchmarks: true
   #   secrets: inherit
 
-  # Validates every helper script under .github/scripts/test_*.py — currently
-  # `test_release_options.py` (release dropdown ↔ package directories) and
-  # `test_models.py` (eval matrix outputs ↔ evals.yml). Job id/name are kept
-  # for branch-protection compatibility; rename only with a coordinated PR.
+  # Validates every helper script under .github/scripts/test_*.py. Job id/name
+  # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
     name: "Validate Release Options"
     runs-on: ubuntu-latest

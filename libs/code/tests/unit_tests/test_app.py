@@ -58,7 +58,7 @@ from deepagents_code.app import (
     _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
-from deepagents_code.media_utils import ImageData
+from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -1953,6 +1953,140 @@ class TestAppBindings:
         assert "ctrl+e" not in bindings_by_key
 
 
+class TestCtrlDChatInput:
+    """Test Ctrl+D deletion and quit behavior in the main chat input."""
+
+    async def test_ctrl_d_deletes_right_when_input_has_text(self) -> None:
+        """Ctrl+D should delete right of the cursor without quitting."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "e", "l", "l", "o")
+            # ctrl+a moves the cursor to the start of the line (not select-all),
+            # so delete-right removes the leading "h".
+            await pilot.press("ctrl+a")
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "ello"
+            exit_mock.assert_not_called()
+            # A draft swallows the quit rather than half-arming the double-tap.
+            assert app._quit_pending is False
+
+    async def test_ctrl_d_does_not_quit_at_end_of_non_empty_input(self) -> None:
+        """Ctrl+D should be a no-op at the end of a non-empty draft."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("h", "i")
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "hi"
+            exit_mock.assert_not_called()
+            assert app._quit_pending is False
+
+    @pytest.mark.parametrize("kind", ["image", "video"])
+    async def test_ctrl_d_deletes_bound_media_placeholder_atomically(
+        self, kind: str
+    ) -> None:
+        """Ctrl+D should delete a bound media placeholder as one token."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            if kind == "image":
+                placeholder = app._image_tracker.add_image(
+                    ImageData(base64_data="abc", format="png", placeholder="")
+                )
+            else:
+                placeholder = app._image_tracker.add_video(
+                    VideoData(base64_data="abc", format="mp4", placeholder="")
+                )
+            chat_input.value = placeholder
+            text_area.move_cursor((0, 0))
+            text_area.focus()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            assert app._image_tracker.get_images() == []
+            assert app._image_tracker.get_videos() == []
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_collapsed_paste_placeholder_atomically(self) -> None:
+        """Ctrl+D should preserve collapsed-paste integrity when deleting it."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            chat_input.handle_external_paste("p" * 900)
+            text_area.move_cursor((0, 0))
+            assert chat_input.value == "[Pasted text #1]"
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == ""
+            assert 1 in chat_input._pasted_contents
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_when_input_is_empty(self) -> None:
+        """Ctrl+D should still quit when the focused chat input is empty."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            assert chat_input.value == ""
+            text_area.focus()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_with_non_empty_draft_hidden_by_modal(self) -> None:
+        """Ctrl+D should quit instead of editing a draft hidden behind a modal."""
+        from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.press("d", "r", "a", "f", "t", "ctrl+a")
+
+            app.push_screen(UpdateAvailableScreen(_update_entry()))
+            await pilot.pause()
+
+            assert text_area.has_focus
+            assert app.focused is not text_area
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert chat_input.value == "draft"
+            exit_mock.assert_called_once()
+
+
 class TestCtrlCCopySelection:
     """Test Ctrl+C copying a focused input's selection instead of quitting."""
 
@@ -3512,6 +3646,8 @@ class TestMessageQueue:
             chat = app._chat_input
             assert chat is not None
             chat.value = ""
+            # No visible output yet, so the gate must not suppress restore.
+            assert app._active_turn_visible_output_started is False
 
             with patch.object(app, "notify") as mock_notify:
                 app.action_interrupt()
@@ -3620,6 +3756,122 @@ class TestMessageQueue:
             assert chat.value == ""
             worker.cancel.assert_called_once()
             mock_notify.assert_not_called()
+
+    async def test_escape_after_visible_output_started_does_not_restore_prompt(
+        self,
+    ) -> None:
+        """Once output is visible, Esc interrupts without restoring the prompt."""
+        app = DeepAgentsApp()
+        worker = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = worker
+            active = UserMessage("do the thing")
+            app._active_user_message = active
+            # Simulate the adapter reporting the first streamed output.
+            app._on_user_visible_output_started()
+            chat = app._chat_input
+            assert chat is not None
+            chat.value = ""
+
+            with patch.object(app, "notify") as mock_notify:
+                app.action_interrupt()
+
+            assert chat.value == ""
+            worker.cancel.assert_called_once()
+            assert active.has_class("-cancelled")
+            mock_notify.assert_not_called()
+
+    async def test_ui_adapter_wires_visible_output_started_callback(self) -> None:
+        """The constructed adapter forwards output-started to the app handler.
+
+        Both halves of the gate are unit-tested in isolation; this pins the
+        seam at `_post_paint_init` so a dropped `on_user_visible_output_started`
+        kwarg cannot silently disable the feature while every other test stays
+        green.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            adapter = app._ui_adapter
+            assert adapter is not None
+            assert (
+                adapter._on_user_visible_output_started
+                == app._on_user_visible_output_started
+            )
+
+    async def test_interrupt_restores_before_cancelling_worker(self) -> None:
+        """Restore reads the gate before the worker's cleanup can reset it.
+
+        `_cleanup_agent_task` resets `_active_turn_visible_output_started` on the
+        worker's teardown, so `_restore_interrupted_message_to_input` must run
+        before `_cancel_worker`. Pin that order in `action_interrupt` rather than
+        leave it holding only by construction (a mock worker never triggers
+        cleanup, so an ordering regression would otherwise pass unnoticed).
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+            app._active_user_message = UserMessage("do the thing")
+
+            calls = MagicMock()
+            with (
+                patch.object(
+                    app, "_restore_interrupted_message_to_input", calls.restore
+                ),
+                patch.object(app, "_cancel_worker", calls.cancel),
+            ):
+                app.action_interrupt()
+
+            assert [call[0] for call in calls.mock_calls] == ["restore", "cancel"]
+
+    async def test_send_to_agent_resets_visible_output_started_flag(self) -> None:
+        """A fresh turn clears the output-started flag so Esc can restore again.
+
+        Without this reset the gate would be sticky: once any turn produced
+        output, every later turn's Esc-interrupt would stop restoring the
+        prompt. Closing the worker coroutine leaves the flag as `_send_to_agent`
+        set it, without running the turn.
+        """
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A prior turn produced output.
+            app._on_user_visible_output_started()
+            assert app._active_turn_visible_output_started is True
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._send_to_agent("next question")
+                coro = mock_rw.call_args[0][0]
+                coro.close()
+
+            assert app._active_turn_visible_output_started is False
+
+    async def test_cleanup_agent_task_resets_visible_output_started_flag(self) -> None:
+        """Turn cleanup clears the output-started flag alongside its siblings.
+
+        Keeps the "False at turn start" invariant local rather than relying on
+        the start-of-turn reset being reached on every entry path.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._on_user_visible_output_started()
+        assert app._active_turn_visible_output_started is True
+
+        await app._cleanup_agent_task()
+
+        assert app._active_turn_visible_output_started is False
 
     async def test_escape_drains_queue_before_restoring_interrupted_prompt(
         self,
@@ -4690,14 +4942,73 @@ class TestClearCommand:
                 str(widget._content) == "Started new thread: new-thread"
                 for widget in app_msgs
             )
-            schedule.assert_called_once()
-            widget = schedule.call_args.args[0]
-            assert isinstance(widget, AppMessage)
-            assert widget in app_msgs
-            assert schedule.call_args.kwargs == {
+            started_widget = schedule.call_args_list[0].args[0]
+            assert isinstance(started_widget, AppMessage)
+            assert started_widget in app_msgs
+            assert schedule.call_args_list[0].kwargs == {
                 "prefix": "Started new thread",
                 "thread_id": "new-thread",
             }
+
+    async def test_clear_points_back_to_previous_thread(self) -> None:
+        """/clear should surface the abandoned thread and a resume hint."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            assert app._session_state.previous_thread_id == "old-thread"
+
+            app_msgs = list(app.query(AppMessage))
+            assert any(
+                str(widget._content) == "Previous thread: old-thread"
+                for widget in app_msgs
+            )
+            assert any(
+                str(widget._content)
+                == "Resume it with /threads -r (or /threads -r old-thread)"
+                for widget in app_msgs
+            )
+            assert schedule.call_args_list[1].kwargs == {
+                "prefix": "Previous thread",
+                "thread_id": "old-thread",
+            }
+
+    async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
+        """/clear should not advertise a thread that cannot be resumed."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert "Previous thread: old-thread" not in contents
+            assert not any("Resume it with /threads -r" in text for text in contents)
+            schedule.assert_called_once()
 
 
 class TestCopyCommand:
@@ -11707,6 +12018,76 @@ class TestSlashCommandBypass:
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
 
+    async def test_exit_keyword_exits_from_normal_mode(self) -> None:
+        """Plain exit quits from normal mode, case-insensitive and whitespace-stripped.
+
+        The `  EXIT  ` literal is the only coverage of the `.lower().strip()`
+        normalization; keep the padding and casing when editing this test.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("  EXIT  ", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_bypasses_queue_when_agent_running(self) -> None:
+        """Plain exit should quit immediately even when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("exit", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_bypasses_thread_switching(self) -> None:
+        """Plain exit should quit even during a thread switch."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._thread_switching = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted("exit", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_exit_keyword_requires_exact_match(self) -> None:
+        """Other messages containing exit should still go to the agent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as handler,
+            ):
+                app.post_message(ChatInput.Submitted("exit now", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_not_called()
+            handler.assert_awaited_once_with("exit now")
+
+    def test_exit_keyword_only_matches_normal_mode(self) -> None:
+        """`exit` quits only in normal mode; shell/command input is untouched."""
+        assert DeepAgentsApp._is_exit_keyword("exit", "normal") is True
+        assert DeepAgentsApp._is_exit_keyword("exit", "shell") is False
+        assert DeepAgentsApp._is_exit_keyword("exit", "shell_incognito") is False
+        assert DeepAgentsApp._is_exit_keyword("exit", "command") is False
+
     async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
         """/force-clear should process immediately when agent is running."""
         app = DeepAgentsApp()
@@ -11779,6 +12160,28 @@ class TestSlashCommandBypass:
             assert list(app._pending_messages) == [
                 QueuedMessage(text="next task", mode="normal")
             ]
+
+    async def test_external_prompt_exit_is_forwarded(self) -> None:
+        """An external `exit` prompt should be sent to the agent, not quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as handler,
+            ):
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(kind="prompt", payload="exit", source="test")
+                    )
+                )
+                await pilot.pause()
+
+            exit_mock.assert_not_called()
+            handler.assert_awaited_once_with("exit")
 
     async def test_version_executes_during_connecting(self) -> None:
         """/version should process immediately when only connecting."""
@@ -15093,7 +15496,7 @@ class TestResolveResumeThread:
             assert app._status_bar.connection_state == "connecting"
 
     async def test_resume_offers_abort_option_at_launch(self) -> None:
-        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        """The launch-time cwd prompt is invoked with the `resume` abort mode."""
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
@@ -15114,7 +15517,7 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert offer.await_args is not None
-            assert offer.await_args.kwargs["allow_abort"] is True
+            assert offer.await_args.kwargs["abort"] == "resume"
             assert app._lc_thread_id == "some-thread"
 
     async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
@@ -15453,6 +15856,49 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
 
         assert any("Close the current dialog" in m for m in notified)
+
+    async def test_ctrl_n_in_model_selector_toggles_model_ids(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model selector handles ctrl+n instead of the notification center."""
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        # Seed a pending entry so a broken `check_action` would push the
+        # notification center on ctrl+n; the assertions below then genuinely
+        # prove the model selector suppressed it, rather than passing only
+        # because an empty registry never opens the center anyway.
+        app._notice_registry.add(_missing_dep_entry())
+        screen = ModelSelectorScreen()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not screen._show_specs
+            assert "Claude Sonnet 5" in str(screen._option_widgets[0].content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            # ctrl+n toggled the selector and did not open the notification
+            # center despite the pending entry.
+            assert app.screen is screen
+            assert not isinstance(app.screen, NotificationCenterScreen)
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
 
     async def test_ctrl_n_with_pending_opens_modal(self) -> None:
         """ctrl+n pushes the NotificationCenterScreen when entries exist."""
@@ -21554,6 +22000,93 @@ class TestResumeThreadCwdSwitch:
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
 
+    async def test_offer_switch_failure_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An accepted server-backed switch that fails to restart returns `abort`.
+
+        With `abort="thread_switch"` set, both abort sources (user-declined and
+        switch-failed) are reachable for a single call configuration -- not
+        concurrently, but the return value alone cannot say which fired. This
+        pins the switch-failed source end-to-end through the real method (the
+        other abort tests either use `restart_server=False` or mock the whole
+        method out) and checks it leaves a persistent in-chat record.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="abort")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+        mount = AsyncMock()
+        app._mount_message = mount  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        replace.assert_awaited_once()
+        # The failed switch must be surfaced as a durable message, distinct from
+        # the transient toast `_replace_server_after_cwd_switch` already raised.
+        mount.assert_awaited_once()
+        assert mount.await_args is not None
+        # `AppMessage` stores its raw text in `_content` (its serialization
+        # field); read it directly so a rename fails loudly rather than
+        # defaulting to "" and masking the mismatch.
+        mounted = mount.await_args.args[0]
+        assert isinstance(mounted, AppMessage)
+        assert mounted._content == (
+            "Could not switch to the thread's directory; staying on the current thread."
+        )
+
+    async def test_offer_user_declined_returns_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user-declined abort returns `abort` without attempting a switch.
+
+        Complements `test_offer_switch_failure_returns_abort`: that pins the
+        switch-failed abort source through the real method; this pins the
+        user-declined source (the `choice == "abort"` early return), which every
+        other abort test reaches only by mocking `_offer_thread_cwd_switch` out.
+        """
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        app._push_screen_wait = AsyncMock(return_value="abort")  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="continue")
+        app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=True, abort="thread_switch"
+            )
+
+        assert outcome == "abort"
+        # A declined abort must not touch the server.
+        replace.assert_not_awaited()
+
     async def test_no_prompt_when_thread_cwd_matches_current(
         self,
         tmp_path: Path,
@@ -21621,6 +22154,57 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
+
+    async def test_threads_switch_offers_abort_and_cancels(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The `/threads` switcher offers abort; aborting keeps the current thread."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="old-thread")
+        app._lc_thread_id = "old-thread"
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        fetch = AsyncMock()
+        app._fetch_thread_history_data = fetch  # ty: ignore[invalid-assignment]
+        offer = AsyncMock(return_value="abort")
+        app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+
+        await app._resume_thread("new-thread")
+
+        assert offer.await_args is not None
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
+        # Aborting must not switch threads or load history.
+        assert app._session_state.thread_id == "old-thread"
+        assert app._lc_thread_id == "old-thread"
+        fetch.assert_not_awaited()
+        # Abort returns before the switch lock is acquired; leaving it set would
+        # permanently block `/threads` for the session.
+        assert app._thread_switching is False
+
+    async def test_threads_reselect_offers_abort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reselecting the current thread also offers abort and cancels silently."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        app._agent = MagicMock()
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        mount = AsyncMock()
+        app._mount_message = mount  # ty: ignore[invalid-assignment]
+        offer = AsyncMock(return_value="abort")
+        app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+
+        await app._resume_thread("thread-1")
+
+        assert offer.await_args is not None
+        assert offer.await_args.kwargs["abort"] == "thread_switch"
+        mount.assert_not_awaited()
 
     # --- _resolve_thread_cwd_mismatch (pure staticmethod) ---
 

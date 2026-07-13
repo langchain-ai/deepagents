@@ -166,7 +166,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/threads",
         description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="continue history sessions",
+        hidden_keywords="continue history sessions resume back previous",
+        argument_hint="[-r [ID]]",
     ),
     SlashCommand(
         name="/trace",
@@ -310,7 +311,7 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error"})
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug", "/debug-error"})
 """Power-user commands kept out of autocomplete and help."""
 
 STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(

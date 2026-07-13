@@ -10,9 +10,12 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code.file_ops import is_sensitive_file_path
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+_CREDENTIAL_NOTICE = "Contents hidden — file may contain credentials"
 
 # Constants for display limits
 _MAX_VALUE_LEN = 200
@@ -163,23 +166,28 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
         content = format_display_content(self.data.get("content", ""))
         file_extension = self.data.get("file_extension", "text")
 
-        # Content with syntax highlighting via Markdown code block
-        lines = content.split("\n")
-        total_lines = len(lines)
-
-        # File header with line count
-        yield from _file_header(file_path, additions=total_lines if content else 0)
-
-        if total_lines > _MAX_LINES:
-            # Truncate for display
-            shown_lines = lines[:_MAX_LINES]
-            remaining = total_lines - _MAX_LINES
-            truncated_content = (
-                "\n".join(shown_lines) + f"\n... ({remaining} more lines)"
-            )
-            yield Markdown(f"```{file_extension}\n{truncated_content}\n```")
+        # Never render the contents of credential files (e.g. `.env`).
+        if is_sensitive_file_path(file_path):
+            yield from _file_header(file_path)
+            yield Static(Content.styled(_CREDENTIAL_NOTICE, "dim"))
         else:
-            yield Markdown(f"```{file_extension}\n{content}\n```")
+            # Content with syntax highlighting via Markdown code block
+            lines = content.split("\n")
+            total_lines = len(lines)
+
+            # File header with line count
+            yield from _file_header(file_path, additions=total_lines if content else 0)
+
+            if total_lines > _MAX_LINES:
+                # Truncate for display
+                shown_lines = lines[:_MAX_LINES]
+                remaining = total_lines - _MAX_LINES
+                truncated_content = (
+                    "\n".join(shown_lines) + f"\n... ({remaining} more lines)"
+                )
+                yield Markdown(f"```{file_extension}\n{truncated_content}\n```")
+            else:
+                yield Markdown(f"```{file_extension}\n{content}\n```")
 
 
 class EditFileApprovalWidget(ToolApprovalWidget):
@@ -199,7 +207,11 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         additions, deletions = _count_diff_stats(diff_lines, old_string, new_string)
         yield from _file_header(file_path, additions, deletions)
 
-        if not diff_lines and not old_string and not new_string:
+        # Never render the diff of credential files (e.g. `.env`); the stats
+        # above still convey that a change happened without exposing content.
+        if is_sensitive_file_path(file_path):
+            yield Static(Content.styled(_CREDENTIAL_NOTICE, "dim"))
+        elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
             # Render content

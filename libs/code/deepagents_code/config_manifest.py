@@ -70,14 +70,14 @@ class OptionKind(Enum):
 
     All kinds flow through `resolve_scalar`. The scalar kinds (`BOOL`,
     `BOOL_PRESENCE`, `INT`, `FLOAT`, `STR`) are coerced inline by
-    `_coerce_env`/`_coerce_toml`. `SHELL_LIST_DELEGATE`, `SKILLS_DIRS_DELEGATE`,
-    `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to bespoke parsers (their
-    semantics — colon-split Path resolution, comma + `recommended`/`all`
-    sentinels, the PTC/startup-mode allowlists — do not compress into a generic
-    coercion). `THEME_DELEGATE` is resolved separately at the top of
-    `resolve_scalar` and never reaches the inline coercers. `STRUCTURED` marks
-    user-defined tables that the scalar resolver only passes through for
-    display.
+    `_coerce_env`/`_coerce_toml`. `LOG_LEVEL_DELEGATE`, `SHELL_LIST_DELEGATE`,
+    `SKILLS_DIRS_DELEGATE`, `PTC_DELEGATE`, and `STARTUP_MODE_DELEGATE` defer to
+    bespoke parsers (their semantics — dynamic debug fallback, colon-split Path
+    resolution, comma + `recommended`/`all` sentinels, and the PTC/startup-mode
+    allowlists — do not compress into a generic coercion). `THEME_DELEGATE` is
+    resolved separately at the top of `resolve_scalar` and never reaches the
+    inline coercers. `STRUCTURED` marks user-defined tables that the scalar
+    resolver only passes through for display.
     """
 
     BOOL = "bool"
@@ -92,6 +92,9 @@ class OptionKind(Enum):
     FLOAT = "float"
 
     STR = "str"
+
+    LOG_LEVEL_DELEGATE = "log_level"
+    """Validates log levels and resolves the default from debug mode."""
 
     SHELL_LIST_DELEGATE = "shell_list"
     """Delegates to `config.parse_shell_allow_list`."""
@@ -118,6 +121,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.INT: "int",
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
+    OptionKind.LOG_LEVEL_DELEGATE: "str",
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
@@ -383,6 +387,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         return bool(raw)
     if kind is OptionKind.STR:
         return raw
+    if kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._debug import LOG_LEVELS
+
+        level = raw.strip().upper()
+        if level in LOG_LEVELS:
+            return level
+        valid = ", ".join(LOG_LEVELS)
+        logger.warning("Ignoring %s=%r (expected one of %s)", name, raw, valid)
+        return _INVALID
     if kind is OptionKind.INT:
         try:
             return int(raw.strip())
@@ -610,6 +623,11 @@ def resolve_scalar(
             if value is not _INVALID:
                 return value, "config.toml"
 
+    if option.kind is OptionKind.LOG_LEVEL_DELEGATE:
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+
+        return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
+
     return option.default, "default"
 
 
@@ -665,6 +683,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "huggingface": ("langchain_huggingface", "huggingface"),
     "ibm": ("langchain_ibm", "ibm"),
     "litellm": ("langchain_litellm", "litellm"),
+    "meta": ("langchain_meta", "meta"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
     "ollama": ("langchain_ollama", "ollama"),
@@ -1242,6 +1261,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+    ),
+    ConfigOption(
+        key="debug.log_level",
+        group="Debug",
+        summary=(
+            "Minimum runtime log level (DEBUG, INFO, WARNING, ERROR, or CRITICAL); "
+            "defaults to DEBUG in debug mode and INFO otherwise."
+        ),
+        kind=OptionKind.LOG_LEVEL_DELEGATE,
+        env_var=_env_vars.LOG_LEVEL,
     ),
     ConfigOption(
         key="debug.onboarding",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import get_args
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
@@ -9,6 +10,7 @@ from textual.binding import Binding
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.cwd_switch import (
+    CwdSwitchAbortMode,
     CwdSwitchChoice,
     CwdSwitchPromptScreen,
 )
@@ -105,20 +107,93 @@ class TestCwdSwitchAbortOption:
 
         assert bindings_by_key["a"].action == "abort"
 
-    def test_help_and_body_mention_abort_only_when_allowed(self) -> None:
-        """The abort affordance is described only when `allow_abort` is set."""
+    def test_check_action_gates_abort_binding_by_mode(self) -> None:
+        """`check_action` enables the `a` binding only when an abort mode is set.
+
+        Guards the binding-disable against regressing to always-enabled — a
+        regression the direct `action_abort` tests would miss because they call
+        the action method directly, bypassing the binding layer.
+        """
+
+        def abort_enabled(abort: CwdSwitchAbortMode | None) -> bool | None:
+            screen = CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )
+            return screen.check_action("abort", ())
+
+        assert abort_enabled("resume") is True
+        assert abort_enabled("thread_switch") is True
+        assert abort_enabled(None) is False
+
+        # Non-abort actions are always allowed, regardless of mode.
+        no_abort = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
+        assert no_abort.check_action("switch", ()) is True
+
+    def test_body_mentions_abort_only_when_allowed(self) -> None:
+        """The abort affordance is described only when an abort mode is set."""
         without = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
         with_abort = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+            current_cwd="/a", thread_cwd="/b", abort="resume"
         )
 
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
+    def test_switch_mode_omits_abort_body_note(self) -> None:
+        """The in-session `/threads` abort is described only in the help line."""
+        switch = CwdSwitchPromptScreen(
+            current_cwd="/a",
+            thread_cwd="/b",
+            abort="thread_switch",
+        )
+
+        body = switch._body_text()
+        assert "new session" not in body
+        assert "instead of switching" not in body
+        assert "keep your current thread" not in body
+
+    def test_title_reflects_flow(self) -> None:
+        """The title asks about switching for `/threads`, resuming otherwise."""
+
+        def title(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._title_text()
+
+        assert title("thread_switch") == "Switch to the thread's original directory?"
+        assert title("resume") == "Resume from the thread's original directory?"
+        assert title(None) == "Resume from the thread's original directory?"
+
+    def test_help_text_names_mode_specific_abort_action(self) -> None:
+        """The help line shows the mode's abort wording, or omits it entirely."""
+
+        def help_line(abort: CwdSwitchAbortMode | None) -> str:
+            return CwdSwitchPromptScreen(
+                current_cwd="/a", thread_cwd="/b", abort=abort
+            )._help_text()
+
+        assert help_line("resume") == (
+            "Enter: switch · Esc: stay in cwd · A: don't resume"
+        )
+        assert help_line("thread_switch") == (
+            "Enter: switch · Esc: stay in cwd · A: don't switch"
+        )
+        assert help_line(None) == "Enter: switch · Esc: stay in cwd"
+
+    def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
+        """Abort-mode tokens never collide with prompt-outcome tokens.
+
+        The disjointness is a naming convention (input mode vs. outcome), not a
+        type guarantee. This pins it so a future member like a re-added
+        `"switch"` mode -- which would make a mode token ambiguous with a
+        `CwdSwitchChoice` outcome in logs and debuggers -- fails loudly.
+        """
+        assert not (set(get_args(CwdSwitchAbortMode)) & set(get_args(CwdSwitchChoice)))
+
     def test_action_abort_dismisses_abort_when_allowed(self) -> None:
         """Abort resolves the prompt to `abort` when offered."""
         screen = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", allow_abort=True
+            current_cwd="/a", thread_cwd="/b", abort="resume"
         )
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
@@ -128,7 +203,7 @@ class TestCwdSwitchAbortOption:
         dismiss.assert_called_once_with("abort")
 
     def test_action_abort_is_noop_when_not_allowed(self) -> None:
-        """Abort does nothing when the prompt was not opened with `allow_abort`."""
+        """Abort does nothing when the prompt was not opened with an abort mode."""
         screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
@@ -144,7 +219,7 @@ class TestCwdSwitchAbortOption:
             outcomes: list[CwdSwitchChoice | None] = []
             app.push_screen(
                 CwdSwitchPromptScreen(
-                    current_cwd="/a", thread_cwd="/b", allow_abort=True
+                    current_cwd="/a", thread_cwd="/b", abort="resume"
                 ),
                 outcomes.append,
             )

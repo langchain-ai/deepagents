@@ -1254,11 +1254,6 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
-        if event.key == "delete" and self._delete_placeholder_token(backwards=False):
-            event.prevent_default()
-            event.stop()
-            return
-
         # If completion is active, let parent handle navigation keys.
         # Space is included so that slash-command completion can accept the
         # selected suggestion via the same code path as Tab (avoiding a
@@ -1303,6 +1298,11 @@ class ChatTextArea(TextArea):
             return
 
         await super()._on_key(event)
+
+    def action_delete_right(self) -> None:
+        """Delete a bound placeholder atomically or the next character."""
+        if not self._delete_placeholder_token(backwards=False):
+            super().action_delete_right()
 
     def _delete_placeholder_token(self, *, backwards: bool) -> bool:
         """Delete a full placeholder token (image, video, or paste) in one keypress.

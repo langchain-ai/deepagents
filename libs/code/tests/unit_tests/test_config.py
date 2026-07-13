@@ -3229,13 +3229,17 @@ class TestQuietSdkTracingLogging:
 
         monkeypatch.delenv(DEBUG, raising=False)
         for name in ("langsmith", "langchain"):
-            logging.getLogger(name).handlers.clear()
+            logger = logging.getLogger(name)
+            logger.handlers.clear()
+            logger.setLevel(logging.NOTSET)
 
         _quiet_sdk_tracing_logging()
 
         for name in ("langsmith", "langchain"):
-            handlers = logging.getLogger(name).handlers
+            logger = logging.getLogger(name)
+            handlers = logger.handlers
             assert any(isinstance(h, logging.NullHandler) for h in handlers)
+            assert logger.level == logging.NOTSET
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
@@ -4750,6 +4754,14 @@ class TestDetectProvider:
             ("gemini-3.1-pro-preview", "google_genai"),
             ("nemotron-3-nano-30b-a3b", "nvidia"),
             ("nvidia/nemotron-3-nano-30b-a3b", "nvidia"),
+            ("accounts/fireworks/models/kimi-k2p7-code", "fireworks"),
+            ("accounts/fireworks/routers/kimi-k2p7-code", "fireworks"),
+            ("Accounts/Fireworks/Models/Kimi-K2P7-Code", "fireworks"),
+            ("accounts/openai/models/gpt-5.5", None),
+            # A different account whose name merely starts with "fireworks"
+            # must not resolve to Fireworks; the trailing slash in the prefix
+            # is what anchors the match to the exact account namespace.
+            ("accounts/fireworks-enterprise/models/kimi-k2p7-code", None),
             ("llama3", None),
             ("mistral-large", None),
             ("some-unknown-model", None),

@@ -127,13 +127,13 @@ jobs:
           IN_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
           IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
           IN_FORCE_BUILD: ${{ inputs.force_build }}
-          IN_HARBOR_OVERRIDE: ${{ inputs.harbor_package_override }}
+          HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
         run: |
           # Never echo the override spec: uv accepts authenticated specs
           # (e.g. git+https://user:token@host/repo.git) and this summary is
           # public, so report only whether an override was set.
           override_status="(pinned)"
-          [ -n "${IN_HARBOR_OVERRIDE}" ] && override_status="(override set)"
+          [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
           {
             echo "## Unified evals — run configuration"
             echo ""

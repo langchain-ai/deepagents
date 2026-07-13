@@ -127,10 +127,18 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     # A run-configuration summary in prep makes a dispatch's inputs debuggable.
     assert "$GITHUB_STEP_SUMMARY" in prep_job
     # ...but the harbor_package_override spec (which can carry credentials) must
-    # never be echoed into the public summary: report only whether one was set,
-    # and never via the `:-` form that renders the raw value when it is set.
-    assert 'override_status="(override set)"' in prep_job
-    assert "IN_HARBOR_OVERRIDE:-" not in prep_job
+    # never reach the summary step's environment or public output. Derive only
+    # a boolean in the expression context and report whether an override was set.
+    summary_step = _indented_block(
+        prep_job, '      - name: "📝 Summarize dispatch inputs"'
+    )
+    summary_env = _indented_block(summary_step, "        env:")
+    assert (
+        "HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}"
+        in summary_env
+    )
+    assert "IN_HARBOR_OVERRIDE:" not in summary_env
+    assert '[ "${HARBOR_OVERRIDE_SET}" = "true" ]' in summary_step
 
     # The harness selector is a constrained choice defaulting to bare.
     agent_impl_input = _indented_block(workflow, "      agent_impl:")

@@ -45,6 +45,7 @@ from deepagents_code import (
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    MCP_REENABLED_PENDING_ERROR,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -361,6 +362,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
@@ -8383,6 +8385,191 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    async def _handle_tools_command(self, command: str) -> None:
+        """List the tools available to the agent as a chat message.
+
+        Managed sessions enumerate built-ins off the UI thread with a
+        credential-free agent compile; preconfigured local agents are inspected
+        directly so their custom tool set stays authoritative. MCP tools reuse
+        the metadata loaded for the running agent rather than re-discovering,
+        because discovery uses `asyncio.run`, which cannot run inside Textual's
+        live event loop.
+
+        Args:
+            command: The raw command text (displayed as a user message).
+        """
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.tool_catalog import (
+            build_catalog_from_server_info,
+            collect_built_in_tools,
+            collect_tools_from_agent,
+        )
+
+        await self._mount_message(UserMessage(command))
+
+        server_info = self._mcp_server_info_for_tools()
+
+        built_in = []
+        # Set to a human-readable reason when built-in tools cannot be listed:
+        # a remote/custom agent we cannot introspect, or a compile that raised.
+        # The agent still binds those tools; only enumeration failed. Left empty
+        # on success. Drives the notice logic below.
+        enumeration_failed_reason = ""
+        if self._server_kwargs is None:
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+            except Exception:
+                # `collect_tools_from_agent` is defensively written, but a remote
+                # graph proxy can do real work on attribute access and raise.
+                # Mirror the managed branch: log and degrade to the notice below
+                # rather than letting it escape as an unhandled handler error.
+                logger.exception("Failed to inspect agent tools for /tools")
+                active_tools = None
+            if active_tools is None:
+                enumeration_failed_reason = (
+                    "Built-in tools cannot be enumerated for this custom or "
+                    "remote agent"
+                )
+            else:
+                # The local graph's tool node holds built-in *and* MCP tools;
+                # MCP tools are rendered separately from `server_info`, so drop
+                # them here to avoid listing each MCP tool twice.
+                mcp_names = {
+                    tool.name for server in server_info for tool in server.tools
+                }
+                built_in = [tool for tool in active_tools if tool.name not in mcp_names]
+        else:
+            enable_interpreter = bool(self._server_kwargs.get("enable_interpreter"))
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=enable_interpreter,
+                )
+            except Exception:
+                logger.exception("Failed to enumerate built-in tools for /tools")
+                enumeration_failed_reason = "Could not enumerate built-in tools"
+
+        catalog = build_catalog_from_server_info(built_in, server_info)
+        has_mcp_info = any(group.source == "mcp" for group in catalog.groups) or bool(
+            catalog.unavailable
+        )
+        if enumeration_failed_reason and not has_mcp_info:
+            # No MCP tools or unavailable-server statuses to show: rendering "0
+            # tools available" would wrongly imply the agent has no tools at all,
+            # when in fact only the listing failed. Surface the reason on its own.
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}. The agent still has its "
+                    "built-in tools; they just cannot be listed here.",
+                ),
+            )
+            return
+        if enumeration_failed_reason:
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}; showing MCP information only."
+                ),
+            )
+
+        await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+
+    def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
+        """Return MCP metadata matching the tools bound to the running agent.
+
+        The `/mcp` viewer optimistically replaces a newly disabled server with
+        a tool-less cosmetic entry before reconnect. Until reconnect actually
+        rebuilds the agent, its original tools remain callable, so `/tools`
+        must use the saved pre-toggle entry instead.
+
+        Returns:
+            MCP server metadata for the active agent tool set.
+        """
+        return [
+            self._mcp_optimistic_original_server_info.get(server.name, server)
+            for server in self._mcp_server_info or []
+        ]
+
+    @staticmethod
+    def _render_tool_catalog(catalog: ToolCatalog) -> Content:
+        """Render a tool catalog as chat `Content`.
+
+        Shows a count header, then each group's heading with its rows:
+        built-in groups render aligned `name  description` rows, while MCP
+        groups render names only — their descriptions are surfaced via `/mcp`,
+        noted by a pointer line whenever any MCP tools are present. Then any MCP
+        servers that loaded with no tools and a non-`ok` status, and finally a
+        discovery-error notice if the catalog carries one. Every display
+        string — tool names/descriptions and MCP server names/statuses, some of
+        which are external — is added as a plain-text span (via `Content.styled`
+        or a `(text, style)` tuple) that is never parsed as markup.
+
+        Args:
+            catalog: Collected tool groups, unavailable MCP servers, and any
+                discovery-error notice.
+
+        Returns:
+            Assembled `Content` ready to mount in an `AppMessage`.
+        """
+        from deepagents_code.tool_catalog import unavailable_server_display
+
+        total = sum(len(group.tools) for group in catalog.groups)
+        noun = "tool" if total == 1 else "tools"
+
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            Content.styled(f"{total} {noun} available", "bold"),
+        ]
+
+        def _section(heading: str, rows: list[tuple[str, str]]) -> None:
+            """Append a bold heading and left-aligned `label  detail` rows."""
+            if not rows:
+                return
+            width = max(len(label) for label, _ in rows)
+            parts.extend(("\n\n", Content.styled(heading, "bold")))
+            for label, detail in rows:
+                row = f"  {label.ljust(width)}  {detail}".rstrip()
+                parts.extend(("\n", (row, "dim")))
+
+        has_mcp_tools = False
+        for group in catalog.groups:
+            if group.source == "mcp":
+                has_mcp_tools = has_mcp_tools or bool(group.tools)
+                rows = [(entry.name, "") for entry in group.tools]
+            else:
+                rows = [(entry.name, entry.description) for entry in group.tools]
+            _section(group.label, rows)
+
+        if has_mcp_tools:
+            parts.extend(
+                ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
+            )
+
+        def _unavailable_row(server: UnavailableServer) -> tuple[str, str]:
+            """Map an unavailable server to a `(name, detail)` row for `_section`.
+
+            Args:
+                server: An MCP server discovered with no usable tools.
+
+            Returns:
+                A `(name, detail)` pair for `_section` to align and render.
+            """
+            label, detail = unavailable_server_display(server)
+            return (server.name, f"{label}: {detail}" if detail else label)
+
+        _section(
+            "Unavailable MCP servers",
+            [_unavailable_row(server) for server in catalog.unavailable],
+        )
+
+        if catalog.mcp_error:
+            parts.extend(("\n\n", (catalog.mcp_error, "dim")))
+
+        return Content.assemble(*parts)
+
     def _goal_state_update(self) -> dict[str, Any]:
         """Build checkpoint state for TUI-owned goal/rubric metadata.
 
@@ -9689,7 +9876,7 @@ class DeepAgentsApp(App):
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/threads, /trace, "
+                "/tools, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -9931,6 +10118,8 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
+        elif cmd == "/tools":
+            await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -12693,9 +12882,10 @@ class DeepAgentsApp(App):
         """Handle the Ctrl+D binding.
 
         Delete-confirm screens and the auth/thread selectors keep their own
-        Ctrl+D behavior. Otherwise, when the chat input is focused and holds a
-        draft, Ctrl+D deletes right of the cursor instead of quitting; the app
-        only exits from an empty (or unfocused) prompt.
+        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
+        deletes a non-empty selection or the character right of the cursor.
+        Only at the end of the prompt with no active selection does it exit
+        the app.
         """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
@@ -12722,14 +12912,22 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
-        # Delegate Ctrl+D to the chat input's delete-right when it holds a
-        # draft. Check `self.focused` (the active screen's focused widget), not
-        # `text_area.has_focus`: a draft hidden behind a modal keeps focus but
-        # must not be edited from under it, so Ctrl+D quits in that case.
+        # Delegate Ctrl+D when delete-right can remove selected text or content
+        # after the cursor. Check `self.focused` (the active screen's focused
+        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
+        # focus but must not be edited from under it, so Ctrl+D quits in that case.
         chat_input = self._chat_input
         if chat_input is not None:
             text_area = chat_input.input_widget
-            if text_area is not None and self.focused is text_area and chat_input.value:
+            if (
+                text_area is not None
+                and self.focused is text_area
+                and chat_input.value
+                and (
+                    not text_area.selection.is_empty
+                    or text_area.cursor_location != text_area.document.end
+                )
+            ):
                 text_area.action_delete_right()
                 return
 
@@ -15515,7 +15713,8 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — press Ctrl+R to load.",
+                            error=MCP_REENABLED_PENDING_ERROR,
+                            pending_reconnect=True,
                         ),
                     )
         self._mcp_server_info = updated

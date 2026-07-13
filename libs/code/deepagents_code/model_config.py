@@ -1438,14 +1438,15 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
 def _ollama_host_reachable(
     base: str, *, timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS
 ) -> bool:
-    """Return whether a TCP listener is accepting connections at `base`.
+    """Return whether a TCP listener appears to accept connections at `base`.
 
     A lightweight presence preflight so Ollama discovery can skip the HTTP
     probe entirely when no daemon is running (e.g. Ollama is not installed).
     The check opens and immediately closes a TCP connection to the endpoint's
     host and port. Any failure -- connection refused, DNS error, timeout, or
     sockets blocked under `pytest-socket` -- is treated as "not reachable" so
-    discovery falls back gracefully.
+    discovery falls back gracefully; an unexpected (non-`OSError`) failure is
+    additionally logged at warning so a real bug isn't misreported as absence.
 
     Args:
         base: Base URL of the Ollama daemon, e.g. `http://localhost:11434`.
@@ -1457,23 +1458,37 @@ def _ollama_host_reachable(
             `False` when the connection cannot be made.
     """
     import socket
-    from contextlib import closing
 
     parsed = urlparse(base)
     host = parsed.hostname
     if not host:
         # Can't determine a target host; let the HTTP probe make the decision.
         return True
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError:
+        # Malformed port (out of range / non-numeric); defer to the HTTP probe.
+        return True
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
-    # Catch-all mirrors the discovery probe: presence detection is best-effort
-    # and must never break the model selector. Notably catches `pytest-socket`'s
-    # `SocketBlockedError`, which inherits from `Exception` (not `OSError`).
+    # Mirror the discovery probe below: expected transport failures (refused,
+    # DNS, timeout) just mean the daemon is absent and stay silent; anything
+    # else is surfaced at warning so a real bug isn't misreported as "not
+    # detected". `pytest-socket`'s `SocketBlockedError` inherits from
+    # `Exception` (not `OSError`), so the broad branch catches it. The socket
+    # is its own context manager, so `with` closes the probe connection.
     try:
-        with closing(socket.create_connection((host, port), timeout=timeout)):
+        with socket.create_connection((host, port), timeout=timeout):
             return True
-    except Exception:  # noqa: BLE001  # best-effort presence check; see above
+    except OSError:
+        return False
+    except Exception as exc:  # noqa: BLE001  # see comment above
+        logger.warning(
+            "Ollama presence preflight raised unexpected %s for %s: %s",
+            type(exc).__name__,
+            base,
+            exc,
+        )
         return False
 
 
@@ -1515,11 +1530,13 @@ def _fetch_ollama_installed_models(
         )
         return []
 
-    # Presence preflight: a dead/absent daemon (the common case when Ollama is
-    # not installed) refuses the connection. Detecting that here lets us skip
-    # the HTTP probe and log a quiet "not detected" line instead of a
-    # misleading "discovery failed ... Connection refused" error.
-    if not _ollama_host_reachable(base, timeout=timeout):
+    # Presence preflight (local endpoints only -- remote hosts may be reachable
+    # only through a proxy that the HTTP probe honors but a raw socket does
+    # not). A dead/absent daemon (the common case when Ollama is not installed)
+    # refuses the connection; detecting that here lets us skip the HTTP probe
+    # and log a quiet "not detected" line instead of a misleading
+    # "discovery failed ... Connection refused" debug line.
+    if _is_local_endpoint(base) and not _ollama_host_reachable(base, timeout=timeout):
         logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
         return []
 

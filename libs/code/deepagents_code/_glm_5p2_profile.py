@@ -263,7 +263,15 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
             if not prompt
             else f"{prompt}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
         )
-        return request.override(system_prompt=recovery_prompt)
+        model_settings = {
+            **request.model_settings,
+            "reasoning_effort": "none",
+        }
+        return request.override(
+            system_prompt=recovery_prompt,
+            tool_choice="any",
+            model_settings=model_settings,
+        )
 
     def _should_recover(
         self,

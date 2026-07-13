@@ -31,6 +31,7 @@ from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
 if TYPE_CHECKING:
     from deepagents.profiles import HarnessProfile
+    from langchain_core.tools import BaseTool
 
 
 _FIREWORKS_GLM = "fireworks:accounts/fireworks/models/glm-5p2"
@@ -548,6 +549,12 @@ def test_headless_glm_retries_exact_terminal_output_cap() -> None:
         _FIREWORKS_GLM,
         recover_terminal_stalls=True,
     )
+    tools: list[BaseTool | dict[str, Any]] = [{"name": "write_file"}]
+    request = _model_request("accounts/fireworks/models/glm-5p2").override(
+        tools=tools,
+        tool_choice="auto",
+        model_settings={"reasoning_effort": "high", "temperature": 0.25},
+    )
     requests: list[ModelRequest] = []
     responses = iter(
         [
@@ -561,13 +568,31 @@ def test_headless_glm_retries_exact_terminal_output_cap() -> None:
         return next(responses)
 
     result = middleware.wrap_model_call(
-        _model_request("accounts/fireworks/models/glm-5p2"),
+        request,
         handler,
     )
 
     assert len(requests) == 2
+    assert requests[0].tool_choice == "auto"
+    assert requests[0].model_settings == {
+        "reasoning_effort": "high",
+        "temperature": 0.25,
+    }
+    assert requests[0].tools == tools
     assert requests[1].system_prompt is not None
     assert "call a tool now" in requests[1].system_prompt
+    assert requests[1].tool_choice == "any"
+    assert requests[1].model_settings == {
+        "reasoning_effort": "none",
+        "temperature": 0.25,
+    }
+    assert requests[1].tools == tools
+    assert request.tool_choice == "auto"
+    assert request.model_settings == {
+        "reasoning_effort": "high",
+        "temperature": 0.25,
+    }
+    assert request.tools == tools
     assert isinstance(result, ExtendedModelResponse)
     assert result.model_response.result[0].text == "recovered"
 

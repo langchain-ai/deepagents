@@ -354,6 +354,28 @@ class TestSummarizationMiddlewareInit:
         assert middleware._backend is backend
         assert middleware._history_path_prefix == "/conversation_history"
 
+    def test_langchain_deprecated_kwargs_are_forwarded(self) -> None:
+        """LangChain-owned deprecated arguments retain their upstream behavior."""
+        with pytest.warns(DeprecationWarning, match="(?:max_tokens_before_summary|messages_to_keep) is deprecated"):
+            middleware = SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=MockBackend(),
+                max_tokens_before_summary=100,
+                messages_to_keep=5,
+            )
+
+        assert middleware._lc_helper.trigger == ("tokens", 100)
+        assert middleware._lc_helper.keep == ("messages", 5)
+
+    def test_history_path_prefix_is_rejected(self) -> None:
+        """The removed Deep Agents argument is not silently forwarded."""
+        with pytest.raises(TypeError, match="history_path_prefix"):
+            SummarizationMiddleware(
+                model=make_mock_model(),
+                backend=MockBackend(),
+                history_path_prefix="/history",
+            )
+
 
 class TestOffloadingBasic:
     """Tests for basic offloading behavior."""

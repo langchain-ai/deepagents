@@ -132,7 +132,8 @@ class StoreBackend(BackendProtocol):
             msg = (
                 "StoreBackend must be used inside a LangGraph graph execution "
                 "(e.g. via create_deep_agent), or initialized with an explicit "
-                "store: StoreBackend(store=my_store)"
+                "store and namespace: StoreBackend(store=my_store, "
+                "namespace=lambda _rt: ('filesystem',))"
             )
             raise RuntimeError(msg) from None
 

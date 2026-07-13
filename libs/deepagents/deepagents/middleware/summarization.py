@@ -526,6 +526,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
 
@@ -558,6 +559,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
 
+        Raises:
+            TypeError: If the removed `history_path_prefix` argument is provided.
+
         Example:
             ```python
             from deepagents.middleware.summarization import SummarizationMiddleware
@@ -571,6 +575,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             )
             ```
         """
+        if "history_path_prefix" in deprecated_kwargs:
+            msg = "`history_path_prefix` was removed in deepagents 0.7. Configure `CompositeBackend.artifacts_root` instead."
+            raise TypeError(msg)
+
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
             model=model,
@@ -579,6 +587,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
+            **deprecated_kwargs,
         )
 
         # Whether the configured token counter accepts a `tools` kwarg. Resolved

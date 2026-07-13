@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.style import Style
 from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
 from textual.content import Content
-from textual.widgets import Markdown
+from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
 from deepagents_code.formatting import format_duration
@@ -24,6 +25,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -4177,3 +4179,45 @@ class TestUserMessageTruncation:
             text, _ending = result
             assert text == big
             assert "…" not in text
+
+
+class _RubricResultApp(App[None]):
+    """Minimal app mounting a rubric result."""
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\n" + "complete detail " * 200,
+            id="rubric-result",
+        )
+
+
+class TestRubricResultMessage:
+    """Grader details stay complete, collapsed, and scrollable."""
+
+    async def test_details_expand_without_truncation(self) -> None:
+        """The compact default should reveal the full plain-text result on demand."""
+        app = _RubricResultApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-result", RubricResultMessage)
+            details_scroll = message.query_one(
+                ".rubric-result-details-scroll",
+                VerticalScroll,
+            )
+            details = message.query_one(".rubric-result-details", Static)
+
+            assert message._expanded is False
+            assert details_scroll.display is False
+            assert str(details.content) == message._details
+            assert "complete detail " * 200 in str(details.content)
+            assert details_scroll.styles.max_height is not None
+            assert details_scroll.styles.max_height.cells == 16
+
+            await pilot.click(".rubric-result-hint")
+            await pilot.pause()
+
+            assert message._expanded is True
+            assert details_scroll.display is True
+            assert str(details.content) == message._details

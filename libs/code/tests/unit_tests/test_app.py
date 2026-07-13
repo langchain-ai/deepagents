@@ -72,6 +72,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     ErrorMessage,
     QueuedUserMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
@@ -5734,6 +5735,57 @@ class TestGoalCommand:
             request.assert_awaited_once_with(
                 "max-iterations for the parser", "- tests pass"
             )
+
+    def test_goal_generator_receives_session_repository_root(self) -> None:
+        """Criteria drafting should use the repository for the session cwd."""
+        app = DeepAgentsApp(agent=MagicMock(), cwd="/workspace/project")
+        repository_root = Path("/workspace/project")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=SimpleNamespace(project_root=repository_root),
+            ) as resolve_context,
+            patch(
+                "deepagents_code.goal_rubric.generate_goal_rubric",
+                return_value="- criterion",
+            ) as generate,
+        ):
+            result = app._generate_goal_rubric("ship it")
+
+        assert result == "- criterion"
+        resolve_context.assert_called_once_with("/workspace/project")
+        assert generate.call_args.kwargs["repository_root"] == repository_root
+
+    def test_goal_generator_falls_back_when_repository_resolution_fails(self) -> None:
+        """A broken cwd path should not prevent goal-only criteria generation."""
+        app = DeepAgentsApp(agent=MagicMock(), cwd="/workspace/project")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                side_effect=RuntimeError("symlink loop"),
+            ),
+            patch(
+                "deepagents_code.goal_rubric.generate_goal_rubric",
+                return_value="- criterion",
+            ) as generate,
+        ):
+            result = app._generate_goal_rubric("ship it")
+
+        assert result == "- criterion"
+        assert generate.call_args.kwargs["repository_root"] is None
+
+    def test_rubric_detail_expansion_syncs_to_message_store(self) -> None:
+        """Expanded grader details should survive transcript virtualization."""
+        app = DeepAgentsApp(agent=MagicMock())
+        widget = RubricResultMessage("summary", "details", id="rubric-1")
+        event = RubricResultMessage.ExpansionChanged(widget, True)
+
+        with patch.object(app._message_store, "update_message") as update:
+            app.on_rubric_result_message_expansion_changed(event)
+
+        update.assert_called_once_with("rubric-1", rubric_expanded=True)
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""

@@ -33,6 +33,7 @@ from deepagents_code.tui.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
@@ -41,6 +42,7 @@ from deepagents_code.tui.textual_adapter import (
 )
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
 )
@@ -1242,8 +1244,8 @@ class TestFormatRubricEvent:
             == "⏳ Checking acceptance criteria (iteration 2)…"
         )
 
-    def test_needs_revision_includes_failed_criteria(self) -> None:
-        """Failed criteria should be shown with actionable gaps."""
+    def test_needs_revision_uses_work_status_copy(self) -> None:
+        """An unmet rubric should describe the work, not call the rubric deficient."""
         assert (
             _format_rubric_event(
                 {
@@ -1256,7 +1258,7 @@ class TestFormatRubricEvent:
                     ],
                 },
             )
-            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
+            == "↻ Acceptance criteria not yet satisfied"
         )
 
     def test_satisfied_event(self) -> None:
@@ -1283,26 +1285,26 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
             )
-            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
+            == "⚠ Acceptance criteria not yet satisfied (iteration limit reached)"
         )
 
-    def test_grader_failure_results_render_warning(self) -> None:
-        """Grader failures should surface as warnings with the explanation."""
+    def test_invalid_rubric_and_grader_failure_have_distinct_copy(self) -> None:
+        """Rubric validity and grader infrastructure failures must stay distinct."""
         assert (
             _format_rubric_event(
                 {
                     "type": "rubric_evaluation_end",
                     "result": "failed",
-                    "explanation": "timeout",
+                    "explanation": "contradictory criteria",
                 },
             )
-            == "⚠ Rubric grader failed: timeout"
+            == "⚠ Rubric is invalid or cannot be evaluated"
         )
         assert (
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "grader_error"},
             )
-            == "⚠ Rubric grader error"
+            == "⚠ Acceptance criteria check failed"
         )
 
     def test_unknown_terminal_result_renders_fallback(self) -> None:
@@ -1311,8 +1313,52 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "something_new"},
             )
-            == "⚠ Rubric grading ended"
+            == "⚠ Acceptance criteria check ended"
         )
+
+    def test_complete_details_preserve_explanation_gaps_and_next_step(self) -> None:
+        """Details should retain every structured field without repr truncation."""
+        explanation = "First paragraph.\n\nSecond paragraph.\n" + "detail " * 1000
+        details = _format_rubric_details(
+            {
+                "type": "rubric_evaluation_end",
+                "result": "needs_revision",
+                "explanation": explanation,
+                "criteria": [
+                    {
+                        "name": "Exact copy remains intact",
+                        "passed": False,
+                        "gap": "Expected 'Not ready'; found 'Pending'.",
+                    },
+                    {"name": "Passing criterion", "passed": True},
+                ],
+            }
+        )
+
+        assert explanation.strip() in details
+        assert "Exact copy remains intact" in details
+        assert "Expected 'Not ready'; found 'Pending'." in details
+        assert "Passing criterion" not in details
+        assert "Address every unmet criterion, then retry the check." in details
+        assert "{'name':" not in details
+        assert "truncated" not in details
+
+    def test_invalid_rubric_and_grader_failure_details_recommend_next_steps(
+        self,
+    ) -> None:
+        """Each terminal failure class should provide the relevant recovery action."""
+        invalid = _format_rubric_details(
+            {
+                "result": "failed",
+                "explanation": "The criteria contradict each other.",
+            }
+        )
+        grader_error = _format_rubric_details(
+            {"result": "grader_error", "explanation": "Provider timeout."}
+        )
+
+        assert "Review or replace the rubric" in invalid
+        assert "Retry the check, or choose a different grader model." in grader_error
 
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
@@ -1348,11 +1394,12 @@ class TestFormatRubricEvent:
             )
         assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
         assert revision == (
-            f"{ASCII_GLYPHS.retry} Changes need revision\n"
-            f"  {ASCII_GLYPHS.error} tests pass — not run"
+            f"{ASCII_GLYPHS.retry} Acceptance criteria not yet satisfied"
         )
         assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
-        assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
+        assert failed == (
+            f"{ASCII_GLYPHS.warning} Rubric is invalid or cannot be evaluated"
+        )
 
 
 class _FakeAgent:
@@ -3087,14 +3134,23 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         ]
 
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
-        app_text = [str(widget._content) for widget in app_messages]
-        assert app_text == [
+        assert [str(widget._content) for widget in app_messages] == [
             (
                 f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
                 f"{UNICODE_GLYPHS.ellipsis}"
-            ),
-            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
+            )
         ]
+        rubric_messages = [
+            widget for widget in mounted if isinstance(widget, RubricResultMessage)
+        ]
+        assert len(rubric_messages) == 1
+        assert rubric_messages[0]._summary == (
+            f"{UNICODE_GLYPHS.retry} Acceptance criteria not yet satisfied"
+        )
+        assert rubric_messages[0]._details == (
+            "Explanation\nsay yellow\n\n"
+            "Next step\nAddress every unmet criterion, then retry the check."
+        )
 
 
 class TestExecuteTaskTextualHITLShellSuppression:

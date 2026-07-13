@@ -1688,10 +1688,11 @@ class TextualSessionState:
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
         self.previous_thread_id: str | None = None
-        """Thread id abandoned by the most recent `reset_thread` (`/clear`).
+        """Thread id abandoned by the most recent `reset_thread`.
 
-        Lets the TUI point users back to the thread they just left; `None`
-        until the first reset.
+        Set by every `reset_thread` caller — `/clear`, `/force-clear`, and the
+        agent-switch teardown — not just `/clear`. Lets the TUI point users
+        back to the thread they just left; `None` until the first reset.
         """
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
@@ -7617,8 +7618,10 @@ class DeepAgentsApp(App):
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — /model opens selector,
-            # /model <name> does a direct switch that shouldn't race with agent.
+            # Only bare form (no args) bypasses — the selector-opening form is
+            # safe, but an argument form does a direct action that shouldn't
+            # race the agent (e.g. `/model <name>` switches models, `/threads
+            # -r <id>` resumes a thread).
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -9730,15 +9733,27 @@ class DeepAgentsApp(App):
                 )
                 previous_thread_id = self._session_state.previous_thread_id
                 if previous_thread_id:
+                    import sqlite3
+
                     from deepagents_code.sessions import thread_exists
 
+                    # Best-effort: on any failure just suppress the hint (never
+                    # crash `/clear`), but log unexpected errors loudly so a
+                    # real bug isn't silently read as "not resumable".
                     try:
                         previous_thread_is_resumable = await thread_exists(
                             previous_thread_id
                         )
-                    except Exception:
+                    except (sqlite3.Error, OSError):
                         logger.debug(
                             "Could not check whether previous thread %s is resumable",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                    except Exception:
+                        logger.warning(
+                            "Unexpected error checking previous thread %s resumability",
                             previous_thread_id,
                             exc_info=True,
                         )
@@ -16286,9 +16301,10 @@ class DeepAgentsApp(App):
 
         Bare `/threads` opens the interactive selector. `/threads -r [ID]`
         resumes in place: `-r` alone returns to the thread left by the most
-        recent `/clear` (falling back to the most recent thread on disk), and
-        `-r <ID>` resumes a specific thread — mirroring the launch-time `-r`
-        flag.
+        recent reset (e.g. `/clear`), falling back to the most recent thread
+        for the active agent; `-r <ID>` resumes a specific thread. Both forms
+        only resume threads owned by the active agent, mirroring the
+        launch-time `-r` flag.
 
         Args:
             command: The raw command text, e.g. `"/threads -r abc123"`.
@@ -16326,7 +16342,11 @@ class DeepAgentsApp(App):
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
     ) -> str | None:
-        """Resolve a `/threads -r` argument to a concrete, existing thread id.
+        """Resolve a `/threads -r` argument to a concrete, resumable thread id.
+
+        Only threads owned by the active agent resolve: an explicit id owned by
+        another agent is refused, and the bare-`-r` fallback is filtered to the
+        active agent's most recent thread.
 
         Args:
             requested_id: Explicit thread id from `-r <ID>`, or `None` for a
@@ -16336,6 +16356,8 @@ class DeepAgentsApp(App):
             The thread id to resume, or `None` when nothing suitable exists;
             in that case a user-facing message has already been mounted.
         """
+        import sqlite3
+
         from deepagents_code.sessions import (
             find_similar_threads,
             get_most_recent,
@@ -16389,14 +16411,26 @@ class DeepAgentsApp(App):
 
             msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
-        except Exception:
-            logger.debug(
-                "Failed to resolve in-TUI resume target %r",
+        except (sqlite3.Error, OSError):
+            # Expected thread-store failures: log for a debug session and tell
+            # the user to retry. Mirrors the launch-time resolver's handling.
+            logger.warning(
+                "Thread-history lookup failed resolving resume target %r",
                 requested_id,
                 exc_info=True,
             )
             await self._mount_message(
                 AppMessage("Could not look up thread history. Please try again.")
+            )
+        except Exception:
+            # Anything else (e.g. a programming error, or a widget-mount fault)
+            # is a real bug, not "database unavailable" — surface it loudly
+            # instead of masking it behind the retry message above.
+            logger.exception(
+                "Unexpected error resolving resume target %r", requested_id
+            )
+            await self._mount_message(
+                AppMessage("Something went wrong resolving that thread.")
             )
         return None
 
@@ -17071,6 +17105,13 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
+
+            # The switch succeeded: record the thread we just left so a
+            # subsequent bare `/threads -r` steps back to it rather than
+            # resolving `previous == current` and reporting "Already on
+            # thread". Set only after the last statement that can raise, so a
+            # failed switch (handled below) never leaves a stale pointer.
+            self._session_state.previous_thread_id = prev_session_thread
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

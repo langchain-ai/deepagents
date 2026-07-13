@@ -79,7 +79,8 @@ class TestHandleThreadsCommand:
         await app._handle_threads_command("/threads --nope")
         app._show_thread_selector.assert_not_awaited()  # ty: ignore
         app._resume_thread.assert_not_awaited()  # ty: ignore
-        app._mount_message.assert_awaited()  # ty: ignore
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "Usage: /threads" in str(message._content)
 
     async def test_too_many_args_shows_usage(self) -> None:
         app = _make_app()
@@ -87,6 +88,8 @@ class TestHandleThreadsCommand:
         await app._handle_threads_command("/threads -r a b")
         app._resolve_threads_resume_target.assert_not_awaited()  # ty: ignore
         app._resume_thread.assert_not_awaited()  # ty: ignore
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "at most one thread ID" in str(message._content)
 
 
 class TestResolveResumeTarget:
@@ -139,9 +142,11 @@ class TestResolveResumeTarget:
         ):
             target = await app._resolve_threads_resume_target("abc")
         assert target is None
-        app._mount_message.assert_awaited()  # ty: ignore
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "Thread 'abc' not found." in str(message._content)
 
-    async def test_specific_id_database_failure_notifies(self) -> None:
+    async def test_specific_id_missing_suggests_similar(self) -> None:
+        """A near-miss id surfaces the `find_similar_threads` suggestions."""
         app = _make_app()
         with (
             patch(
@@ -150,12 +155,51 @@ class TestResolveResumeTarget:
             ),
             patch(
                 "deepagents_code.sessions.find_similar_threads",
-                AsyncMock(side_effect=RuntimeError("db unavailable")),
+                AsyncMock(return_value=["abc123", "abc456"]),
             ),
         ):
             target = await app._resolve_threads_resume_target("abc")
         assert target is None
-        app._mount_message.assert_awaited_once()  # ty: ignore
+        message = str(app._mount_message.await_args.args[0]._content)  # ty: ignore
+        assert "Did you mean: abc123, abc456?" in message
+
+    async def test_specific_id_database_failure_notifies(self) -> None:
+        """An expected thread-store error asks the user to retry."""
+        import sqlite3
+
+        app = _make_app()
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.find_similar_threads",
+                AsyncMock(side_effect=sqlite3.OperationalError("db locked")),
+            ),
+        ):
+            target = await app._resolve_threads_resume_target("abc")
+        assert target is None
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "Could not look up thread history" in str(message._content)
+
+    async def test_specific_id_unexpected_error_notifies(self) -> None:
+        """A non-DB error is surfaced distinctly from a lookup failure."""
+        app = _make_app()
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.find_similar_threads",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+        ):
+            target = await app._resolve_threads_resume_target("abc")
+        assert target is None
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "Something went wrong resolving that thread." in str(message._content)
 
     async def test_bare_prefers_previous_thread(self) -> None:
         app = _make_app()
@@ -223,6 +267,34 @@ class TestResolveResumeTarget:
             exclude_thread_id="cur",
         )
 
+    async def test_bare_previous_deleted_falls_back(self) -> None:
+        """A `previous_thread_id` pruned since `/clear` falls through to recent."""
+        app = _make_app()
+        app._assistant_id = "coder"
+        state = TextualSessionState(thread_id="cur")
+        state.previous_thread_id = "prev"
+        app._session_state = state
+        with (
+            # previous exists no more; the fallback thread does.
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="coder"),
+            ) as thread_agent,
+            patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value="recent"),
+            ) as most_recent,
+        ):
+            target = await app._resolve_threads_resume_target(None)
+        assert target == "recent"
+        # The deleted previous never reaches the ownership check.
+        thread_agent.assert_not_awaited()
+        most_recent.assert_awaited_once_with("coder", exclude_thread_id="cur")
+
     async def test_bare_none_when_no_threads(self) -> None:
         app = _make_app()
         app._session_state = TextualSessionState(thread_id="cur")
@@ -238,7 +310,8 @@ class TestResolveResumeTarget:
         ):
             target = await app._resolve_threads_resume_target(None)
         assert target is None
-        app._mount_message.assert_awaited()  # ty: ignore
+        message = app._mount_message.await_args.args[0]  # ty: ignore
+        assert "No previous threads for 'agent' to resume." in str(message._content)
 
     async def test_bare_default_agent_fallback_is_filtered(self) -> None:
         app = _make_app()

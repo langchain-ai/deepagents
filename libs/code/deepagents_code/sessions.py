@@ -1266,7 +1266,7 @@ async def get_most_recent(
     *,
     exclude_thread_id: str | None = None,
 ) -> str | None:
-    """Get the most recent thread, optionally filtered by agent or thread ID.
+    """Get the most recent thread, optionally agent-filtered and/or excluding a thread.
 
     Args:
         agent_name: Return only threads created by this agent.

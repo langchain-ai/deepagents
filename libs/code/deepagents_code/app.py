@@ -349,7 +349,6 @@ if TYPE_CHECKING:
     from textual.events import MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
-    from textual.scrollbar import ScrollDown, ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
@@ -1863,6 +1862,20 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    class Scrolled(Message, namespace="chat"):
+        """Posted whenever the chat's vertical scroll offset changes.
+
+        Transcript hydration keys off the actual scroll offset instead of the
+        scrollbar `ScrollUp`/`ScrollDown` messages, because those never reach
+        the app for the common scroll paths: wheel/trackpad scrolling arrives as
+        `MouseScroll*` events, keyboard scrolling runs through key-binding scroll
+        actions, and both move `scroll_y` directly without posting a scrollbar
+        message. Scrollbar-track clicks do post `ScrollUp`/`ScrollDown`, but this
+        container's own `_on_scroll_up`/`_on_scroll_down` handlers consume them
+        via `event.stop()` before they can bubble to the app. Watching `scroll_y`
+        covers every input device uniformly. Validated against Textual 8.2.7.
+        """
+
     # The deferred-anchor logic below drives the base class through its private
     # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
     # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
@@ -1935,6 +1948,19 @@ class _ChatScroll(VerticalScroll):
             self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
         return result
 
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Announce vertical scroll changes so the app can hydrate history.
+
+        Args:
+            old_value: Previous vertical scroll offset.
+            new_value: New vertical scroll offset.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        # Guard on `is_attached` (mirrors `ThreadControlsScroll.watch_scroll_y`)
+        # so mount/teardown offset changes don't post to a detached widget.
+        if old_value != new_value and self.is_attached:
+            self.post_message(self.Scrolled())
+
     def _is_scrollable(self) -> bool:
         """Return whether current chat content overflows the viewport."""
         return self.max_scroll_y > 0
@@ -1978,6 +2004,12 @@ class DeepAgentsApp(App):
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
+
+    _hydration_failure_notified: bool = False
+    """Set once a hydration failure has been surfaced, to avoid toast spam.
+
+    Hydration now runs on every scroll-offset delta, so a persistent failure
+    would otherwise notify on every scroll tick."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -5714,12 +5746,13 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
-    def on_scroll_up(self, _event: ScrollUp) -> None:
-        """Handle scroll up to check if we need to hydrate older messages."""
-        self._check_hydration_needed()
+    def on_chat_scrolled(self, _event: _ChatScroll.Scrolled) -> None:
+        """Hydrate history in both directions whenever the chat scrolls.
 
-    def on_scroll_down(self, _event: ScrollDown) -> None:
-        """Handle scroll down to hydrate newer messages below the window."""
+        Driven by `_ChatScroll.Scrolled` (see that message for why hydration
+        keys off the scroll offset rather than the scrollbar messages).
+        """
+        self._check_hydration_needed()
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:
@@ -5859,6 +5892,23 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _notify_hydration_failure(self) -> None:
+        """Surface transcript hydration failures to the user, once per session.
+
+        The `logger.warning` in the hydrate loops records every failure, but the
+        user only sees a gap where history should be. Show a single toast so the
+        missing history is explainable, without spamming on repeated scrolls.
+        """
+        if self._hydration_failure_notified:
+            return
+        self._hydration_failure_notified = True
+        self.notify(
+            "Some earlier messages couldn't be loaded. See the debug log for details.",
+            severity="warning",
+            timeout=6,
+            markup=False,
+        )
+
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
 
@@ -5960,6 +6010,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                     exc_info=True,
                 )
+                self._notify_hydration_failure()
                 break
 
         if hydrated_count > 0:
@@ -5976,6 +6027,10 @@ class DeepAgentsApp(App):
         # Collapse any completed tool runs brought in above the window so
         # hydrated history matches the live transcript.
         await self._regroup_completed_tools()
+        if hydrated_count > 0:
+            # Re-check after layout because a boundary scroll cannot emit
+            # another `Scrolled` message while its offset remains unchanged.
+            self.call_after_refresh(self._check_hydration_needed)
 
     async def _hydrate_messages_below(self) -> None:
         """Hydrate newer messages when scrolling down toward the tail."""
@@ -6019,6 +6074,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                     exc_info=True,
                 )
+                self._notify_hydration_failure()
                 break
 
         if hydrated_count == 0:
@@ -6029,6 +6085,9 @@ class DeepAgentsApp(App):
         self._sync_transcript_spacers(messages_container)
         chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
+        # Re-check after layout because a boundary scroll cannot emit another
+        # `Scrolled` message while its offset remains unchanged.
+        self.call_after_refresh(self._check_hydration_below_needed)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, kept above the bottom anchors.

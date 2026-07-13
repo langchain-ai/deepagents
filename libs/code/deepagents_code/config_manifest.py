@@ -1076,9 +1076,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
-        key="experimental.enabled",
+        key="features.experimental",
         group="Tools",
-        summary="Enable experimental dcode features",
+        summary="Opt into experimental, unstable dcode behavior.",
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.EXPERIMENTAL,

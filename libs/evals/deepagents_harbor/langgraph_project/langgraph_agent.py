@@ -100,6 +100,23 @@ def _model_name(configurable: dict[str, object]) -> str:
     return value
 
 
+def _build_model(configurable: dict[str, object]) -> object:
+    """Build the chat model, defaulting OpenAI to the Responses API.
+
+    OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for
+    gpt-5.x, and its model profile defaults ``reasoning_effort``. The model is
+    built here directly via ``init_chat_model``, which bypasses the Deep Agents
+    OpenAI provider profile that would set ``use_responses_api=True``, so set it
+    explicitly for ``openai:`` models. A caller-supplied ``model_kwargs`` value
+    still wins.
+    """
+    name = _model_name(configurable)
+    kwargs = _model_kwargs(configurable)
+    if name.startswith("openai:") and "use_responses_api" not in kwargs:
+        kwargs["use_responses_api"] = True
+    return init_chat_model(name, **kwargs)
+
+
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
@@ -130,7 +147,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
     with _scrub_shell_env():
         graph, _backend = create_cli_agent(
@@ -169,7 +186,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
     return create_deep_agent(
         model=model,
@@ -290,7 +307,7 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name or MCP servers are provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model = _build_model(configurable)
     client = MultiServerMCPClient(_mcp_connections(configurable))
     tools = await client.get_tools()
     return create_deep_agent(

@@ -63,8 +63,37 @@ def _model_request(
     )
 
 
-def _model_response() -> ModelResponse[Any]:
-    return ModelResponse(result=[AIMessage(content="done")])
+def _model_response(
+    *,
+    content: str = "done",
+    output_tokens: int = 1,
+    with_tool_call: bool = False,
+) -> ModelResponse[Any]:
+    tool_calls = (
+        [
+            {
+                "id": "call-write",
+                "name": "write_file",
+                "args": {"file_path": "/app/result.txt", "content": "done"},
+                "type": "tool_call",
+            }
+        ]
+        if with_tool_call
+        else []
+    )
+    return ModelResponse(
+        result=[
+            AIMessage(
+                content=content,
+                tool_calls=tool_calls,
+                usage_metadata={
+                    "input_tokens": 1,
+                    "output_tokens": output_tokens,
+                    "total_tokens": output_tokens + 1,
+                },
+            )
+        ]
+    )
 
 
 def _model_update(result: ModelResponse[Any] | ExtendedModelResponse[Any]) -> bool:
@@ -512,6 +541,112 @@ async def test_async_model_wrapper_matches_sync_transition() -> None:
     assert _model_update(result) is True
     assert captured[0].system_prompt is not None
     assert captured[0].system_prompt.endswith(glm_profile._SYSTEM_PROMPT_SUFFIX)
+
+
+def test_headless_glm_retries_exact_terminal_output_cap() -> None:
+    middleware = _GlmReadFileMediaGuard(
+        _FIREWORKS_GLM,
+        recover_terminal_stalls=True,
+    )
+    requests: list[ModelRequest] = []
+    responses = iter(
+        [
+            _model_response(content="unfinished design", output_tokens=32_768),
+            _model_response(content="recovered"),
+        ]
+    )
+
+    def handler(actual: ModelRequest) -> ModelResponse[Any]:
+        requests.append(actual)
+        return next(responses)
+
+    result = middleware.wrap_model_call(
+        _model_request("accounts/fireworks/models/glm-5p2"),
+        handler,
+    )
+
+    assert len(requests) == 2
+    assert requests[1].system_prompt is not None
+    assert "call a tool now" in requests[1].system_prompt
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.model_response.result[0].text == "recovered"
+
+
+async def test_async_headless_glm_retries_at_most_once() -> None:
+    middleware = _GlmReadFileMediaGuard(
+        _FIREWORKS_GLM,
+        recover_terminal_stalls=True,
+    )
+    calls = 0
+
+    async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        await asyncio.sleep(0)
+        calls += 1
+        return _model_response(content="still stalled", output_tokens=32_768)
+
+    result = await middleware.awrap_model_call(
+        _model_request("accounts/fireworks/models/glm-5p2"),
+        handler,
+    )
+
+    assert calls == 2
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.model_response.result[0].text == "still stalled"
+
+
+@pytest.mark.parametrize(
+    ("identifier", "recover_terminal_stalls", "output_tokens", "with_tool_call"),
+    [
+        pytest.param(
+            "accounts/fireworks/models/glm-5p2",
+            False,
+            32_768,
+            False,
+            id="interactive",
+        ),
+        pytest.param("gpt-5.5", True, 32_768, False, id="non-glm"),
+        pytest.param("z-ai/glm-5.2", True, 32_768, False, id="openrouter"),
+        pytest.param("zai-org/GLM-5.2", True, 32_768, False, id="baseten"),
+        pytest.param(
+            "accounts/fireworks/models/glm-5p2",
+            True,
+            32_767,
+            False,
+            id="below-cap",
+        ),
+        pytest.param(
+            "accounts/fireworks/models/glm-5p2",
+            True,
+            32_768,
+            True,
+            id="tool-call",
+        ),
+    ],
+)
+def test_terminal_stall_recovery_ignores_near_misses(
+    identifier: str,
+    recover_terminal_stalls: bool,
+    output_tokens: int,
+    with_tool_call: bool,
+) -> None:
+    middleware = _GlmReadFileMediaGuard(
+        _FIREWORKS_GLM,
+        recover_terminal_stalls=recover_terminal_stalls,
+    )
+    calls = 0
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        return _model_response(
+            output_tokens=output_tokens,
+            with_tool_call=with_tool_call,
+        )
+
+    middleware.wrap_model_call(_model_request(identifier), handler)
+
+    assert calls == 1
 
 
 @pytest.mark.parametrize(

@@ -1507,7 +1507,12 @@ def create_cli_agent(
         middleware: list[AgentMiddleware[Any, Any]] = []
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        middleware.append(_GlmReadFileMediaGuard(construction_model))
+        middleware.append(
+            _GlmReadFileMediaGuard(
+                construction_model,
+                recover_terminal_stalls=not interactive,
+            )
+        )
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1571,7 +1576,10 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _GlmReadFileMediaGuard(model),
+        _GlmReadFileMediaGuard(
+            model,
+            recover_terminal_stalls=not interactive,
+        ),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.

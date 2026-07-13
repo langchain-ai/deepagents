@@ -15,7 +15,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
 )
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 if TYPE_CHECKING:
@@ -36,6 +36,9 @@ _GLM_5P2_MODEL_IDENTIFIERS: frozenset[str] = frozenset(
     spec.partition(":")[2] for spec in _GLM_5P2_MODEL_SPECS
 )
 """Provider-native identifiers recognized as GLM-5.2."""
+
+_FIREWORKS_GLM_5P2_IDENTIFIER = _GLM_5P2_MODEL_SPECS[0].partition(":")[2]
+"""Fireworks model identifier whose terminal output cap was measured."""
 
 _SYSTEM_PROMPT_SUFFIX = """\
 <glm_5p2_execution>
@@ -86,6 +89,18 @@ _MEDIA_READ_ERROR = (
 )
 """Fixed error used instead of reflecting unsupported media results."""
 
+_TERMINAL_STALL_OUTPUT_TOKENS = 32_768
+"""Exact GLM output cap observed on tool-free, unfinished Harbor turns."""
+
+_TERMINAL_STALL_RECOVERY_SUFFIX = """\
+<glm_5p2_terminal_stall_recovery>
+Your prior attempt exhausted its output budget without taking an action. Stop \
+explaining or planning and call a tool now to create or update the requested \
+deliverable. Prefer the smallest valid artifact, then run one discriminating check. \
+Keep any reasoning brief enough to reach the tool call.
+</glm_5p2_terminal_stall_recovery>"""
+"""One-shot instruction used to recover a capped headless model turn."""
+
 
 def _has_only_text_content(message: ToolMessage) -> bool:
     """Return whether a successful tool message contains only valid text."""
@@ -105,14 +120,22 @@ def _has_only_text_content(message: ToolMessage) -> bool:
     )
 
 
-def _is_glm_5p2_model(model: str | BaseChatModel) -> bool:
-    """Return whether a model or spec has an exact GLM-5.2 identifier."""
+def _model_identifier(model: str | BaseChatModel) -> str | None:
+    """Return the provider-native identifier for a model or model spec."""
     if isinstance(model, str):
         _, separator, identifier = model.partition(":")
-        model_identifier = identifier if separator else model
-    else:
-        model_identifier = get_model_identifier(model)
-    return model_identifier in _GLM_5P2_MODEL_IDENTIFIERS
+        return identifier if separator else model
+    return get_model_identifier(model)
+
+
+def _is_glm_5p2_model(model: str | BaseChatModel) -> bool:
+    """Return whether a model or spec has an exact GLM-5.2 identifier."""
+    return _model_identifier(model) in _GLM_5P2_MODEL_IDENTIFIERS
+
+
+def _is_fireworks_glm_5p2_model(model: str | BaseChatModel) -> bool:
+    """Return whether a model resolves to the measured Fireworks GLM-5.2."""
+    return _model_identifier(model) == _FIREWORKS_GLM_5P2_IDENTIFIER
 
 
 def _without_trusted_suffix(prompt: str) -> str:
@@ -162,18 +185,26 @@ class _GlmReadFileMediaState(AgentState):
 
 
 class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
-    """Keep unsupported `read_file` media out of GLM-5.2 requests."""
+    """Apply GLM-5.2 model-response and `read_file` media guards."""
 
     state_schema = _GlmReadFileMediaState
 
-    def __init__(self, model: str | BaseChatModel) -> None:
+    def __init__(
+        self,
+        model: str | BaseChatModel,
+        *,
+        recover_terminal_stalls: bool = False,
+    ) -> None:
         """Capture the construction model as a safe tool-state fallback.
 
         Args:
             model: Model instance or spec used to construct this agent stack.
+            recover_terminal_stalls: Retry once when a headless GLM response hits
+                the exact output cap without calling a tool.
         """
         super().__init__()
         self._construction_active = _is_glm_5p2_model(model)
+        self._recover_terminal_stalls = recover_terminal_stalls
 
     @staticmethod
     def _prepare_model_request(
@@ -205,6 +236,48 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
             command=Command(update={"_glm_5p2_active": active}),
         )
 
+    @staticmethod
+    def _is_terminal_stall(response: ModelResponse) -> bool:
+        """Return whether a response matches the exact observed stall signature."""
+        if response.structured_response is not None or len(response.result) != 1:
+            return False
+        message = response.result[0]
+        if not isinstance(message, AIMessage) or message.tool_calls:
+            return False
+        usage = message.usage_metadata
+        return (
+            isinstance(usage, dict)
+            and usage.get("output_tokens") == _TERMINAL_STALL_OUTPUT_TOKENS
+        )
+
+    @staticmethod
+    def _recovery_request(request: ModelRequest) -> ModelRequest:
+        """Append a trusted one-shot recovery instruction to a model request.
+
+        Returns:
+            Request with the recovery instruction appended to its system prompt.
+        """
+        prompt = request.system_prompt
+        recovery_prompt = (
+            _TERMINAL_STALL_RECOVERY_SUFFIX
+            if not prompt
+            else f"{prompt}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
+        )
+        return request.override(system_prompt=recovery_prompt)
+
+    def _should_recover(
+        self,
+        response: ModelResponse,
+        *,
+        model: str | BaseChatModel,
+    ) -> bool:
+        """Return whether this headless GLM call should receive one retry."""
+        return (
+            self._recover_terminal_stalls
+            and _is_fireworks_glm_5p2_model(model)
+            and self._is_terminal_stall(response)
+        )
+
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -216,7 +289,10 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
             Model response with the effective GLM state update.
         """
         request, active = self._prepare_model_request(request)
-        return self._model_result(handler(request), active=active)
+        response = handler(request)
+        if self._should_recover(response, model=request.model):
+            response = handler(self._recovery_request(request))
+        return self._model_result(response, active=active)
 
     async def awrap_model_call(
         self,
@@ -229,7 +305,10 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
             Model response with the effective GLM state update.
         """
         request, active = self._prepare_model_request(request)
-        return self._model_result(await handler(request), active=active)
+        response = await handler(request)
+        if self._should_recover(response, model=request.model):
+            response = await handler(self._recovery_request(request))
+        return self._model_result(response, active=active)
 
     def _active_for_tool(self, request: ToolCallRequest) -> bool:
         """Read validated private state or use the construction fallback.

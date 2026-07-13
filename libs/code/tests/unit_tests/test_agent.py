@@ -3293,10 +3293,12 @@ class TestCreateCliAgentInterpreterWiring:
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
 
-    def test_glm_headless_does_not_add_completion_agent(
+    def test_glm_headless_uses_terminal_stall_guard_without_completion_agent(
         self,
         tmp_path: Path,
     ) -> None:
+        from deepagents_code._glm_5p2_profile import _GlmReadFileMediaGuard
+
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -3334,6 +3336,11 @@ class TestCreateCliAgentInterpreterWiring:
             if type(item).__name__.startswith("_GlmCompletion")
         ]
         assert completion_agents == []
+        guards = [
+            item for item in middleware if isinstance(item, _GlmReadFileMediaGuard)
+        ]
+        assert len(guards) == 1
+        assert guards[0]._recover_terminal_stalls is True
 
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

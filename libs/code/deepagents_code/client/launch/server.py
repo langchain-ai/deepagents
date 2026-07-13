@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
+
 _EPHEMERAL_PORT = 0
 """Sentinel port meaning "let `start()` pick a free ephemeral port".
 
@@ -37,14 +38,28 @@ never a typed-in address — so it deliberately avoids binding the well-known
 `langgraph dev` default (2024). Leaving 2024 free lets users run their own
 `langgraph dev` projects alongside `deepagents-code` without a port collision.
 """
+
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
+
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
+
 _HEALTH_TIMEOUT = 60
+
 _SHUTDOWN_TIMEOUT = 3
+"""Seconds to wait for a graceful SIGTERM exit before escalating to SIGKILL."""
+
+_SIGKILL_TIMEOUT = 2
+"""Seconds to wait for the group/process to exit after SIGKILL."""
+
+_PROCESS_GROUP_POLL_INTERVAL = 0.05
+
 _LOG_TAIL_CHARS = 3000
-"""Max chars of subprocess log appended to the early-exit `RuntimeError`
-message. Enough to carry a Python traceback without flooding the TUI banner
-when it surfaces via `ServerStartFailed`."""
+"""Max chars of subprocess log appended to the early-exit `RuntimeError` message.
+
+Enough to carry a Python traceback without flooding the TUI banner when it
+surfaces via `ServerStartFailed`.
+"""
+
 _STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
 """Machine-readable prefix emitted by the server subprocess for known startup errors."""
 
@@ -357,6 +372,169 @@ def _build_server_env() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Process-group teardown
+# ---------------------------------------------------------------------------
+
+
+def _server_process_group(pid: int) -> int | None:
+    """Return the server's own process group id to signal, or `None`.
+
+    The server is spawned with `start_new_session=True` on POSIX, so it leads
+    its own session and process group (its pgid equals its pid). Signaling that
+    group reaches the whole `langgraph dev` process tree, so descendants receive
+    the same shutdown signals as the root rather than being left running when
+    only the root is signaled.
+
+    Returns `None` — meaning "signal only the root process" — on Windows (no
+    POSIX process groups) and whenever the server is not the leader of its own
+    dedicated group. As a defensive check, the `pgid == os.getpgid(0)` clause
+    also refuses to return dcode's own group, so the group handed back can never
+    be the one whose termination would take down the TUI.
+
+    Args:
+        pid: Process id of the server subprocess.
+
+    Returns:
+        The server's dedicated process group id, or `None` to fall back to
+        signaling just the root process.
+    """
+    if sys.platform == "win32":
+        return None
+    try:
+        pgid = os.getpgid(pid)
+        own_pgid = os.getpgid(0)
+    except ProcessLookupError:
+        # The process already exited; there is no group left to signal.
+        return None
+    except OSError:
+        # Resolving the group failed unexpectedly (getpgid on an owned child
+        # should not). Fall back to root-only signaling, but surface it so a
+        # silently orphaned descendant tree is diagnosable rather than invisible.
+        logger.warning(
+            "Could not resolve process group for pid=%d; "
+            "falling back to root-only signaling",
+            pid,
+            exc_info=True,
+        )
+        return None
+    if pgid != pid or pgid == own_pgid:
+        return None
+    return pgid
+
+
+def _wait_for_process_group_exit(
+    process: subprocess.Popen[Any], pgid: int, timeout: float
+) -> bool:
+    """Wait until every process in a POSIX process group has exited.
+
+    `Popen.wait()` only observes the group leader. Poll it on every pass so an
+    exited leader does not remain a zombie and keep the group probe alive, then
+    continue probing because descendants may remain after the leader exits.
+
+    Args:
+        process: The group leader, reaped as soon as it exits.
+        pgid: Process group id to probe.
+        timeout: Maximum seconds to wait for the whole group.
+
+    Returns:
+        `True` when the group is gone, or `False` on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        # `poll()` reaps an exited leader without blocking. Until that happens,
+        # its zombie entry keeps `killpg(..., 0)` reporting the group as alive.
+        process.poll()
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            process.wait()
+            return True
+        except PermissionError:
+            # The group still exists even if the probe is not permitted.
+            pass
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_PROCESS_GROUP_POLL_INTERVAL, remaining))
+
+
+def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
+    """Terminate the `langgraph dev` server and its descendants.
+
+    Sends SIGTERM, waits `_SHUTDOWN_TIMEOUT` for a graceful exit, then escalates
+    to SIGKILL. On POSIX the whole detached process group is signaled via
+    `os.killpg`, and teardown waits for the entire group to exit — not just the
+    root — so a child that outlives the `langgraph dev` root is still escalated
+    to SIGKILL rather than orphaned. On Windows (or if the server is not its own
+    group leader) only the root process is signaled. `_server_process_group`
+    guarantees dcode's own process group is never targeted.
+
+    Args:
+        process: The running server subprocess to terminate.
+    """
+    pid = process.pid
+    pgid = _server_process_group(pid)
+    scope = "process group" if pgid is not None else "process"
+
+    logger.info("Stopping langgraph dev server (pid=%d)", pid)
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+            stopped = _wait_for_process_group_exit(process, pgid, _SHUTDOWN_TIMEOUT)
+        else:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=_SHUTDOWN_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                stopped = False
+            else:
+                stopped = True
+    except ProcessLookupError:
+        # The server exited before the SIGTERM landed; nothing left to reap.
+        logger.debug("Server %s pid=%d already exited before SIGTERM", scope, pid)
+        return
+    except OSError:
+        # SIGTERM could not be delivered (e.g. EPERM). We never reach the SIGKILL
+        # escalation, so the server is left running — report it with the same
+        # fidelity as a failed SIGKILL rather than a bare "error stopping".
+        logger.exception(
+            "Failed to signal server %s pid=%d; it may be orphaned", scope, pid
+        )
+        return
+
+    if stopped:
+        return
+
+    logger.warning("Server did not stop gracefully, killing %s", scope)
+    # Guard escalation explicitly: `ProcessLookupError` means the group exited
+    # just before SIGKILL, while any other `OSError` means it may be orphaned.
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+            if not _wait_for_process_group_exit(process, pgid, _SIGKILL_TIMEOUT):
+                logger.warning(
+                    "Server %s pid=%d did not exit after SIGKILL", scope, pid
+                )
+        else:
+            process.kill()
+            try:
+                process.wait(timeout=_SIGKILL_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Server %s pid=%d did not exit after SIGKILL", scope, pid
+                )
+    except ProcessLookupError:
+        logger.debug("Server %s pid=%d already exited before SIGKILL", scope, pid)
+    except OSError:
+        logger.exception(
+            "Failed to SIGKILL server %s pid=%d; it may be orphaned",
+            scope,
+            pid,
+        )
+
+
+# ---------------------------------------------------------------------------
 # ServerProcess
 # ---------------------------------------------------------------------------
 
@@ -526,8 +704,20 @@ class ServerProcess:
             env=env,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
+            # Detach the server from dcode's controlling terminal and process
+            # group on POSIX. Without a new session the server inherits dcode's
+            # session/process group and receives the same terminal-generated
+            # signals as the TUI: the SIGTSTP job-control stop when the user
+            # suspends dcode (Ctrl+Z), and the SIGHUP hangup when the host
+            # terminal is closed — suspending or hanging up the server alongside
+            # dcode. `start_new_session=True` runs
+            # `setsid()` so the server leads its own session/process group
+            # instead. `start_new_session` is ignored on Windows, so it is left
+            # off there.
+            start_new_session=(sys.platform != "win32"),
         )
 
+        started = False
         try:
             await wait_for_server_healthy(
                 self.url,
@@ -536,9 +726,24 @@ class ServerProcess:
                 read_log=self._read_log_file,
                 local=True,
             )
-        except Exception:
-            self.stop()
-            raise
+            started = True
+        finally:
+            if not started:
+                # Reap the subprocess we just spawned if startup did not
+                # complete — including cancellation (e.g. Ctrl+D / SIGINT before
+                # the health check returns). A `finally` rather than `except
+                # Exception` is deliberate: `asyncio.CancelledError` is a
+                # `BaseException`, so an `except Exception` guard would skip this
+                # and orphan the process. The inner guard stops a `stop()` error
+                # from masking the exception already propagating; `stop()` is
+                # effectively non-raising today, so if it does fire it signals an
+                # unexpected leak — hence `error`, not `warning`.
+                try:
+                    self.stop()
+                except Exception:
+                    logger.exception(
+                        "Error stopping server during startup cleanup",
+                    )
 
     async def wait_for_graph_ready(
         self,
@@ -628,22 +833,18 @@ class ServerProcess:
             return
 
         if self._process.poll() is None:
-            logger.info("Stopping langgraph dev server (pid=%d)", self._process.pid)
-            try:
-                self._process.send_signal(signal.SIGTERM)
-                self._process.wait(timeout=_SHUTDOWN_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                logger.warning("Server did not stop gracefully, killing")
-                self._process.kill()
-                try:
-                    self._process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Server process pid=%d did not exit after SIGKILL",
-                        self._process.pid,
-                    )
-            except OSError:
-                logger.warning("Error stopping server", exc_info=True)
+            _terminate_server_process(self._process)
+            # `_terminate_server_process` is best-effort. If the process is still
+            # alive here (e.g. SIGKILL failed with EPERM), then once we drop the
+            # handle below we can no longer observe or reap this pid, so surface
+            # the still-running process rather than clearing state as if shutdown
+            # succeeded.
+            if self._process.poll() is None:
+                logger.warning(
+                    "Dropping handle to server pid=%d that is still running; "
+                    "it may be orphaned",
+                    self._process.pid,
+                )
 
         self._process = None
 

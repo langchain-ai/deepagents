@@ -84,6 +84,12 @@ class TestInitialSkillArg:
             args = parse_args()
         assert args.initial_skill == "code-review"
 
+    def test_short_flag_sets_initial_skill(self) -> None:
+        """Verify `-s` is an alias for `--skill`."""
+        with patch.object(sys, "argv", ["deepagents", "-s", "code-review"]):
+            args = parse_args()
+        assert args.initial_skill == "code-review"
+
     def test_with_message(self) -> None:
         """Verify `--skill` works alongside `-m`."""
         with patch.object(

@@ -401,19 +401,34 @@ async def start_server_and_get_agent(
         owns_config_dir=True,
         scaffold=_scaffold_workspace,
     )
+    started = False
     try:
         await server.start()
         await server.wait_for_graph_ready("agent")
-    except Exception:
-        server.stop()
-        raise
-
-    agent = RemoteAgent(
-        url=server.url,
-        graph_name="agent",
-    )
-
-    return agent, server, None
+        agent = RemoteAgent(
+            url=server.url,
+            graph_name="agent",
+        )
+        started = True
+        return agent, server, None
+    finally:
+        if not started:
+            # Startup failed or was cancelled before the server was handed off
+            # to the caller (which records the reference only on success). If
+            # `start()` itself failed it already reaped its own subprocess, so
+            # this `stop()` is then an idempotent no-op; this cleanup is the sole
+            # reaper only when `start()` succeeded but `wait_for_graph_ready()`
+            # (or `RemoteAgent()`) failed afterward. A `finally` rather than
+            # `except Exception` is deliberate: `asyncio.CancelledError` is a
+            # `BaseException`, so an `except Exception` guard would skip cleanup
+            # and orphan the process. The inner guard stops a `stop()` error
+            # from masking the exception already propagating.
+            try:
+                server.stop()
+            except Exception:
+                logger.exception(
+                    "Error stopping server during startup cleanup",
+                )
 
 
 # ------------------------------------------------------------------

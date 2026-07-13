@@ -30,6 +30,34 @@ _BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
 """A minimal RFC 9728 Bearer challenge pointing at the resource metadata."""
 
 
+class TestResolveHeaders:
+    """Compatibility coverage for the public header resolver."""
+
+    def test_delegates_to_shared_interpolation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The legacy helper remains importable and supports shared syntax."""
+        monkeypatch.delenv("MCP_HEADER_TOKEN", raising=False)
+
+        resolved = resolve_headers(
+            {"Authorization": "Bearer ${MCP_HEADER_TOKEN:-fallback}"},
+            server_name="remote",
+        )
+
+        assert resolved == {"Authorization": "Bearer fallback"}
+
+    def test_preserves_original_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Compatibility resolution returns a copy without mutating its input."""
+        monkeypatch.setenv("MCP_HEADER_TOKEN", "resolved")
+        headers = {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
+
+        resolved = resolve_headers(headers)
+
+        assert resolved == {"Authorization": "Bearer resolved"}
+        assert headers == {"Authorization": "Bearer ${MCP_HEADER_TOKEN}"}
+
+
 def _http_status_error(
     status_code: int,
     *,
@@ -57,37 +85,6 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         fake / ".deepagents" / ".state",
     )
     return fake
-
-
-class TestResolveHeaders:
-    """Tests for static MCP header interpolation."""
-
-    def test_resolves_single_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A single `${VAR}` placeholder resolves to its env value."""
-        monkeypatch.setenv("FOO", "bar")
-        assert resolve_headers({"Authorization": "Bearer ${FOO}"}) == {
-            "Authorization": "Bearer bar"
-        }
-
-    def test_resolves_multiple_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Multiple placeholders resolve left-to-right."""
-        monkeypatch.setenv("A", "alpha")
-        monkeypatch.setenv("B", "beta")
-        assert resolve_headers({"X-Combo": "${A}-${B}"}) == {"X-Combo": "alpha-beta"}
-
-    def test_non_string_value_raises(self) -> None:
-        """Header values must be strings."""
-        with pytest.raises(TypeError, match="must be a string"):
-            resolve_headers({"X-Bad": 123}, server_name="srv")  # ty: ignore
-
-    def test_unset_env_var_raises(self) -> None:
-        """Unset placeholders fail with a helpful message."""
-        with pytest.raises(RuntimeError, match="unset env var"):
-            resolve_headers({"Authorization": "Bearer ${MISSING}"})
-
-    def test_plain_text_value_is_unchanged(self) -> None:
-        """Strings without placeholders pass through unchanged."""
-        assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
 
 
 def _make_tokens(access_token: str = "at"):
@@ -1397,6 +1394,19 @@ class TestFormatLoginFailure:
         assert sentinel not in summary
         assert "FakeMcpError" in summary
 
+    def test_preserves_message_for_config_errors(self) -> None:
+        """Config errors are pre-handshake and token-free, so keep the message.
+
+        These carry the actionable field path (e.g. which var is unset);
+        collapsing them to a bare class name would strip the only guidance
+        the user has for fixing their `.mcp.json`.
+        """
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        message = "mcpServers.notion.url references unset env var MCP_GATEWAY_HOST."
+        summary = format_login_failure(MCPConfigError(message))
+        assert summary == message
+
     def test_includes_message_for_known_loopback_errors(self) -> None:
         """Loopback-internal exceptions are token-free and may include their message."""
         from deepagents_code.mcp_auth import _LoopbackCallbackTimeoutError
@@ -2637,6 +2647,7 @@ class TestLogin:
         """Configured static headers flow into the OAuth handshake connection."""
         from deepagents_code.mcp_auth import login
 
+        monkeypatch.setenv("MCP_GATEWAY_HOST", "mcp.notion.com")
         monkeypatch.setenv("MCP_GATEWAY_TOKEN", "gw-token")
         captured: dict[str, Any] = {}
 
@@ -2651,7 +2662,7 @@ class TestLogin:
                 server_name="notion",
                 server_config={
                     "transport": "http",
-                    "url": "https://mcp.notion.com/mcp",
+                    "url": "https://${MCP_GATEWAY_HOST}/mcp",
                     "auth": "oauth",
                     "headers": {
                         "X-Tenant": "acme",
@@ -2661,6 +2672,7 @@ class TestLogin:
                 ui=CliOAuthInteraction(),
             )
 
+        assert captured["url"] == "https://mcp.notion.com/mcp"
         assert captured["headers"] == {
             "X-Tenant": "acme",
             "Authorization": "Bearer gw-token",
@@ -2670,8 +2682,9 @@ class TestLogin:
         """Unset env vars in static headers fail before the handshake."""
         from deepagents_code.mcp_auth import login
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
 
-        with pytest.raises(RuntimeError, match="unset env var"):
+        with pytest.raises(MCPConfigError, match="unset env var"):
             await login(
                 server_name="notion",
                 server_config={
@@ -2680,6 +2693,49 @@ class TestLogin:
                     "auth": "oauth",
                     "headers": {"Authorization": "Bearer ${MISSING_VAR}"},
                 },
+                ui=CliOAuthInteraction(),
+            )
+
+    async def test_login_unset_env_var_in_url_raises_config_error(self) -> None:
+        """An unset var in a non-header field fails with its field path."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        with pytest.raises(MCPConfigError, match=r"mcpServers\.notion\.url"):
+            await login(
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://${MISSING_HOST}/mcp",
+                    "auth": "oauth",
+                },
+                ui=CliOAuthInteraction(),
+            )
+
+    async def test_login_non_string_field_raises_config_error(self) -> None:
+        """A non-string supported field is wrapped as `MCPConfigError` too.
+
+        Exercises the `TypeError` arm of `login()`'s resolution wrapper (the
+        unset-var tests only cover the `RuntimeError` arm).
+        """
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+        from deepagents_code.mcp_tools import MCPConfigError
+
+        # Deliberately malformed (non-string header value) to hit the
+        # `TypeError` arm; typed separately so the intent is explicit.
+        bad_config: dict[str, Any] = {
+            "transport": "http",
+            "url": "https://mcp.example.com/mcp",
+            "auth": "oauth",
+            "headers": {"X-Bad": 1},
+        }
+
+        with pytest.raises(MCPConfigError, match=r"mcpServers\.notion\.headers\.X-Bad"):
+            await login(
+                server_name="notion",
+                server_config=bad_config,  # ty: ignore
                 ui=CliOAuthInteraction(),
             )
 

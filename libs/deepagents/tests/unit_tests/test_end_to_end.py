@@ -475,13 +475,17 @@ class TestDeepAgentEndToEnd:
         assert "short line 0" in file_content
         assert "xxx" in file_content
         # All four wrapped chunks of source line 2 render in order.
-        for marker in ("2\t", "2.1\t", "2.2\t", "2.3\t"):
+        for marker in ("  2  ", "2.1  ", "2.2  ", "2.3  "):
             assert marker in file_content, f"missing continuation marker {marker!r}"
         # Source line 3 is the third source line and must be included.
         assert "short line 2" in file_content
         # Source lines 4 and 5 fall outside `limit=3`.
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
+        # The partial window surfaces the resume offset end-to-end for every
+        # backend (StateBackend included, which has no standalone read test).
+        assert "lines 1-3 of 5 total" in file_content
+        assert "2 lines remaining from offset 3.]" in file_content
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -1310,14 +1314,14 @@ class TestDeepAgentEndToEnd:
         combined = tool_messages[0].content + tool_messages[1].content
         assert "important instruction" in combined
         assert "line4" in combined
-        # All three continuation chunks of the wrapped line 2 must render in
-        # order, before `important instruction`, with nothing dropped at the
-        # page boundary.
-        for marker in ("2\t", "2.1\t", "2.2\t"):
+        # The primary row and both continuation chunks of the wrapped line 2
+        # must render in order, before `important instruction`, with nothing
+        # dropped at the page boundary.
+        for marker in ("  2  ", "2.1  ", "2.2  "):
             assert marker in combined, f"missing continuation marker {marker!r}"
-        idx_first = combined.index("2\t")
-        idx_cont1 = combined.index("2.1\t")
-        idx_cont2 = combined.index("2.2\t")
+        idx_first = combined.index("  2  ")
+        idx_cont1 = combined.index("2.1  ")
+        idx_cont2 = combined.index("2.2  ")
         idx_next = combined.index("important instruction")
         assert idx_first < idx_cont1 < idx_cont2 < idx_next
 
@@ -4321,6 +4325,7 @@ def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
 
 
+@pytest.mark.filterwarnings(r"ignore:The middleware `RubricMiddleware` is in beta\..*")
 class TestRubricMiddlewareEndToEnd:
     """End-to-end tests for `RubricMiddleware` wired into `create_deep_agent`.
 
@@ -4661,3 +4666,43 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "`ls`" in prompt
         for disabled in ("write_file", "edit_file", "delete", "glob"):
             assert f"`{disabled}`" not in prompt, f"`{disabled}` should not appear in system prompt tool list"
+
+    def test_excluded_tool_call_fails_instead_of_executing(self) -> None:
+        """An excluded tool referenced in a `ToolCall` errors instead of executing.
+
+        Simulates an out-of-schema `write_file` call despite
+        `tools=["ls", "read_file"]`. Before the fix, `write_file` was still
+        registered on `ToolNode` and would execute. After the fix, it's no longer
+        registered, so `ToolNode` returns an error `ToolMessage` instead.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/pwned.txt", "content": "hi"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=model,
+            middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["ls", "read_file"])],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "write_file" in tool_messages[0].content
+        # The excluded tool must not have actually run.
+        assert "/pwned.txt" not in result.get("files", {})

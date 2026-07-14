@@ -62,6 +62,16 @@ def test_read_slices_by_offset_limit() -> None:
     assert result.file_data["content"] == "2\n3\n"
 
 
+def test_read_surfaces_pagination_metadata() -> None:
+    """`ContextHubBackend.read` propagates the pagination metadata from `slice_read_response`."""
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="1\n2\n3\n4\n5")})
+    result = backend.read("/a.md", offset=1, limit=2)
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
 def test_pull_runs_only_once_for_multiple_reads() -> None:
     backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
     backend.read("/a.md")
@@ -363,6 +373,41 @@ def test_grep_invalid_regex() -> None:
     result = backend.grep("[unclosed")
     assert result.error is not None
     assert "Invalid regex" in result.error
+
+
+def _grep_cap_backend() -> ContextHubBackend:
+    """Backend with three total matches across two files for cap tests."""
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="hit\nhit\n"),
+            "b.md": FileEntry(type="file", content="hit\n"),
+        }
+    )
+    return backend
+
+
+def test_grep_max_count_over_cap_truncates() -> None:
+    """More matches than `max_count` returns the cap flagged truncated."""
+    result = _grep_cap_backend().grep("hit", max_count=2)
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert result.truncated is True
+
+
+def test_grep_max_count_exact_cap_not_truncated() -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    result = _grep_cap_backend().grep("hit", max_count=3)
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
+
+
+def test_grep_max_count_none_returns_all() -> None:
+    """`max_count=None` returns every match, untruncated."""
+    result = _grep_cap_backend().grep("hit")
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
 
 
 def test_glob_matches_pattern() -> None:

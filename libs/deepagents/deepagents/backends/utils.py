@@ -874,8 +874,8 @@ def format_grep_matches(
 
     # Presence of the context keys signals "context mode" for the whole result;
     # the producer sets both keys on every match or none. `_format_grep_with_context`
-    # still tolerates a hand-built mix of matches with and without context, since
-    # this is a public helper.
+    # still tolerates a hand-built mix of matches with and without context, because
+    # `format_grep_matches` is public and may be handed such input.
     if output_mode != "content" or not any("context_before" in match or "context_after" in match for match in matches):
         return _format_grep_results(build_grep_results_dict(matches), output_mode)
     return _format_grep_with_context(matches)

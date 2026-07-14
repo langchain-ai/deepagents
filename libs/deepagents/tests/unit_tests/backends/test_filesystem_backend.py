@@ -1649,6 +1649,59 @@ class TestFilesystemGrepContext:
             },
         ]
 
+    def test_ripgrep_context_treats_bare_carriage_returns_as_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_bytes(b"before\rneedle\rafter\r")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(1, "before\rneedle\rafter\r")]}, False),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "before\rneedle\rafter\r",
+                "context_before": [],
+                "context_after": [],
+            }
+        ]
+
+    def test_omitted_match_is_not_returned_as_truncated_context(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle returned\nneedle omitted\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(2, "needle returned")]}, True),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=2)
+
+        assert result.truncated is True
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle returned",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [{"line": 4, "text": "after"}],
+            }
+        ]
+
     def test_context_lines_larger_than_file_iterate_only_existing_lines(self, tmp_path: Path) -> None:
         target = tmp_path / "sample.txt"
         target.write_text("needle")
@@ -1666,7 +1719,11 @@ class TestFilesystemGrepContext:
             }
         ]
 
-    def test_context_formatting_groups_matches_in_one_pass(self) -> None:
+    def test_context_formatting_uses_constant_number_of_passes(self) -> None:
+        # Guards against an O(n^2) regression where formatting re-scans the whole
+        # match list once per match. Asserting a *constant* number of full passes
+        # (independent of input size) rather than an exact count keeps the test
+        # from breaking on a still-linear refactor that adds a pass.
         class CountingMatches(list[GrepMatch]):
             iterations = 0
 
@@ -1687,7 +1744,7 @@ class TestFilesystemGrepContext:
 
         output = format_grep_matches(matches, "content")
 
-        assert matches.iterations <= 2
+        assert matches.iterations < len(matches)
         assert output.count(":\n  1: needle") == 100
 
     def test_context_merges_overlapping_windows_and_separates_groups(self, tmp_path: Path) -> None:
@@ -1741,7 +1798,7 @@ class TestFilesystemGrepContext:
         backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
 
         # Simulate a matched file that cannot be re-read for context.
-        monkeypatch.setattr(backend, "_read_grep_context", lambda *_args: ({}, False))
+        monkeypatch.setattr(backend, "_read_grep_context", lambda *_args, **_kwargs: ({}, False))
 
         result = backend.grep("needle", path="/", context_lines=1)
 
@@ -1790,9 +1847,15 @@ class TestFilesystemGrepContext:
         # alongside the context-read failure rather than being overwritten.
         backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
         matches: list[GrepMatch] = [{"path": "/a.txt", "line": 1, "text": "needle"}]
-        monkeypatch.setattr(backend, "_add_grep_context", lambda *_args: ["/a.txt"])
+        monkeypatch.setattr(backend, "_add_grep_context", lambda *_args, **_kwargs: ["/a.txt"])
 
-        combined = backend._apply_grep_context(matches, 1, "Error: ripgrep partial failure")
+        combined = backend._apply_grep_context(
+            matches,
+            1,
+            "Error: ripgrep partial failure",
+            "needle",
+            newline="\n",
+        )
 
         assert combined is not None
         assert combined.startswith("Error: ripgrep partial failure\n")

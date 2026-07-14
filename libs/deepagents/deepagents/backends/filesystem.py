@@ -675,27 +675,43 @@ class FilesystemBackend(BackendProtocol):
 
         # Try ripgrep first (with -F flag for literal search)
         results, truncated = self._ripgrep_search(pattern, base_full, glob)
+        context_newline = "\n"
         partial_error: str | None = None
         if results is None:
             # Python fallback does literal substring matching on the raw pattern.
             results, truncated, partial_error = self._python_search(pattern, base_full, glob)
+            context_newline = None
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         if context_lines:
-            partial_error = self._apply_grep_context(matches, context_lines, partial_error)
+            partial_error = self._apply_grep_context(
+                matches,
+                context_lines,
+                partial_error,
+                pattern,
+                newline=context_newline,
+            )
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
 
-    def _apply_grep_context(self, matches: list[GrepMatch], context_lines: int, partial_error: str | None) -> str | None:
+    def _apply_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        partial_error: str | None,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> str | None:
         """Attach context to matches, folding any unreadable-file failures into `partial_error`.
 
         The search engines (ripgrep and the Python fallback) return only matching
         lines, so surrounding context must be re-read from disk afterward rather
         than captured during the search itself.
         """
-        unreadable = self._add_grep_context(matches, context_lines)
+        unreadable = self._add_grep_context(matches, context_lines, pattern, newline=newline)
         if not unreadable:
             return partial_error
         joined = ", ".join(sorted(unreadable))
@@ -715,11 +731,20 @@ class FilesystemBackend(BackendProtocol):
                 line_ranges.append((start, end))
         return line_ranges
 
-    def _read_grep_context(self, file_path: str, line_ranges: list[tuple[int, int]]) -> tuple[dict[int, str], bool]:
+    def _read_grep_context(
+        self,
+        file_path: str,
+        line_ranges: list[tuple[int, int]],
+        *,
+        newline: str | None = None,
+    ) -> tuple[dict[int, str], bool]:
         """Return text for the merged line ranges needed for grep context.
 
         The file is scanned sequentially from line 1 up to the last requested
-        range; only lines inside a range are retained.
+        range; only lines inside a range are retained. `line_ranges` must be
+        sorted ascending and non-overlapping (as produced by
+        `_grep_context_ranges`): the scan advances through them monotonically
+        and never revisits an earlier range.
 
         Returns:
             `(context, ok)` where `context` maps line number to text and `ok` is
@@ -730,7 +755,7 @@ class FilesystemBackend(BackendProtocol):
         context: dict[int, str] = {}
         try:
             resolved_path = self._resolve_path(file_path)
-            with resolved_path.open(encoding="utf-8", errors="strict") as handle:
+            with resolved_path.open(encoding="utf-8", errors="strict", newline=newline) as handle:
                 range_index = 0
                 for line_num, raw_line in enumerate(handle, 1):
                     while range_index < len(line_ranges) and line_num > line_ranges[range_index][1]:
@@ -749,7 +774,14 @@ class FilesystemBackend(BackendProtocol):
             return {}, False
         return context, True
 
-    def _add_grep_context(self, matches: list[GrepMatch], context_lines: int) -> list[str]:
+    def _add_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> list[str]:
         """Attach requested surrounding lines to grep matches in place.
 
         Returns the paths of matched files whose context could not be read.
@@ -760,14 +792,20 @@ class FilesystemBackend(BackendProtocol):
 
         unreadable: list[str] = []
         for file_path, file_matches in matches_by_path.items():
-            context, ok = self._read_grep_context(file_path, self._grep_context_ranges(file_matches, context_lines))
+            context, ok = self._read_grep_context(
+                file_path,
+                self._grep_context_ranges(file_matches, context_lines),
+                newline=newline,
+            )
             if not ok:
                 unreadable.append(file_path)
             match_numbers = {match["line"] for match in file_matches}
             # `bisect_*` below require ascending `context_numbers`; sort here so
             # correctness never depends on `_read_grep_context`'s insertion order.
             sorted_context = sorted(context.items())
-            context_items: list[ContextLine] = [{"line": number, "text": text} for number, text in sorted_context if number not in match_numbers]
+            context_items: list[ContextLine] = [
+                {"line": number, "text": text} for number, text in sorted_context if number not in match_numbers and pattern not in text
+            ]
             context_numbers = [item["line"] for item in context_items]
             for match in file_matches:
                 line_num = match["line"]
@@ -795,6 +833,12 @@ class FilesystemBackend(BackendProtocol):
         Raises:
             ValueError: If `context_lines` is negative.
         """
+        # Validate eagerly rather than letting `self.grep` raise inside the
+        # worker thread, mirroring the sync path and avoiding a pointless
+        # `to_thread` hop just to surface a programming error.
+        if context_lines < 0:
+            msg = "context_lines must be non-negative"
+            raise ValueError(msg)
         if context_lines == 0:
             return await super().agrep(pattern, path, glob)
         try:

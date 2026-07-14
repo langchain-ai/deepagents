@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import asyncio
 import base64
 import errno
 import functools
@@ -9,17 +10,20 @@ import os
 import shutil
 import subprocess
 import time
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 from pathlib import Path
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    ASYNC_GREP_TIMEOUT,
     DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    ContextLine,
     DeleteResult,
     EditResult,
     FileData,
@@ -638,6 +642,8 @@ class FilesystemBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -647,10 +653,24 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            context_lines: Number of lines to include before and after each match.
+
+                This is a backend-level API. It is deliberately not exposed
+                through the agent-facing `grep` tool (`GrepSchema`), so matches
+                returned via that tool never carry context.
 
         Returns:
-            `GrepResult` with matches or error.
+            `GrepResult` with matches or error. When `context_lines > 0` and some
+            matched files cannot be re-read for context, the matches are still
+            returned and the failure is reported in `GrepResult.error`.
+
+        Raises:
+            ValueError: If `context_lines` is negative.
         """
+        if context_lines < 0:
+            msg = "context_lines must be non-negative"
+            raise ValueError(msg)
+
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
@@ -669,16 +689,189 @@ class FilesystemBackend(BackendProtocol):
 
         # Try ripgrep first (with -F flag for literal search)
         results, truncated = self._ripgrep_search(pattern, base_full, glob)
+        context_newline = "\n"
         partial_error: str | None = None
         if results is None:
             # Python fallback does literal substring matching on the raw pattern.
             results, truncated, partial_error = self._python_search(pattern, base_full, glob)
+            context_newline = None
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
+        if context_lines:
+            partial_error = self._apply_grep_context(
+                matches,
+                context_lines,
+                partial_error,
+                pattern,
+                newline=context_newline,
+            )
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
+
+    def _apply_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        partial_error: str | None,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> str | None:
+        """Attach context to matches, folding any unreadable-file failures into `partial_error`.
+
+        The search engines (ripgrep and the Python fallback) return only matching
+        lines, so surrounding context must be re-read from disk afterward rather
+        than captured during the search itself.
+        """
+        unreadable = self._add_grep_context(matches, context_lines, pattern, newline=newline)
+        if not unreadable:
+            return partial_error
+        joined = ", ".join(sorted(unreadable))
+        context_error = f"Error: could not read context for {len(unreadable)} file(s) (non-UTF-8 or unreadable): {joined}"
+        return f"{partial_error}\n{context_error}" if partial_error else context_error
+
+    @staticmethod
+    def _grep_context_ranges(file_matches: list[GrepMatch], context_lines: int) -> list[tuple[int, int]]:
+        """Return merged line ranges needed for a file's grep context."""
+        line_ranges: list[tuple[int, int]] = []
+        for line_num in sorted(match["line"] for match in file_matches):
+            start = max(1, line_num - context_lines)
+            end = line_num + context_lines
+            if line_ranges and start <= line_ranges[-1][1] + 1:
+                line_ranges[-1] = (line_ranges[-1][0], max(line_ranges[-1][1], end))
+            else:
+                line_ranges.append((start, end))
+        return line_ranges
+
+    def _read_grep_context(
+        self,
+        file_path: str,
+        line_ranges: list[tuple[int, int]],
+        *,
+        newline: str | None = None,
+    ) -> tuple[dict[int, str], bool]:
+        """Return text for the merged line ranges needed for grep context.
+
+        The file is scanned sequentially from line 1 up to the last requested
+        range; only lines inside a range are retained. `line_ranges` must be
+        sorted ascending and non-overlapping (as produced by
+        `_grep_context_ranges`): the scan advances through them monotonically
+        and never revisits an earlier range.
+
+        Returns:
+            `(context, ok)` where `context` maps line number to text and `ok` is
+            `False` if the file could not be read (a file the search engine just
+            matched should normally be readable, so a failure is surfaced by the
+            caller rather than silently dropped).
+        """
+        context: dict[int, str] = {}
+        try:
+            resolved_path = self._resolve_path(file_path)
+            with resolved_path.open(encoding="utf-8", errors="strict", newline=newline) as handle:
+                range_index = 0
+                for line_num, raw_line in enumerate(handle, 1):
+                    while range_index < len(line_ranges) and line_num > line_ranges[range_index][1]:
+                        range_index += 1
+                    if range_index == len(line_ranges):
+                        break
+                    if line_num >= line_ranges[range_index][0]:
+                        text = raw_line[:-2] if raw_line.endswith("\r\n") else raw_line.removesuffix("\n")
+                        context[line_num] = text
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as e:
+            # A matched file that cannot be re-read (e.g. non-UTF-8 bytes ripgrep
+            # tolerated, a symlink loop, a mid-search deletion, or a path that no
+            # longer resolves) is surfaced to the caller via `GrepResult.error`.
+            # Log at debug for diagnostics, matching `_python_search`'s handling
+            # of unreadable files, rather than spamming warnings for benign binaries.
+            logger.debug("Could not read grep context for %s: %s", file_path, e)
+            return {}, False
+        return context, True
+
+    def _add_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> list[str]:
+        """Attach requested surrounding lines to grep matches in place.
+
+        Returns the paths of matched files whose context could not be read.
+        """
+        matches_by_path: dict[str, list[GrepMatch]] = {}
+        for match in matches:
+            matches_by_path.setdefault(match["path"], []).append(match)
+
+        unreadable: list[str] = []
+        for file_path, file_matches in matches_by_path.items():
+            context, ok = self._read_grep_context(
+                file_path,
+                self._grep_context_ranges(file_matches, context_lines),
+                newline=newline,
+            )
+            if not ok:
+                unreadable.append(file_path)
+            match_numbers = {match["line"] for match in file_matches}
+            # `bisect_*` below require ascending `context_numbers`; sort here so
+            # correctness never depends on `_read_grep_context`'s insertion order.
+            sorted_context = sorted(context.items())
+            context_items: list[ContextLine] = [
+                {"line": number, "text": text} for number, text in sorted_context if number not in match_numbers and pattern not in text
+            ]
+            context_numbers = [item["line"] for item in context_items]
+            for match in file_matches:
+                line_num = match["line"]
+                before_start = bisect_left(context_numbers, max(1, line_num - context_lines))
+                before_end = bisect_left(context_numbers, line_num)
+                after_start = bisect_right(context_numbers, line_num)
+                after_end = bisect_right(context_numbers, line_num + context_lines)
+                match["context_before"] = context_items[before_start:before_end]
+                match["context_after"] = context_items[after_start:after_end]
+        return unreadable
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        context_lines: int = 0,
+    ) -> GrepResult:
+        """Async version of `grep`, with optional surrounding context lines.
+
+        As in the base `agrep`, the async timeout bounds how long the caller
+        waits; it does not stop the worker thread spawned by `asyncio.to_thread`.
+
+        Raises:
+            ValueError: If `context_lines` is negative.
+        """
+        # Validate eagerly rather than letting `self.grep` raise inside the
+        # worker thread, mirroring the sync path and avoiding a pointless
+        # `to_thread` hop just to surface a programming error.
+        if context_lines < 0:
+            msg = "context_lines must be non-negative"
+            raise ValueError(msg)
+        if context_lines == 0:
+            return await super().agrep(pattern, path, glob)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.grep, pattern, path, glob, context_lines=context_lines),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
 
     def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> tuple[dict[str, list[tuple[int, str]]] | None, bool]:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
         """Search using ripgrep with fixed-string (literal) mode.

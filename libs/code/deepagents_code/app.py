@@ -10125,12 +10125,7 @@ class DeepAgentsApp(App):
                         prefix="Previous thread",
                         thread_id=previous_thread_id,
                     )
-                    await self._mount_message(
-                        AppMessage(
-                            "Resume it with /threads -r"
-                            f" (or /threads -r {previous_thread_id})"
-                        )
-                    )
+                    await self._mount_message(AppMessage("Resume it with /threads -r"))
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished

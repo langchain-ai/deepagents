@@ -220,6 +220,7 @@ class TestScrollDrivenHydration:
                 await pilot.pause()
                 if not app._message_store.has_messages_below:
                     break
+                chat.scroll_end(animate=False)
 
             _start_after, end_after = app._message_store.get_visible_range()
             assert end_after == app._message_store.total_count

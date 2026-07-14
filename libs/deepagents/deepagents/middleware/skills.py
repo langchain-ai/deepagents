@@ -53,15 +53,14 @@ Parsed from YAML frontmatter per Agent Skills specification:
 
 ## Sources
 
-Sources point to skill directories in the backend. Each source is a bare path,
-a `(path, label)` tuple, or a `(path, label, name_prefix)` tuple. With a bare
-path the label is derived from the last path component capitalized (e.g.,
-`/skills/user/` -> `User`), with two special cases: `built_in_skills` collapses
-to `Built-in`, and a literal `skills` leaf climbs one level so
-`~/.claude/skills` renders as `Claude` rather than the duplicative
-`Skills Skills`. Pass an explicit tuple to disambiguate labels or qualify names
-from a source. Prefixes are applied after source skill validation, so qualified
-names may use namespace separators that are not valid in source frontmatter.
+Sources point to skill directories in the backend. Each source is either a bare
+path or a `(path, label)` tuple. With a bare path the label is derived from the
+last path component capitalized (e.g., `/skills/user/` -> `User`), with two
+special cases: `built_in_skills` collapses to `Built-in`, and a literal `skills`
+leaf climbs one level so `~/.claude/skills` renders as `Claude` rather than the
+duplicative `Skills Skills`. Pass an explicit tuple to disambiguate sources
+whose leaf directories would collide (e.g. user- vs project-scoped
+`.claude/skills`).
 
 Example sources:
 ```python
@@ -70,7 +69,6 @@ Example sources:
     "/skills/project/",
     ("/home/me/.claude/skills", "User Claude"),
     ("/repo/.claude/skills", "Project Claude"),
-    ("/plugins/review/skills", "Review Plugin", "review:"),
 ]
 ```
 
@@ -142,7 +140,6 @@ logger = logging.getLogger(__name__)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 MAX_SKILLS_LOAD_WARNINGS = 20
 MAX_SKILL_LOAD_WARNING_LENGTH = 1000
-_SKILL_SOURCE_WITH_PREFIX_LEN = 3
 _SKILL_LOAD_WARNING_TRUNCATION_SUFFIX = "... [truncated]"
 
 # Agent Skills specification constraints (https://agentskills.io/specification)
@@ -150,18 +147,14 @@ MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
 
-SkillSource = str | tuple[str, str] | tuple[str, str, str]
-"""A skill source: a bare path, `(path, label)`, or `(path, label, name_prefix)`.
+SkillSource = str | tuple[str, str]
+"""A skill source: either a bare path or a `(path, label)` pair.
 
 When only a path is given, the label is derived from the final path
 component. Supply a tuple to override the default (e.g. to distinguish
 user-scoped from project-scoped directories that share the same leaf
 name). The label is rendered as `**{label} Skills**` in the system
 prompt; do not include the trailing "Skills" yourself.
-
-The optional third tuple element prefixes discovered skill names. This is used
-for plugin namespaces such as `formatter:review` while preserving the same
-underlying skill directory layout.
 """
 
 
@@ -173,12 +166,11 @@ def _validate_tuple_source(source: tuple[object, ...]) -> None:
     middleware or a silently-coerced non-string path downstream.
     """
     if (
-        len(source) not in {2, _SKILL_SOURCE_WITH_PREFIX_LEN}
+        len(source) != 2  # noqa: PLR2004  # SkillSource tuple is exactly (path, label)
         or not isinstance(source[0], str)
         or not isinstance(source[1], str)
-        or (len(source) == _SKILL_SOURCE_WITH_PREFIX_LEN and not isinstance(source[2], str))
     ):
-        msg = f"Invalid skill source: expected str, (str, str), or (str, str, str) tuple, got {source!r}"
+        msg = f"Invalid skill source: expected str or (str, str) tuple, got {source!r}"
         raise TypeError(msg)
 
 
@@ -196,14 +188,6 @@ def _truncate_skill_load_warning(error: str) -> str:
         return error
     length = MAX_SKILL_LOAD_WARNING_LENGTH - len(_SKILL_LOAD_WARNING_TRUNCATION_SUFFIX)
     return f"{error[:length]}{_SKILL_LOAD_WARNING_TRUNCATION_SUFFIX}"
-
-
-def _source_name_prefix(source: SkillSource) -> str:
-    """Return an optional prefix applied to skill names from a source."""
-    if isinstance(source, str):
-        return ""
-    _validate_tuple_source(source)
-    return source[2] if len(source) == _SKILL_SOURCE_WITH_PREFIX_LEN else ""
 
 
 def _derive_source_label(source: SkillSource) -> str:
@@ -314,9 +298,6 @@ class SkillsState(AgentState):
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
 
-    skills_source_version: NotRequired[Annotated[str, PrivateStateAttr]]
-    """Token identifying the source set used for `skills_metadata`."""
-
 
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
@@ -326,9 +307,6 @@ class SkillsStateUpdate(TypedDict):
 
     skills_load_errors: NotRequired[list[str]]
     """Skill source loading errors to merge into state."""
-
-    skills_source_version: NotRequired[str]
-    """Token identifying the source set used for `skills_metadata`."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -609,19 +587,11 @@ def _format_skills_source_error(source_path: str, error: str) -> str:
     return f"Cannot load skills from '{source_path}': {error}"
 
 
-def _apply_skill_name_prefix(skills: list[SkillMetadata], prefix: str) -> list[SkillMetadata]:
-    """Return skill metadata with `prefix` prepended to each skill name."""
-    if not prefix:
-        return skills
-    return [SkillMetadata({**skill, "name": f"{prefix}{skill['name']}"}) for skill in skills]
-
-
 def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
     """List all skills from a backend source.
 
-    Scans backend for `SKILL.md` directly under the source and for
-    subdirectories containing `SKILL.md` files, downloads their content, parses
-    YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing `SKILL.md` files, downloads
+    their content, parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
 
@@ -640,12 +610,6 @@ def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tupl
         Tuple of skill metadata and an optional source-level loading error.
     """
     skills: list[SkillMetadata] = []
-    direct_skill_md_path = str(PurePosixPath(to_posix_path(source_path)) / "SKILL.md")
-    direct_response = backend.download_files([direct_skill_md_path])[0]
-    direct_skill = _skill_metadata_from_response(direct_response, source_path, direct_skill_md_path)
-    if direct_skill is not None:
-        skills.append(direct_skill)
-
     source_error: str | None = None
     ls_result = backend.ls(source_path)
     if isinstance(ls_result, LsResult) and ls_result.error:
@@ -663,7 +627,7 @@ def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tupl
         skill_dirs.append(item["path"])
 
     if not skill_dirs:
-        return skills, source_error
+        return [], source_error
 
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
@@ -692,9 +656,8 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
 async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:
     """List all skills from a backend source (async version).
 
-    Scans backend for `SKILL.md` directly under the source and for
-    subdirectories containing `SKILL.md` files, downloads their content, parses
-    YAML frontmatter, and returns skill metadata.
+    Scans backend for subdirectories containing `SKILL.md` files, downloads
+    their content, parses YAML frontmatter, and returns skill metadata.
 
     Expected structure:
 
@@ -713,12 +676,6 @@ async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) 
         Tuple of skill metadata and an optional source-level loading error.
     """
     skills: list[SkillMetadata] = []
-    direct_skill_md_path = str(PurePosixPath(to_posix_path(source_path)) / "SKILL.md")
-    direct_response = (await backend.adownload_files([direct_skill_md_path]))[0]
-    direct_skill = _skill_metadata_from_response(direct_response, source_path, direct_skill_md_path)
-    if direct_skill is not None:
-        skills.append(direct_skill)
-
     source_error: str | None = None
     ls_result = await backend.als(source_path)
     if isinstance(ls_result, LsResult) and ls_result.error:
@@ -736,7 +693,7 @@ async def _alist_skills_with_errors(backend: BackendProtocol, source_path: str) 
         skill_dirs.append(item["path"])
 
     if not skill_dirs:
-        return skills, source_error
+        return [], source_error
 
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
@@ -849,7 +806,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         backend: BACKEND_TYPES,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
-        source_version: str | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -858,23 +814,20 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             sources: List of skill sources.
 
                 Each entry is either a bare path (e.g. `'/skills/user/'`) or
-                a `(path, label)` tuple, or a
-                `(path, label, name_prefix)` tuple. Labels are rendered as
-                `**{label} Skills**` in the system prompt (do not include the
-                trailing `Skills` in your label). The optional prefix qualifies
-                each loaded skill name after source metadata validation.
+                a `(path, label)` tuple
+                (e.g. `('/home/me/.claude/skills', 'User Claude')`). Labels
+                are rendered as `**{label} Skills**` in the system prompt
+                (do not include the trailing `Skills` in your label).
             system_prompt: System-prompt fragment template. Must contain
                 `{skills_locations}`, `{skills_load_warnings}`, and
                 `{skills_list}` slots for runtime substitution. Pass `None`
                 to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
-            source_version: Optional source version. A changed value reloads
-                metadata from checkpointed sessions.
 
         Raises:
-            TypeError: If a tuple entry in `sources` is not a two- or
-                three-item tuple of strings, or if `system_prompt` is not
-                `str` or `None`.
+            TypeError: If a tuple entry in `sources` is not exactly a
+                `(str, str)` pair, or if `system_prompt` is not `str` or
+                `None`.
             ValueError: If `system_prompt` is a string missing any of the
                 required format slots.
         """
@@ -893,9 +846,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         # information is mirrored on `self.source_labels` at the same index.
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
-        self.source_name_prefixes: list[str] = [_source_name_prefix(s) for s in sources]
         self.system_prompt_template = system_prompt
-        self.source_version = source_version
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -1022,7 +973,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        if "skills_metadata" in state and (self.source_version is None or state.get("skills_source_version") == self.source_version):
+        # Skip if skills_metadata is already present in state (even if empty)
+        if "skills_metadata" in state:
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
@@ -1032,17 +984,15 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
-        for source_path, name_prefix in zip(self.sources, self.source_name_prefixes, strict=True):
+        for source_path in self.sources:
             source_skills, source_error = _list_skills_with_errors(backend, source_path)
             if source_error is not None:
                 skills_load_errors.append(source_error)
-            for skill in _apply_skill_name_prefix(source_skills, name_prefix):
+            for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
-        if self.source_version is not None:
-            update["skills_source_version"] = self.source_version
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and
@@ -1069,7 +1019,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        if "skills_metadata" in state and (self.source_version is None or state.get("skills_source_version") == self.source_version):
+        # Skip if skills_metadata is already present in state (even if empty)
+        if "skills_metadata" in state:
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
@@ -1079,17 +1030,15 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         # Load skills from each source in order
         # Later sources override earlier ones (last one wins)
-        for source_path, name_prefix in zip(self.sources, self.source_name_prefixes, strict=True):
+        for source_path in self.sources:
             source_skills, source_error = await _alist_skills_with_errors(backend, source_path)
             if source_error is not None:
                 skills_load_errors.append(source_error)
-            for skill in _apply_skill_name_prefix(source_skills, name_prefix):
+            for skill in source_skills:
                 all_skills[skill["name"]] = skill
 
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
-        if self.source_version is not None:
-            update["skills_source_version"] = self.source_version
         if skills_load_errors:
             # Log even when `system_prompt_template is None`, otherwise the
             # warnings only reach the model via the prompt fragment and
@@ -1133,4 +1082,4 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         return await handler(modified_request)
 
 
-__all__ = ["SkillMetadata", "SkillSource", "SkillsMiddleware"]
+__all__ = ["SkillMetadata", "SkillsMiddleware"]

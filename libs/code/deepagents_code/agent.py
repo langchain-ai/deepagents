@@ -21,7 +21,6 @@ from deepagents.middleware import (
     FilesystemMiddleware,
     MemoryMiddleware,
     RubricMiddleware,
-    SkillsMiddleware,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
-    from deepagents.middleware.skills import SkillSource
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
@@ -45,6 +43,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
+    from deepagents_code.plugins.adapters.skills import CodeSkillSource
 
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
@@ -76,6 +75,7 @@ from deepagents_code.local_context import (
     _AsyncExecutableBackend,
     _ExecutableBackend,
 )
+from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
@@ -1687,22 +1687,19 @@ def create_cli_agent(
     # Add skills middleware
     if enable_skills:
         # Lowest to highest precedence:
-        # built-in -> user .deepagents -> user .agents
-        # -> plugins -> project .deepagents -> project .agents
+        # built-in -> plugins -> user .deepagents -> user .agents
+        # -> project .deepagents -> project .agents
         # -> user .claude (experimental) -> project .claude (experimental)
         # Plugin skills are namespaced as `{plugin_id}:{skill_name}` to avoid
         # collisions between plugins and user/project skills.
-        sources: list[SkillSource] = [
+        sources: list[CodeSkillSource] = [
             (str(settings.get_built_in_skills_dir()), "Built-in"),
         ]
         try:
-            from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
             if is_env_truthy(EXPERIMENTAL):
                 from deepagents_code.plugins import discover_plugins
                 from deepagents_code.plugins.adapters.skills import (
                     plugin_skill_sources,
-                    skill_name_prefix,
                 )
 
                 plugin_result = discover_plugins()
@@ -1710,12 +1707,7 @@ def create_cli_agent(
                     logger.warning(
                         "Plugin discovery warnings: %s", plugin_result.warnings
                     )
-                sources.extend(
-                    (path, label, skill_name_prefix(namespace))
-                    for path, label, namespace in plugin_skill_sources(
-                        plugin_result.plugins
-                    )
-                )
+                sources.extend(plugin_skill_sources(plugin_result.plugins))
         except Exception:
             logger.warning("Could not discover plugin skills", exc_info=True)
         sources.extend(
@@ -1737,8 +1729,11 @@ def create_cli_agent(
         if project_claude_skills_dir:
             sources.append((str(project_claude_skills_dir), "Project Claude"))
 
+        # `PluginSkillsMiddleware` namespaces plugin skills before dedup while
+        # behaving like the SDK middleware when no plugin namespaces are
+        # present, so it is safe to use for all skill sources.
         agent_middleware.append(
-            SkillsMiddleware(
+            PluginSkillsMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),
                 sources=sources,
             )

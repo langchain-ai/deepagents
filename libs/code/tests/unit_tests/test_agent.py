@@ -1079,7 +1079,7 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent", return_value=mock_agent
@@ -1139,7 +1139,7 @@ class TestCreateCliAgentInteractiveForwarding:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
@@ -1458,7 +1458,7 @@ class TestCreateCliAgentSkillsSources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch(
@@ -1560,7 +1560,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1627,7 +1627,7 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch(
@@ -1715,7 +1715,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -1795,7 +1795,7 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.FilesystemBackend"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -1871,7 +1871,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch(
                 "deepagents_code.agent.LocalShellBackend", return_value=mock_backend
             ) as mock_shell,
@@ -1997,7 +1997,7 @@ class TestCreateCliAgentProjectContext:
         with (
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.FilesystemBackend") as mock_filesystem,
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
             patch("deepagents._models.init_chat_model", return_value=fake_model),
@@ -2458,7 +2458,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2497,7 +2497,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -2543,7 +2543,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2601,7 +2601,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2654,7 +2654,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2707,7 +2707,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2781,7 +2781,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2855,7 +2855,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2908,7 +2908,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -2958,7 +2958,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3012,7 +3012,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3110,7 +3110,7 @@ class TestExperimentalTodoMiddlewareWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.list_subagents",
@@ -3345,7 +3345,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3383,7 +3383,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
             patch(
@@ -3453,7 +3453,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3487,7 +3487,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3517,7 +3517,7 @@ class TestCreateCliAgentInterpreterWiring:
         fake_sandbox = Mock()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -3559,7 +3559,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",
@@ -3603,7 +3603,7 @@ class TestCreateCliAgentInterpreterWiring:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents._models.init_chat_model",
@@ -3652,7 +3652,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
-            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch(
                 "deepagents_code.agent.create_deep_agent",

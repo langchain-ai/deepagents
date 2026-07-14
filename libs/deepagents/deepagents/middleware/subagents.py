@@ -28,7 +28,6 @@ from pydantic import BaseModel, Field
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
-from deepagents.middleware.skills import SkillSource
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -69,10 +68,10 @@ class SubAgent(TypedDict):
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
-        skills: Skill sources for `SkillsMiddleware`.
+        skills: Skill source paths for `SkillsMiddleware`.
 
-            Each source can be a path, a `(path, label)` tuple, or a
-            `(path, label, name_prefix)` tuple.
+            List of paths to skill directories
+            (e.g., `["/skills/user/", "/skills/project/"]`).
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,
@@ -111,8 +110,8 @@ class SubAgent(TypedDict):
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
     """Configure human-in-the-loop for specific tools."""
 
-    skills: NotRequired[Sequence[SkillSource]]
-    """Skill sources for `SkillsMiddleware`."""
+    skills: NotRequired[list[str]]
+    """Skill source paths for `SkillsMiddleware`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.

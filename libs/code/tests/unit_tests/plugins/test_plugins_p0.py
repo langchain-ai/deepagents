@@ -32,10 +32,8 @@ from deepagents_code.plugins.adapters.mcp import (
     plugin_mcp_configs,
     scoped_mcp_server_name,
 )
-from deepagents_code.plugins.adapters.skills import (
-    plugin_skill_sources,
-    skill_name_prefix,
-)
+from deepagents_code.plugins.adapters.skills import plugin_skill_sources
+from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.plugins.commands_cli import execute_plugin_command
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
@@ -765,7 +763,7 @@ def test_marketplace_source_parser_accepts_bare_relative_directory(
     assert Path(source.value) == marketplace_root.resolve()
 
 
-def test_plugin_skill_namespace_qualifies_sdk_skill_name(
+def test_plugin_skill_namespace_qualifies_skill_name(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -786,11 +784,9 @@ def test_plugin_skill_namespace_qualifies_sdk_skill_name(
     )
     assert skills[0]["name"] == "review"
 
-    from deepagents.middleware.skills import SkillsMiddleware
-
-    middleware = SkillsMiddleware(
+    middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False),
-        sources=[(source_path, "Plugin", skill_name_prefix(namespace))],
+        sources=[(source_path, "Plugin", namespace)],
         system_prompt=None,
     )
     update = middleware.before_agent(
@@ -801,6 +797,44 @@ def test_plugin_skill_namespace_qualifies_sdk_skill_name(
         update["skills_metadata"][0]["name"]
         == "quality-review-plugin@company-tools:review"
     )
+
+
+async def test_plugin_skill_adapter_preserves_colliding_names(
+    tmp_path: Path,
+) -> None:
+    first_plugin = tmp_path / "first-plugin" / "skills"
+    second_plugin = tmp_path / "second-plugin" / "skills"
+    root_plugin = tmp_path / "root-plugin"
+    user_skills = tmp_path / "user-skills"
+    _write_skill(first_plugin / "review" / "SKILL.md")
+    _write_skill(second_plugin / "review" / "SKILL.md")
+    _write_skill(root_plugin / "SKILL.md", name="root-plugin")
+    _write_skill(user_skills / "review" / "SKILL.md")
+
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False),
+        sources=[
+            (str(first_plugin), "First plugin", "first"),
+            (str(second_plugin), "Second plugin", "second"),
+            (str(root_plugin), "Root plugin", "root"),
+            (str(user_skills), "User"),
+        ],
+        system_prompt=None,
+    )
+    sync_update = middleware.before_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+    )
+    async_update = await middleware.abefore_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+    )
+
+    expected_names = {"first:review", "second:review", "root:root-plugin", "review"}
+    assert sync_update is not None
+    assert async_update is not None
+    assert {skill["name"] for skill in sync_update["skills_metadata"]} == expected_names
+    assert {
+        skill["name"] for skill in async_update["skills_metadata"]
+    } == expected_names
 
 
 def test_cache_keys_do_not_collide(

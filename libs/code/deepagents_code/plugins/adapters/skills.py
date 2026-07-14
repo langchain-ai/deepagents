@@ -18,6 +18,7 @@ SkillLabel: TypeAlias = str
 SkillNamespace: TypeAlias = str
 DirectorySkillSource: TypeAlias = tuple[SkillPath, SkillLabel]
 PluginSkillSource: TypeAlias = tuple[SkillPath, SkillLabel, SkillNamespace]
+CodeSkillSource: TypeAlias = DirectorySkillSource | PluginSkillSource
 
 
 def namespaced_skill_name(namespace: SkillNamespace, name: str) -> str:
@@ -27,11 +28,6 @@ def namespaced_skill_name(namespace: SkillNamespace, name: str) -> str:
         The qualified skill name.
     """
     return f"{namespace}:{name}"
-
-
-def skill_name_prefix(namespace: SkillNamespace) -> str:
-    """Return the SDK skill-name prefix for a plugin namespace."""
-    return namespaced_skill_name(namespace, "")
 
 
 def plugin_skill_sources(

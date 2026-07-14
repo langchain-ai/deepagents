@@ -4335,6 +4335,40 @@ class _RubricResultApp(App[None]):
         )
 
 
+class _DeferredExpandedRubricApp(App[None]):
+    """Mounts a rubric result whose expansion was restored from virtualization."""
+
+    def compose(self) -> ComposeResult:
+        widget = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-deferred",
+        )
+        widget._deferred_expanded = True
+        yield widget
+
+
+class _RecordingRubricApp(App[None]):
+    """Records `ExpansionChanged` messages posted by a mounted rubric result."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.expansions: list[bool] = []
+
+    def compose(self) -> ComposeResult:
+        yield RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            "Explanation\ndetail",
+            id="rubric-events",
+        )
+
+    def on_rubric_result_message_expansion_changed(
+        self,
+        event: RubricResultMessage.ExpansionChanged,
+    ) -> None:
+        self.expansions.append(event.expanded)
+
+
 class TestRubricResultMessage:
     """Grader details stay complete, collapsed, and scrollable."""
 
@@ -4364,3 +4398,35 @@ class TestRubricResultMessage:
             assert message._expanded is True
             assert details_scroll.display is True
             assert str(details.content) == message._details
+
+    async def test_deferred_expansion_is_restored_on_mount(self) -> None:
+        """A rehydrated widget must reopen its details, not just remember the flag."""
+        app = _DeferredExpandedRubricApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-deferred", RubricResultMessage)
+            details_scroll = message.query_one(
+                ".rubric-result-details-scroll",
+                VerticalScroll,
+            )
+
+            assert message._expanded is True
+            assert details_scroll.display is True
+
+    async def test_toggle_posts_expansion_changed(self) -> None:
+        """Toggling an attached widget must publish state for virtualization."""
+        app = _RecordingRubricApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            message = app.query_one("#rubric-events", RubricResultMessage)
+            # Mounting collapsed (deferred False) must not emit a spurious event.
+            assert app.expansions == []
+
+            message.toggle_details()
+            await pilot.pause()
+            message.toggle_details()
+            await pilot.pause()
+
+            assert app.expansions == [True, False]

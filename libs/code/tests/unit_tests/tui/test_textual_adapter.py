@@ -1398,6 +1398,50 @@ class TestFormatRubricEvent:
         assert "Review or replace the rubric" in invalid
         assert "Retry the check, or choose a different grader model." in grader_error
 
+    def test_no_detail_results_return_empty_string(self) -> None:
+        """`None` and satisfied verdicts have no failure detail to expand."""
+        assert _format_rubric_details({"result": None}) == ""
+        assert _format_rubric_details({"result": "satisfied"}) == ""
+
+    def test_failure_without_explanation_returns_next_step_only(self) -> None:
+        """A failure with no explanation still yields an actionable next step."""
+        details = _format_rubric_details({"result": "failed"})
+
+        assert "Explanation" not in details
+        assert "Unmet criteria" not in details
+        assert details == (
+            "Next step\nReview or replace the rubric before grading again."
+        )
+
+    def test_unknown_result_uses_generic_next_step(self) -> None:
+        """An unrecognized terminal verdict falls back to a generic recovery step."""
+        details = _format_rubric_details({"result": "something_new"})
+
+        assert "Next step\nReview the grader details before continuing." in details
+
+    def test_unnamed_failing_criterion_without_gap(self) -> None:
+        """A failing criterion missing name/gap renders a bare default bullet."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [{"passed": False}],
+            }
+        )
+
+        assert "- Unnamed criterion" in details
+        # No gap line follows a criterion with no gap.
+        assert "- Unnamed criterion\n  " not in details
+
+    def test_active_goal_max_iterations_details_offer_goal_commands(self) -> None:
+        """An unfinished goal that hit the limit should point at goal recovery."""
+        details = _format_rubric_details(
+            {"result": "max_iterations_reached"},
+            goal_active=True,
+        )
+
+        assert "The goal remains active" in details
+        assert "`/goal clear`" in details
+
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
         assert _format_rubric_event({"type": "rubric_evaluation_end"}) is None

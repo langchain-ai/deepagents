@@ -3392,7 +3392,12 @@ class RubricResultMessage(Vertical):
         """Posted when the grader-details expansion state changes."""
 
         def __init__(self, widget: RubricResultMessage, expanded: bool) -> None:
-            """Initialize an expansion-state message."""
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The rubric result whose expansion state changed.
+                expanded: Whether the grader details are now expanded.
+            """
             super().__init__()
             self.widget = widget
             self.expanded = expanded
@@ -3455,6 +3460,10 @@ class RubricResultMessage(Vertical):
         self._details = details
         self._hint_widget: _RubricResultToggle | None = None
         self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against it
+        # keeps the reactive's initialization watcher and the deferred restore from
+        # re-emitting a value the store already holds.
+        self._published_expanded = False
 
     def compose(self) -> ComposeResult:
         """Compose the compact summary, details viewport, and expansion hint.
@@ -3485,7 +3494,12 @@ class RubricResultMessage(Vertical):
         if not self._details:
             self._hint_widget.display = False
             return
-        self._expanded = self._deferred_expanded
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
         self._update_hint()
 
     def toggle_details(self) -> None:
@@ -3494,9 +3508,14 @@ class RubricResultMessage(Vertical):
             self._expanded = not self._expanded
 
     def watch__expanded(self, expanded: bool) -> None:
-        """Refresh the hint and publish expansion state for virtualization."""
+        """Refresh the hint and publish user-driven expansion for virtualization."""
         self._update_hint()
-        if self.is_attached:
+        # Publish only genuine changes: dedupe against the store's known value to
+        # drop the reactive's initialization watcher and the deferred restore, and
+        # require `is_attached` so `_expanded` set in pre-mount test setup does not
+        # `post_message` on a detached widget (NoActiveAppError).
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
             self.post_message(self.ExpansionChanged(self, expanded))
 
     def _update_hint(self) -> None:

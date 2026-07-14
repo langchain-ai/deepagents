@@ -223,14 +223,20 @@ class MessageData:
         """Validate type-field coherence after construction.
 
         Raises:
-            ValueError: If a TOOL message is missing `tool_name` or a SKILL
-                message is missing `skill_name`.
+            ValueError: If a TOOL message is missing `tool_name`, a SKILL
+                message is missing `skill_name`, or a RUBRIC message is missing
+                `rubric_details`.
         """
         if self.type == MessageType.TOOL and not self.tool_name:
             msg = "TOOL messages must have a tool_name"
             raise ValueError(msg)
         if self.type == MessageType.SKILL and not self.skill_name:
             msg = "SKILL messages must have a skill_name"
+            raise ValueError(msg)
+        # A summary-only grader result stays an AppMessage; a RUBRIC message
+        # exists precisely to carry expandable details, so require them.
+        if self.type == MessageType.RUBRIC and not self.rubric_details:
+            msg = "RUBRIC messages must have rubric_details"
             raise ValueError(msg)
 
     def to_widget(self) -> Widget:

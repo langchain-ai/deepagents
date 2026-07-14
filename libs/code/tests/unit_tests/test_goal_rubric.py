@@ -7,16 +7,31 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
     from pathlib import Path
+    from typing import Any
 
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.runnables import Runnable
+    from langchain_core.tools import BaseTool
+
+import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from deepagents_code.goal_rubric import (
+    _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
+    _REPOSITORY_READ_BYTE_LIMIT,
+    _REPOSITORY_READ_LINE_LIMIT,
+    _REPOSITORY_TOOL_CALL_LIMIT,
+    _REPOSITORY_TOOL_RESULT_LIMIT,
     GOAL_RUBRIC_SYSTEM_PROMPT,
+    _generate_with_repository_context,
     _goal_amendment_human_prompt,
     _goal_rubric_human_prompt,
+    _RepositoryContextUnavailableError,
     _RepositoryToolBudgetMiddleware,
     generate_goal_amendment,
     generate_goal_rubric,
@@ -53,6 +68,21 @@ class _FakeStructuredModel:
         """Record the prompt and return the configured amendment."""
         self.invoked_with = messages
         return self._response
+
+
+class _ToolCallingFakeModel(GenericFakeChatModel):
+    """Fake chat model that supports agent tool binding."""
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Return this model after accepting the agent's repository tools."""
+        del tools, tool_choice, kwargs
+        return self
 
 
 class TestGoalAmendment:
@@ -150,15 +180,18 @@ class TestGoalRubricHumanPrompt:
 
     def test_system_prompt_requires_minimal_outcome_focused_criteria(self) -> None:
         """Drafting instructions should constrain both content and presentation."""
-        assert "usually 2-5 bullets" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "flat Markdown bullet list" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "short, concrete, outcome-focused" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "Remove overlap" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "Do not invent requirements or implementation details" in (
-            GOAL_RUBRIC_SYSTEM_PROMPT
-        )
-        assert "Do not add documentation" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "generic testing\nrequirements" in GOAL_RUBRIC_SYSTEM_PROMPT
+        # Normalize whitespace so assertions track wording, not the incidental
+        # line wrapping of the source triple-quoted string.
+        normalized = " ".join(GOAL_RUBRIC_SYSTEM_PROMPT.split())
+        assert "usually 2-5 bullets" in normalized
+        assert "flat Markdown bullet list" in normalized
+        assert "short, concrete, outcome-focused" in normalized
+        assert "Remove overlap" in normalized
+        assert "Do not invent requirements or implementation details" in normalized
+        assert "Do not add documentation" in normalized
+        assert "generic testing requirements" in normalized
+        # The advertised tool-call budget must track the enforced constant.
+        assert f"no more than {_REPOSITORY_TOOL_CALL_LIMIT} tool calls" in normalized
 
     def test_explicit_user_constraints_are_preserved_in_prompt(self) -> None:
         """Paths, commands, and exact required copy should reach the model unchanged."""
@@ -167,10 +200,11 @@ class TestGoalRubricHumanPrompt:
             "show exactly 'Not ready'."
         )
         prompt = _goal_rubric_human_prompt(objective)
+        normalized = " ".join(GOAL_RUBRIC_SYSTEM_PROMPT.split())
 
         assert f"<goal>\n{objective}\n</goal>" in prompt
-        assert "explicit user constraints" in GOAL_RUBRIC_SYSTEM_PROMPT
-        assert "verbatim where\npractical" in GOAL_RUBRIC_SYSTEM_PROMPT
+        assert "explicit user constraints" in normalized
+        assert "verbatim where practical" in normalized
 
 
 class TestGenerateGoalRubric:
@@ -243,10 +277,98 @@ class TestGenerateGoalRubric:
             tool_token_limit_before_evict=None,
         )
         assert create_agent.call_args.kwargs["tools"] == []
-        assert create_agent.call_args.kwargs["middleware"][0] is filesystem
+        wired_middleware = create_agent.call_args.kwargs["middleware"]
+        assert wired_middleware[0] is filesystem
+        # The budget middleware must actually be wired in after the filesystem
+        # tools, or none of the isolation-level limit tests reflect real runs.
+        assert isinstance(wired_middleware[1], _RepositoryToolBudgetMiddleware)
         agent.invoke.assert_called_once()
-        assert agent.invoke.call_args.kwargs["config"] == {"recursion_limit": 7}
+        assert agent.invoke.call_args.kwargs["config"] == {"recursion_limit": 10}
         assert model.invoked_with is None
+
+    def test_repository_context_permits_full_sequential_tool_budget(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Four sequential repository calls should still reach a final response."""
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ls",
+                        "args": {"path": "/"},
+                        "id": f"call-{index}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for index in range(4)
+        ]
+        responses.append(AIMessage(content="- repository context used"))
+        model = _ToolCallingFakeModel(messages=iter(responses))
+
+        result = _generate_with_repository_context(model, "inspect the repo", tmp_path)
+
+        assert result == "- repository context used"
+
+    def test_empty_final_response_is_treated_as_unavailable(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A blank final answer should raise so the caller falls back, not return ''."""
+        agent = MagicMock()
+        agent.invoke.return_value = {"messages": [AIMessage(content="   ")]}
+
+        with (
+            patch(
+                "deepagents.backends.filesystem.FilesystemBackend",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=MagicMock(),
+            ),
+            patch("langchain.agents.create_agent", return_value=agent),
+            pytest.raises(_RepositoryContextUnavailableError),
+        ):
+            _generate_with_repository_context(
+                _ToolCallingFakeModel(messages=iter([AIMessage(content="unused")])),
+                "inspect the repo",
+                tmp_path,
+            )
+
+    def test_tool_message_is_not_mistaken_for_final_response(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A trailing ToolMessage carries `text` but is not the agent's answer."""
+        agent = MagicMock()
+        agent.invoke.return_value = {
+            "messages": [
+                AIMessage(content="- from the assistant"),
+                ToolMessage(content="tool output", tool_call_id="t1"),
+            ]
+        }
+
+        with (
+            patch(
+                "deepagents.backends.filesystem.FilesystemBackend",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deepagents.middleware.FilesystemMiddleware",
+                return_value=MagicMock(),
+            ),
+            patch("langchain.agents.create_agent", return_value=agent),
+        ):
+            result = _generate_with_repository_context(
+                _ToolCallingFakeModel(messages=iter([AIMessage(content="unused")])),
+                "inspect the repo",
+                tmp_path,
+            )
+
+        assert result == "- from the assistant"
 
     def test_repository_context_failure_falls_back_to_goal_only_prompt(
         self,
@@ -442,3 +564,134 @@ class TestRepositoryToolBudgetMiddleware:
         handler.assert_not_called()
         assert isinstance(result, ToolMessage)
         assert "exceeds the listing limit" in result.text
+
+    def test_rejects_read_escaping_repository_root(self, tmp_path: Path) -> None:
+        """A read whose path escapes the repository root must be refused."""
+        (tmp_path.parent / "secret.txt").write_text("token")
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+        handler = MagicMock()
+
+        result = middleware.wrap_tool_call(
+            self._request(call_id="escape", file_path="../secret.txt"),
+            handler,
+        )
+
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "Repository path is unavailable" in result.text
+
+    def test_rejects_listing_escaping_repository_root(self, tmp_path: Path) -> None:
+        """A listing whose path escapes the repository root must be refused."""
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+        request = ToolCallRequest(
+            tool_call={
+                "name": "ls",
+                "args": {"path": "../"},
+                "id": "escape-ls",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={},
+            runtime=MagicMock(),
+        )
+        handler = MagicMock()
+
+        result = middleware.wrap_tool_call(request, handler)
+
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert "Repository path is unavailable" in result.text
+
+    def test_clamps_non_int_and_bool_read_limits(self, tmp_path: Path) -> None:
+        """A bool or non-int `limit` should fall back to the line limit, not leak."""
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+        seen_limits: list[object] = []
+
+        def handler(request: ToolCallRequest) -> ToolMessage:
+            seen_limits.append(request.tool_call["args"]["limit"])
+            return ToolMessage(content="ok", tool_call_id=request.tool_call["id"])
+
+        # `True` is an `int` subclass, so it must be excluded explicitly.
+        middleware.wrap_tool_call(self._request(call_id="bool", limit=True), handler)
+        middleware.wrap_tool_call(self._request(call_id="str", limit="50"), handler)
+
+        assert seen_limits == [_REPOSITORY_READ_LINE_LIMIT] * 2
+
+    def test_allows_boundary_file_and_directory(self, tmp_path: Path) -> None:
+        """A file/dir exactly at the limit is allowed; only over-limit is refused."""
+        (tmp_path / "exact.py").write_bytes(b"x" * _REPOSITORY_READ_BYTE_LIMIT)
+        directory = tmp_path / "packed"
+        directory.mkdir()
+        for index in range(_REPOSITORY_DIRECTORY_ENTRY_LIMIT):
+            (directory / str(index)).touch()
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+
+        read_handler = MagicMock(
+            return_value=ToolMessage(content="ok", tool_call_id="exact")
+        )
+        read_result = middleware.wrap_tool_call(
+            self._request(call_id="exact", file_path="/exact.py"),
+            read_handler,
+        )
+        list_handler = MagicMock(
+            return_value=ToolMessage(content="ok", tool_call_id="packed")
+        )
+        list_result = middleware.wrap_tool_call(
+            ToolCallRequest(
+                tool_call={
+                    "name": "ls",
+                    "args": {"path": "/packed"},
+                    "id": "packed",
+                    "type": "tool_call",
+                },
+                tool=None,
+                state={},
+                runtime=MagicMock(),
+            ),
+            list_handler,
+        )
+
+        read_handler.assert_called_once()
+        list_handler.assert_called_once()
+        assert read_result.status != "error"
+        assert list_result.status != "error"
+
+    def test_truncated_result_keeps_marker_within_limit(self, tmp_path: Path) -> None:
+        """An over-limit result is shortened to the limit and marked as such."""
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+
+        def handler(request: ToolCallRequest) -> ToolMessage:
+            return ToolMessage(
+                content="x" * 20_000,
+                tool_call_id=request.tool_call["id"],
+            )
+
+        result = middleware.wrap_tool_call(self._request(call_id="big"), handler)
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, str)
+        assert len(result.content) <= _REPOSITORY_TOOL_RESULT_LIMIT
+        assert result.content.endswith(
+            "[Repository tool result shortened to the context limit.]"
+        )
+
+    def test_missing_path_arg_skips_preflight(self, tmp_path: Path) -> None:
+        """A call without a string path bypasses preflight and reaches the handler."""
+        middleware = _RepositoryToolBudgetMiddleware(tmp_path)
+        request = ToolCallRequest(
+            tool_call={
+                "name": "read_file",
+                "args": {"limit": 5},
+                "id": "no-path",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={},
+            runtime=MagicMock(),
+        )
+        handler = MagicMock(return_value=ToolMessage(content="ok", tool_call_id="x"))
+
+        middleware.wrap_tool_call(request, handler)
+
+        handler.assert_called_once()

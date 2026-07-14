@@ -4387,6 +4387,48 @@ class TestAskUserLifecycle:
         folded.toggle_output.assert_not_called()
         skill.toggle_body.assert_not_called()
 
+    def test_ctrl_o_prefers_recent_rubric_over_tool_group(self) -> None:
+        """A newer rubric result should win Ctrl+O over an older tool group."""
+        from deepagents_code.tui.widgets.messages import (
+            RubricResultMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        group = MagicMock(spec=ToolGroupSummary)
+        rubric = MagicMock(spec=RubricResultMessage)
+        rubric._details = "details"
+        container = MagicMock()
+        container.children = [group, rubric]  # rubric mounted after the group
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        rubric.toggle_details.assert_called_once_with()
+        group.toggle.assert_not_called()
+
+    def test_ctrl_o_skips_rubric_without_details(self) -> None:
+        """A summary-only rubric is not toggleable, so Ctrl+O falls through."""
+        from deepagents_code.tui.widgets.messages import (
+            RubricResultMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        group = MagicMock(spec=ToolGroupSummary)
+        rubric = MagicMock(spec=RubricResultMessage)
+        rubric._details = ""  # no expandable content
+        container = MagicMock()
+        container.children = [group, rubric]  # rubric is most recent
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        rubric.toggle_details.assert_not_called()
+        group.toggle.assert_called_once_with()
+
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
         app = DeepAgentsApp()
@@ -6438,10 +6480,14 @@ class TestGoalCommand:
         widget = RubricResultMessage("summary", "details", id="rubric-1")
         event = RubricResultMessage.ExpansionChanged(widget, True)
 
-        with patch.object(app._message_store, "update_message") as update:
+        with (
+            patch.object(app._message_store, "update_message") as update,
+            patch.object(app, "_schedule_message_height_measurement") as measure,
+        ):
             app.on_rubric_result_message_expansion_changed(event)
 
         update.assert_called_once_with("rubric-1", rubric_expanded=True)
+        measure.assert_called_once_with("rubric-1")
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""

@@ -9734,10 +9734,9 @@ class DeepAgentsApp(App):
 
         try:
             repository_root = ProjectContext.from_user_cwd(self._cwd).project_root
-        except Exception:  # repository context is optional
-            logger.debug(
-                "Could not resolve repository context for goal criteria generation",
-                exc_info=True,
+        except (OSError, RuntimeError) as exc:  # repository context is optional
+            logger.warning(
+                "Could not resolve repository context for goal criteria: %s", exc
             )
             repository_root = None
 
@@ -13140,6 +13139,7 @@ class DeepAgentsApp(App):
                 event.widget.id,
                 rubric_expanded=event.expanded,
             )
+            self._schedule_message_height_measurement(event.widget.id)
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""

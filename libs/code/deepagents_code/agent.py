@@ -1887,19 +1887,18 @@ def create_cli_agent(
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         shell_middleware_added = True
 
-    # Get or use custom system prompt (overwrite base prompt)
-    resolved_system_prompt: str | SystemPromptConfig
+    # Overwrite the SDK's built-in base prompt with our own — auto-generated
+    # from context, or the caller's explicit prompt — so it isn't appended on
+    # top of ours. A caller-supplied prompt therefore takes full ownership (see
+    # the `system_prompt` parameter docs).
     if system_prompt is None:
-        resolved_system_prompt = {
-            "base": get_system_prompt(
-                assistant_id=assistant_id,
-                sandbox_type=sandbox_type,
-                interactive=interactive,
-                cwd=effective_cwd,
-            )
-        }
-    else:
-        resolved_system_prompt = system_prompt
+        system_prompt = get_system_prompt(
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            cwd=effective_cwd,
+        )
+    resolved_system_prompt: SystemPromptConfig = {"base": system_prompt}
 
     # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None

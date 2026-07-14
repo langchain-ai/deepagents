@@ -47,6 +47,7 @@ from deepagents_code.agent import (
 )
 from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
+from deepagents_code.offload import _filesystem_tool_path
 from deepagents_code.project_utils import ProjectContext
 
 
@@ -145,9 +146,10 @@ def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> Non
     `execute` -- the whole point of the local-mode rewire.
     """
     artifacts_root = tmp_path / "artifacts"
+    tool_root = _filesystem_tool_path(artifacts_root)
     model = _make_fake_chat_model()
 
-    with patch("deepagents_code.agent._artifacts_root", return_value=artifacts_root):
+    with patch("deepagents_code.agent._artifacts_root", return_value=tool_root):
         _agent, backend = create_cli_agent(
             model=model,
             assistant_id="test-agent",
@@ -158,8 +160,8 @@ def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> Non
             cwd=tmp_path,
         )
 
-    assert backend.artifacts_root == str(artifacts_root)
-    result = backend.write(f"{artifacts_root}/large_tool_results/call-1", "payload")
+    assert backend.artifacts_root == tool_root
+    result = backend.write(f"{tool_root}/large_tool_results/call-1", "payload")
 
     assert result.error is None
     # The bytes are on the real filesystem at the advertised path.

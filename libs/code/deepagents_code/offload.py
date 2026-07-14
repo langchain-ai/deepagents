@@ -6,9 +6,30 @@ import logging
 import os
 import stat
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePath
 
 logger = logging.getLogger(__name__)
+
+
+def _filesystem_tool_path(path: PurePath) -> str:
+    """Represent an absolute host path in the filesystem tool path format.
+
+    Drive-qualified paths are rejected by the SDK's virtual path validation. The
+    Windows extended-length form keeps the drive while starting with the `/`
+    required by filesystem tools; `pathlib` and Windows APIs still resolve it to
+    the same host directory.
+
+    Args:
+        path: Absolute host path to represent.
+
+    Returns:
+        A forward-slash path accepted by the filesystem tool contract.
+    """
+    normalized = path.as_posix()
+    if path.drive and not path.drive.startswith("\\\\"):
+        return f"//?/{normalized}"
+    return normalized
+
 
 _EPHEMERAL_OFFLOAD_STORAGE = False
 """Whether the most recent `_offload_fallback_root` fell back to temp storage."""
@@ -75,7 +96,7 @@ def _probe_writable(path: Path) -> None:
         pass
 
 
-def _artifacts_root() -> Path:
+def _artifacts_root() -> str:
     """Return a stable, private per-user directory for offloaded artifacts.
 
     In local mode, large tool results are written here on the real filesystem
@@ -99,7 +120,7 @@ def _artifacts_root() -> Path:
     across restarts, but it never trusts a directory owned by someone else.
 
     Returns:
-        A private, writable directory for offloaded artifacts.
+        The private, writable directory in the filesystem tool path format.
     """
     getuid = getattr(os, "getuid", None)
     suffix = str(getuid()) if getuid is not None else str(os.getpid())
@@ -119,8 +140,8 @@ def _artifacts_root() -> Path:
         )
         _harden_dir(unique)
         _probe_writable(unique)
-        return unique
-    return root
+        return _filesystem_tool_path(unique)
+    return _filesystem_tool_path(root)
 
 
 def _offload_fallback_root() -> Path:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -48,6 +49,30 @@ _FILTER_URL = "https://datasets-server.huggingface.co/filter"
 #: Max rows per ``/filter`` request (the endpoint caps ``length`` at 100).
 _PAGE_SIZE = 100
 
+#: Fallback source: the Hub's auto-converted parquet, served from
+#: ``huggingface.co`` (independent uptime from the datasets-server API). Read with
+#: a predicate-pushdown filter so only matching row groups transfer.
+_PARQUET_REVISION = "refs/convert/parquet"
+_PARQUET_CONFIG = "default"
+
+#: Columns each row needs (see ``_row_to_example``); selecting them keeps the
+#: pushdown from materializing unused columns.
+_PARQUET_COLUMNS = (
+    "id",
+    "dataset",
+    "task_group",
+    "task",
+    "context_len",
+    "context_window_id",
+    "context_window_text",
+    "context_window_text_with_labels",
+    "num_labels",
+    "question",
+    "answer",
+    "answer_type",
+    "input_subset",
+)
+
 #: On-disk cache for fetched rows, one JSONL per (split, subset, context_len).
 _CACHE_DIR = Path(__file__).parent / ".cache" / "oolong"
 
@@ -69,7 +94,9 @@ def _get_json_with_retry(url: str, *, attempts: int = 4) -> dict[str, Any]:
     raise RuntimeError(msg)
 
 
-def _fetch_oolong_rows(subset: str, context_len: int | None, split: str) -> list[dict[str, Any]]:
+def _fetch_oolong_rows_via_filter(
+    subset: str, context_len: int | None, split: str
+) -> list[dict[str, Any]]:
     """Fetch all rows for one (subset, context_len) bucket via the filter API.
 
     Paginates server-side until the full matching set is retrieved. A bucket is
@@ -102,6 +129,61 @@ def _fetch_oolong_rows(subset: str, context_len: int | None, split: str) -> list
         if offset >= (data.get("num_rows_total") or 0):
             break
     return rows
+
+
+def _fetch_oolong_rows_via_parquet(
+    subset: str, context_len: int | None, split: str
+) -> list[dict[str, Any]]:
+    """Fetch the bucket from the Hub's auto-converted parquet (datasets-server-free).
+
+    Reads ``refs/convert/parquet/<config>/<split>`` from ``huggingface.co`` with a
+    predicate-pushdown filter on ``(dataset, context_len)``, so only the matching
+    row groups transfer via HTTP range reads rather than the whole split.
+    ``pyarrow`` and ``huggingface_hub`` are imported lazily so this module stays
+    stdlib-only at import time.
+    """
+    import pyarrow.compute as pc  # noqa: PLC0415
+    import pyarrow.dataset as pads  # noqa: PLC0415
+    from huggingface_hub import HfFileSystem  # noqa: PLC0415
+
+    fs = HfFileSystem()
+    base = f"datasets/{_HF_DATASET}@{_PARQUET_REVISION}/{_PARQUET_CONFIG}/{split}"
+    shards = [f for f in fs.ls(base, detail=False) if f.endswith(".parquet")]
+    if not shards:
+        msg = f"No parquet shards under {base}"
+        raise RuntimeError(msg)
+
+    parquet = pads.dataset([f"hf://{f}" for f in shards], filesystem=fs, format="parquet")
+    predicate = pc.field("dataset") == subset
+    if context_len is not None:
+        predicate = predicate & (pc.field("context_len") == context_len)
+    table = parquet.to_table(filter=predicate, columns=list(_PARQUET_COLUMNS))
+    return table.to_pylist()
+
+
+def _fetch_oolong_rows(subset: str, context_len: int | None, split: str) -> list[dict[str, Any]]:
+    """Fetch a bucket's rows, preferring the datasets-server API, then the Hub parquet.
+
+    The datasets-server ``/filter`` API is the light path (server-side filter), but
+    it has its own uptime; when it is unavailable (5xx) fall back to reading the
+    Hub's auto-converted parquet, which only needs ``huggingface.co``.
+    """
+    try:
+        return _fetch_oolong_rows_via_filter(subset, context_len, split)
+    except RuntimeError as filter_err:
+        print(  # noqa: T201  (surfaced in CI logs so the fallback is visible)
+            f"OOLONG: datasets-server fetch failed ({filter_err}); "
+            "falling back to the Hub parquet export.",
+            file=sys.stderr,
+        )
+        try:
+            return _fetch_oolong_rows_via_parquet(subset, context_len, split)
+        except Exception as parquet_err:  # noqa: BLE001 (report both failures)
+            msg = (
+                "OOLONG fetch failed on both paths. "
+                f"datasets-server: {filter_err} | Hub parquet: {parquet_err}"
+            )
+            raise RuntimeError(msg) from parquet_err
 
 
 def _load_rows_cached(subset: str, context_len: int | None, split: str) -> list[dict[str, Any]]:

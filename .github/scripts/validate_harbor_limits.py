@@ -7,7 +7,7 @@ fast when:
 * the resolved model set is not a single model (a model group like `all`/`set0`
   or a comma-separated `models_override` resolves to more than one), or
 * the per-run limits are exceeded: `n_shards <= shard_matrix.MAX_SHARDS` (200),
-  `concurrency <= 4`. `n_shards` no longer bounds concurrency directly — it may
+  `concurrency <= 4`. `n_shards` does not bound concurrency directly — it may
   be set as high as the task count (one task per shard) for dynamic dispatch.
   Instead, the derived `shard_parallel` (the pool the shards drain through) is
   what's bounded, alongside the per-shard concurrent-trial count: `shard_parallel

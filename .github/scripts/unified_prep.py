@@ -147,6 +147,28 @@ def derive_pool(
     return max_parallel, model_parallel
 
 
+def _allocate_shard_budgets(counts: dict[str, int], cap: int) -> dict[str, int]:
+    """Split `cap` shards across categories proportional to `counts`.
+
+    Each category gets `max(1, cap * count // total)` shards. That floor
+    allocation can round up to more than `cap` in total when several small
+    categories each get bumped to the 1-shard floor, so any resulting excess is
+    trimmed one shard at a time from the currently-largest budget (ties broken
+    by category order) until the sum is exactly `<= cap`.
+    """
+    total = sum(counts.values())
+    budgets = {cat: max(1, (cap * n) // total) for cat, n in counts.items()}
+    excess = sum(budgets.values()) - cap
+    while excess > 0:
+        shrinkable = [cat for cat, b in budgets.items() if b > 1]
+        if not shrinkable:
+            break
+        largest = max(shrinkable, key=lambda cat: budgets[cat])
+        budgets[largest] -= 1
+        excess -= 1
+    return budgets
+
+
 def build_flat_matrix(
     model: str,
     categories: list[str],
@@ -155,17 +177,34 @@ def build_flat_matrix(
 ) -> list[dict]:
     """One flat matrix of single-`harbor run` shards spanning all categories.
 
-    Each category's task list is packed into <= MAX_SHARDS groups (1 task each
-    below the cap); each group is one matrix entry carrying its own dataset and
-    agent so the leaf's max-parallel pool drains the mixed queue across category
-    boundaries. `provider` is retained only as an aggregation tag.
+    Each category's task list is packed into a per-category shard budget; each
+    group is one matrix entry carrying its own dataset and agent so the leaf's
+    max-parallel pool drains the mixed queue across category boundaries.
+    `provider` is retained only as an aggregation tag.
+
+    The per-model total entry count is bounded by `shard_matrix.MAX_SHARDS`:
+    when the categories' combined task count fits under the cap, each category
+    packs 1 task/shard as usual. Above the cap, `MAX_SHARDS` is allocated across
+    the active categories proportional to their task counts (via
+    `_allocate_shard_budgets`) and each category is packed into its own budget,
+    so the sum across categories never exceeds `MAX_SHARDS`.
     """
     prov = provider_of(model)
+    active_counts = {
+        cat: len(tasks_by_cat[cat]) for cat in categories if tasks_by_cat.get(cat)
+    }
+    total = sum(active_counts.values())
+    if total > shard_matrix.MAX_SHARDS:
+        budgets = _allocate_shard_budgets(active_counts, shard_matrix.MAX_SHARDS)
+    else:
+        budgets = dict.fromkeys(active_counts, shard_matrix.MAX_SHARDS)
+
     entries: list[dict] = []
     for cat in categories:
         cm = CATEGORY_MAP[cat]
         agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
-        for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, [])):
+        cat_budget = budgets.get(cat, shard_matrix.MAX_SHARDS)
+        for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, []), cat_budget):
             entries.append(
                 {
                     "model": model,
@@ -256,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             tasks_by_cat = json.load(f)
 
     n_models = len(model_specs)
-    est_tasks = max((sum(len(tasks_by_cat.get(c, [])) for c in categories), 1))
+    est_tasks = max(sum(len(tasks_by_cat.get(c, [])) for c in categories), 1)
     total_job_guard(n_models, est_tasks)
 
     # n_shards for the pool = number of single-task shards (pre-pack); derive pool.

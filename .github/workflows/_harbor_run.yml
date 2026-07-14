@@ -41,7 +41,7 @@ on:
       max_parallel:
         # Explicit size of the harbor job's parallel runner pool, for a caller
         # driving `flat_matrix` across several models/categories at once. 0
-        # falls back to `shard_parallel` (today's single-dataset behavior).
+        # falls back to `shard_parallel`, the single-dataset pool size.
         type: string
         default: "0"
       concurrency:
@@ -107,8 +107,7 @@ jobs:
       # The harbor job reads this so its partition matches the emitted matrix.
       n_shards: ${{ steps.resolve-matrix.outputs.n_shards }}
       # Size of the harbor job's parallel runner pool: an explicit max_parallel
-      # override when the caller supplied one, else the per-leaf shard_parallel
-      # (today's behavior).
+      # override when the caller supplied one, else the per-leaf shard_parallel.
       effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}
       # One entry per category to aggregate: a single entry for the plain
       # single-dataset call, or (on a flat multi-category run) one entry per

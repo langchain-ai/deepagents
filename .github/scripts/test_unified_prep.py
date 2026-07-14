@@ -169,6 +169,40 @@ def test_build_flat_matrix_packs_above_cap():
     assert seen == tasks["autonomous"]
 
 
+def test_build_flat_matrix_bounds_per_model_total_across_categories():
+    # 120 + 120 + 40 = 280 > MAX_SHARDS (200): the per-model TOTAL must be
+    # packed down to the cap via proportional per-category budgets, not just
+    # each category independently capped (which would allow up to 3x200).
+    tasks = {
+        "autonomous": [f"harbor-index/a{i}" for i in range(120)],
+        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(120)],
+        "context": [f"cb-cloud-{i}" for i in range(40)],
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "conversation", "context"], tasks, dcode_impl="dcode"
+    )
+    assert len(entries) <= shard_matrix.MAX_SHARDS
+    for cat, expected in tasks.items():
+        cat_entries = [e for e in entries if e["category"] == cat]
+        seen = " ".join(e["include_tasks"] for e in cat_entries).split()
+        assert seen == expected  # every task present exactly once, order preserved
+
+
+def test_build_flat_matrix_below_cap_stays_one_task_per_shard():
+    # Lite-like: total is well under MAX_SHARDS, so behavior is unchanged —
+    # one task per matrix entry, no packing.
+    tasks = {
+        "autonomous": [f"harbor-index/a{i}" for i in range(15)],
+        "conversation": [f"sierra-research/tau3-bench__c{i}" for i in range(11)],
+        "context": [f"cb-cloud-{i}" for i in range(8)],
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "conversation", "context"], tasks, dcode_impl="dcode"
+    )
+    assert len(entries) == 15 + 11 + 8
+    assert all(len(e["include_tasks"].split()) == 1 for e in entries)
+
+
 def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     import json as _j
     out = tmp_path / "o"

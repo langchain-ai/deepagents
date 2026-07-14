@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -274,6 +276,42 @@ class TestOffloadSuccess:
             # Offloaded count is the new cutoff of six minus a prior cutoff of zero.
             assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
 
+    async def test_committed_offload_survives_trailing_model_failure(self) -> None:
+        """A checkpointed tool update wins over a later stream failure."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(10))
+            after = _state_values(_make_dict_messages(12), _summary_event(4))
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("trailing model unavailable"),
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            assert any(
+                "Offloaded 4 older messages" in str(widget._content)
+                for widget in app.query(AppMessage)
+            )
+            assert not any(
+                "Offload failed" in str(widget._content)
+                for widget in app.query(ErrorMessage)
+            )
+
     async def test_offload_shows_feedback_message(self) -> None:
         """Should display feedback with message count and token change."""
         app = DeepAgentsApp()
@@ -308,7 +346,14 @@ class TestOffloadSuccess:
             assert any("6 messages kept" in str(w._content) for w in msgs)
 
     async def test_offload_updates_context_tokens(self) -> None:
-        """Should update `_context_tokens` to the post-compaction count."""
+        """Should update `_context_tokens` to the post-compaction count.
+
+        The count is taken from the pre-seed conversation plus the new event, so
+        it excludes the tool's own machinery (the seeded call, the tool result,
+        and the trailing model turn) that the post-run state carries. Using
+        distinct before/after message lists guards against regressing to the
+        post-run state, which would understate the reduction.
+        """
         from langchain_core.messages.utils import count_tokens_approximately
 
         from deepagents_code.app import _effective_conversation
@@ -318,13 +363,14 @@ class TestOffloadSuccess:
             await pilot.pause()
             _setup_server_offload_app(app)
 
+            before_messages = _make_dict_messages(10)
             after_messages = _make_dict_messages(12)
             after_event = _summary_event(4)
-            before = _state_values(_make_dict_messages(10))
+            before = _state_values(before_messages)
             after = _state_values(after_messages, after_event)
 
             expected = count_tokens_approximately(
-                _effective_conversation(after_messages, after_event)
+                _effective_conversation(before_messages, after_event)
             )
 
             with (
@@ -887,9 +933,30 @@ class TestFallbackOffloadBackend:
     def test_fallback_root_prefers_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`~/.deepagents` is preferred when the home directory resolves."""
+        """`~/.deepagents` is preferred when it can be written."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert _offload_fallback_root() == tmp_path / ".deepagents"
+
+    def test_fallback_root_uses_temp_when_home_is_read_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resolved but read-only home directory falls back to temp storage."""
+        home_root = tmp_path / "home" / ".deepagents"
+        home_root.mkdir(parents=True)
+        temp_dir = tmp_path / "tmp"
+        probe = MagicMock(
+            side_effect=[PermissionError("read-only home"), nullcontext()]
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
+
+        root = _offload_fallback_root()
+
+        assert root == temp_dir / "deepagents"
+        assert root.is_dir()
+        assert probe.call_count == 2
 
     def test_fallback_backend_is_virtual(self) -> None:
         """Fallback backend must use virtual mode so absolute paths stay rooted."""
@@ -1071,6 +1138,46 @@ class TestDriveServerSideCompaction:
 
             assert result is not None
             assert result.startswith("Compaction failed")
+
+    async def test_rejects_interrupt_without_identifiable_action(self) -> None:
+        """Malformed interrupt payloads fail closed instead of being approved."""
+        from langgraph.types import Command
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        astream_inputs: list[Any] = []
+
+        class _Interrupt:
+            id = "interrupt-unknown"
+            value: dict[str, Any] = {}  # noqa: RUF012  # test stub
+
+        async def _astream(  # noqa: RUF029, ANN202
+            stream_input: object, **_kwargs: object
+        ):
+            astream_inputs.append(stream_input)
+            if stream_input is None:
+                yield ((), "updates", {"__interrupt__": [_Interrupt()]})
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+
+            config = {"configurable": {"thread_id": "test-thread"}}
+            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            await pilot.pause()
+
+        assert result is None
+        assert len(astream_inputs) == 2
+        assert isinstance(astream_inputs[1], Command)
+        decision = astream_inputs[1].resume["interrupt-unknown"]["decisions"][0]
+        assert decision["type"] == "reject"
 
     async def test_rejects_trailing_gated_tool_call(self) -> None:
         """Approves compaction but rejects a trailing model turn's gated tool.
@@ -1458,3 +1565,81 @@ class TestPerformOffload:
         assert isinstance(result, OffloadResult)
         assert result.offload_warning is not None
         assert "could not be saved" in result.offload_warning
+
+
+class TestOffloadHelpers:
+    """Pure helpers backing `/offload` accounting and failure detection."""
+
+    def test_summarization_cutoff_reads_int(self) -> None:
+        from deepagents_code.app import _summarization_cutoff
+
+        assert _summarization_cutoff({"cutoff_index": 4}) == 4
+
+    def test_summarization_cutoff_defaults_zero_on_malformed(self) -> None:
+        from deepagents_code.app import _summarization_cutoff
+
+        assert _summarization_cutoff(None) == 0
+        assert _summarization_cutoff({"cutoff_index": "x"}) == 0
+        assert _summarization_cutoff({}) == 0
+        assert _summarization_cutoff("not-a-dict") == 0
+
+    def test_effective_conversation_applies_event(self) -> None:
+        from deepagents_code.app import _effective_conversation
+
+        messages = [f"m{i}" for i in range(5)]
+        event = {"summary_message": "S", "cutoff_index": 2}
+        assert _effective_conversation(messages, event) == ["S", "m2", "m3", "m4"]
+
+    def test_effective_conversation_degrades_on_malformed(self) -> None:
+        from deepagents_code.app import _effective_conversation
+
+        messages = ["m0", "m1"]
+        # No event, non-dict event, missing summary, and non-int cutoff all
+        # return the messages unchanged rather than raising or emitting a None.
+        assert _effective_conversation(messages, None) == messages
+        assert _effective_conversation(messages, "x") == messages
+        assert _effective_conversation(messages, {"cutoff_index": 1}) == messages
+        assert _effective_conversation(messages, {"summary_message": "S"}) == messages
+
+    def test_effective_conversation_cutoff_past_end(self) -> None:
+        from deepagents_code.app import _effective_conversation
+
+        event = {"summary_message": "S", "cutoff_index": 9}
+        assert _effective_conversation(["m0"], event) == ["S"]
+
+    def test_message_text_handles_str_and_block_list(self) -> None:
+        from deepagents_code.app import _message_text
+
+        assert _message_text(MagicMock(content="hello")) == "hello"
+        # A block-list content is concatenated, not stringified to "[{...}]".
+        blocks = [
+            {"type": "text", "text": "Compaction "},
+            {"type": "text", "text": "failed"},
+        ]
+        assert _message_text({"content": blocks}) == "Compaction failed"
+        assert _message_text({"content": None}) == ""
+
+    def test_find_compaction_failure_scans_durable_state(self) -> None:
+        from langchain_core.messages import HumanMessage, ToolMessage
+
+        from deepagents_code.app import _find_compaction_failure
+        from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
+
+        failing = ToolMessage(
+            content=f"{COMPACTION_FAILURE_PREFIX}: boom",
+            tool_call_id="tc",
+        )
+        messages = [HumanMessage("hi"), failing]
+        assert (
+            _find_compaction_failure(messages) == f"{COMPACTION_FAILURE_PREFIX}: boom"
+        )
+
+    def test_find_compaction_failure_ignores_success(self) -> None:
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.app import _find_compaction_failure
+
+        ok = ToolMessage(content="Conversation compacted.", tool_call_id="tc")
+        assert _find_compaction_failure([ok]) is None
+        # Serialized-dict tool message form is handled too.
+        assert _find_compaction_failure([{"type": "tool", "content": "ok"}]) is None

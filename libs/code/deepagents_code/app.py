@@ -295,11 +295,15 @@ def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
 def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # noqa: ANN401
     """Reconstruct the effective conversation the model would see.
 
-    Mirrors `SummarizationMiddleware._apply_event_to_messages`: when a prior
-    summarization event exists, the effective conversation is the summary
-    message followed by the messages from `cutoff_index` onward. Works on both
-    LangChain message objects and the serialized dicts returned by remote
-    state snapshots, since it only slices and prepends.
+    A hardened local variant of
+    `SummarizationMiddleware._apply_event_to_messages`, kept in the client
+    because it runs against possibly-malformed remote-snapshot dicts and must
+    degrade gracefully (a `None` summary or non-int cutoff returns the full
+    list) rather than raise or emit a `None`-led list. Like the SDK method,
+    when a prior summarization event exists the effective conversation is the
+    summary message followed by the messages from `cutoff_index` onward, and it
+    works on both LangChain message objects and serialized dicts since it only
+    slices and prepends.
 
     Args:
         messages: Full message list from state.
@@ -317,6 +321,71 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     if cutoff > len(messages):
         return [summary]
     return [summary, *messages[cutoff:]]
+
+
+def _message_text(msg: Any) -> str:  # noqa: ANN401
+    """Extract the text content of a message object or serialized dict.
+
+    Handles the shapes `/offload` sees across the LangGraph server boundary:
+    a message object with `.content`, or a serialized dict with `"content"`.
+    A string content is returned as-is; a list of content blocks has its text
+    parts concatenated (so a `ToolMessage` whose content is a block list is not
+    stringified to `"[{...}]"`, which would defeat prefix matching).
+
+    Args:
+        msg: A message object or serialized message dict.
+
+    Returns:
+        The concatenated text content, or an empty string when there is none.
+    """
+    content = (
+        msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+    )
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "".join(parts)
+    return "" if content is None else str(content)
+
+
+def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
+    """Return whether `msg` is a tool message in object or serialized form."""
+    if isinstance(msg, dict):
+        return msg.get("type") == "tool" or msg.get("role") == "tool"
+    return type(msg).__name__ == "ToolMessage"
+
+
+def _find_compaction_failure(messages: list[Any]) -> str | None:
+    """Return a persisted forced-compaction failure message, if present.
+
+    `/offload` primarily detects tool failures from the live message stream,
+    but a stream hiccup (or an update-injected `ToolMessage` that never surfaces
+    on the `messages` stream) can drop that signal even though the failure
+    `ToolMessage` still lands in durable state. Scanning committed state closes
+    that gap so a genuine failure is never misreported as "nothing to offload".
+
+    Args:
+        messages: The message list from committed thread state (objects or
+            serialized dicts).
+
+    Returns:
+        The failure message text, or `None` if no failure marker is found.
+    """
+    from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
+
+    for msg in reversed(messages):
+        if not _is_tool_message(msg):
+            continue
+        text = _message_text(msg)
+        if text.startswith(COMPACTION_FAILURE_PREFIX):
+            return text
+    return None
 
 
 def _create_model_with_deepagents_import_lock(
@@ -10916,19 +10985,50 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
-            tool_error = await self._drive_server_side_compaction(config)
-            if tool_error is not None:
-                await self._mount_message(ErrorMessage(tool_error))
-                return
+            try:
+                tool_error = await self._drive_server_side_compaction(config)
+            except Exception as stream_error:
+                # A server graph can checkpoint the tool-node update before a
+                # provider failure in the trailing model call reaches this
+                # stream. Reconcile the durable event before reporting the
+                # whole operation as failed.
+                logger.warning(
+                    "Offload stream failed; checking for committed compaction state",
+                    exc_info=True,
+                )
+                try:
+                    new_state = await self._get_thread_state_values(self._lc_thread_id)
+                except Exception as state_error:
+                    logger.warning(
+                        "Failed to reconcile state after offload stream error",
+                        exc_info=True,
+                    )
+                    raise stream_error from state_error
+                reconciled_event = new_state.get("_summarization_event")
+                if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                    raise
+            else:
+                if tool_error is not None:
+                    await self._mount_message(ErrorMessage(tool_error))
+                    return
 
-            # Read the persisted result back so the UI reflects server state
-            # (the archive now lives in the agent's own backend, not a
-            # client-local directory the server can never read).
-            new_state = await self._get_thread_state_values(self._lc_thread_id)
+                # Read the persisted result back so the UI reflects server state
+                # (the archive now lives in the agent's own backend, not a
+                # client-local directory the server can never read).
+                new_state = await self._get_thread_state_values(self._lc_thread_id)
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
             if new_event is None or new_cutoff <= prior_cutoff:
+                # A failure and a genuine no-op both leave `_summarization_event`
+                # unchanged. Stream-based detection can miss the failure
+                # `ToolMessage` (e.g. an update-injected message that never
+                # surfaces on the `messages` stream), so cross-check committed
+                # state before concluding there was nothing to do.
+                failure = _find_compaction_failure(new_state.get("messages", []))
+                if failure is not None:
+                    await self._mount_message(ErrorMessage(failure))
+                    return
                 # `force=True` bypasses the eligibility gate, so the only no-op
                 # left is "cutoff == 0": nothing older than the retention window
                 # to summarize.
@@ -10954,14 +11054,20 @@ class DeepAgentsApp(App):
                     )
                 )
 
-            after_messages = new_state.get("messages", [])
+            # Recompute the post-offload size from the ORIGINAL pre-seed
+            # messages plus the new event. `_effective_conversation` yields
+            # `[summary, *before_messages[new_cutoff:]]` — the compacted
+            # conversation without the tool's own machinery (the seeded tool
+            # call, the tool result, and the trailing model turn), all of which
+            # land in `new_state["messages"]` at/after `new_cutoff`. Counting
+            # `before_messages` keeps this token figure consistent with the
+            # message counts below and avoids understating the reduction.
             tokens_after = count_tokens_approximately(
-                _effective_conversation(after_messages, new_event)
+                _effective_conversation(before_messages, new_event)
             )
-            # Counts are derived purely from the absolute cutoff so the tool's
-            # own message-machinery artifacts (the seeded tool call, the tool
-            # result, and the follow-up model turn) are not mistaken for kept
-            # conversation.
+            # Message counts are likewise derived purely from the absolute
+            # cutoffs, so those same machinery artifacts are never mistaken for
+            # kept conversation.
             messages_offloaded = max(0, new_cutoff - prior_cutoff)
             messages_kept = max(0, len(before_messages) - new_cutoff)
             pct = (
@@ -11083,10 +11189,18 @@ class DeepAgentsApp(App):
                 value.get("action_requests") if isinstance(value, dict) else None
             )
             if not action_requests:
-                # Missing/malformed payload: this drive only ever seeds a single
-                # compact_conversation call, so a lone approval matches the
-                # expected shape and preserves historical behavior.
-                return [ApproveDecision(type="approve")]
+                # Without an identifiable action, approving could execute a
+                # different gated tool requested by the trailing model turn.
+                # A singleton rejection safely answers the surfaced interrupt.
+                return [
+                    RejectDecision(
+                        type="reject",
+                        message=(
+                            "Not executed: /offload could not identify the "
+                            "requested action."
+                        ),
+                    )
+                ]
             decisions: list[Any] = []
             for req in action_requests:
                 name = req.get("name") if isinstance(req, dict) else None
@@ -11142,11 +11256,10 @@ class DeepAgentsApp(App):
                             pending.append((iid, {"decisions": decisions}))
                 elif mode == "messages" and isinstance(data, tuple):
                     msg = data[0]
-                    content = str(getattr(msg, "content", ""))
-                    if type(msg).__name__ == "ToolMessage" and content.startswith(
-                        COMPACTION_FAILURE_PREFIX
-                    ):
-                        tool_error = content
+                    if _is_tool_message(msg):
+                        text = _message_text(msg)
+                        if text.startswith(COMPACTION_FAILURE_PREFIX):
+                            tool_error = text
             return pending
 
         # Bound the resume loop: after compaction the model runs again, and a
@@ -11163,6 +11276,17 @@ class DeepAgentsApp(App):
                     "unresolved",
                     max_resume_rounds,
                     len(pending),
+                )
+                # Compaction itself already committed in round 1, so the caller
+                # still reports the offload. Surface the abandoned drain so the
+                # user knows the thread was left paused mid-run and may need a
+                # fresh message to reset.
+                await self._mount_message(
+                    ErrorMessage(
+                        "Offload completed, but the agent kept requesting tools "
+                        "afterward and the run could not be fully drained. Send "
+                        "a new message to continue; the thread may need to reset."
+                    )
                 )
                 break
             resume_payload = dict(pending)

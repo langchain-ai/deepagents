@@ -128,26 +128,38 @@ def _offload_fallback_root() -> Path:
 
     Prefers the persistent per-user `~/.deepagents` directory so offloaded
     history survives across sessions and is easy to locate; falls back to a
-    temp directory when the home directory cannot be resolved.
+    temp directory when the home directory cannot be resolved or written.
 
     Returns:
         A directory path suitable for use as a writable backend root.
     """
+
+    def _prepare(path: Path) -> Path:
+        path.mkdir(parents=True, exist_ok=True)
+        # Creating the directory is insufficient when it already exists on a
+        # read-only mount. A temporary file proves archive writes can succeed.
+        with tempfile.NamedTemporaryFile(dir=path, prefix=".write-test-"):
+            pass
+        return path
+
     try:
-        return Path.home() / ".deepagents"
+        return _prepare(Path.home() / ".deepagents")
     except (RuntimeError, OSError):
-        return Path(tempfile.gettempdir()) / "deepagents"
+        logger.debug(
+            "User data directory is not writable; using temporary offload storage",
+            exc_info=True,
+        )
+        return _prepare(Path(tempfile.gettempdir()) / "deepagents")
 
 
 def _fallback_offload_backend() -> FilesystemBackend:
-    """Build a writable local backend for offload when none is provided.
+    """Build a writable local backend for `perform_offload` when none is given.
 
-    In server mode the app holds no handle to the agent's routed backend, so
-    `/offload` must persist conversation history through a backend it creates
-    itself. A non-virtual `FilesystemBackend` would resolve the absolute
-    `/conversation_history/...` path against the real filesystem root, which is
-    not writable on normal accounts and fails the persist step. Rooting a
-    virtual-mode backend at `~/.deepagents` keeps the same virtual path while
+    `perform_offload` accepts an optional backend and falls back to this when a
+    caller supplies none. A non-virtual `FilesystemBackend` would resolve the
+    absolute `/conversation_history/...` path against the real filesystem root,
+    which is not writable on normal accounts and fails the persist step. Rooting
+    a virtual-mode backend at `~/.deepagents` keeps the same virtual path while
     landing the file somewhere writable, and blocks path traversal outside the
     root.
 

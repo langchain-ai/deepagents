@@ -7,11 +7,17 @@ Core compact tool logic tests live in the SDK at
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.messages import HumanMessage
 
-from deepagents_code.offload_middleware import CLICompactionMiddleware
+from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.offload_middleware import (
+    COMPACTION_FAILURE_PREFIX,
+    CLICompactionMiddleware,
+    _runtime_model_config,
+)
 from deepagents_code.tool_display import format_tool_display
 
 
@@ -114,3 +120,101 @@ class TestCLICompactionMiddleware:
             "provider:active-model", extra_kwargs={"temperature": 0}
         )
         create_summarization.assert_called_once_with(active_model, startup._backend)
+
+    async def test_force_noops_when_nothing_old_enough(self) -> None:
+        """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 0
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one")]}
+        runtime.tool_call_id = "tool-call"
+
+        result = await middleware._arun_forced_compact(runtime)
+
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        summarization._acreate_summary.assert_not_awaited()
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+    async def test_forced_compact_error_when_summary_fails(self) -> None:
+        """A summary failure returns the failure prefix and does not compact."""
+        summarization = self._summarization()
+        summarization._acreate_summary = AsyncMock(side_effect=RuntimeError("boom"))
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        result = await middleware._arun_forced_compact(runtime)
+
+        # The failure must NOT persist an event, and must carry the stable
+        # prefix the `/offload` client keys on.
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        content = result.update["messages"][0].content
+        assert content.startswith(COMPACTION_FAILURE_PREFIX)
+        assert "RuntimeError" in content
+
+    def test_sync_forced_compact_compacts(self) -> None:
+        """The synchronous forced path mirrors the async one."""
+        summarization = self._summarization()
+        summarization._create_summary.return_value = "Summary"
+        summarization._offload_to_backend.return_value = (
+            "/conversation_history/thread.md"
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        result = middleware._run_forced_compact(runtime)
+
+        summarization._create_summary.assert_called_once()
+        assert result.update is not None
+        assert result.update["_summarization_event"]["cutoff_index"] == 2
+
+    def test_force_is_hidden_from_model_schema(self) -> None:
+        """`force` must not appear in the schema the model sees."""
+        middleware = CLICompactionMiddleware(self._summarization())
+        tool = middleware.tools[0]
+        # `tool_call_schema` is a pydantic model (or, rarely, a dict); either
+        # way the model-facing property set must not expose `force`.
+        schema: Any = tool.tool_call_schema
+        props = (
+            schema.get("properties", {})
+            if isinstance(schema, dict)
+            else schema.model_json_schema().get("properties", {})
+        )
+        assert "force" not in props
+
+
+class TestRuntimeModelConfig:
+    """Cover the three context shapes `_runtime_model_config` accepts."""
+
+    @staticmethod
+    def _runtime(context: object) -> MagicMock:
+        runtime = MagicMock()
+        runtime.context = context
+        return runtime
+
+    def test_schema_instance(self) -> None:
+        ctx = CLIContextSchema(model="p:m", model_params={"temperature": 0})
+        assert _runtime_model_config(self._runtime(ctx)) == (
+            "p:m",
+            {"temperature": 0},
+        )
+
+    def test_serialized_dict(self) -> None:
+        ctx = {"model": "p:m2", "model_params": {"x": 1}}
+        assert _runtime_model_config(self._runtime(ctx)) == ("p:m2", {"x": 1})
+
+    def test_dict_with_bad_types_normalizes(self) -> None:
+        ctx = {"model": 123, "model_params": None}
+        assert _runtime_model_config(self._runtime(ctx)) == (None, {})
+
+    def test_unknown_shape(self) -> None:
+        assert _runtime_model_config(self._runtime(object())) == (None, {})

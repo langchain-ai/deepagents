@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+import logging
+from typing import TYPE_CHECKING, Annotated, Any
 
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
@@ -14,19 +15,17 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES
-    from deepagents.middleware.summarization import (
-        SummarizationEvent,
-        SummarizationMiddleware,
-    )
+    from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
-    from langchain_core.messages import AnyMessage
+
+logger = logging.getLogger(__name__)
 
 
 COMPACTION_FAILURE_PREFIX = "Compaction failed"
@@ -80,9 +79,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         """
         middleware = self
 
+        # `force` is annotated `InjectedToolArg` so it is stripped from the
+        # schema the model sees: the model can only reach the normal, gated
+        # path. `/offload` seeds the tool call with `force=True` directly, and
+        # an injected value supplied on the call still reaches the function.
         def sync_compact(
             runtime: ToolRuntime,
-            force: bool = False,
+            force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
             if not force:
                 return middleware._run_compact(runtime)
@@ -90,7 +93,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
         async def async_compact(
             runtime: ToolRuntime,
-            force: bool = False,
+            force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
             if not force:
                 return await middleware._arun_compact(runtime)
@@ -101,8 +104,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             description=(
                 "Compact the conversation by summarizing older messages into "
                 "a concise summary. Use this proactively when the conversation "
-                "is getting long to free up context window space. Leave `force` "
-                "unset; it is reserved for explicit user-initiated compaction."
+                "is getting long to free up context window space."
             ),
             func=sync_compact,
             coroutine=async_compact,
@@ -150,18 +152,17 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary = summarization._create_summary(to_summarize)
             backend = self._resolve_backend(runtime)
             file_path = summarization._offload_to_backend(backend, to_summarize)
-        except Exception as exc:  # noqa: BLE001  # tool errors must remain ToolMessages
+            # The inherited `_build_compact_result` produces the same event and
+            # tool message as the SDK's gated path via model-independent helpers
+            # (string formatting + a staticmethod), so the runtime-selected
+            # summarizer is not needed to build it. Kept inside the `try` so a
+            # failure here still returns a ToolMessage rather than raising.
+            return self._build_compact_result(
+                runtime, to_summarize, summary, file_path, event, cutoff
+            )
+        except Exception as exc:  # tool errors must surface as ToolMessages
+            logger.exception("forced compact_conversation failed")
             return self._forced_compact_error(tool_call_id, exc)
-
-        return self._build_forced_result(
-            runtime,
-            summarization,
-            to_summarize,
-            summary,
-            file_path,
-            event,
-            cutoff,
-        )
 
     async def _arun_forced_compact(self, runtime: ToolRuntime) -> Command:
         """Asynchronously compact without the SDK eligibility gate.
@@ -185,18 +186,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary = await summarization._acreate_summary(to_summarize)
             backend = self._resolve_backend(runtime)
             file_path = await summarization._aoffload_to_backend(backend, to_summarize)
-        except Exception as exc:  # noqa: BLE001  # tool errors must remain ToolMessages
+            # See `_run_forced_compact` for why the inherited builder is reused
+            # and why it stays inside the `try`.
+            return self._build_compact_result(
+                runtime, to_summarize, summary, file_path, event, cutoff
+            )
+        except Exception as exc:  # tool errors must surface as ToolMessages
+            logger.exception("forced compact_conversation failed")
             return self._forced_compact_error(tool_call_id, exc)
-
-        return self._build_forced_result(
-            runtime,
-            summarization,
-            to_summarize,
-            summary,
-            file_path,
-            event,
-            cutoff,
-        )
 
     @staticmethod
     def _forced_compact_error(tool_call_id: str, exc: Exception) -> Command:
@@ -227,54 +224,6 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                             "no messages were summarized or removed."
                         ),
                         tool_call_id=tool_call_id,
-                    )
-                ],
-            }
-        )
-
-    @staticmethod
-    def _build_forced_result(
-        runtime: ToolRuntime,
-        summarization: SummarizationMiddleware,
-        to_summarize: list[AnyMessage],
-        summary: str,
-        file_path: str | None,
-        event: SummarizationEvent | None,
-        cutoff: int,
-    ) -> Command:
-        """Build the state update using the runtime-selected summarizer.
-
-        Args:
-            runtime: Runtime for the originating tool call.
-            summarization: Summarizer selected for this invocation.
-            to_summarize: Messages included in the generated summary.
-            summary: Generated summary text.
-            file_path: Persisted archive path, or `None` on write failure.
-            event: Prior summarization event.
-            cutoff: Cutoff within the effective conversation.
-
-        Returns:
-            A state update containing the new event and tool result.
-        """
-        summary_message = summarization._build_new_messages_with_path(
-            summary, file_path
-        )[0]
-        state_cutoff = summarization._compute_state_cutoff(event, cutoff)
-        new_event = {
-            "cutoff_index": state_cutoff,
-            "summary_message": summary_message,
-            "file_path": file_path,
-        }
-        return Command(
-            update={
-                "_summarization_event": new_event,
-                "messages": [
-                    ToolMessage(
-                        content=(
-                            "Conversation compacted. Summarized "
-                            f"{len(to_summarize)} messages into a concise summary."
-                        ),
-                        tool_call_id=runtime.tool_call_id or "",
                     )
                 ],
             }

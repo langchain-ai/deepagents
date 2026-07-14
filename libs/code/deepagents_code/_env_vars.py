@@ -136,6 +136,16 @@ When set, this replaces (takes precedence over) the
 is never silently emptied.)
 """
 
+EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
+"""Opt into experimental, unstable dcode behavior.
+
+Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
+values). Currently gates dropping the SDK's `TodoListMiddleware` (and its
+`write_todos` tool) from the agent and its subagents, along with the matching
+todo-list prompt guidance. Behavior behind this flag may change or be removed
+without notice.
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -194,6 +204,15 @@ LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
 """Minimum level for `deepagents_code` runtime logging.
 
 Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
+"""
+
+MEMORY_AUTO_SAVE = "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE"
+"""Toggle automatic memory saving (defaults to on).
+
+When enabled, the memory prompt tells the agent to proactively persist
+learnings to the `AGENTS.md` memory files. Set to a falsy value (`0`, `false`,
+`no`, `off`, or empty) to keep loading memory into context while disabling the
+auto-save guidance; explicit saves (e.g. the `remember` skill) still work.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

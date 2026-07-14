@@ -151,9 +151,18 @@ def build_provider_matrices(
                 "agent_impl": agent_impl,
                 "include_tasks": include,
                 # Empty: the leaf derives the canonical shared dataset name per
-                # category (harbor-index/harbor-index-1.0, tau3-subset,
-                # local/...), so every model attaches as an experiment on the one
-                # shared dataset. unified_summary remains the cross-model surface.
+                # category (harbor-index/harbor-index-1.0, tau3-subset, local/...)
+                # and a stable per-run experiment name, so a model's shards attach
+                # to the one shared dataset. NOTE: consolidating those shards into a
+                # SINGLE experiment per model needs harbor > 0.1.1. Released
+                # harbor-langsmith==0.1.1 suffixes every shard's experiment with
+                # "-{job.id[:8]}" (one experiment per shard); harbor main honors the
+                # explicit experiment_name _harbor_run.yml sets and reuses the
+                # session across shards. Until a fixed release ships, set the
+                # `harbor_package_override` input to a harbor build with that fix,
+                # e.g. commit af2e8629e95c2e9f487f7a2ba87c1e25b531a55b (see that
+                # input's description for the full pip specs). The GH-aggregated
+                # unified_summary is the cross-model surface regardless.
                 "langsmith_dataset": "",
                 "n_shards": n_shards,
                 "shard_parallel": shard_parallel,

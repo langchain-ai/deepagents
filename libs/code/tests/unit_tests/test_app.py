@@ -62,6 +62,7 @@ from deepagents_code.app import (
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.media_utils import ImageData, VideoData
+from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import (
     GoalReviewMenu,
@@ -2204,6 +2205,156 @@ class TestCtrlDChatInput:
                 await pilot.pause()
 
             assert chat_input.value == "draft"
+            exit_mock.assert_called_once()
+
+
+class TestCtrlDInlinePrompt:
+    """Test Ctrl+D deletion and quit behavior in inline free-text prompts.
+
+    These fields (`GoalReviewTextArea`, `AskUserTextArea`) should match the
+    primary chat input: Ctrl+D deletes forward while content remains after the
+    cursor, and only quits at the true end with no selection.
+    """
+
+    async def _open_goal_edit(
+        self, app: DeepAgentsApp, pilot: Pilot[DeepAgentsApp]
+    ) -> GoalReviewTextArea:
+        """Mount a goal review, enter edit mode, and return the focused editor."""
+        messages = app.query_one("#messages", Container)
+        menu = GoalReviewMenu("goal", "- crit")
+        await messages.mount(menu)
+        app._pending_goal_review_widget = menu
+        await pilot.pause()
+        menu.focus()
+        await pilot.pause()
+        await pilot.press("e")
+        await pilot.pause()
+        edit = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+        assert app.focused is edit
+        return edit
+
+    async def test_ctrl_d_deletes_right_in_goal_review_edit(self) -> None:
+        """Ctrl+D mid-text in the goal-review editor deletes right, no quit."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.move_cursor((0, 0))
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == "ello"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_deletes_selection_in_goal_review_edit(self) -> None:
+        """Ctrl+D with a selection deletes it rather than quitting."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.select_all()
+            assert not edit.selection.is_empty
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == ""
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_end_of_goal_review_edit(self) -> None:
+        """Ctrl+D at the end of the editor with no selection quits the app."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            edit = await self._open_goal_edit(app, pilot)
+            edit.text = "hello"
+            edit.move_cursor(edit.document.end)
+            assert edit.selection.is_empty
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert edit.text == "hello"
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_deletes_right_in_ask_user_text_input(self) -> None:
+        """Ctrl+D mid-text in an ask-user free-text answer deletes right."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hello"
+            text_input.focus()
+            text_input.move_cursor((0, 0))
+            await pilot.pause()
+            assert app.focused is text_input
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert text_input.text == "ello"
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_quits_at_end_of_ask_user_text_input(self) -> None:
+        """Ctrl+D at the end of an ask-user answer with no selection quits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hello"
+            text_input.focus()
+            text_input.move_cursor(text_input.document.end)
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.selection.is_empty
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert text_input.text == "hello"
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_when_ask_user_text_input_empty(self) -> None:
+        """Ctrl+D in an empty ask-user answer quits rather than swallowing it."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.text == ""
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
             exit_mock.assert_called_once()
 
 

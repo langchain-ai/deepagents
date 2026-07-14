@@ -12449,6 +12449,7 @@ class DeepAgentsApp(App):
             widget.id,
             tool_status=data.tool_status,
             tool_output=data.tool_output,
+            tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
         )

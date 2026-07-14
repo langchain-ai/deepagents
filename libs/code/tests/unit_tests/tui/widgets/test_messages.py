@@ -22,6 +22,7 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
 )
+from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -722,7 +723,7 @@ class TestDiffMessageCredentialRedaction:
 
 
 class TestToolCallMessageDuration:
-    """Tests for the post-run duration shown on `execute` tool calls."""
+    """Tests for the post-run duration shown on long-running tool calls."""
 
     async def test_execute_shows_took_after_success(self) -> None:
         """`execute` keeps its status row and reports how long it ran."""
@@ -761,6 +762,48 @@ class TestToolCallMessageDuration:
             content = status._Static__content  # ty: ignore
             assert isinstance(content, Content)
             assert content.plain == "Took 0.3s"
+
+    async def test_task_shows_took_after_success(self) -> None:
+        """`task` subagent calls keep their status row and report how long they ran."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 5  # ty: ignore
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            assert status.display is True
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 5s"
+
+    async def test_task_took_duration_survives_rehydration(self) -> None:
+        """A virtualized task row restores its completed duration."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 5  # ty: ignore
+            app.msg.set_success("done")
+            data = MessageData.from_widget(app.msg)
+            assert data.tool_duration == pytest.approx(5, abs=0.1)
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        rehydrated_app = _tool_msg_app("task")
+        rehydrated_app.msg = restored
+        async with rehydrated_app.run_test() as pilot:
+            await pilot.pause()
+
+            status = restored._status_widget
+            assert status is not None
+            assert status.display is True
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 5s"
 
     async def test_execute_without_run_falls_back_to_success_status(self) -> None:
         """`execute` success with no recorded start time hides the row.

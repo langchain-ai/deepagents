@@ -154,6 +154,16 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
+# Long-running tools whose completed status row reports how long they ran
+# ("Took <duration>") when a run was timed, instead of being hidden. `execute`
+# shells and `task` subagent dispatches can both run for a while, so the elapsed
+# time is useful.
+_TIMED_SUCCESS_TOOLS: set[str] = {
+    "execute",
+    "task",
+}
+
+
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
@@ -1160,10 +1170,12 @@ class ToolCallMessage(Vertical):
         # Animation state
         self._spinner_position = 0
         self._start_time: float | None = None
+        self._duration: float | None = None
         self._animation_timer: Timer | None = None
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
+        self._deferred_duration: float | None = None
         self._deferred_expanded: bool = False
         self._deferred_reject_reason: str | None = None
         # Whether the widget is currently hidden because an approval prompt
@@ -1263,6 +1275,7 @@ class ToolCallMessage(Vertical):
 
         status = self._deferred_status
         output = self._deferred_output or ""
+        duration = self._deferred_duration
         self._expanded = self._deferred_expanded
         if self._deferred_reject_reason:
             self._reject_reason = self._deferred_reject_reason
@@ -1270,6 +1283,7 @@ class ToolCallMessage(Vertical):
         # Clear deferred values
         self._deferred_status = None
         self._deferred_output = None
+        self._deferred_duration = None
         self._deferred_expanded = False
         self._deferred_reject_reason = None
 
@@ -1279,7 +1293,11 @@ class ToolCallMessage(Vertical):
             case "success":
                 self._status = "success"
                 self._output = output
-                self._show_success_status()
+                self._duration = duration
+                if self._tool_name in _TIMED_SUCCESS_TOOLS and duration is not None:
+                    self._show_timed_success_status(duration)
+                else:
+                    self._show_success_status()
                 self._update_output_display()
             case "error":
                 self._status = "error"
@@ -1332,6 +1350,7 @@ class ToolCallMessage(Vertical):
             return  # Already running
 
         self._status = "running"
+        self._duration = None
         self._start_time = time()
         if self._status_widget:
             self._status_widget.add_class("pending")
@@ -1385,9 +1404,10 @@ class ToolCallMessage(Vertical):
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
-        For `execute` calls that actually ran (a start time was recorded via
-        `set_running`), the elapsed run time is shown in place of the usual
-        success marker; every other tool routes through `_show_success_status`.
+        For long-running tools (`execute`, `task`) that actually ran (a start
+        time was recorded via `set_running`), the elapsed run time is shown via
+        `_show_timed_success_status`; every other case routes through
+        `_show_success_status`.
 
         Args:
             result: Tool output/result to display
@@ -1402,19 +1422,32 @@ class ToolCallMessage(Vertical):
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
+        self._duration = (
+            elapsed
+            if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
+            else None
+        )
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._tool_name == "execute" and elapsed is not None and self._status_widget:
-            self._status_widget.remove_class("pending")
-            # `execute` calls can run for a while, so keep the row and report
-            # how long the command took once the spinner stops.
-            self._status_widget.update(
-                Content.styled(f"Took {format_duration(elapsed)}", "dim")
-            )
-            self._status_widget.display = True
+        if self._duration is not None:
+            self._show_timed_success_status(self._duration)
         else:
             self._show_success_status()
         self._update_output_display()
+
+    def _show_timed_success_status(self, duration: float) -> None:
+        """Render the preserved duration for a completed timed tool call.
+
+        Args:
+            duration: Elapsed tool run time in seconds.
+        """
+        if self._status_widget is None:
+            return
+        self._status_widget.remove_class("pending")
+        self._status_widget.update(
+            Content.styled(f"Took {format_duration(duration)}", "dim")
+        )
+        self._status_widget.display = True
 
     def _show_success_status(self) -> None:
         """Render the status marker for a completed successful call.

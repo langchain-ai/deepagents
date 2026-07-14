@@ -17,9 +17,10 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
-from langchain.agents.middleware import SummarizationMiddleware
+from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -302,16 +303,18 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
     manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     tools = [_make_execute_tool(backend), *_make_background_tools(manager)]
-    # Summarization compacts the growing conversation once it crosses the token
-    # trigger, so each turn stops re-sending an unbounded history (the main cost and
-    # latency driver for a multi-turn coding agent). Prompt caching is a
+    # Context management, cheapest first: deterministic tool-output compaction shrinks
+    # each model-call payload every turn with no extra LLM calls (the main cost/latency
+    # driver is re-sending stale tool outputs); summarization is the LLM-based fallback
+    # once the whole conversation still crosses the token trigger; prompt caching is a
     # billing/latency optimization that no-ops for non-Anthropic models.
     return create_agent(
         model=model,
         tools=tools,
         system_prompt=CODING_SYSTEM_PROMPT,
         middleware=[
-            SummarizationMiddleware(model, trigger=("tokens", 80_000)),
+            _ToolOutputCompactionMiddleware(),
+            SummarizationMiddleware(model, trigger=("tokens", 80_000), summary_prompt=CODING_SUMMARY_PROMPT),
             AnthropicPromptCachingMiddleware(),
         ],
     )
@@ -353,6 +356,79 @@ burning the whole budget repeating a dead end.
 
 Keep going until the task is complete and verified. Do not stop early.
 """
+
+
+CODING_SUMMARY_PROMPT = """You are compacting the working context of a coding agent. The \
+conversation below will be REPLACED by your output, so preserve exactly what is needed to keep \
+coding without redoing work. Be concise but do not drop concrete details.
+
+Fill in each section (write "None" if empty):
+
+## GOAL
+The task objective and its acceptance criteria.
+
+## FILES
+Every file created or modified: its path plus current contents or a precise description of its \
+state, enough to continue editing or recreate it.
+
+## VERIFICATION STATE
+Which of the task's tests/examples you have run, the latest result (pass or fail), and the exact \
+error messages or diffs from the most recent failure.
+
+## APPROACH
+The current strategy, what you have tried, and approaches ruled out and why. Record key facts \
+discovered (constants, file locations, commands that work).
+
+## NEXT STEPS
+The specific next actions, including the exact commands to run.
+
+Respond ONLY with the sections above.
+
+<messages>
+{messages}
+</messages>"""
+
+
+class _ToolOutputCompactionMiddleware(AgentMiddleware):
+    """Online, deterministic compaction of stale tool outputs.
+
+    On every model call, replaces the string content of tool messages older than the
+    most recent ``keep_last`` with a short elision marker (keeping ids so tool
+    call/result pairing survives), while leaving all reasoning and recent tool
+    outputs intact. No LLM calls: it only shrinks the per-call payload, so it adds no
+    latency and does not mutate persisted state.
+    """
+
+    def __init__(self, *, keep_last: int = 6, max_chars: int = 1200) -> None:
+        super().__init__()
+        self._keep_last = keep_last
+        self._max_chars = max_chars
+
+    def _compact(self, messages: list[Any]) -> list[Any]:
+        tool_positions = [i for i, msg in enumerate(messages) if isinstance(msg, ToolMessage)]
+        if len(tool_positions) <= self._keep_last:
+            return messages
+        stale = set(tool_positions[: -self._keep_last])
+        compacted: list[Any] = []
+        for i, msg in enumerate(messages):
+            content = msg.content if isinstance(msg, ToolMessage) else None
+            if i in stale and isinstance(content, str) and len(content) > self._max_chars:
+                elided = (
+                    f"{content[:200]}\n"
+                    f"[... {len(content) - 200} chars elided by tool-output compaction ...]"
+                )
+                compacted.append(
+                    ToolMessage(content=elided, tool_call_id=msg.tool_call_id, name=msg.name, id=msg.id)
+                )
+            else:
+                compacted.append(msg)
+        return compacted
+
+    def wrap_model_call(self, request, handler):  # noqa: ANN001, ANN201
+        return handler(request.override(messages=self._compact(request.messages)))
+
+    async def awrap_model_call(self, request, handler):  # noqa: ANN001, ANN201
+        return await handler(request.override(messages=self._compact(request.messages)))
 
 
 class _ProcessManager:

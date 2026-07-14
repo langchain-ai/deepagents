@@ -32,8 +32,8 @@ which reads `bucket.toml` and fetches the matching rows.
 ## Run it locally
 
 ```bash
-# from libs/evals/
-make oolong-populate                       # fetch the bucket + write task dirs
+# from libs/evals/ — fetch the bucket + write the (git-ignored) task dirs
+python -m harbor_adapters.oolong.main --populate datasets/oolong-synth
 harbor run --path datasets/oolong-synth --n-tasks 1 -a oracle -e docker -k 1
 # → Mean: 1.000  (the oracle writes the gold answer)
 ```
@@ -52,7 +52,8 @@ The task is agent-agnostic, so the arm is a `harbor run` choice, not task conten
   Select it with `agent_impl=bare`.
 
 Both dispatch with `dataset_path=datasets/oolong-synth`. Locally, after
-`make stage-harbor-local-deps` + `make oolong-populate`, run either graph with
+`make stage-harbor-local-deps` + `python -m harbor_adapters.oolong.main --populate
+datasets/oolong-synth`, run either graph with
 `harbor run --agent langgraph --ak graph=oolong_code_interpreter` (or
 `graph=bare_deepagent`) against `--path datasets/oolong-synth`. The subagent model
 defaults to the root model; override with `OOLONG_SUB_MODEL` for the paper's

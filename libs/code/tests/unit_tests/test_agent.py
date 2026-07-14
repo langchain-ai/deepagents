@@ -107,6 +107,32 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
+def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
+    """Local archives use the stable user data directory across server restarts."""
+    history_root = tmp_path / ".deepagents"
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._offload_fallback_root", return_value=history_root
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    result = backend.write("/conversation_history/thread.md", "archived")
+
+    assert result.error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "archived"
+
+
 def _request_with_context(
     context: object,
     *,

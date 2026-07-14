@@ -10940,6 +10940,20 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            archive_path = (
+                new_event.get("file_path")
+                if isinstance(new_event, dict)
+                else getattr(new_event, "file_path", None)
+            )
+            if not archive_path:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Warning: conversation history could not be saved to "
+                        "storage. Older messages will not be recoverable. "
+                        "Check logs for details."
+                    )
+                )
+
             after_messages = new_state.get("messages", [])
             tokens_after = count_tokens_approximately(
                 _effective_conversation(after_messages, new_event)
@@ -10985,10 +10999,16 @@ class DeepAgentsApp(App):
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
-        executes the tool. The tool is HITL-gated, so the first `astream(None)`
-        surfaces an approval interrupt that is auto-approved here (this is an
-        explicit user-initiated `/offload`, not a model-proposed tool call) and
-        the run is resumed to completion.
+        executes the tool. The tool is HITL-gated, so `astream(None)` surfaces
+        an approval interrupt; only the `compact_conversation` interrupt is
+        approved here (this is an explicit user-initiated `/offload`).
+
+        Compaction returns the graph to the model, so a trailing model turn
+        runs and may itself request gated tools. Those are NOT auto-approved —
+        approving tool calls the user never saw would be unsafe — they are
+        rejected so the run finishes cleanly with no side effects. The resume
+        drain loops until no interrupts remain (bounded, so a pathological
+        model that keeps requesting tools after rejection cannot spin forever).
 
         A first-turn `Command(update=..., goto=...)` is intentionally avoided:
         the LangGraph API server rebuilds it with `goto=None` and crashes
@@ -11005,9 +11025,14 @@ class DeepAgentsApp(App):
         """
         import uuid
 
-        from langchain.agents.middleware.human_in_the_loop import ApproveDecision
+        from langchain.agents.middleware.human_in_the_loop import (
+            ApproveDecision,
+            RejectDecision,
+        )
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
+
+        from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
 
         agent = self._agent
         if agent is None:
@@ -11033,43 +11058,115 @@ class DeepAgentsApp(App):
             )
         await agent.aupdate_state(config, {"messages": [seed]}, as_node="model")
 
-        interrupt_ids: list[str] = []
         tool_error: str | None = None
+        # `self._agent` includes local graphs whose generic context defaults to
+        # `None`, but the graph is built with `CLIContextSchema` at runtime.
+        streaming_agent = cast("Any", agent)
 
-        async def _drain(stream_input: Any) -> None:  # noqa: ANN401
+        def _decisions_for_interrupt(interrupt_obj: Any) -> list[Any]:  # noqa: ANN401
+            """Approve the forced compaction; reject any other gated tool call.
+
+            The trailing model turn that runs after compaction can request its
+            own gated tools. Auto-approving those would execute actions the user
+            never saw, so only `compact_conversation` is approved; everything
+            else is rejected (safe — no side effects) so the run terminates.
+
+            Args:
+                interrupt_obj: The interrupt surfaced by the HITL middleware.
+
+            Returns:
+                One decision per `action_request`, in order, as the HITL
+                    middleware requires.
+            """
+            value = getattr(interrupt_obj, "value", None)
+            action_requests = (
+                value.get("action_requests") if isinstance(value, dict) else None
+            )
+            if not action_requests:
+                # Missing/malformed payload: this drive only ever seeds a single
+                # compact_conversation call, so a lone approval matches the
+                # expected shape and preserves historical behavior.
+                return [ApproveDecision(type="approve")]
+            decisions: list[Any] = []
+            for req in action_requests:
+                name = req.get("name") if isinstance(req, dict) else None
+                if name == "compact_conversation":
+                    decisions.append(ApproveDecision(type="approve"))
+                else:
+                    decisions.append(
+                        RejectDecision(
+                            type="reject",
+                            message=(
+                                "Not executed: /offload only performs "
+                                "conversation compaction."
+                            ),
+                        )
+                    )
+            return decisions
+
+        async def _drain(stream_input: Any) -> list[tuple[str, dict[str, Any]]]:  # noqa: ANN401
+            """Advance the graph, collecting interrupts that need a resume.
+
+            Sets `tool_error` if the compaction tool reported a failure.
+
+            Args:
+                stream_input: `None` to advance, or a `Command(resume=...)` to
+                    answer pending interrupts.
+
+            Returns:
+                `(interrupt_id, resume_value)` pairs for every interrupt
+                    surfaced during this stream.
+            """
             nonlocal tool_error
-            async for chunk in agent.astream(
+            pending: list[tuple[str, dict[str, Any]]] = []
+            async for chunk in streaming_agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
+                context=CLIContext(
+                    model=self._model_override,
+                    model_params=self._model_params_override or {},
+                    thread_id=self._lc_thread_id,
+                ),
                 durability="exit",
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
                     continue
                 _namespace, mode, data = chunk
                 if mode == "updates" and isinstance(data, dict):
-                    interrupts = data.get("__interrupt__")
-                    if interrupts:
-                        for interrupt_obj in interrupts:
-                            iid = getattr(interrupt_obj, "id", None)
-                            if iid:
-                                interrupt_ids.append(iid)
+                    for interrupt_obj in data.get("__interrupt__") or []:
+                        iid = getattr(interrupt_obj, "id", None)
+                        if iid:
+                            decisions = _decisions_for_interrupt(interrupt_obj)
+                            pending.append((iid, {"decisions": decisions}))
                 elif mode == "messages" and isinstance(data, tuple):
                     msg = data[0]
                     content = str(getattr(msg, "content", ""))
                     if type(msg).__name__ == "ToolMessage" and content.startswith(
-                        "Compaction failed"
+                        COMPACTION_FAILURE_PREFIX
                     ):
                         tool_error = content
+            return pending
 
-        await _drain(None)
-        if interrupt_ids:
-            resume_payload = {
-                interrupt_id: {"decisions": [ApproveDecision(type="approve")]}
-                for interrupt_id in interrupt_ids
-            }
-            await _drain(Command(resume=resume_payload))
+        # Bound the resume loop: after compaction the model runs again, and a
+        # rejected tool call could in principle prompt another. This caps that
+        # so a misbehaving model cannot spin `/offload` indefinitely.
+        max_resume_rounds = 10
+        pending = await _drain(None)
+        rounds = 0
+        while pending:
+            rounds += 1
+            if rounds > max_resume_rounds:
+                logger.warning(
+                    "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
+                    "unresolved",
+                    max_resume_rounds,
+                    len(pending),
+                )
+                break
+            resume_payload = dict(pending)
+            pending = await _drain(Command(resume=resume_payload))
 
         return tool_error
 

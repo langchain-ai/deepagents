@@ -87,6 +87,8 @@ from deepagents_code.local_context import (
     _AsyncExecutableBackend,
     _ExecutableBackend,
 )
+from deepagents_code.offload import _offload_fallback_root
+from deepagents_code.offload_middleware import _create_cli_compaction_middleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
@@ -1916,7 +1918,7 @@ def create_cli_agent(
             virtual_mode=True,
         )
         conversation_history_backend = FilesystemBackend(
-            root_dir=tempfile.mkdtemp(prefix="deepagents_conversation_history_"),
+            root_dir=_offload_fallback_root() / "conversation_history",
             virtual_mode=True,
         )
         composite_backend = CompositeBackend(
@@ -1933,11 +1935,7 @@ def create_cli_agent(
             routes={},
         )
 
-    from deepagents.middleware.summarization import create_summarization_tool_middleware
-
-    agent_middleware.append(
-        create_summarization_tool_middleware(model, composite_backend)
-    )
+    agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.

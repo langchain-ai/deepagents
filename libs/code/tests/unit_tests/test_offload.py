@@ -564,6 +564,47 @@ class TestAgentRunningGuard:
 class TestOffloadErrorHandling:
     """Test error handling during offload."""
 
+    async def test_missing_archive_path_warns_about_unrecoverable_history(
+        self,
+    ) -> None:
+        """A successful summary with a failed backend write is not silent."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(10))
+            after = _state_values(
+                _make_dict_messages(12), _summary_event(4, file_path=None)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            error_messages = app.query(ErrorMessage)
+            assert any(
+                "Older messages will not be recoverable" in str(widget._content)
+                for widget in error_messages
+            )
+            assert any(
+                "Offloaded 4 older messages" in str(widget._content)
+                for widget in app.query(AppMessage)
+            )
+
     async def test_tool_reported_compaction_failure_shows_error(self) -> None:
         """A "Compaction failed" ToolMessage surfaces as an `ErrorMessage`."""
         app = DeepAgentsApp()
@@ -922,7 +963,9 @@ class TestDriveServerSideCompaction:
     """Unit-test the server-side `compact_conversation` trigger mechanism."""
 
     @staticmethod
-    def _fake_remote_agent(tool_content: str) -> tuple[Any, list[Any]]:
+    def _fake_remote_agent(
+        tool_content: str,
+    ) -> tuple[Any, list[Any], list[object]]:
         """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
 
         First `astream(None)` surfaces a HITL approval interrupt; the resume
@@ -934,12 +977,19 @@ class TestDriveServerSideCompaction:
         from deepagents_code.client.remote_client import RemoteAgent
 
         astream_inputs: list[Any] = []
+        astream_contexts: list[object] = []
 
         class _Interrupt:
             id = "interrupt-1"
+            value = {  # noqa: RUF012  # test stub; immutability irrelevant
+                "action_requests": [
+                    {"name": "compact_conversation", "args": {"force": True}}
+                ]
+            }
 
-        async def _astream(stream_input: object, **_kwargs: object):  # noqa: RUF029, ANN202
+        async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
             astream_inputs.append(stream_input)
+            astream_contexts.append(kwargs.get("context"))
             if stream_input is None:
                 yield ((), "updates", {"__interrupt__": [_Interrupt()]})
             else:
@@ -953,7 +1003,7 @@ class TestDriveServerSideCompaction:
         agent.aensure_thread = AsyncMock()
         agent.aupdate_state = AsyncMock()
         agent.astream = _astream
-        return agent, astream_inputs
+        return agent, astream_inputs, astream_contexts
 
     async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
         """Seeds a forced `compact_conversation` call and approves the interrupt."""
@@ -962,11 +1012,13 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, astream_inputs = self._fake_remote_agent(
+            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
                 "Conversation compacted. Summarized 2 messages into a concise summary."
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"
+            app._model_override = "provider:active-model"
+            app._model_params_override = {"temperature": 0}
 
             config = {"configurable": {"thread_id": "test-thread"}}
             result = await app._drive_server_side_compaction(config)  # ty: ignore
@@ -989,13 +1041,25 @@ class TestDriveServerSideCompaction:
             assert isinstance(astream_inputs[1], Command)
             resume = astream_inputs[1].resume
             assert "interrupt-1" in resume
+            assert astream_contexts == [
+                {
+                    "model": "provider:active-model",
+                    "model_params": {"temperature": 0},
+                    "thread_id": "test-thread",
+                },
+                {
+                    "model": "provider:active-model",
+                    "model_params": {"temperature": 0},
+                    "thread_id": "test-thread",
+                },
+            ]
 
     async def test_reports_tool_failure(self) -> None:
         """Returns the tool's error text when compaction fails."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs = self._fake_remote_agent(
+            agent, _inputs, _contexts = self._fake_remote_agent(
                 "Compaction failed: an error occurred while generating the summary."
             )
             app._agent = agent
@@ -1007,6 +1071,78 @@ class TestDriveServerSideCompaction:
 
             assert result is not None
             assert result.startswith("Compaction failed")
+
+    async def test_rejects_trailing_gated_tool_call(self) -> None:
+        """Approves compaction but rejects a trailing model turn's gated tool.
+
+        Driving the graph loops back to the model after compaction, so the
+        trailing turn can request its own gated tools. Those must NOT be
+        auto-approved (the user never saw them) — they are rejected so the run
+        finishes cleanly without side effects and without stranding an
+        interrupt.
+        """
+        from langchain_core.messages import ToolMessage
+        from langgraph.types import Command
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        astream_inputs: list[Any] = []
+
+        class _Interrupt:
+            def __init__(self, iid: str, tool_name: str) -> None:
+                self.id = iid
+                self.value = {"action_requests": [{"name": tool_name, "args": {}}]}
+
+        async def _astream(stream_input: object, **_kwargs: object):  # noqa: RUF029, ANN202
+            idx = len(astream_inputs)
+            astream_inputs.append(stream_input)
+            if idx == 0:
+                compact = _Interrupt("i-compact", "compact_conversation")
+                yield ((), "updates", {"__interrupt__": [compact]})
+            elif idx == 1:
+                # Trailing model turn requests a gated tool.
+                write = _Interrupt("i-write", "write_file")
+                yield ((), "updates", {"__interrupt__": [write]})
+            else:
+                yield (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="Conversation compacted. Summarized 2 messages "
+                            "into a concise summary.",
+                            tool_call_id="x",
+                        ),
+                        {},
+                    ),
+                )
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+
+            config = {"configurable": {"thread_id": "test-thread"}}
+            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            await pilot.pause()
+
+        assert result is None
+        # Initial drain + two resumes (compaction, then trailing tool).
+        assert len(astream_inputs) == 3
+        assert isinstance(astream_inputs[1], Command)
+        assert isinstance(astream_inputs[2], Command)
+        # Compaction was approved.
+        compact_decision = astream_inputs[1].resume["i-compact"]["decisions"][0]
+        assert compact_decision["type"] == "approve"
+        # The trailing gated tool call was rejected, not approved.
+        write_decision = astream_inputs[2].resume["i-write"]["decisions"][0]
+        assert write_decision["type"] == "reject"
 
 
 class TestFormatTokenCount:

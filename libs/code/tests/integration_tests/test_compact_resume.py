@@ -252,5 +252,21 @@ async def test_compact_resumed_thread_uses_persisted_history(
             )
             assert "keeps enough unique detail" in read_back
             assert "Summarized at" in read_back
+
+        # Server 3: the event and archive path must remain usable after the
+        # process that performed the offload has exited.
+        async with server_session(
+            assistant_id=assistant_id,
+            model_name="itest:fake",
+            no_mcp=True,
+            enable_shell=False,
+            interactive=True,
+            sandbox_type="none",
+        ) as (agent, _server_proc):
+            read_back = await _read_file_through_agent(
+                agent, thread_id=thread_id, file_path=archive_path
+            )
+            assert "keeps enough unique detail" in read_back
+            assert "Summarized at" in read_back
     finally:
         model_config.clear_caches()

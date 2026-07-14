@@ -140,7 +140,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
       `file_path == /conversation_history/<thread>.md`,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
       proving the bytes live in the agent's backend server-side, and
-    - nothing was written to the client-local offload fallback directory.
+    - local archives land in the persistent per-user history directory.
     """
     home_dir = tmp_path / "home"
     project_dir = tmp_path / "project"
@@ -247,11 +247,10 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             # The SDK middleware writes a "## Summarized at" archive header.
             assert "Summarized at" in read_back
 
-        # With `backend=None` nothing should be written to the client-local
-        # offload fallback directory (`~/.deepagents/conversation_history`).
-        client_fallback = (
+        persistent_archive = (
             home_dir / ".deepagents" / "conversation_history" / f"{thread_id}.md"
         )
-        assert not client_fallback.exists()
+        assert persistent_archive.exists()
+        assert "keeps enough unique detail" in persistent_archive.read_text()
     finally:
         model_config.clear_caches()

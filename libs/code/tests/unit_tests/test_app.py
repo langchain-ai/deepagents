@@ -5086,8 +5086,7 @@ class TestClearCommand:
                 for widget in app_msgs
             )
             assert any(
-                str(widget._content)
-                == "Resume it with /threads -r (or /threads -r old-thread)"
+                str(widget._content) == "Resume it with /threads -r"
                 for widget in app_msgs
             )
             assert schedule.call_args_list[1].kwargs == {
@@ -9001,6 +9000,7 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             # Shrink the window so a small load archives messages above the
             # visible range, mirroring a long thread scrolled to the bottom.
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
@@ -24272,6 +24272,92 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
+    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+        """Excluded tools stay visible and split adjacent tool groups."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, excluded, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("excluded", tool_name, {}, "success"),
+                    ("after", "execute", {"command": "ls"}, "success"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
+            assert excluded.display is True
+            assert not excluded.has_class("-grouped")
+            assert after.display is False
+
+    async def test_regroup_leaves_edit_diff_outside_later_tool_group(self) -> None:
+        """An edit diff arriving after a parallel read stays expanded."""
+        from deepagents_code.tui.widgets.messages import DiffMessage, ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-edit-diff-history")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            edit, read = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("edit", "edit_file", {"file_path": "a.py"}, "success"),
+                    ("read", "read_file", {"file_path": "b.py"}, "success"),
+                ],
+            )
+            diff = DiffMessage("-old\n+new", "a.py", tool_name="edit_file")
+            await messages.mount(diff)
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 1
+            assert edit.display is True
+            assert read.display is False
+            assert diff.display is True
+            assert not diff.has_class("-grouped")
+
+    async def test_regroup_leaves_consecutive_excluded_tools_expanded(self) -> None:
+        """Two adjacent excluded tools stay expanded with no summary between them."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-adjacent")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            edit, todos = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("edit", "edit_file", {"file_path": "a.py"}, "success"),
+                    ("todos", "write_todos", {}, "success"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 0
+            assert edit.display is True
+            assert todos.display is True
+            assert not edit.has_class("-grouped")
+            assert not todos.has_class("-grouped")
+
     async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
         """A timestamp footer between two tools does not split the run.
 
@@ -24454,6 +24540,79 @@ class TestToolGroupCollapse:
             assert "Read 1 file" in rendered.plain
             assert tool.display is False
             await pilot.pause()
+
+    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    async def test_mount_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+        """Excluded tools mount standalone instead of opening a live group."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-live")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage(tool_name, {})
+            await app._mount_message(tool)
+
+            assert app._active_tool_group is None
+            assert tool.display is True
+            assert not tool.has_class("-grouped")
+
+    async def test_mount_leaves_edit_diff_outside_parallel_read_group(self) -> None:
+        """A late edit diff does not join the active parallel read group."""
+        from deepagents_code.tui.widgets.messages import DiffMessage, ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-edit-diff-live")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            edit = ToolCallMessage("edit_file", {"file_path": "a.py"})
+            read = ToolCallMessage("read_file", {"file_path": "b.py"})
+            diff = DiffMessage("-old\n+new", "a.py", tool_name="edit_file")
+            await app._mount_message(edit)
+            await app._mount_message(read)
+            await app._mount_message(diff)
+
+            assert len(list(app.query(ToolGroupSummary))) == 1
+            assert edit.display is True
+            assert read.display is False
+            assert diff.display is True
+            assert not diff.has_class("-grouped")
+            assert app._active_tool_group is None
+
+    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    async def test_mount_excluded_tool_closes_open_live_group(
+        self, tool_name: str
+    ) -> None:
+        """An excluded tool closes the live group; the next tool opens a new one."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-boundary")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            first = ToolCallMessage("execute", {"command": "ls"})
+            excluded = ToolCallMessage(tool_name, {})
+            later = ToolCallMessage("read_file", {"file_path": "a.py"})
+
+            await app._mount_message(first)
+            opened = app._active_tool_group
+            assert opened is not None  # groupable tool opened a live group
+
+            await app._mount_message(excluded)
+            assert app._active_tool_group is None  # excluded tool closed it
+            assert excluded.display is True
+            assert not excluded.has_class("-grouped")
+
+            await app._mount_message(later)
+            # A fresh groupable tool opens a new group, not the closed one.
+            assert app._active_tool_group is not None
+            assert app._active_tool_group is not opened
 
     async def test_group_survives_idle_after_completion(self) -> None:
         """A folded group stays mounted across completion, idle, and a boundary.

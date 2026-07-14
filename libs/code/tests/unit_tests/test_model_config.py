@@ -5830,6 +5830,9 @@ class TestLoadMcpServerApprovalsParsing:
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.approvals == frozenset()
+        # The wrong-typed key counts as one dropped diagnostic so callers can
+        # surface it instead of it only reaching an unseen debug log.
+        assert result.malformed_approvals == 1
 
     def test_malformed_entries_are_dropped(self, tmp_path: Path) -> None:
         """Non-table and fingerprint-less entries drop; well-formed ones survive."""
@@ -5857,6 +5860,9 @@ class TestLoadMcpServerApprovalsParsing:
                 )
             }
         )
+        # Both the non-table entry and the fingerprint-less entry are counted so
+        # a corrupt saved approval is surfaced rather than silently re-prompting.
+        assert result.malformed_approvals == 2
 
 
 class TestLoadMcpServerTrustLists:

@@ -91,6 +91,12 @@ class ConfigResolutionError:
     var is set. Twin of `legacy_ignored` for the env surface; see
     `format_legacy_env_ignored_notice`."""
 
+    malformed_approvals: int = 0
+    """Count of persisted `[mcp].enabled_project_server_approvals` rows dropped as
+    malformed. Non-zero means a saved approval could not be read, so its server
+    silently stopped pre-approving; surfaced for parity with `legacy_ignored`.
+    See `format_malformed_approvals_notice`."""
+
 
 @dataclass(frozen=True)
 class ConfigResolution:
@@ -125,6 +131,11 @@ class ConfigResolution:
     legacy_env_ignored: bool = False
     """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
     var is set. See `ConfigResolutionError.legacy_env_ignored`."""
+
+    malformed_approvals: int = 0
+    """Count of persisted approval rows dropped as malformed. Surfaced even on
+    success because the requested server may load while a corrupt sibling
+    approval does not. See `ConfigResolutionError.malformed_approvals`."""
 
     def __post_init__(self) -> None:
         """Enforce the non-empty `used_paths` invariant.
@@ -227,6 +238,7 @@ def resolve_mcp_config(
     policy_error: str | None = None
     legacy_ignored: tuple[str, ...] = ()
     legacy_env_ignored = False
+    malformed_approvals = 0
 
     for path in user_paths:
         loaded, error = load_mcp_config_with_error(path)
@@ -242,6 +254,7 @@ def resolve_mcp_config(
         trust_lists = load_mcp_server_trust_lists()
         legacy_ignored = tuple(sorted(trust_lists.legacy_ignored))
         legacy_env_ignored = trust_lists.legacy_env_ignored
+        malformed_approvals = trust_lists.malformed_approvals
         project_base = _resolve_project_config_base(None)
         untrusted_paths: list[Path] = []
         if trust_lists.load_failed:
@@ -311,6 +324,7 @@ def resolve_mcp_config(
             legacy_ignored=legacy_ignored,
             policy_error=policy_error,
             legacy_env_ignored=legacy_env_ignored,
+            malformed_approvals=malformed_approvals,
         )
 
     return ConfigResolution(
@@ -320,6 +334,7 @@ def resolve_mcp_config(
         legacy_ignored=legacy_ignored,
         policy_error=policy_error,
         legacy_env_ignored=legacy_env_ignored,
+        malformed_approvals=malformed_approvals,
     )
 
 
@@ -456,6 +471,30 @@ def format_legacy_env_ignored_notice(legacy_env_ignored: bool) -> str:
     )
 
 
+def format_malformed_approvals_notice(count: int) -> str:
+    """Build the CLI-style hint for dropped malformed saved approvals.
+
+    Mirrors `format_legacy_ignored_notice` so non-interactive `dcode mcp login`
+    explains why a previously-approved server stopped loading (a corrupt saved
+    approval) instead of leaving it to vanish silently.
+
+    Args:
+        count: Number of `[mcp].enabled_project_server_approvals` rows dropped as
+            malformed.
+
+    Returns:
+        A single-line user-facing string. Empty when `count` is zero.
+    """
+    if count <= 0:
+        return ""
+    entry_word = "entry" if count == 1 else "entries"
+    return (
+        f"{count} [mcp].enabled_project_server_approvals {entry_word} could not "
+        "be read and were ignored; re-approve by running `dcode` in this project "
+        "to keep loading affected servers"
+    )
+
+
 __all__ = [
     "ConfigErrorKind",
     "ConfigResolution",
@@ -463,6 +502,7 @@ __all__ = [
     "ServerSelection",
     "format_legacy_env_ignored_notice",
     "format_legacy_ignored_notice",
+    "format_malformed_approvals_notice",
     "format_policy_error_notice",
     "format_untrusted_project_notice",
     "resolve_mcp_config",

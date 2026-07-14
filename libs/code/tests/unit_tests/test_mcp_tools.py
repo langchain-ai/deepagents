@@ -4195,6 +4195,66 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
+    async def test_deepagents_subdir_server_loads_via_scoped_approval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A server defined only in `<root>/.deepagents/.mcp.json` loads.
+
+        This exercises the two independent project-root derivations together:
+        the approval is keyed to `<root>` (write side), while the runtime
+        reconstructs the root from the `.deepagents` config path via
+        `project_root_for_mcp_config_path` (read side). If that `.deepagents`
+        unwrap drifted from the write-side root, the scoped approval would
+        silently stop matching for the entire subdir-config layout.
+        """
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        servers = {"docs": self._stdio()}
+        (nested / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, servers, ["docs"])
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_writer_persisted_approval_loads_through_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An approval saved via the real writer loads through the real loader.
+
+        Unlike the unit-level round-trip (which passes `project_root` straight
+        to `is_enabled`), this drives the actual write-side root normalization
+        in `add_enabled_project_mcp_servers` and the read-side derivation in
+        `resolve_and_load_mcp_tools` — the only place the two could diverge.
+        """
+        from deepagents_code import model_config
+
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        servers = {"docs": self._stdio()}
+        (nested / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+        user_config = tmp_path / "config.toml"
+
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=project,
+            server_configs=servers,
+        )
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=False
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
     async def test_same_name_in_different_project_is_not_approved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4451,6 +4511,46 @@ class TestSelectiveProjectMcpTrust:
         assert any(
             "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in msg
             and "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in msg
+            for msg in errors
+        )
+
+    async def test_malformed_saved_approval_surfaces_migration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt saved approval surfaces a visible notice, not silence.
+
+        A malformed `[mcp].enabled_project_server_approvals` row is dropped
+        fail-closed, but the loader runs in non-interactive paths with no
+        prompt, so the user must learn a saved approval could not be read
+        instead of the server just silently re-prompting.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        # A table missing `fingerprint` is malformed and dropped.
+        user_config.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = [\n"
+            f'  {{ project_root = "{project}", name = "docs" }},\n'
+            "]\n"
+        )
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any(
+            "enabled_project_server_approvals" in msg and "could not be read" in msg
             for msg in errors
         )
 

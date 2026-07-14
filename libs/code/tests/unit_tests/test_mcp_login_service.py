@@ -629,6 +629,26 @@ class TestFormatLegacyIgnoredNotice:
         assert "dcode" in notice
 
 
+class TestFormatMalformedApprovalsNotice:
+    """`format_malformed_approvals_notice` rendering."""
+
+    def test_zero_returns_empty_string(self) -> None:
+        """No dropped approvals means no notice."""
+        from deepagents_code.mcp_login_service import format_malformed_approvals_notice
+
+        assert format_malformed_approvals_notice(0) == ""
+
+    def test_count_and_migration_hint(self) -> None:
+        """The notice reports the count and how to re-approve."""
+        from deepagents_code.mcp_login_service import format_malformed_approvals_notice
+
+        notice = format_malformed_approvals_notice(2)
+        assert "2" in notice
+        assert "enabled_project_server_approvals" in notice
+        assert "could not be read" in notice
+        assert "dcode" in notice
+
+
 class TestFormatPolicyErrorNotice:
     """`format_policy_error_notice` rendering."""
 

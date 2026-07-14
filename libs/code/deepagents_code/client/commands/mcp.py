@@ -114,6 +114,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigResolutionError,
         format_legacy_env_ignored_notice,
         format_legacy_ignored_notice,
+        format_malformed_approvals_notice,
         format_policy_error_notice,
         format_untrusted_project_notice,
         resolve_mcp_config,
@@ -150,6 +151,9 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     legacy_env_notice = format_legacy_env_ignored_notice(resolution.legacy_env_ignored)
     if legacy_env_notice:
         print(legacy_env_notice, file=sys.stderr)  # noqa: T201
+    malformed_notice = format_malformed_approvals_notice(resolution.malformed_approvals)
+    if malformed_notice:
+        print(malformed_notice, file=sys.stderr)  # noqa: T201
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -263,6 +267,7 @@ def _print_resolution_error(error: ConfigResolutionError) -> None:
     from deepagents_code.mcp_login_service import (
         format_legacy_env_ignored_notice,
         format_legacy_ignored_notice,
+        format_malformed_approvals_notice,
         format_untrusted_project_notice,
     )
 
@@ -279,4 +284,7 @@ def _print_resolution_error(error: ConfigResolutionError) -> None:
     legacy_env_notice = format_legacy_env_ignored_notice(error.legacy_env_ignored)
     if legacy_env_notice:
         print(legacy_env_notice, file=sys.stderr)  # noqa: T201
+    malformed_notice = format_malformed_approvals_notice(error.malformed_approvals)
+    if malformed_notice:
+        print(malformed_notice, file=sys.stderr)  # noqa: T201
     print(error.message, file=sys.stderr)  # noqa: T201

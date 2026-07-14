@@ -3212,7 +3212,10 @@ class McpProjectServerApproval:
             return None
         return cls(
             project_root=normalized_root,
-            name=name,
+            # Strip so the read side matches the write side and `from_toml`,
+            # both of which persist/compare a stripped name — otherwise a
+            # whitespace-padded server key would never match its own approval.
+            name=name.strip(),
             fingerprint=fingerprint_mcp_server_config(server),
         )
 
@@ -3367,6 +3370,14 @@ class McpServerTrustLists:
     `legacy_ignored` for the env surface; callers should surface the rename so the
     change is not silent. Excluded from equality like `read_error`."""
 
+    malformed_approvals: int = field(default=0, compare=False, kw_only=True)
+    """Count of `[mcp].enabled_project_server_approvals` rows that were dropped as
+    malformed (wrong-typed key, non-table entry, or a table missing/blank
+    `project_root`/`name`/`fingerprint`). Non-zero means a persisted approval
+    could not be read, so its server silently re-prompts; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) for parity with
+    `legacy_ignored`. Diagnostic, not resolved policy — excluded from equality."""
+
     def __post_init__(self) -> None:
         """Enforce reject precedence by stripping disabled names from both sets.
 
@@ -3518,7 +3529,7 @@ def _toml_str_list(
 
 def _toml_project_server_approvals(
     value: object, *, config_path: Path
-) -> list[McpProjectServerApproval]:
+) -> tuple[list[McpProjectServerApproval], int]:
     """Parse `[mcp].enabled_project_server_approvals` entries.
 
     Args:
@@ -3526,20 +3537,26 @@ def _toml_project_server_approvals(
         config_path: Config file the value came from, for log context.
 
     Returns:
-        Well-formed project-scoped approvals. Malformed entries are dropped,
-        which is fail-closed for an allowlist.
+        `(approvals, dropped)`: the well-formed project-scoped approvals and the
+            count of malformed rows ignored. Dropping is fail-closed for an
+            allowlist; the count lets callers surface the loss (a bare
+            `logger.warning` is invisible outside debug mode) so a corrupt saved
+            approval doesn't just silently re-prompt.
     """
     if value is None:
-        return []
+        return [], 0
     if not isinstance(value, list):
         logger.warning(
             "[mcp].enabled_project_server_approvals in %s should be a list of "
             "tables; ignoring it",
             config_path,
         )
-        return []
+        # Count the whole-key type error as one dropped diagnostic so it is
+        # surfaced rather than only logged.
+        return [], 1
 
     approvals: list[McpProjectServerApproval] = []
+    dropped = 0
     for item in value:
         if not isinstance(item, dict):
             logger.warning(
@@ -3547,6 +3564,7 @@ def _toml_project_server_approvals(
                 "non-table entry",
                 config_path,
             )
+            dropped += 1
             continue
         approval = McpProjectServerApproval.from_toml(
             cast("Mapping[str, object]", item)
@@ -3557,9 +3575,10 @@ def _toml_project_server_approvals(
                 "entry missing project_root, name, or fingerprint",
                 config_path,
             )
+            dropped += 1
             continue
         approvals.append(approval)
-    return approvals
+    return approvals, dropped
 
 
 def load_mcp_server_trust_lists(
@@ -3611,6 +3630,7 @@ def load_mcp_server_trust_lists(
         config_path = DEFAULT_CONFIG_PATH
 
     toml_approvals: list[McpProjectServerApproval] = []
+    malformed_approvals = 0
     toml_disabled: list[str] = []
     legacy_ignored: list[str] = []
     read_error: str | None = None
@@ -3620,7 +3640,7 @@ def load_mcp_server_trust_lists(
                 data = tomllib.load(f)
             mcp_section = data.get("mcp", {})
             if isinstance(mcp_section, dict):
-                toml_approvals = _toml_project_server_approvals(
+                toml_approvals, malformed_approvals = _toml_project_server_approvals(
                     mcp_section.get("enabled_project_server_approvals"),
                     config_path=config_path,
                 )
@@ -3696,6 +3716,13 @@ def load_mcp_server_trust_lists(
         () if env_enabled is not None or read_error is not None else toml_approvals
     )
     disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
+    # Corner: when `read_error` is set because `config.toml` was unreadable,
+    # `toml_disabled` is lost, so a name that is both TOML-`disabled` *and*
+    # exported in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` would survive here —
+    # "reject wins" does not hold in that one corner. It requires a
+    # self-contradicting config plus the explicit `DANGEROUSLY_` opt-in, and the
+    # read error is surfaced to the user, so it stays an accepted footgun rather
+    # than a silent fail-open.
     # Reject precedence is enforced by `McpServerTrustLists.__post_init__`, so no
     # subtraction here.
     return McpServerTrustLists(
@@ -3705,6 +3732,7 @@ def load_mcp_server_trust_lists(
         read_error=read_error,
         legacy_ignored=frozenset(legacy_ignored),
         legacy_env_ignored=legacy_env_ignored,
+        malformed_approvals=malformed_approvals,
     )
 
 
@@ -3785,7 +3813,7 @@ def add_enabled_project_mcp_servers(
         mcp_section = data.get("mcp")
         if not isinstance(mcp_section, dict):
             mcp_section = {}
-        existing = _toml_project_server_approvals(
+        existing, _ = _toml_project_server_approvals(
             mcp_section.get("enabled_project_server_approvals"),
             config_path=config_path,
         )

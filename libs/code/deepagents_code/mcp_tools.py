@@ -2301,7 +2301,7 @@ def _log_skipped_project_servers(
     (`--trust-project-mcp` off) or merely not yet granted.
 
     Args:
-        dropped: `(name, kind, summary)` tuples for each skipped server.
+        dropped: `ProjectServerSummary` rows for each skipped server.
         trust_project_mcp: The caller's tri-state trust flag.
         config_trusted: Whether the project config was otherwise trusted (so the
             only reason to drop is an explicit user-level deny entry).
@@ -2467,6 +2467,22 @@ async def resolve_and_load_mcp_tools(
                         "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS is no longer "
                         "used; it was renamed to "
                         "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+                    ),
+                )
+            )
+        if trust_lists.malformed_approvals:
+            # A corrupt saved approval would otherwise just silently re-prompt;
+            # surface it here (the loader runs in non-interactive paths where a
+            # bare logger.warning is unseen), mirroring the legacy notices above.
+            count = trust_lists.malformed_approvals
+            entry_word = "entry" if count == 1 else "entries"
+            config_load_errors.append(
+                (
+                    DEFAULT_CONFIG_PATH,
+                    (
+                        f"{count} [mcp].enabled_project_server_approvals {entry_word} "
+                        "could not be read and were ignored; re-approve via the "
+                        "project MCP prompt to keep loading affected servers"
                     ),
                 )
             )

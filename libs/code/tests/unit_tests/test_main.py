@@ -34,6 +34,7 @@ from deepagents_code.main import (
     format_tool_warning_cli,
     run_textual_cli_async,
 )
+from deepagents_code.mcp_tools import ProjectServerSummary
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
@@ -3368,6 +3369,14 @@ class TestCheckMcpProjectTrustPrompt:
 class TestSelectProjectServersToPersist:
     """Tests for the "always allow" subset selection helpers."""
 
+    @pytest.fixture
+    def _interactive_picker_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Allow picker tests to run independently of pytest's captured streams."""
+        monkeypatch.setattr(
+            "deepagents_code.main._project_mcp_picker_has_terminal",
+            lambda: True,
+        )
+
     @pytest.mark.parametrize(
         ("raw", "count", "expected"),
         [
@@ -3392,8 +3401,12 @@ class TestSelectProjectServersToPersist:
         from deepagents_code.main import _format_project_mcp_checkbox_rows
 
         servers = [
-            ("docs-langchain", "http", "https://docs.langchain.com/mcp"),
-            ("reference-langchain", "http", "https://reference.langchain.com/mcp"),
+            ProjectServerSummary(
+                "docs-langchain", "http", "https://docs.langchain.com/mcp"
+            ),
+            ProjectServerSummary(
+                "reference-langchain", "http", "https://reference.langchain.com/mcp"
+            ),
         ]
 
         rows = _format_project_mcp_checkbox_rows(
@@ -3420,13 +3433,16 @@ class TestSelectProjectServersToPersist:
             _unexpected_picker,
         ):
             names = _select_project_servers_to_persist(
-                [("fs", "stdio", "node")], Console(stderr=True)
+                [ProjectServerSummary("fs", "stdio", "node")],
+                Console(stderr=True),
             )
 
         assert names == ["fs"]
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_action_picker_is_inline_and_defaults_to_deny(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The unified selector is inline and requires navigation to grant trust."""
         from rich.console import Console
@@ -3462,10 +3478,6 @@ class TestSelectProjectServersToPersist:
                 return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        monkeypatch.setattr(
-            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
-        )
-
         result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
 
         assert result is _ProjectMcpTrustAction.DENY
@@ -3477,8 +3489,51 @@ class TestSelectProjectServersToPersist:
         assert "Remember..." in rendered
         assert "Deny" in rendered
 
-    def test_inline_checkbox_picker_does_not_use_full_screen(
+    def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hidden selector is not launched when stderr is not a terminal."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_trust_action_picker
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
+        )
+
+        result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
+
+        assert result is None
+
+    def test_checkbox_picker_falls_back_when_stderr_is_redirected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The follow-up selector also avoids hidden rendering to stderr."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
+        )
+
+        result = _run_project_mcp_server_checkbox_picker(
+            [ProjectServerSummary("docs", "stdio", "echo docs")],
+            Console(stderr=True),
+        )
+
+        assert result is None
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_inline_checkbox_picker_does_not_use_full_screen(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The checkbox picker stays inline rather than taking over the terminal."""
         from rich.console import Console
@@ -3499,14 +3554,19 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert names == ["reference"]
         assert captured["full_screen"] is False
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_navigation_wraps(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Up at the first row and down at the last row wrap around."""
         from rich.console import Console
@@ -3555,13 +3615,18 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert names == ["docs", "reference"]
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_space_toggle_derives_selection(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Space checks the cursor row and Enter confirms the explicit selection.
 
@@ -3604,13 +3669,18 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert names == ["docs"]
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_select_all_is_explicit(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The dedicated select-all key checks every server from an empty default."""
         from rich.console import Console
@@ -3648,13 +3718,18 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert names == ["docs", "reference"]
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_scrolls_a_bounded_viewport(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Long server lists stay bounded while navigation keeps the cursor visible."""
         from rich.console import Console
@@ -3691,11 +3766,16 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [(f"item{index:02}", "stdio", "echo") for index in range(12)]
+        servers = [
+            ProjectServerSummary(f"item{index:02}", "stdio", "echo")
+            for index in range(12)
+        ]
         _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_escape_cancels(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Esc cancels the approval, distinct from confirming an empty selection.
 
@@ -3736,13 +3816,18 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_ctrl_c_returns_interrupted(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Ctrl+C in the checkbox picker aborts the launch flow."""
         from rich.console import Console
@@ -3779,7 +3864,10 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
         assert result is _ProjectMcpTrustPromptOutcome.INTERRUPTED
@@ -3790,7 +3878,10 @@ class TestSelectProjectServersToPersist:
 
         from deepagents_code.main import _select_project_servers_to_persist
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         with patch(
             "deepagents_code.main._run_project_mcp_server_checkbox_picker",
             return_value=["reference"],
@@ -3805,7 +3896,10 @@ class TestSelectProjectServersToPersist:
 
         from deepagents_code.main import _select_project_servers_to_persist
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         with patch(
             "deepagents_code.main._run_project_mcp_server_checkbox_picker",
             return_value=[],
@@ -3820,7 +3914,10 @@ class TestSelectProjectServersToPersist:
 
         from deepagents_code.main import _select_project_servers_to_persist
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         with (
             patch(
                 "deepagents_code.main._run_project_mcp_server_checkbox_picker",
@@ -3838,7 +3935,10 @@ class TestSelectProjectServersToPersist:
 
         from deepagents_code.main import _select_project_servers_to_persist
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         with (
             patch(
                 "deepagents_code.main._run_project_mcp_server_checkbox_picker",
@@ -3859,7 +3959,10 @@ class TestSelectProjectServersToPersist:
             _select_project_servers_to_persist,
         )
 
-        servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
         with (
             patch(
                 "deepagents_code.main._run_project_mcp_server_checkbox_picker",
@@ -3870,6 +3973,98 @@ class TestSelectProjectServersToPersist:
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
         assert names is _ProjectMcpTrustPromptOutcome.INTERRUPTED
+
+    def test_fallback_blank_cancels(self) -> None:
+        """Blank fallback input cancels (deny) rather than confirming nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _select_project_servers_to_persist,
+        )
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", return_value="   "),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names is _ProjectMcpTrustPromptOutcome.CANCELLED
+
+    def test_fallback_eof_cancels(self) -> None:
+        """EOF (Ctrl+D) at the fallback prompt cancels, not an empty confirm."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _select_project_servers_to_persist,
+        )
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names is _ProjectMcpTrustPromptOutcome.CANCELLED
+
+
+class TestSelectProjectMcpTrustAction:
+    """Text-fallback token mapping for the trust action selector.
+
+    The inline arrow picker is covered separately; this pins the letter tokens
+    the text fallback accepts — notably that the advertised `r`/`remember` and
+    the `a`/`always` alias both map to REMEMBER.
+    """
+
+    @pytest.mark.parametrize(
+        ("token", "expected_name"),
+        [
+            ("y", "ALLOW_ONCE"),
+            ("yes", "ALLOW_ONCE"),
+            ("r", "REMEMBER"),
+            ("remember", "REMEMBER"),
+            ("a", "REMEMBER"),
+            ("always", "REMEMBER"),
+            ("n", "DENY"),
+            ("", "DENY"),
+        ],
+    )
+    def test_text_fallback_tokens(
+        self, token: str, expected_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each accepted token maps to the documented action."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustAction,
+            _select_project_mcp_trust_action,
+        )
+
+        # Force the inline picker to defer to the text prompt.
+        monkeypatch.setattr(
+            "deepagents_code.main._run_project_mcp_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_project_mcp_trust_action(2, Console(stderr=True))
+
+        assert result is _ProjectMcpTrustAction[expected_name]
 
 
 class TestCheckMcpProjectTrustDedupe:

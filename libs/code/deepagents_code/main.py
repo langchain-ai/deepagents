@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.app import AppResult
     from deepagents_code.config import Glyphs
-    from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
@@ -2537,7 +2537,7 @@ def _parse_server_number_selection(raw: str, count: int) -> list[int]:
 
 
 def _format_project_mcp_checkbox_rows(
-    prompt_servers: Sequence[tuple[str, str, str]],
+    prompt_servers: Sequence["ProjectServerSummary"],
     selected_names: set[str],
     selected_index: int,
     glyphs: "Glyphs",
@@ -2565,6 +2565,11 @@ def _format_project_mcp_checkbox_rows(
     return rows
 
 
+def _project_mcp_picker_has_terminal() -> bool:
+    """Return whether the inline MCP pickers have interactive input and output."""
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
 def _run_project_mcp_trust_action_picker(
     server_count: int, console: "Console"
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
@@ -2578,7 +2583,7 @@ def _run_project_mcp_trust_action_picker(
         The chosen action, `INTERRUPTED` for Ctrl+C, or `None` when the inline
         picker cannot run and the caller should use the text fallback.
     """
-    if not sys.stdin.isatty():
+    if not _project_mcp_picker_has_terminal():
         return None
 
     try:
@@ -2735,7 +2740,7 @@ def _select_project_mcp_trust_action(
 
 
 def _run_project_mcp_server_checkbox_picker(
-    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
     """Show an inline checkbox picker for project MCP servers to remember.
 
@@ -2749,6 +2754,9 @@ def _run_project_mcp_server_checkbox_picker(
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """
+    if not _project_mcp_picker_has_terminal():
+        return None
+
     try:
         from prompt_toolkit import Application
         from prompt_toolkit.formatted_text import FormattedText
@@ -2903,7 +2911,7 @@ def _run_project_mcp_server_checkbox_picker(
 
 
 def _select_project_servers_with_numbers(
-    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome:
     """Ask which prompted project MCP servers to remember with a text fallback.
 
@@ -2942,7 +2950,7 @@ def _select_project_servers_with_numbers(
 
 
 def _select_project_servers_to_persist(
-    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome:
     """Ask which prompted project MCP servers to remember for this project.
 

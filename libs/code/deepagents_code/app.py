@@ -17363,7 +17363,6 @@ class DeepAgentsApp(App):
         # below reloads every on-disk MCP token regardless.
         if self._agent_running and self._agent_worker:
             self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
-            self._set_agent_running(False)
         else:
             self._discard_queue()
 

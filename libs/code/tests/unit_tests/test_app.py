@@ -22544,7 +22544,7 @@ class TestRestartCommand:
     async def test_cancels_inflight_worker_before_respawn(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Active agent worker is cancelled and queue drained before respawn."""
+        """Cancellation keeps goal mutations gated until worker cleanup finishes."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -22554,7 +22554,7 @@ class TestRestartCommand:
 
             worker = MagicMock()
             app._agent_worker = worker
-            app._agent_running = True
+            app._set_agent_running(True)
             app._pending_messages.append(QueuedMessage(text="hi", mode="normal"))
 
             from deepagents_code.config import settings
@@ -22568,17 +22568,23 @@ class TestRestartCommand:
             monkeypatch.setattr(settings, "reload_from_environment", _reload)
             monkeypatch.setattr("deepagents_code.model_config.clear_caches", _clear)
 
-            async def _noop_restart() -> None:  # noqa: RUF029  # awaited by handler
-                return
+            async def _noop_restart() -> bool:  # noqa: RUF029  # awaited by handler
+                assert app._agent_running is True
+                assert not app._agent_quiescent.is_set()
+                return False
 
             monkeypatch.setattr(app, "_restart_server_manual", _noop_restart)
 
-            await app._handle_command("/restart")
-            await pilot.pause()
+            try:
+                await app._handle_command("/restart")
+                await pilot.pause()
 
-            worker.cancel.assert_called_once()
-            assert app._agent_running is False
-            assert len(app._pending_messages) == 0
+                worker.cancel.assert_called_once()
+                assert app._agent_running is True
+                assert not app._agent_quiescent.is_set()
+                assert len(app._pending_messages) == 0
+            finally:
+                app._set_agent_running(False)
 
     async def test_case_insensitive_bypass_when_busy(
         self, monkeypatch: pytest.MonkeyPatch

@@ -33,6 +33,7 @@ _TIPS: dict[str, int] = {
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /auto-update to toggle automatic updates": 1,
     "Use /timestamps to show or hide message timestamp footers": 1,
+    "Use /goal amend to steer an active goal without restarting it": 2,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,

@@ -5,7 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from deepagents_code.goal_rubric import _goal_rubric_human_prompt, generate_goal_rubric
+from deepagents_code.goal_rubric import (
+    _goal_amendment_human_prompt,
+    _goal_rubric_human_prompt,
+    generate_goal_amendment,
+    generate_goal_rubric,
+)
 
 
 class _FakeModel:
@@ -19,6 +24,65 @@ class _FakeModel:
         """Record the prompt and return a response with the configured text."""
         self.invoked_with = messages
         return SimpleNamespace(text=self._text)
+
+
+class _FakeStructuredModel:
+    """Structured-output model double for goal amendments."""
+
+    def __init__(self, response: dict[str, str]) -> None:
+        self._response = response
+        self.invoked_with: object | None = None
+        self.schema: object | None = None
+
+    def with_structured_output(self, schema: object) -> _FakeStructuredModel:
+        """Record the requested schema and return this model."""
+        self.schema = schema
+        return self
+
+    def invoke(self, messages: object) -> dict[str, str]:
+        """Record the prompt and return the configured amendment."""
+        self.invoked_with = messages
+        return self._response
+
+
+class TestGoalAmendment:
+    """Goal amendments preserve bounded current state and use structured output."""
+
+    def test_prompt_contains_current_state_and_feedback(self) -> None:
+        prompt = _goal_amendment_human_prompt(
+            "ship login",
+            "- password login works\n- keep API stable",
+            "add passkeys",
+        )
+
+        assert "<current_goal>\nship login\n</current_goal>" in prompt
+        assert "- keep API stable" in prompt
+        assert "<user_feedback>\nadd passkeys\n</user_feedback>" in prompt
+
+    def test_generate_returns_trimmed_structured_amendment(self) -> None:
+        model = _FakeStructuredModel(
+            {
+                "objective": "  ship login with passkeys  ",
+                "criteria": "  - password login works\n- passkeys work  ",
+            }
+        )
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            result = generate_goal_amendment(
+                "ship login",
+                "- password login works",
+                "add passkeys",
+                model_spec="openai:gpt-5.5",
+            )
+
+        assert result == {
+            "objective": "ship login with passkeys",
+            "criteria": "- password login works\n- passkeys work",
+        }
+        assert model.schema is not None
+        assert model.invoked_with is not None
 
 
 class TestGoalRubricHumanPrompt:

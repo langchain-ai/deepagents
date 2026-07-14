@@ -102,6 +102,43 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
         up.main()
 
 
+def test_full_profile_has_empty_include_tasks():
+    mats = up.build_provider_matrices(
+        ["openai:gpt"], ["autonomous"], shard_parallel=10, n_shards_by_cat={"autonomous": 10}
+    )
+    assert mats["openai"][0]["include_tasks"] == ""
+
+
+def test_lite_profile_sets_include_tasks_and_right_sizes_shards():
+    import lite_tasks
+
+    defaults = {"autonomous": 10, "conversation": 3, "context": 3}
+    mats = up.build_provider_matrices(
+        ["openai:gpt"],
+        ["autonomous", "conversation", "context"],
+        shard_parallel=10,
+        n_shards_by_cat=defaults,
+        dcode_impl="bare",
+        profile="lite",
+    )
+    by_cat = {e["category"]: e for e in mats["openai"]}
+    for cat in ("autonomous", "conversation", "context"):
+        n = len(lite_tasks.LITE_TASKS[cat])
+        assert by_cat[cat]["include_tasks"] == " ".join(lite_tasks.LITE_TASKS[cat])
+        assert by_cat[cat]["n_shards"] == min(defaults[cat], max(1, (n + 4) // 5))
+
+
+def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+    monkeypatch.setenv("UNIFIED_PROFILE", "medium")
+    with pytest.raises(SystemExit, match=r"UNIFIED_PROFILE must be one of"):
+        up.main()
+
+
 def test_langsmith_dataset_is_empty_for_shared_dataset():
     # No per-model dataset name: the leaf derives the canonical shared dataset,
     # so every entry's langsmith_dataset is empty regardless of the model spec.

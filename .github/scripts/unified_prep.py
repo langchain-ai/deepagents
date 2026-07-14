@@ -17,6 +17,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lite_tasks  # noqa: E402  (lite_tasks.py in same dir)
 import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
 
@@ -59,6 +60,10 @@ DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
 # Harnesses selectable for the code categories (autonomous, context) via the
 # `agent_impl` input. Conversation is always tau3 and is never overridden.
 CODE_AGENT_IMPLS = {"dcode", "bare"}
+
+# Run profiles: "full" = every task in each category; "lite" = the frozen
+# high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
+PROFILES = {"full", "lite"}
 
 
 def parse_int_input(
@@ -114,6 +119,7 @@ def build_provider_matrices(
     shard_parallel: int,
     n_shards_by_cat: dict[str, int],
     dcode_impl: str = "dcode",
+    profile: str = "full",
 ) -> dict[str, list[dict]]:
     matrices: dict[str, list[dict]] = {}
     for spec in models_list:
@@ -123,6 +129,13 @@ def build_provider_matrices(
             # `dcode_impl` swaps the harness for the code categories only; the
             # conversation category's tau3 harness is left untouched.
             agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
+            # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks);
+            # right-size shards so a ~15-task slice doesn't spin 10 runners.
+            include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
+            n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
+            if include:
+                n_tasks = len(include.split())
+                n_shards = min(n_shards, max(1, (n_tasks + 4) // 5))
             entry = {
                 "model": spec,
                 "provider": prov,
@@ -130,12 +143,13 @@ def build_provider_matrices(
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
                 "agent_impl": agent_impl,
+                "include_tasks": include,
                 # Empty: the leaf derives the canonical shared dataset name per
                 # category (harbor-index/harbor-index-1.0, tau3-subset,
                 # local/...), so every model attaches as an experiment on the one
                 # shared dataset. unified_summary remains the cross-model surface.
                 "langsmith_dataset": "",
-                "n_shards": n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat]),
+                "n_shards": n_shards,
                 "shard_parallel": shard_parallel,
             }
             matrices.setdefault(prov, []).append(entry)
@@ -196,6 +210,12 @@ def main(argv: list[str] | None = None) -> int:
             f"got {dcode_impl!r}"
         )
 
+    profile = os.environ.get("UNIFIED_PROFILE", "").strip() or "full"
+    if profile not in PROFILES:
+        raise SystemExit(
+            f"UNIFIED_PROFILE must be one of {sorted(PROFILES)}, got {profile!r}"
+        )
+
     if not categories:
         raise SystemExit(f"No categories selected. Choose from {sorted(CATEGORY_MAP)}.")
     unknown = [c for c in categories if c not in CATEGORY_MAP]
@@ -225,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     assert len(providers_present) * shard_parallel <= MAX_RUNNERS
 
     matrices = build_provider_matrices(
-        model_specs, categories, shard_parallel, n_shards_by_cat, dcode_impl
+        model_specs, categories, shard_parallel, n_shards_by_cat, dcode_impl, profile
     )
 
     outputs: dict[str, object] = {

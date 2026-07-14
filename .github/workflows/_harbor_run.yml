@@ -262,26 +262,34 @@ jobs:
         # dedicated "tau3-subset" LangSmith dataset name.
         if: env.HARBOR_DATASET == 'tau3-subset'
         run: |
-          include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
-          # Fail loudly if the filter resolved to the wrong size. An import error
-          # already aborts via `set -e` (a bare assignment propagates the command
-          # substitution's exit code — do not switch to `local`/`export`, which
-          # swallow it), but a successful-but-empty/partial result would be
-          # written verbatim and silently run a different set than the promised
-          # "30-task subset" — an empty value means NO filter, i.e. the FULL
-          # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
-          # invariant the unit tests pin; change both together.
-          task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
-          if [ "$task_count" -ne 30 ]; then
-            echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
-            exit 1
+          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+            # A caller-provided filter (e.g. profile=lite) wins: keep it, skip the
+            # full tau3_subset expansion and its 30-task invariant. Still rewrite
+            # the dataset ref + LangSmith name below.
+            include_tasks="$HARBOR_INCLUDE_TASKS"
+            echo "tau3-subset: using caller include_tasks ($(printf '%s' "$include_tasks" | wc -w | tr -d ' ') tasks)"
+          else
+            include_tasks="$(uv run python -c 'from deepagents_evals.tau3_subset import INCLUDE_TASKS; print(INCLUDE_TASKS)')"
+            # Fail loudly if the filter resolved to the wrong size. An import error
+            # already aborts via `set -e` (a bare assignment propagates the command
+            # substitution's exit code — do not switch to `local`/`export`, which
+            # swallow it), but a successful-but-empty/partial result would be
+            # written verbatim and silently run a different set than the promised
+            # "30-task subset" — an empty value means NO filter, i.e. the FULL
+            # dataset, still mislabeled as tau3-subset in LangSmith. 30 is the same
+            # invariant the unit tests pin; change both together.
+            task_count=$(printf '%s' "$include_tasks" | wc -w | tr -d ' ')
+            if [ "$task_count" -ne 30 ]; then
+              echo "::error::tau3-subset resolved to $task_count tasks (expected 30); refusing to run a mismatched task set."
+              exit 1
+            fi
+            echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
           fi
           {
             echo "HARBOR_DATASET=sierra-research/tau3-bench"
             echo "HARBOR_INCLUDE_TASKS=$include_tasks"
             echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
           } >> "$GITHUB_ENV"
-          echo "tau3-subset -> sierra-research/tau3-bench, $task_count tasks"
 
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports

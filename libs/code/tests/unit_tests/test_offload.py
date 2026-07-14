@@ -1203,13 +1203,14 @@ class TestArtifactsRoot:
 
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
 
-        root = _artifacts_root()
-        root_path = Path(root)
+        storage = _artifacts_root()
+        root_path = Path(storage.root)
 
+        assert storage.large_results_dir is None
         assert root_path.samefile(temp_dir / f"dcode-artifacts-{uid}")
         assert stat.S_IMODE(root_path.stat().st_mode) == 0o700
         # Stable across calls (paths embedded in resumed threads stay resolvable).
-        assert _artifacts_root() == root
+        assert _artifacts_root() == storage
 
     def test_windows_artifacts_root_is_accepted_by_filesystem_tools(self) -> None:
         """A Windows temp path retains its drive without a rejected drive prefix."""
@@ -1251,12 +1252,17 @@ class TestArtifactsRoot:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
         monkeypatch.setattr(Path, "lstat", fake_lstat)
 
-        root = _artifacts_root()
-        root_path = Path(root)
+        storage = _artifacts_root()
+        next_storage = _artifacts_root()
 
-        assert not root_path.samefile(reserved)
-        assert root_path.name.startswith(f"dcode-artifacts-{uid}-")
-        assert stat.S_IMODE(root_path.stat().st_mode) == 0o700
+        assert storage.root == "/dcode-artifacts-fallback"
+        assert next_storage.root == storage.root
+        assert storage.large_results_dir is not None
+        assert next_storage.large_results_dir is not None
+        assert not storage.large_results_dir.samefile(reserved)
+        assert storage.large_results_dir.name.startswith(f"dcode-artifacts-{uid}-")
+        assert stat.S_IMODE(storage.large_results_dir.stat().st_mode) == 0o700
+        assert next_storage.large_results_dir != storage.large_results_dir
 
 
 class TestOffloadStorageCaveat:

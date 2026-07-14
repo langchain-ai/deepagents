@@ -341,6 +341,7 @@ Do not assume that a path returned by a file tool can be used directly in a shel
 
 Host path mappings:
 - `<tmp_path>/dcode-artifacts/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `<tmp_path>/dcode-artifacts/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
+- `/dcode-artifacts-fallback/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `/dcode-artifacts-fallback/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
 
 ## `task` (subagent spawner)
 

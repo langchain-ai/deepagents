@@ -47,7 +47,11 @@ from deepagents_code.agent import (
 )
 from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
-from deepagents_code.offload import _filesystem_tool_path
+from deepagents_code.offload import (
+    _FALLBACK_ARTIFACTS_ROOT,
+    _ArtifactsStorage,
+    _filesystem_tool_path,
+)
 from deepagents_code.project_utils import ProjectContext
 
 
@@ -149,7 +153,10 @@ def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> Non
     tool_root = _filesystem_tool_path(artifacts_root)
     model = _make_fake_chat_model()
 
-    with patch("deepagents_code.agent._artifacts_root", return_value=tool_root):
+    with patch(
+        "deepagents_code.agent._artifacts_root",
+        return_value=_ArtifactsStorage(root=tool_root),
+    ):
         _agent, backend = create_cli_agent(
             model=model,
             assistant_id="test-agent",
@@ -166,6 +173,63 @@ def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> Non
     assert result.error is None
     # The bytes are on the real filesystem at the advertised path.
     assert (artifacts_root / "large_tool_results" / "call-1").read_text() == "payload"
+
+
+def test_fallback_artifacts_root_keeps_archive_path_resolvable(
+    tmp_path: Path,
+) -> None:
+    """A resumed archive path keeps matching after fallback storage changes."""
+    history_root = tmp_path / ".deepagents"
+    first_results = tmp_path / "large-results-1"
+    recovered_root = _filesystem_tool_path(tmp_path / "recovered-artifacts")
+    model = _make_fake_chat_model()
+
+    with (
+        patch(
+            "deepagents_code.agent._artifacts_root",
+            side_effect=[
+                _ArtifactsStorage(
+                    root=_FALLBACK_ARTIFACTS_ROOT,
+                    large_results_dir=first_results,
+                ),
+                _ArtifactsStorage(root=recovered_root),
+            ],
+        ),
+        patch(
+            "deepagents_code.agent._offload_fallback_root",
+            return_value=history_root,
+        ),
+    ):
+        _first_agent, first_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+        _second_agent, second_backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert second_backend.artifacts_root == recovered_root
+    archive_path = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/thread.md"
+    assert first_backend.write(archive_path, "initial").error is None
+    assert second_backend.write(archive_path, "resumed").error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "resumed"
+
+    result_path = f"{_FALLBACK_ARTIFACTS_ROOT}/large_tool_results/call-1"
+    assert first_backend.write(result_path, "payload").error is None
+    assert (first_results / "call-1").read_text() == "payload"
 
 
 def _request_with_context(

@@ -37,6 +37,7 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -85,7 +86,11 @@ from deepagents_code.local_context import (
     _AsyncExecutableBackend,
     _ExecutableBackend,
 )
-from deepagents_code.offload import _artifacts_root, _offload_fallback_root
+from deepagents_code.offload import (
+    _FALLBACK_ARTIFACTS_ROOT,
+    _artifacts_root,
+    _offload_fallback_root,
+)
 from deepagents_code.offload_middleware import _create_cli_compaction_middleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -1938,30 +1943,36 @@ def create_cli_agent(
 
     # Set up composite backend with routing.
     if sandbox is None:
-        # Local mode: put large tool results on the REAL filesystem, under a
-        # stable, hardened per-user artifacts dir, instead of a hidden virtual
-        # route. The SDK middleware derives its offload prefixes from
-        # `artifacts_root` (`<root>/large_tool_results/` and
-        # `<root>/conversation_history/`), so pointing `artifacts_root` at a real
-        # dir and NOT routing `large_tool_results` makes offloaded results fall
-        # through to the default `LocalShellBackend` at a real path. The agent
-        # can then inspect them with `execute` (jq/grep/python) using the exact
-        # path the offload message hands it -- no virtual-path translation or
-        # copy-out/in. The root is stable across process restarts so paths
-        # embedded in a resumed thread's history stay resolvable. Conversation
-        # history keeps a dedicated route to persistent storage (`~/.deepagents`)
-        # so `/offload` archives survive restarts (and reboots).
-        artifacts_root = _artifacts_root()
+        # Local mode normally lets large results fall through to the default
+        # backend at the real, hardened `artifacts_root`, so filesystem tools and
+        # `execute` receive the same host path. If that predictable directory is
+        # unusable, `_artifacts_root` supplies a stable virtual root plus private
+        # temporary storage, and `large_tool_results` is routed there explicitly.
+        # Conversation history always has a dedicated route to persistent storage.
+        # The fallback alias remains installed even after the predictable directory
+        # recovers, so archive paths saved during fallback stay resolvable.
+        artifacts_storage = _artifacts_root()
+        artifacts_root = artifacts_storage.root
         conversation_history_backend = FilesystemBackend(
             root_dir=_offload_fallback_root() / "conversation_history",
             virtual_mode=True,
         )
+        fallback_history_root = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/"
+        artifact_routes: dict[str, BackendProtocol] = {
+            f"{artifacts_root}/conversation_history/": conversation_history_backend,
+            fallback_history_root: conversation_history_backend,
+        }
+        if artifacts_storage.large_results_dir is not None:
+            artifact_routes[f"{artifacts_root}/large_tool_results/"] = (
+                FilesystemBackend(
+                    root_dir=artifacts_storage.large_results_dir,
+                    virtual_mode=True,
+                )
+            )
         composite_backend = CompositeBackend(
             default=backend,
-            routes={
-                f"{artifacts_root}/conversation_history/": conversation_history_backend,
-            },
-            artifacts_root=str(artifacts_root),
+            routes=artifact_routes,
+            artifacts_root=artifacts_root,
         )
     else:
         # Sandbox mode: No special routing needed

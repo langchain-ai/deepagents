@@ -6,9 +6,20 @@ import logging
 import os
 import stat
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePath
 
 logger = logging.getLogger(__name__)
+
+_FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
+
+
+@dataclass(frozen=True)
+class _ArtifactsStorage:
+    """Agent-visible artifacts root and optional routed large-result directory."""
+
+    root: str
+    large_results_dir: Path | None = None
 
 
 def _filesystem_tool_path(path: PurePath) -> str:
@@ -96,31 +107,18 @@ def _probe_writable(path: Path) -> None:
         pass
 
 
-def _artifacts_root() -> str:
-    """Return a stable, private per-user directory for offloaded artifacts.
+def _artifacts_root() -> _ArtifactsStorage:
+    """Return storage configuration for offloaded artifacts.
 
-    In local mode, large tool results are written here on the real filesystem
-    (rather than a hidden virtual backend) so the agent can inspect them with
-    `execute` (`jq`, `grep`, `python`) using the exact path the offload message
-    hands it. The directory is:
-
-    - stable across process restarts (keyed by user id) so paths embedded in a
-      resumed thread's history stay resolvable, and
-    - hardened to `0o700` and owned by the current user so other local accounts
-      cannot read offloaded results.
-
-    It is used as the `CompositeBackend` `artifacts_root`, which the SDK
-    filesystem and summarization middleware turn into the
-    `<root>/large_tool_results/` and `<root>/conversation_history/` prefixes.
-
-    If the predictable per-user path is unusable -- e.g. squatted by another
-    local user or symlinked (rejected by `_harden_dir`'s ownership / `S_ISDIR`
-    guards) -- this falls back to a private unique directory rather than reusing
-    a foreign-owned path or failing agent startup. The fallback is not stable
-    across restarts, but it never trusts a directory owned by someone else.
+    The normal path is a stable, hardened host directory that filesystem tools
+    and shell commands can use directly. If that predictable directory is
+    unusable, large results use a private unique directory behind a stable virtual
+    root. Keeping the virtual root stable lets conversation archive paths persisted
+    in thread state continue matching their dedicated route after a restart.
 
     Returns:
-        The private, writable directory in the filesystem tool path format.
+        The agent-visible artifacts root and an optional directory to which large
+        results must be routed.
     """
     getuid = getattr(os, "getuid", None)
     suffix = str(getuid()) if getuid is not None else str(os.getpid())
@@ -131,8 +129,8 @@ def _artifacts_root() -> str:
         _probe_writable(root)
     except (OSError, RuntimeError):
         logger.warning(
-            "Predictable per-user artifacts directory is unavailable; creating "
-            "a private unique directory (paths will not be stable across restarts)",
+            "Predictable per-user artifacts directory is unavailable; routing "
+            "large results from a stable virtual prefix to private temporary storage",
             exc_info=True,
         )
         unique = Path(
@@ -140,8 +138,11 @@ def _artifacts_root() -> str:
         )
         _harden_dir(unique)
         _probe_writable(unique)
-        return _filesystem_tool_path(unique)
-    return _filesystem_tool_path(root)
+        return _ArtifactsStorage(
+            root=_FALLBACK_ARTIFACTS_ROOT,
+            large_results_dir=unique,
+        )
+    return _ArtifactsStorage(root=_filesystem_tool_path(root))
 
 
 def _offload_fallback_root() -> Path:

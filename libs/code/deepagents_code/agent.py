@@ -151,6 +151,17 @@ class _NoTodoListMiddleware(AgentMiddleware):
     That case is caught two ways — `_todo_list_middleware_override` re-checks the
     match at build time and raises, and `test_agent.py` guards it in CI. Gated
     behind `DEEPAGENTS_CODE_EXPERIMENTAL`; see `_todo_list_middleware_override`.
+
+    The `before_agent` / `abefore_agent` hooks are intentionally no-ops: they
+    exist solely so the SDK compiles a runtime node for this middleware. Without
+    a hook, LangGraph builds no node for the stand-in, so its presence — and the
+    fact that `write_todos` was dropped — cannot be positively identified from a
+    trace. LangGraph names middleware hook nodes `<middleware.name>.<hook>`, so
+    overriding `before_agent` yields a child node named exactly
+    `TodoListMiddleware.before_agent` (the real middleware implements only
+    `after_model`, so this name does not collide). That node is a stable,
+    queryable LangSmith trace signal for experimental runs and nothing more — it
+    returns no state update and does not otherwise affect execution.
     """
 
     name: str = TodoListMiddleware.__name__
@@ -161,6 +172,17 @@ class _NoTodoListMiddleware(AgentMiddleware):
     bare instance is self-contained rather than relying on the SDK's
     `getattr(mw, "tools", [])` fallback.
     """
+
+    def before_agent(self, state: AgentState, runtime: Runtime) -> None:
+        """No-op hook whose sole purpose is to emit a traceable LangGraph node.
+
+        Overriding it makes the SDK compile a `TodoListMiddleware.before_agent`
+        node, so experimental runs carry a stable, queryable LangSmith trace
+        signal. Deliberately empty: it never mutates state (see class docstring).
+        """
+
+    async def abefore_agent(self, state: AgentState, runtime: Runtime) -> None:
+        """Async counterpart to `before_agent`; see it and the class docstring."""
 
 
 def _todo_list_middleware_override() -> list[AgentMiddleware]:

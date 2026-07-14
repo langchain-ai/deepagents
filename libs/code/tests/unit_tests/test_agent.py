@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langgraph.prebuilt.tool_node import ToolCallRequest
+    from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
@@ -3369,6 +3370,75 @@ class TestExperimentalTodoMiddlewareWiring:
         assert not self._has_todo_standin(kwargs["middleware"])
         for spec in kwargs["subagents"]:
             assert not self._has_todo_standin(spec.get("middleware", []))
+
+
+class TestExperimentalTodoTraceNode:
+    """The stand-in's no-op `before_agent` hook is a LangSmith trace signal.
+
+    Without a hook the SDK compiles no runtime node for `_NoTodoListMiddleware`,
+    so its presence — and the fact that `write_todos` was dropped — cannot be
+    positively identified in a trace. Overriding `before_agent` makes LangGraph
+    emit a child node named exactly `TodoListMiddleware.before_agent`. These
+    tests compile the real main-agent graph (offline placeholder model) and
+    assert the node appears only under the experimental flag, while confirming
+    the hook itself is a genuine no-op that leaves execution unchanged.
+    """
+
+    _TRACE_NODE = "TodoListMiddleware.before_agent"
+
+    @staticmethod
+    def _compile_main_agent() -> "Pregel[Any, Any, Any, Any]":
+        from deepagents_code.tool_catalog import _CatalogModel
+
+        agent, _backend = create_cli_agent(
+            _CatalogModel(),
+            assistant_id="agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=True,
+        )
+        return agent
+
+    @staticmethod
+    def _tool_names(agent: "Pregel[Any, Any, Any, Any]") -> set[str]:
+        from deepagents_code.tool_catalog import collect_tools_from_agent
+
+        tools = collect_tools_from_agent(agent)
+        assert tools is not None
+        return {tool.name for tool in tools}
+
+    def test_trace_node_present_when_experimental(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        agent = self._compile_main_agent()
+
+        assert self._TRACE_NODE in agent.nodes
+        # The stand-in still drops the real middleware's tool.
+        assert "write_todos" not in self._tool_names(agent)
+
+    def test_trace_node_absent_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        agent = self._compile_main_agent()
+
+        assert self._TRACE_NODE not in agent.nodes
+        # Default behavior is untouched: the real middleware and its tool remain.
+        assert "write_todos" in self._tool_names(agent)
+
+    def test_before_agent_hook_returns_no_state_update(self) -> None:
+        """Both sync and async hooks are no-ops returning no state update."""
+        import asyncio
+
+        from deepagents_code.agent import _NoTodoListMiddleware
+
+        middleware = _NoTodoListMiddleware()
+        state = cast("AgentState", {"messages": []})
+        runtime = cast("Runtime", object())
+
+        assert middleware.before_agent(state, runtime) is None
+        assert asyncio.run(middleware.abefore_agent(state, runtime)) is None
 
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:

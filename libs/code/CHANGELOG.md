@@ -4,11 +4,10 @@
 
 ## [0.1.39](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.38...deepagents-code==0.1.39) (2026-07-14)
 
+### Bug fixes
 
-### Bug Fixes
-
-* **code:** partition Debug Console log retention by level ([#4718](https://github.com/langchain-ai/deepagents/issues/4718)) ([c6e3b35](https://github.com/langchain-ai/deepagents/commit/c6e3b351f1826aa6ea97be244acd867950a032ee))
-* **code:** run `/offload` server-side ([#4696](https://github.com/langchain-ai/deepagents/issues/4696)) ([564e5a0](https://github.com/langchain-ai/deepagents/commit/564e5a05bca5236ae33ce1147865111f931d257c))
+- Improved Debug Console log retention by partitioning retained logs by level ([#4718](https://github.com/langchain-ai/deepagents/issues/4718)) ([c6e3b35](https://github.com/langchain-ai/deepagents/commit/c6e3b351f1826aa6ea97be244acd867950a032ee)).
+- Fixed `/offload` to run server-side ([#4696](https://github.com/langchain-ai/deepagents/issues/4696)) ([564e5a0](https://github.com/langchain-ai/deepagents/commit/564e5a05bca5236ae33ce1147865111f931d257c)).
 
 ## [0.1.38](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.37...deepagents-code==0.1.38) (2026-07-14)
 

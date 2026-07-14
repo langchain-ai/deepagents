@@ -59,6 +59,7 @@ on:
         type: boolean
         default: false
       harbor_package_override:
+        description: "Optional Harbor package spec(s) to install instead of the locked version. Multiple specs may be given, one per line, installed together in a single resolution (e.g. harbor core plus the harbor-langsmith plugin pinned from the same branch). Empty uses the pinned Harbor."
         type: string
         default: ""
 
@@ -218,7 +219,25 @@ jobs:
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
         # --reinstall --refresh defeats any stale cached wheel for this git ref,
         # so re-running with the same override picks up a freshly-built package.
-        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
+        #
+        # The override may list MULTIPLE specs, one per line, installed together
+        # in a single resolution. This lets a run pin both harbor core and the
+        # harbor-langsmith plugin from the same git branch: with both in one
+        # `uv pip install`, the plugin's `harbor` dependency binds to the core
+        # spec given here (a direct git reference) instead of resolving from
+        # PyPI. Specs use the PEP 508 `name @ url` form (which contains spaces),
+        # so we split on newlines — never on whitespace — and pass each as its
+        # own argument (no shell interpolation of the value).
+        run: |
+          specs=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+            line="${line%"${line##*[![:space:]]}"}"  # rtrim
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          printf 'Installing %d Harbor override spec(s):\n' "${#specs[@]}"
+          printf '  - %s\n' "${specs[@]}"
+          uv pip install --reinstall --refresh "${specs[@]}"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

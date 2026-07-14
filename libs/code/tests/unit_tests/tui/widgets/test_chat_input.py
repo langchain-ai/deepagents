@@ -4577,24 +4577,24 @@ class TestPasteCollapseHelpers:
         assert expand_paste_refs(text, {}) == text
 
     def test_load_collapse_pastes_default_enabled(self, monkeypatch) -> None:
-        """The loader defaults to enabled when nothing overrides it."""
+        """The shared resolver defaults to enabled when nothing overrides it."""
         from deepagents_code import config_manifest
         from deepagents_code._env_vars import COLLAPSE_PASTES
-        from deepagents_code.tui.widgets import chat_input
+        from deepagents_code.tui.widgets import _paste_textarea
 
         monkeypatch.delenv(COLLAPSE_PASTES, raising=False)
         monkeypatch.setattr(config_manifest, "load_config_toml", dict)
-        assert chat_input._load_collapse_pastes() is True
+        assert _paste_textarea._collapse_pastes_enabled() is True
 
     def test_load_collapse_pastes_env_disables(self, monkeypatch) -> None:
-        """A falsy env var disables paste collapsing in the loader."""
+        """A falsy env var disables paste collapsing in the shared resolver."""
         from deepagents_code import config_manifest
         from deepagents_code._env_vars import COLLAPSE_PASTES
-        from deepagents_code.tui.widgets import chat_input
+        from deepagents_code.tui.widgets import _paste_textarea
 
         monkeypatch.setenv(COLLAPSE_PASTES, "0")
         monkeypatch.setattr(config_manifest, "load_config_toml", dict)
-        assert chat_input._load_collapse_pastes() is False
+        assert _paste_textarea._collapse_pastes_enabled() is False
 
 
 class TestPasteCollapseIntegration:

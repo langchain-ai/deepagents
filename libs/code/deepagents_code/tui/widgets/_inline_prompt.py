@@ -139,9 +139,12 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
     async def _on_key(self, event: events.Key) -> None:
         now = time.monotonic()
 
-        # A paste replayed as rapid key events (no bracketed paste) is buffered
-        # so it can be collapsed and kept grouped rather than submitting on the
-        # first embedded newline.
+        # Drive the shared paste-burst state machine so a paste replayed as rapid
+        # key events (no bracketed paste) stays grouped rather than submitting on
+        # the first embedded newline: feed keys into an active quote-started
+        # buffer (`_absorb_key_into_burst`), start one when a keypress looks like
+        # a paste head (`_maybe_start_burst`), and otherwise track the rapid-run
+        # timing that arms the Enter-suppression window (`_track_burst_run`).
         if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()

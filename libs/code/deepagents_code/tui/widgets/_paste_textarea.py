@@ -20,7 +20,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from textual.widgets import TextArea
-from typing_extensions import override
 
 from deepagents_code.paste_collapse import (
     PASTE_PLACEHOLDER_PATTERN,
@@ -68,8 +67,9 @@ class PasteBurstTextArea(TextArea):
 
     Subclasses drive the state machine from their own `_on_key` by calling the
     helper methods here, and override the policy hooks
-    (`_in_slash_command_context`, `_paste_collapse_enabled`,
-    `_dispatch_burst_payload`) as needed.
+    (`_in_slash_command_context`, `_dispatch_burst_payload`) as needed. The base
+    inserts a flushed burst verbatim; collapsing into placeholders is layered on
+    by `CollapsingPasteTextArea`.
     """
 
     _paste_burst_buffer: str
@@ -110,10 +110,6 @@ class PasteBurstTextArea(TextArea):
         window always applies. Override to opt keystrokes out of grouping.
         """
         return False
-
-    def _paste_collapse_enabled(self) -> bool:  # noqa: PLR6301  # overridable hook
-        """Return whether large pastes should be collapsed into placeholders."""
-        return True
 
     async def _dispatch_burst_payload(self, payload: str) -> None:
         """Handle a flushed burst payload. Base behavior inserts it verbatim."""
@@ -186,10 +182,15 @@ class PasteBurstTextArea(TextArea):
         previous `enter` was already suppressed, and the suppression window is
         still open. The char-gap check keeps a deliberate `enter` pressed after
         a burst settles from being swallowed; the window bounds how long a
-        replayed paste's newlines stay grouped.
+        replayed paste's newlines stay grouped. Returns `False` immediately in
+        slash-command context (see `_in_slash_command_context`).
         """
         if self._in_slash_command_context():
             return False
+        # Defensive: the shipped `_on_key`s absorb (via `_absorb_key_into_burst`)
+        # or flush any active buffer before Enter reaches this helper, so this
+        # branch is unreachable today. It keeps the helper's contract
+        # self-contained for future callers.
         if self._paste_burst_buffer:
             return True
         until = self._paste_burst_window_until
@@ -207,6 +208,11 @@ class PasteBurstTextArea(TextArea):
         Restricting to quote-prefixed input at an empty cursor reduces false
         positives for normal typing. General multi-line pastes are handled by
         the Enter-suppression window instead.
+
+        The quote head only matters where `_dispatch_burst_payload` inspects the
+        flushed payload (the chat input's dropped-path parsing). For subclasses
+        that just insert/collapse, it merely defers the quote by one flush delay;
+        harmless, and kept so burst behavior is identical across surfaces.
         """
         if char not in PASTE_BURST_START_CHARS:
             return False
@@ -323,26 +329,41 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
 
     _pasted_contents: dict[int, PastedContent]
     _next_paste_id: int
+    _collapse_pastes: bool
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the text area and its collapsed-paste storage."""
         super().__init__(**kwargs)
         self._pasted_contents = {}
         self._next_paste_id = 1
+        # Resolve the preference once, mirroring how `ChatInput` caches it at
+        # construction, so paste handling never re-reads config from disk and
+        # stays consistent with the chat input for the widget's lifetime.
+        self._collapse_pastes = _collapse_pastes_enabled()
 
     @property
     def submitted_value(self) -> str:
         """The current text with collapsed-paste placeholders expanded."""
         return expand_paste_refs(self.text, self._pasted_contents)
 
-    @override
-    def _paste_collapse_enabled(self) -> bool:
-        """Return whether large pastes should be collapsed into placeholders.
+    def reset_paste_state(self) -> None:
+        """Drop burst timing and collapsed-paste storage after a text swap.
 
-        Mirrors the chat input: reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then
-        `[display].collapse_pastes` in the config, defaulting to enabled.
+        Call after a wholesale programmatic `text` swap (e.g. switching an
+        inline editor between modes) so a stale flush timer can't fire against
+        the new text and placeholders from the previous buffer don't linger in
+        `_pasted_contents`.
         """
-        return _collapse_pastes_enabled()
+        self._reset_paste_burst_state()
+        self._pasted_contents.clear()
+        self._next_paste_id = 1
+
+    def _paste_collapse_enabled(self) -> bool:
+        """Return whether large pastes are collapsed into placeholders.
+
+        Returns the preference resolved once at construction (see `__init__`).
+        """
+        return self._collapse_pastes
 
     async def _dispatch_burst_payload(self, payload: str) -> None:
         """Collapse a large flushed burst, otherwise insert it verbatim."""
@@ -493,8 +514,10 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
 def _collapse_pastes_enabled() -> bool:
     """Resolve whether large pastes should be collapsed into placeholders.
 
-    Reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then `[display].collapse_pastes`
-    in the config, defaulting to enabled.
+    Reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then `[ui].collapse_pastes` in
+    `~/.deepagents/config.toml`, defaulting to enabled. This is the single
+    source of truth shared with the chat input (`ChatInput` calls it once at
+    construction).
 
     Returns:
         The resolved preference (defaults to `True`).
@@ -507,6 +530,8 @@ def _collapse_pastes_enabled() -> bool:
 
     option = get_option("display.collapse_pastes")
     if option is None:
+        # Unreachable unless the manifest key is renamed without updating this
+        # literal; log so that mismatch surfaces instead of silently defaulting.
         logger.warning(
             "Unknown config option %r; defaulting to enabled", "display.collapse_pastes"
         )

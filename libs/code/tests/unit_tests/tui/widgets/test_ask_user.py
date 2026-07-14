@@ -403,6 +403,51 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["green"]}
 
+    async def test_multiple_choice_other_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in the "other" free-text answer expands on submit."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.focus()
+            big = "detail\n" * 5
+            await other_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
+
     async def test_enter_advances_sequentially_through_mc_questions(self) -> None:
         """Enter on a MC question should advance to the next, not skip."""
         app = _AskUserTestApp(

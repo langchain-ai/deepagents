@@ -228,6 +228,38 @@ class TestGoalReviewMenu:
 
             assert await future == {"type": "edited", "criteria": big.strip()}
 
+    async def test_regenerate_expands_collapsed_paste_on_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in the feedback box expands in the regenerate message."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_reject_with_message()
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+            text_input.focus()
+
+            big = "- feedback\n" * 5
+            await text_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert text_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+
+            assert await future == {"type": "rejected", "message": big.strip()}
+
     async def test_keypress_accept_resolves_accepted(self) -> None:
         """The accept quick-key resolves through the real binding dispatch."""
         app = _GoalReviewTestApp()

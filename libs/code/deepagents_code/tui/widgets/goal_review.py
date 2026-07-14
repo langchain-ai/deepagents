@@ -273,6 +273,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "edit"
         if self._edit_input is not None:
             self._edit_input.text = self._criteria
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
@@ -284,6 +285,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "reject"
         if self._edit_input is not None:
             self._edit_input.text = ""
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()

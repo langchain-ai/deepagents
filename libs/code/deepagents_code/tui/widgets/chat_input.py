@@ -40,6 +40,7 @@ from deepagents_code.paste_collapse import (
 )
 from deepagents_code.tui.widgets._paste_textarea import (
     PasteBurstTextArea,
+    _collapse_pastes_enabled,
 )
 from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
@@ -128,33 +129,6 @@ if TYPE_CHECKING:
 def _should_collapse_chat_paste(text: str) -> bool:
     """Return whether pasted chat text should be collapsed."""
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
-
-
-def _load_collapse_pastes() -> bool:
-    """Resolve whether large chat-input pastes are collapsed into placeholders.
-
-    Reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then `[ui].collapse_pastes` in
-    `~/.deepagents/config.toml`, defaulting to enabled.
-
-    Returns:
-        The resolved preference (defaults to `True`).
-    """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
-
-    option = get_option("display.collapse_pastes")
-    if option is None:
-        # Unreachable unless the manifest key is renamed without updating this
-        # literal; log so that mismatch surfaces instead of silently defaulting.
-        logger.warning(
-            "Unknown config option %r; defaulting to enabled", "display.collapse_pastes"
-        )
-        return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
 
 
 class CompletionOption(Static):
@@ -945,8 +919,9 @@ class ChatTextArea(PasteBurstTextArea):
             # The parser absorbs OSError/RuntimeError internally, so reaching
             # here signals an unexpected regression.  Leave a breadcrumb (never
             # the paste content) instead of swallowing it, then fall through to
-            # normal text handling.
-            logger.debug(
+            # normal text handling.  Logged at warning (not debug) so the
+            # regression actually surfaces in production.
+            logger.warning(
                 "Path-payload parsing failed; treating burst as text",
                 exc_info=True,
             )
@@ -1580,7 +1555,7 @@ class ChatInput(Vertical):
         # placeholders.
         # Gated by `display.collapse_pastes` (env / `[ui].collapse_pastes`);
         # when disabled, pasted text is inserted verbatim.
-        self._collapse_pastes = _load_collapse_pastes()
+        self._collapse_pastes = _collapse_pastes_enabled()
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not

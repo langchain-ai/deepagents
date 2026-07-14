@@ -152,6 +152,146 @@ class TestInlinePromptPaste:
 
             assert app.submissions == ["hello"]
 
+    async def test_identical_second_paste_expands_placeholder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-pasting identical content expands the placeholder in place."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            big = "line\n" * 10
+            await ta._on_paste(Paste(big))
+            await pilot.pause()
+            assert ta.text == "[Pasted text #1 +10 lines]"
+
+            # Pasting the same content again is treated as a request to see it in
+            # full: the existing placeholder expands in place rather than a
+            # second `#2` placeholder being added.
+            await ta._on_paste(Paste(big))
+            await pilot.pause()
+            assert ta.text == big
+            assert "[Pasted text #2" not in ta.text
+            assert ta.submitted_value == big
+
+    async def test_delete_key_deletes_collapsed_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Forward-delete removes a whole collapsed-paste token in one keypress."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._on_paste(Paste("a\nb\nc\nd"))
+            await pilot.pause()
+            assert ta.text == "[Pasted text #1 +3 lines]"
+
+            ta.move_cursor((0, 0))
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert ta.text == ""
+
+    async def test_typed_placeholder_shape_is_not_atomic(self) -> None:
+        """Hand-typed placeholder-shaped text deletes one char, not the token."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            # No paste occurred, so `_pasted_contents` is empty and this text is
+            # not a bound token — backspace must edit it character by character.
+            typed = "[Pasted text #1]"
+            ta.text = typed
+            ta.move_cursor((0, len(typed)))
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert ta.text == typed[:-1]
+
+    async def test_small_burst_payload_inserts_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flushed burst below the collapse threshold inserts as plain text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta._paste_burst_buffer = "short text"
+            await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == "short text"
+            assert ta.submitted_value == "short text"
+            assert ta._pasted_contents == {}
+
+    async def test_collapse_disabled_inserts_full_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With collapsing disabled, a large paste is inserted verbatim.
+
+        The preference is cached at construction, so it is patched before the
+        widget is created.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            big = "line\n" * 10
+            # Flush path inserts directly, so the full text is observable here
+            # (the `_on_paste` fall-through defers its insert to Textual's base
+            # handler via MRO dispatch).
+            ta._paste_burst_buffer = big
+            await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == big
+            assert "[Pasted text #1" not in ta.text
+            assert ta._pasted_contents == {}
+            assert ta.submitted_value == big
+
+    async def test_bracketed_paste_not_collapsed_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With collapsing disabled, `_on_paste` defers instead of collapsing."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._on_paste(Paste("line\n" * 10))
+            await pilot.pause()
+
+            # Only the deferral branch is asserted: no placeholder, no stored
+            # content. The verbatim insert is Textual's base handler's job.
+            assert "[Pasted text #1" not in ta.text
+            assert ta._pasted_contents == {}
+
 
 class TestInlinePromptCompletion:
     """Resolve-at-most-once semantics, independent of call ordering."""

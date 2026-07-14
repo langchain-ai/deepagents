@@ -24,6 +24,8 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _apply_grep_max_count,
+    _method_accepts_max_count,
     execute_accepts_timeout,
 )
 from deepagents.backends.state import StateBackend
@@ -40,6 +42,18 @@ def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
             "path": f"{route_prefix[:-1]}{m['path']}",
         },
     )
+
+
+def _remaining_grep_budget(max_count: int | None, collected: int) -> int | None:
+    """Return the match budget left for the next routed grep.
+
+    `None` means "no cap" (propagate `max_count=None` downstream). An int is the
+    number of matches still allowed before the global cap is hit; `0` signals
+    the caller to short-circuit the remaining routes.
+    """
+    if max_count is None:
+        return None
+    return max(max_count - collected, 0)
 
 
 def _strip_route_from_pattern(pattern: str, route_prefix: str) -> str:
@@ -358,11 +372,43 @@ class CompositeBackend(BackendProtocol):
             return GrepResult(error=raw)
         return GrepResult(matches=raw)
 
+    def _grep_backend(
+        self,
+        backend: BackendProtocol,
+        pattern: str,
+        path: str | None,
+        glob: str | None,
+        max_count: int | None,
+    ) -> GrepResult:
+        """Call `grep` while supporting backends with the previous signature."""
+        if _method_accepts_max_count(type(backend), "grep"):
+            raw = backend.grep(pattern, path, glob, max_count=max_count)
+        else:
+            raw = backend.grep(pattern, path, glob)
+        return _apply_grep_max_count(self._coerce_grep_result(raw), max_count)
+
+    async def _agrep_backend(
+        self,
+        backend: BackendProtocol,
+        pattern: str,
+        path: str | None,
+        glob: str | None,
+        max_count: int | None,
+    ) -> GrepResult:
+        """Call `agrep` while supporting backends with the previous signature."""
+        if _method_accepts_max_count(type(backend), "agrep"):
+            raw = await backend.agrep(pattern, path, glob, max_count=max_count)
+        else:
+            raw = await backend.agrep(pattern, path, glob)
+        return _apply_grep_max_count(self._coerce_grep_result(raw), max_count)
+
     def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search files for literal text pattern.
 
@@ -376,6 +422,17 @@ class CompositeBackend(BackendProtocol):
             glob: Glob pattern to filter files (e.g., `"*.py"`, `"**/*.txt"`).
 
                 Filters by filename, not content.
+            max_count: Optional total cap on returned matches across all routed
+                backends. `None` returns every match; an int enforces the cap
+                globally (not per backend), short-circuits remaining routes once
+                the cap is reached, and flags the result `truncated=True`.
+
+                Unlike a single backend, composite does not guarantee the
+                "exactly `max_count` matches means complete" boundary: when an
+                earlier route fills the budget exactly, the remaining routes are
+                short-circuited and the result is flagged `truncated=True` even
+                if those routes would have contributed nothing. The flag is thus
+                conservative — it may over-report truncation, never under-report.
 
         Returns:
             `GrepResult` with matches or error.
@@ -394,7 +451,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(backend.grep(pattern, backend_path, glob))
+                grep_result = self._grep_backend(backend, pattern, backend_path, glob, max_count)
                 if grep_result.error:
                     return grep_result
                 return GrepResult(
@@ -407,28 +464,43 @@ class CompositeBackend(BackendProtocol):
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
             truncated = False
-            default_result = self._coerce_grep_result(self.default.grep(pattern, path, glob))
+            default_result = self._grep_backend(self.default, pattern, path, glob, max_count)
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
             truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(backend.grep(pattern, "/", glob))
+                remaining = _remaining_grep_budget(max_count, len(all_matches))
+                if remaining == 0:
+                    # Cap already met by earlier routes; skip the rest.
+                    truncated = True
+                    break
+                grep_result = self._grep_backend(backend, pattern, "/", glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
+            if max_count is not None and len(all_matches) > max_count:
+                all_matches = all_matches[:max_count]
+                truncated = True
             return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(self.default.grep(pattern, path, glob))
+        return self._grep_backend(self.default, pattern, path, glob, max_count)
 
     async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Async version of grep.
 
@@ -441,7 +513,7 @@ class CompositeBackend(BackendProtocol):
                 path=path,
             )
             if route_prefix is not None:
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, backend_path, glob))
+                grep_result = await self._agrep_backend(backend, pattern, backend_path, glob, max_count)
                 if grep_result.error:
                     return grep_result
                 return GrepResult(
@@ -454,22 +526,35 @@ class CompositeBackend(BackendProtocol):
         if path is None or path == "/":
             all_matches: list[GrepMatch] = []
             truncated = False
-            default_result = self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+            default_result = await self._agrep_backend(self.default, pattern, path, glob, max_count)
             if default_result.error:
                 return default_result
             all_matches.extend(default_result.matches or [])
             truncated = truncated or default_result.truncated
 
             for route_prefix, backend in self.routes.items():
-                grep_result = self._coerce_grep_result(await backend.agrep(pattern, "/", glob))
+                remaining = _remaining_grep_budget(max_count, len(all_matches))
+                if remaining == 0:
+                    # Cap already met by earlier routes; skip the rest.
+                    truncated = True
+                    break
+                grep_result = await self._agrep_backend(backend, pattern, "/", glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
+            if max_count is not None and len(all_matches) > max_count:
+                all_matches = all_matches[:max_count]
+                truncated = True
             return GrepResult(matches=all_matches, truncated=truncated)
         # Path specified but doesn't match a route - search only default
-        return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
+        return await self._agrep_backend(self.default, pattern, path, glob, max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern, routing by path prefix.

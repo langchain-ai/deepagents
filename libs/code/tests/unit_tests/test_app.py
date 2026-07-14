@@ -9187,6 +9187,7 @@ class TestMessageTimestampFooters:
             app._sync_tool_message_state(tool)
             assert stored.tool_status == ToolStatus.SUCCESS
             assert stored.tool_output == "done"
+            assert stored.tool_duration is not None
             assert not app._message_store.is_protected("tool-sync")
 
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:

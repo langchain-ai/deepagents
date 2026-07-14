@@ -16,8 +16,10 @@ from deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
     BackendProtocol,
     DeleteResult,
+    GrepResult,
     ReadResult,
     SandboxBackendProtocol,
+    _method_accepts_max_count,
     _supports_delete,
 )
 
@@ -180,6 +182,30 @@ class TestAgrepTimeout:
         with pytest.raises(NotImplementedError):
             await backend.agrep("pattern")
 
+    async def test_agrep_caps_legacy_grep_result(self) -> None:
+        """The inherited async wrapper caps results from an old `grep` signature."""
+
+        class LegacyBackend(BackendProtocol):
+            def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+                self,
+                pattern: str,
+                path: str | None = None,
+                glob: str | None = None,
+            ) -> GrepResult:
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.txt", "line": 1, "text": pattern},
+                        {"path": "/two.txt", "line": 1, "text": pattern},
+                        {"path": "/three.txt", "line": 1, "text": pattern},
+                    ]
+                )
+
+        result = await LegacyBackend().agrep("needle", max_count=2)
+
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
 
 def _runtime_error_from_eloop_context() -> RuntimeError:
     """Create the Python <=3.12 `Path.resolve()` symlink-loop shape via `__context__`."""
@@ -227,6 +253,33 @@ class TestMapFileOperationError:
         assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"
+
+
+class TestMethodAcceptsMaxCount:
+    """`_method_accepts_max_count` decides whether the cap is forwarded or applied post-hoc."""
+
+    def test_explicit_keyword_param_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_var_keyword_param_detected(self) -> None:
+        """A `**kwargs` grep is treated as accepting the cap (forwarded, not post-hoc)."""
+
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, **kwargs: object) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_missing_param_not_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:  # ty: ignore[invalid-method-override]
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is False
 
 
 class TestReadResultPaginationInvariants:

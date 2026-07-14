@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     GlobResult,
     GrepResult,
@@ -953,7 +954,7 @@ async def test_composite_agrep_error_in_routed_backend_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return GrepResult(error="Invalid regex pattern error")
 
     error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
@@ -972,7 +973,7 @@ async def test_composite_agrep_error_in_routed_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return GrepResult(error="Backend error occurred")
 
     error_backend = ErrorBackend(store=mem_store, namespace=lambda _rt: ("errors",))
@@ -991,7 +992,7 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
-        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        async def agrep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return GrepResult(error="Default backend error")
 
     error_default = ErrorDefaultBackend(store=mem_store, namespace=lambda _rt: ("default",))
@@ -1002,6 +1003,36 @@ async def test_composite_agrep_error_in_default_backend_at_root_async() -> None:
     # When searching from root and default backend errors, return the error
     result = await comp.agrep("test", path="/")
     assert result.error == "Default backend error"
+
+
+async def test_composite_agrep_supports_legacy_child_signatures() -> None:
+    """Composite async grep avoids forwarding caps to old child signatures."""
+
+    class LegacyBackend(BackendProtocol):
+        def __init__(self, paths: list[str]) -> None:
+            self.paths = paths
+
+        async def agrep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+        ) -> GrepResult:
+            return GrepResult(matches=[{"path": item, "line": 1, "text": pattern} for item in self.paths])
+
+    comp = CompositeBackend(
+        default=LegacyBackend(["/default.txt"]),
+        routes={"/legacy/": LegacyBackend(["/one.txt", "/two.txt", "/three.txt"])},
+    )
+
+    uncapped = await comp.agrep("needle", path="/")
+    capped = await comp.agrep("needle", path="/", max_count=2)
+
+    assert uncapped.matches is not None
+    assert len(uncapped.matches) == 4
+    assert capped.matches is not None
+    assert len(capped.matches) == 2
+    assert capped.truncated is True
 
 
 async def test_composite_aglob_default_error_short_circuits_routes_async() -> None:

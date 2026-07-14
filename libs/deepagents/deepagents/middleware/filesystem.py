@@ -51,6 +51,8 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _apply_grep_max_count,
+    _method_accepts_max_count,
     _supports_delete,
     execute_accepts_timeout,
 )
@@ -451,6 +453,36 @@ def _filter_grep_matches_by_permission(
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
+def _grep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `grep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "grep"):
+        result = backend.grep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = backend.grep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
+
+
+async def _agrep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `agrep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "agrep"):
+        result = await backend.agrep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = await backend.agrep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
+
+
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
@@ -461,7 +493,7 @@ def _format_grep_tool_result(
     """Format a backend grep result for the tool boundary.
 
     Size-truncation is applied to the match body here, before any note is
-    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    appended, so a trailing `GREP_TRUNCATION_NOTE` survives instead of being
     sliced off by an outer `truncate_if_too_long` at the call site. Callers
     should use the returned content as-is rather than re-truncating it.
 
@@ -484,7 +516,7 @@ def _format_grep_tool_result(
         return f"{error}\n\nPartial matches:\n{formatted}", "error"
     notes: list[str] = []
     if result.truncated:
-        notes.append(SEARCH_TRUNCATION_NOTE)
+        notes.append(GREP_TRUNCATION_NOTE)
     if not result.truncated and not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
         notes.append(hint)
     if notes:
@@ -522,7 +554,7 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
     """Render glob paths for the tool boundary, appending the truncation note when partial."""
     content = _format_file_paths(paths)
     if truncated:
-        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+        return f"{content}\n\n{GLOB_TRUNCATION_NOTE}"
     return content
 
 
@@ -563,9 +595,16 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
-SEARCH_TRUNCATION_NOTE = (
-    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
-    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
+GREP_TRUNCATION_NOTE = (
+    "Note: the search stopped early (it hit its time limit or the maximum match count). "
+    "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
+    "narrower path), or raise max_count, to see the rest."
+)
+# Glob has no match-count cap and no `max_count` argument, so its note names only
+# the time/size limit and omits the (inapplicable) "raise max_count" remedy.
+GLOB_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The paths above are valid but "
+    "incomplete. Narrow the search (a more specific pattern or a narrower path) to see the rest."
 )
 
 
@@ -620,7 +659,8 @@ def _truncate_paginated_read(
 
     Args:
         content: Line-numbered content produced by
-            `format_content_with_line_numbers` (one gutter + tab per row).
+            `format_content_with_line_numbers` (a marker followed by two spaces
+            and the source content).
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
             adjusted `next_offset` is derived from its 1-indexed line range.
@@ -660,7 +700,7 @@ def _truncate_paginated_read(
         boundaries: list[tuple[int, int]] = []
         for index, row in enumerate(rows):
             position += len(row)
-            marker = row.partition("\t")[0].strip().partition(".")[0]
+            marker = row.lstrip().partition("  ")[0].partition(".")[0]
             source_line = int(marker)
             # Rows numbered past the window's last source line are not file
             # content: a byte-capped backend page appends its own truncation
@@ -674,7 +714,7 @@ def _truncate_paginated_read(
                 break
             next_source_line = None
             if index + 1 < len(rows):
-                next_marker = rows[index + 1].partition("\t")[0].strip().partition(".")[0]
+                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
                 next_source_line = int(next_marker)
             if next_source_line != source_line:
                 boundaries.append((position, source_line))
@@ -873,6 +913,16 @@ class GrepSchema(BaseModel):
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description=GREP_OUTPUT_MODE_DESCRIPTION,
+    )
+
+    max_count: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional cap on the total number of matches returned across all files. "
+            "Leave unset to use the configured default. When the cap is hit, results "
+            "are truncated and a note says so; narrow the pattern or path to see the rest."
+        ),
     )
 
 
@@ -1371,6 +1421,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
@@ -1389,6 +1440,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            grep_max_count: Default total cap on the number of matches the
+                `grep` tool returns across all files.
+
+                Defaults to `1000`, which bounds memory use and context size on
+                very large repositories. The model can override it per call via
+                the tool's `max_count` argument. Set to `None` to disable the
+                default cap (return every match unless a per-call cap is given).
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
@@ -1410,6 +1468,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        if grep_max_count is not None and grep_max_count <= 0:
+            msg = f"grep_max_count must be positive or None, got {grep_max_count}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
@@ -1445,6 +1506,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._grep_max_count = grep_max_count
         if isinstance(tools, list):
             self._enabled_tools: frozenset[str] | None = frozenset(tools)
         elif tools == "all":
@@ -2224,6 +2286,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -2244,7 +2307,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
@@ -2268,6 +2332,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -2288,7 +2353,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(

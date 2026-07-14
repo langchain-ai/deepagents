@@ -829,12 +829,17 @@ def grep_matches_from_files(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    *,
+    max_count: int | None = None,
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
     Performs literal text search (not regex).
 
-    Returns a `GrepResult` with matches on success.
+    Returns a `GrepResult` with matches on success. When `max_count` is set, at
+    most that many matches are returned; if more exist the scan stops and the
+    result is flagged `truncated=True`. Exactly `max_count` matches with none
+    dropped is reported complete (`truncated=False`).
 
     We deliberately do not raise here to keep backends non-throwing in tool
     contexts and preserve user-facing error messages.
@@ -855,6 +860,11 @@ def grep_matches_from_files(
         content_str = _normalize_content(file_data)
         for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
+                if max_count is not None and len(matches) >= max_count:
+                    # A further match beyond `max_count` proves more exist; stop
+                    # and flag truncation. Checked before appending so exactly
+                    # `max_count` matches is reported complete, not truncated.
+                    return GrepResult(matches=matches, truncated=True)
                 matches.append({"path": file_path, "line": int(line_num), "text": line})
     return GrepResult(matches=matches)
 

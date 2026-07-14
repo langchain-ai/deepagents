@@ -17,6 +17,7 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
+from pydantic import ValidationError
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
@@ -45,11 +46,13 @@ from deepagents.middleware._message_eviction import (
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
-    SEARCH_TRUNCATION_NOTE,
+    GLOB_TRUNCATION_NOTE,
+    GREP_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
     FilesystemState,
+    GrepSchema,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -685,7 +688,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "1: import os" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     def test_grep_truncated_regex_pattern_no_matches_keeps_note(self):
         """A regex-looking miss still reports that the backend search was incomplete."""
@@ -708,7 +711,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert result.content.startswith("No matches found")
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
         assert "literal text, not regex" not in result.content
 
     def test_glob_truncated_renders_as_success_with_note(self):
@@ -735,7 +738,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "/test.py" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GLOB_TRUNCATION_NOTE in result.content
 
     def test_grep_not_truncated_omits_note(self):
         """A complete grep must not carry the truncation note."""
@@ -752,7 +755,150 @@ class TestFilesystemMiddleware:
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
 
         assert result.status == "success"
-        assert SEARCH_TRUNCATION_NOTE not in result.content
+        assert GREP_TRUNCATION_NOTE not in result.content
+
+    def test_grep_forwards_default_max_count_to_backend(self):
+        """The grep tool forwards the middleware's `grep_max_count` default to the backend."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=250)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] == 250
+
+    def test_grep_per_call_max_count_overrides_default(self):
+        """A per-call `max_count` argument overrides the configured default."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=1000)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "max_count": 5, "runtime": _runtime()})
+
+        assert captured["max_count"] == 5
+
+    def test_grep_max_count_none_disables_default_cap(self):
+        """`grep_max_count=None` forwards no cap to the backend when no per-call value is given."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, grep_max_count=None)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {"max_count": "unset"}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] is None
+
+    def test_grep_caps_legacy_backend_without_forwarding_max_count(self):
+        """The default cap remains compatible with a backend using the previous `grep` signature."""
+
+        class LegacyBackend(StateBackend):
+            def grep(self, pattern, path=None, glob=None):  # type: ignore[override]
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.py", "line": 1, "text": "needle"},
+                        {"path": "/two.py", "line": 1, "text": "needle"},
+                        {"path": "/three.py", "line": 1, "text": "needle"},
+                    ]
+                )
+
+        middleware = FilesystemMiddleware(backend=LegacyBackend(), grep_max_count=2)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = grep_search_tool.invoke({"pattern": "needle", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/one.py" in result.content
+        assert "/two.py" in result.content
+        assert "/three.py" not in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
+
+    async def test_async_grep_caps_legacy_backend_without_forwarding_max_count(self):
+        """The inherited async wrapper also supports the previous `grep` signature."""
+
+        class LegacyBackend(StateBackend):
+            def grep(self, pattern, path=None, glob=None):  # type: ignore[override]
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.py", "line": 1, "text": "needle"},
+                        {"path": "/two.py", "line": 1, "text": "needle"},
+                    ]
+                )
+
+        middleware = FilesystemMiddleware(backend=LegacyBackend(), grep_max_count=1)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = await grep_search_tool.ainvoke({"pattern": "needle", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/one.py" in result.content
+        assert "/two.py" not in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
+
+    @pytest.mark.parametrize("grep_max_count", [0, -1])
+    def test_invalid_grep_max_count_raises(self, grep_max_count: int):
+        """A non-positive `grep_max_count` is rejected at construction."""
+        backend, _ = _make_backend()
+        with pytest.raises(ValueError, match="grep_max_count must be positive"):
+            FilesystemMiddleware(backend=backend, grep_max_count=grep_max_count)
+
+    def test_default_grep_max_count_is_1000(self):
+        """The documented default cap (1000) is forwarded when no override is given."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] == 1000
+
+    @pytest.mark.parametrize("max_count", [0, -1])
+    def test_non_positive_per_call_max_count_is_rejected(self, max_count: int) -> None:
+        """The grep tool schema accepts only positive per-call caps."""
+        with pytest.raises(ValidationError, match="greater than 0"):
+            GrepSchema(pattern="needle", max_count=max_count)
 
     def test_glob_not_truncated_omits_note(self):
         """A complete glob must not carry the truncation note."""
@@ -769,7 +915,7 @@ class TestFilesystemMiddleware:
             result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
 
         assert result.status == "success"
-        assert SEARCH_TRUNCATION_NOTE not in result.content
+        assert GLOB_TRUNCATION_NOTE not in result.content
 
     def test_grep_truncation_note_survives_size_truncation(self):
         """A grep that is both time-truncated and size-overflowing keeps the truncation note (it isn't tail-cut)."""
@@ -790,7 +936,7 @@ class TestFilesystemMiddleware:
         assert result.status == "success"
         # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
         assert TRUNCATION_GUIDANCE in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     async def test_async_grep_truncated_renders_as_success_with_note(self):
         """The async grep handler renders a truncated result as success with the note (parity with sync)."""
@@ -808,7 +954,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "1: import os" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     async def test_async_glob_truncated_renders_as_success_with_note(self):
         """The async glob handler renders a truncated result as success with the note (parity with sync)."""
@@ -826,7 +972,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "/test.py" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GLOB_TRUNCATION_NOTE in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {
@@ -1427,7 +1573,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("     1\tone\n     2\ttwo\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1443,7 +1589,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 10})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "     1\tone\n     2\ttwo\n     3\tthree"
+        assert result.content == "1  one\n2  two\n3  three"
         assert "remaining from offset" not in result.content
 
     def test_read_file_offset_window_reports_source_line_range(self):
@@ -1460,7 +1606,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("     3\tthree\n     4\tfour\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
+        assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1476,7 +1622,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("     1\tone\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+        assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
@@ -1493,7 +1639,7 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "     1\tone\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+        assert result.content == "1  one\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
 
     def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
@@ -1533,8 +1679,8 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if "\t" in line]
-        last_displayed_line = int(numbered_lines[-1].split("\t", 1)[0])
+        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
+        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
@@ -1557,8 +1703,8 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if "\t" in line]
-        last_displayed_line = int(numbered_lines[-1].split("\t", 1)[0])
+        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
+        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
         assert last_displayed_line < 100
         assert numbered_lines[-1].endswith("x" * 80)
         assert f"remaining from offset {last_displayed_line}.]" in result.content

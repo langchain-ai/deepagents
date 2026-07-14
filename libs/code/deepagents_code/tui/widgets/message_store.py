@@ -41,6 +41,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "content",
         "tool_status",
         "tool_output",
+        "tool_duration",
         "tool_expanded",
         "tool_reject_reason",
         "skill_expanded",
@@ -148,6 +149,9 @@ class MessageData:
     tool_output: str | None = None
     """Output returned by the tool after execution."""
 
+    tool_duration: float | None = None
+    """Elapsed run time in seconds for a completed timed tool call."""
+
     tool_expanded: bool = False
     """Whether the tool output section is expanded in the UI."""
 
@@ -254,6 +258,7 @@ class MessageData:
                 # via _restore_deferred_state
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
+                widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
                 return widget
@@ -368,6 +373,7 @@ class MessageData:
                 tool_args=widget._args,
                 tool_status=tool_status,
                 tool_output=widget._output,
+                tool_duration=widget._duration,
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
             )

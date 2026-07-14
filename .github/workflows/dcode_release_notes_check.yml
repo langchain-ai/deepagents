@@ -1,0 +1,168 @@
+# Required merge gate for curated deepagents-code release notes. Pull-request runs
+# attach the native required status to the PR commit. Comment/manual runs execute
+# trusted automation from main and explicitly refresh that status on the validated
+# release head.
+
+name: "📝 dcode curated release notes check"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review, converted_to_draft, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Release PR number to validate after a release-please sync"
+        required: true
+        type: string
+
+permissions:
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: dcode-release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  curated-release-notes:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    name: ${{ github.event_name == 'pull_request' && 'curated release notes' || 'Refresh curated release notes check' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted validator
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Validate current curated release-note state
+        id: validate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+        with:
+          script: |
+            const { checkCuratedState, isReleaseBranchPr } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            const number = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(number) || number <= 0) {
+              core.setFailed(`Invalid PR number: ${process.env.PR_NUMBER}`);
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
+            if (!isReleaseBranchPr(pr)) {
+              core.info('Not the deepagents-code release PR; curated release notes are not required.');
+              return;
+            }
+            let refreshCheck = null;
+            if (context.eventName !== 'pull_request') {
+              const { data: check } = await github.rest.checks.create({
+                owner,
+                repo,
+                name: 'curated release notes',
+                head_sha: pr.head.sha,
+                status: 'in_progress',
+                output: {
+                  title: 'Validating curated release notes',
+                  summary: 'Checking the latest curated release-note state.',
+                },
+              });
+              refreshCheck = check.id;
+              // Expose the id so the always() finalizer below can close this check
+              // if the job is cancelled or times out mid-poll before it completes.
+              core.setOutput('refresh_check_id', String(refreshCheck));
+            }
+            try {
+              const result = await checkCuratedState({
+                github,
+                context,
+                core,
+                number,
+                expectedHead: pr.head.sha,
+                login: process.env.BOT_LOGIN,
+                id: process.env.BOT_ID,
+                initialDraftPollAttempts: context.eventName === 'issue_comment' ? 0 : 72,
+              });
+              core.info(`Curated release-note state: ${result.status}.`);
+              if (refreshCheck !== null) {
+                // 'not-applicable' means the PR is no longer the release branch, so
+                // the gate isn't required — treat it as passing, matching the
+                // pull_request path's early green return for non-release PRs.
+                const passing = new Set(['bypassed', 'draft', 'passed', 'not-applicable']);
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: refreshCheck,
+                  status: 'completed',
+                  conclusion: passing.has(result.status) ? 'success' : 'failure',
+                  output: {
+                    title: passing.has(result.status)
+                      ? 'Curated release notes are valid'
+                      : result.status === 'unapplied'
+                        ? 'Curated release notes are ready for review'
+                        : 'Curated release notes need attention',
+                    summary: result.status === 'unapplied'
+                      ? 'Review the bot-authored draft, then run `@dcode-release-bot apply`.'
+                      : `Validation result: ${result.status}.`,
+                  },
+                });
+              }
+            } catch (error) {
+              if (refreshCheck !== null) {
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: refreshCheck,
+                  status: 'completed',
+                  conclusion: 'failure',
+                  output: {
+                    title: 'Curated release-note validation failed',
+                    summary: `The validator hit an error talking to GitHub: ${error instanceof Error ? error.message : String(error)}. This is often transient — re-run the check.`,
+                  },
+                });
+              }
+              core.setFailed(error instanceof Error ? error.message : String(error));
+            }
+
+      # The validate step creates the refresh check as `in_progress` before it
+      # polls (up to ~12 min) for the automatic draft. A job timeout or cancellation
+      # kills that step before it can conclude the check, leaving a required check
+      # spinning forever. Close it here so an interrupted run reads as a re-runnable
+      # failure rather than a silent hang. No-ops on the happy path (already
+      # completed) and when no refresh check was created (pull_request runs).
+      - name: Close an interrupted refresh check
+        if: always() && steps.validate.outputs.refresh_check_id != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          REFRESH_CHECK_ID: ${{ steps.validate.outputs.refresh_check_id }}
+        with:
+          script: |
+            const checkRunId = Number(process.env.REFRESH_CHECK_ID);
+            const { owner, repo } = context.repo;
+            try {
+              const { data: check } = await github.rest.checks.get({ owner, repo, check_run_id: checkRunId });
+              if (check.status === 'completed') return;
+              await github.rest.checks.update({
+                owner,
+                repo,
+                check_run_id: checkRunId,
+                status: 'completed',
+                conclusion: 'failure',
+                output: {
+                  title: 'Curated release-note validation was interrupted',
+                  summary: 'The validator did not finish — it was likely cancelled or timed out while waiting for the automatic draft. Re-run this check.',
+                },
+              });
+            } catch (error) {
+              // Never fail the finalizer itself; the required check stays red either way.
+              core.warning(`Could not finalize the interrupted refresh check: ${error instanceof Error ? error.message : String(error)}`);
+            }

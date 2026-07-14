@@ -11,6 +11,13 @@ on:
         description: "Comma list"
         type: string
         default: "autonomous,conversation,context"
+      agent_impl:
+        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
+        type: choice
+        default: "bare"
+        options:
+          - bare
+          - dcode
       rollouts:
         type: string
         default: "3"
@@ -91,12 +98,76 @@ jobs:
         env:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
+          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
           UNIFIED_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
           UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}
           UNIFIED_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
         run: python .github/scripts/unified_prep.py
+
+      # A single place to see exactly what a dispatch ran with — the raw inputs
+      # plus the values prep derived from them (resolved model list, effective
+      # shard_parallel after clamping). Runs even if the parse step failed, so a
+      # bad dispatch still shows what was requested. Values are passed via env
+      # (never interpolated into the script) so free-form inputs can't inject.
+      - name: "📝 Summarize dispatch inputs"
+        if: ${{ always() }}
+        env:
+          IN_MODELS: ${{ inputs.models }}
+          RESOLVED_MODELS: ${{ steps.p.outputs.models }}
+          IN_CATEGORIES: ${{ inputs.categories }}
+          RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
+          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_ROLLOUTS: ${{ inputs.rollouts }}
+          IN_CONCURRENCY: ${{ inputs.concurrency }}
+          IN_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
+          EFFECTIVE_SHARD_PARALLEL: ${{ steps.p.outputs.effective_shard_parallel }}
+          IN_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
+          IN_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}
+          IN_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
+          IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          IN_FORCE_BUILD: ${{ inputs.force_build }}
+          HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
+        run: |
+          # Never echo the override spec: uv accepts authenticated specs
+          # (e.g. git+https://user:token@host/repo.git) and this summary is
+          # public, so report only whether an override was set.
+          override_status="(pinned)"
+          [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
+
+          # RESOLVED_MODELS is a JSON array; render it as a plain comma list.
+          resolved_models="${RESOLVED_MODELS:-(prep did not complete)}"
+          resolved_models="${resolved_models#[}"
+          resolved_models="${resolved_models%]}"
+          resolved_models="${resolved_models//\"/}"
+
+          # agent_impl only affects the autonomous/context (deep-agents)
+          # categories. When neither ran, the value is inert — flag it rather
+          # than imply a harness was used. An empty RESOLVED_CATEGORIES means
+          # prep didn't complete, so report the requested value as-is.
+          agent_impl_note=""
+          case "${RESOLVED_CATEGORIES}" in
+            *'"autonomous"'* | *'"context"'* | '') ;;
+            *) agent_impl_note=" — not applicable (no autonomous/context category selected)" ;;
+          esac
+          {
+            echo "## Unified evals — run configuration"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| models (requested) | \`${IN_MODELS}\` |"
+            echo "| models (resolved) | \`${resolved_models}\` |"
+            echo "| categories | \`${IN_CATEGORIES}\` |"
+            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| rollouts | \`${IN_ROLLOUTS}\` |"
+            echo "| concurrency | \`${IN_CONCURRENCY}\` |"
+            echo "| shard_parallel (requested → effective) | \`${IN_SHARD_PARALLEL}\` → \`${EFFECTIVE_SHARD_PARALLEL:-?}\` |"
+            echo "| n_shards (autonomous/conversation/context) | \`${IN_N_SHARDS_AUTONOMOUS}\` / \`${IN_N_SHARDS_CONVERSATION}\` / \`${IN_N_SHARDS_CONTEXT}\` |"
+            echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
+            echo "| force_build | \`${IN_FORCE_BUILD}\` |"
+            echo "| harbor_package_override | \`${override_status}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   eval-anthropic:
     needs: prep

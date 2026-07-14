@@ -11,6 +11,7 @@ of scrolling with a trackpad.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from textual import events
@@ -160,6 +161,7 @@ class TestScrollDrivenHydration:
             # above the mounted tail (the state after a long transcript grows).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             await app._prune_old_messages()
             await pilot.pause()
 
@@ -178,10 +180,14 @@ class TestScrollDrivenHydration:
             chat.scroll_end(animate=False)
             await pilot.pause()
             chat.scroll_to(y=0, animate=False)
-            for _ in range(30):
-                await pilot.pause()
-                if not app._message_store.has_messages_above:
-                    break
+
+            async def wait_for_head_hydration() -> None:
+                while app._message_store.has_messages_above:
+                    await pilot.pause()
+                    chat.scroll_to(y=0, animate=False)
+
+            await asyncio.wait_for(wait_for_head_hydration(), timeout=5)
+            await pilot.pause()
 
             start_after, _end_after = app._message_store.get_visible_range()
             assert start_after == 0
@@ -200,7 +206,8 @@ class TestScrollDrivenHydration:
             # Archive the newest rows below the window (the state after the user
             # has scrolled up and older history was mounted in their place).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
-            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 20)
+            monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            monkeypatch.setattr(app, "_check_hydration_needed", lambda: None)
             messages = app.query_one("#messages", Container)
             await app._prune_messages_below_window(messages)
             await pilot.pause()
@@ -215,11 +222,18 @@ class TestScrollDrivenHydration:
             chat.scroll_to(y=0, animate=False)
             await pilot.pause()
             chat.scroll_end(animate=False)
-            for _ in range(30):
-                await pilot.pause()
-                if not app._message_store.has_messages_below:
-                    break
 
+            async def wait_for_tail_hydration() -> None:
+                while app._message_store.has_messages_below:
+                    chat.scroll_to(y=0, animate=False)
+                    await pilot.pause()
+                    chat.scroll_end(animate=False)
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_tail_hydration(), timeout=5)
+            await pilot.pause()
+
+            assert not app._message_store.has_messages_below
             _start_after, end_after = app._message_store.get_visible_range()
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.

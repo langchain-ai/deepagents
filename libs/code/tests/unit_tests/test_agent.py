@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
+    _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
@@ -104,6 +105,32 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
     assert interrupt_on
     for config in interrupt_on.values():
         assert config.get("when") is _should_interrupt_tool_call
+
+
+def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
+    """Local archives use the stable user data directory across server restarts."""
+    history_root = tmp_path / ".deepagents"
+    model = _make_fake_chat_model()
+
+    with patch(
+        "deepagents_code.agent._offload_fallback_root", return_value=history_root
+    ):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    result = backend.write("/conversation_history/thread.md", "archived")
+
+    assert result.error is None
+    assert (
+        history_root / "conversation_history" / "thread.md"
+    ).read_text() == "archived"
 
 
 def _request_with_context(
@@ -317,6 +344,33 @@ def test_cli_context_field_parity() -> None:
     typed_dict_keys = set(CLIContext.__annotations__)
     dataclass_keys = {f.name for f in fields(CLIContextSchema)}
     assert typed_dict_keys == dataclass_keys
+
+
+def test_get_context_preserves_compaction_fields_from_dict() -> None:
+    """`_get_context` must carry the compaction fields across the dict boundary.
+
+    On the RemoteGraph path the run context arrives as a dict and
+    `_get_context` reconstructs `CLIContextSchema` field-by-field. The field
+    parity test only guards the *declarations*; this guards the coercion, so
+    `profile_overrides`/`model_context_limit` (which `/offload` reads via the
+    compaction middleware) are not silently dropped on that path.
+    """
+    from deepagents_code.configurable_model import _get_context
+
+    ctx = {
+        "model": "anthropic:claude-haiku-4-5-20251001",
+        "model_params": {"temperature": 0.5},
+        "profile_overrides": {"max_input_tokens": 12345},
+        "model_context_limit": 4096,
+    }
+    request = cast("Any", SimpleNamespace(runtime=SimpleNamespace(context=ctx)))
+
+    resolved = _get_context(request)
+
+    assert resolved is not None
+    assert resolved.profile_overrides == {"max_input_tokens": 12345}
+    assert resolved.model_context_limit == 4096
+    assert resolved.model_params == {"temperature": 0.5}
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
@@ -1727,6 +1781,98 @@ class TestCreateCliAgentMemorySources:
         sources = captured[0]
         # Only user AGENTS.md, no project paths
         assert sources == [str(agent_dir / "AGENTS.md")]
+
+
+class TestCreateCliAgentMemoryAutoSave:
+    """Test that `memory_auto_save` selects the memory prompt variant."""
+
+    @staticmethod
+    def _mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        return mock_settings
+
+    def _capture_system_prompt(
+        self, tmp_path: Path, *, memory_auto_save: bool
+    ) -> object:
+        mock_settings = self._mock_settings(tmp_path)
+        captured: list[object] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the system_prompt arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("system_prompt", "__unset__"))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_code.agent.FilesystemBackend"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                memory_auto_save=memory_auto_save,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_auto_save_on_uses_default_prompt(self, tmp_path: Path) -> None:
+        """Default (auto-save on) leaves the middleware's default prompt in place."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=True)
+        # No override passed -> MemoryMiddleware keeps its default persistence prompt.
+        assert system_prompt == "__unset__"
+
+    def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
+        """Auto-save off swaps in the Code-owned read-only prompt."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
+        assert system_prompt is _MEMORY_READONLY_SYSTEM_PROMPT
+
+        formatted = _MEMORY_READONLY_SYSTEM_PROMPT.format(
+            agent_memory="(No memory loaded)"
+        )
+        assert "<agent_memory>" in formatted
+        assert "**Trust and verification:**" in formatted
+        assert "**Learning from feedback:**" not in formatted
+        assert "**When to update memories:**" not in formatted
+        assert "**Automatic memory saving is disabled:**" in formatted
+        assert "Never store API keys, access tokens, passwords" in formatted
 
 
 class TestCreateCliAgentProjectContext:
@@ -3461,7 +3607,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3516,8 +3662,8 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1\tfirst" in allowed.content
-        assert "2\tsecond" in allowed.content
+        assert "1  first" in allowed.content
+        assert "2  second" in allowed.content
         assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:

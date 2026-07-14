@@ -108,6 +108,7 @@ jobs:
           UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
+          UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           UNIFIED_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
           UNIFIED_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
           UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}

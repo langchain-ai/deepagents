@@ -109,7 +109,7 @@ def test_full_profile_has_empty_include_tasks():
     assert mats["openai"][0]["include_tasks"] == ""
 
 
-def test_lite_profile_sets_include_tasks_and_shards_one_task_each():
+def test_lite_profile_sizes_shards_to_saturate_concurrency():
     import lite_tasks
 
     defaults = {"autonomous": 10, "conversation": 3, "context": 3}
@@ -120,28 +120,32 @@ def test_lite_profile_sets_include_tasks_and_shards_one_task_each():
         n_shards_by_cat=defaults,
         dcode_impl="bare",
         profile="lite",
+        concurrency=4,
+        rollouts=3,
     )
     by_cat = {e["category"]: e for e in mats["openai"]}
+    # ceil(4/3) = 2 tasks/shard so each shard's 2*3=6 trials cover concurrency 4.
     for cat in ("autonomous", "conversation", "context"):
         n = len(lite_tasks.LITE_TASKS[cat])
         assert by_cat[cat]["include_tasks"] == " ".join(lite_tasks.LITE_TASKS[cat])
-        # One task per shard: max-parallel drains the queue, GH pulls the next
-        # single-task shard as each finishes (dynamic load-balancing).
-        assert by_cat[cat]["n_shards"] == n
-    assert by_cat["autonomous"]["n_shards"] == 15
+        assert by_cat[cat]["n_shards"] == -(-n // 2)
+    assert by_cat["autonomous"]["n_shards"] == 8  # ceil(15/2)
 
 
-def test_lite_shards_independent_of_shard_parallel():
-    # n_shards is the queue depth (one task each), NOT capped at shard_parallel:
-    # a small max-parallel just means GH drains the queue in more waves.
+def test_lite_shard_sizing_is_rollout_aware():
+    # rollouts=1 -> a shard needs `concurrency` tasks to fill concurrency, so
+    # shards get fatter (4 tasks each here) instead of wasting slots.
     mats = up.build_provider_matrices(
         ["openai:gpt"],
         ["autonomous"],
-        shard_parallel=2,
+        shard_parallel=10,
         n_shards_by_cat={"autonomous": 10},
         profile="lite",
+        concurrency=4,
+        rollouts=1,
     )
-    assert mats["openai"][0]["n_shards"] == 15
+    # ceil(4/1) = 4 tasks/shard -> ceil(15/4) = 4 shards.
+    assert mats["openai"][0]["n_shards"] == 4
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

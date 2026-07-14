@@ -110,6 +110,11 @@ jobs:
       # override when the caller supplied one, else the per-leaf shard_parallel
       # (today's behavior).
       effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}
+      # One entry per category to aggregate: a single entry for the plain
+      # single-dataset call, or (on a flat multi-category run) one entry per
+      # distinct category present in flat_matrix. The `aggregate` job matrixes
+      # over this.
+      aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -160,6 +165,74 @@ jobs:
             effective_max_parallel="$SHARD_PARALLEL"
           fi
           echo "effective_max_parallel=$effective_max_parallel" >> "$GITHUB_OUTPUT"
+
+      - name: "🗂️ Derive aggregate matrix"
+        id: agg-matrix
+        # One aggregate_shards.py invocation per category: the single-dataset
+        # path (flat_matrix empty) emits exactly one entry; a flat
+        # multi-category run emits one entry per distinct category present in
+        # flat_matrix, with expected_shards = the number of flat_matrix entries
+        # carrying that category (each entry is one shard job).
+        env:
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
+          SINGLE_CATEGORY: ${{ inputs.category }}
+          SINGLE_DATASET: ${{ inputs.dataset }}
+          SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          flat_matrix = os.environ.get("FLAT_MATRIX", "").strip()
+          category_re = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+          if flat_matrix:
+              try:
+                  data = json.loads(flat_matrix)
+              except json.JSONDecodeError as exc:
+                  sys.exit(f"::error::Invalid flat_matrix JSON: {exc}")
+              by_category: dict[str, dict] = {}
+              for entry in data.get("include", []):
+                  category = entry.get("category")
+                  if not category or not category_re.match(str(category)):
+                      sys.exit(
+                          f"::error::Invalid or missing category in flat_matrix entry: {category!r}"
+                      )
+                  info = by_category.setdefault(category, {"count": 0, "dataset": None})
+                  info["count"] += 1
+                  if info["dataset"] is None:
+                      info["dataset"] = entry.get("dataset") or entry.get("dataset_path") or ""
+              if not by_category:
+                  sys.exit("::error::flat_matrix produced no categories to aggregate")
+              include = [
+                  {
+                      "category": category,
+                      "dataset": info["dataset"] or "",
+                      "expected_shards": info["count"],
+                  }
+                  for category, info in sorted(by_category.items())
+              ]
+          else:
+              raw_expected = os.environ.get("SINGLE_EXPECTED_SHARDS", "").strip()
+              include = [
+                  {
+                      "category": os.environ.get("SINGLE_CATEGORY", ""),
+                      "dataset": os.environ.get("SINGLE_DATASET", ""),
+                      "expected_shards": int(raw_expected) if raw_expected.isdigit() else "",
+                  }
+              ]
+
+          matrix = {"include": include}
+          line = "aggregate_matrix=" + json.dumps(matrix, separators=(",", ":"))
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          if github_output:
+              with open(github_output, "a") as fh:
+                  fh.write(line + "\n")
+          else:
+              print(line)
+          PY
 
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
@@ -430,6 +503,10 @@ jobs:
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
+          if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
+            exit 1
+          fi
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
@@ -578,7 +655,9 @@ jobs:
               # shard's slice is legitimately empty. Upload a marker so aggregation
               # can distinguish this successful no-op from a missing shard artifact.
               mkdir -p harbor-jobs/terminal-bench
-              touch "harbor-jobs/terminal-bench/empty-shard-$HARBOR_SHARD_INDEX"
+              # Category-scoped so a flat multi-category run's independently-sharded
+              # categories can't collide on the same shard index's marker name.
+              touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"
               echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
               echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
               exit 0
@@ -777,7 +856,9 @@ jobs:
       - name: "🔖 Compute leaf slug"
         if: always()
         # Sanitized model+category, used to scope this run's artifact names so
-        # concurrent runs don't collide.
+        # concurrent runs don't collide. HARBOR_CATEGORY_SAFE additionally scopes
+        # the artifact name by category, so a flat multi-category run's shards
+        # group distinctly per category for the aggregate job.
         env:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
@@ -788,12 +869,19 @@ jobs:
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "LEAF_SLUG=$slug" >> "$GITHUB_ENV"
 
+          category_safe=$(printf '%s' "$HARBOR_CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$category_safe" ]; then
+            category_safe="uncategorized"
+          fi
+          echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
+
       - name: "📤 Upload Harbor artifacts"
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          # Slug-scoped so the aggregate job globs only this run's shards.
-          name: shard-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          # Category- and slug-scoped so the aggregate job globs only this run's
+          # own shards, grouped per category.
+          name: shard-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
           if-no-files-found: warn
@@ -809,6 +897,13 @@ jobs:
     permissions:
       contents: read
       actions: write        # download shard artifacts, then delete them after merging
+    # One leg per category to aggregate: a single leg for the plain
+    # single-dataset call, or (on a flat multi-category run) one leg per
+    # distinct category present in flat_matrix, each carrying its own dataset +
+    # expected_shards.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.aggregate_matrix) }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -817,9 +912,6 @@ jobs:
       # failed. Empty shards (task-filtered slices) no-op successfully, so a
       # filtered run is not falsely reported as incomplete.
       HARBOR_RESULT: ${{ needs.harbor.result }}
-      # Authoritative effective count after prep caps shards to selectable work.
-      # Successful empty slices upload markers, so every emitted shard is countable.
-      EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -838,13 +930,31 @@ jobs:
           slug="${slug}-$(printf '%s' "$raw" | sha256sum | cut -c1-8)"
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
+      - name: "🔖 Compute category slug"
+        id: cat-slug
+        # Sanitized aggregate_matrix category. Must match the harbor job's
+        # HARBOR_CATEGORY_SAFE byte-for-byte so the download/delete globs below
+        # hit exactly this category's shard artifacts.
+        env:
+          CATEGORY: ${{ matrix.category }}
+        run: |
+          if ! [[ "$CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid aggregate category: $CATEGORY"
+            exit 1
+          fi
+          category_safe=$(printf '%s' "$CATEGORY" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
+          if [ -z "$category_safe" ]; then
+            category_safe="uncategorized"
+          fi
+          echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
+
       - name: "⬇️ Download shard results"
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -872,12 +982,16 @@ jobs:
 
       - name: "📊 Compute pass@k / avg@k"
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
-        # avoid workflow-input injection; argparse int-parses --rollouts.
+        # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
+        # category, and expected_shards come from this leg's aggregate_matrix
+        # entry: on the single-dataset path that entry mirrors inputs.dataset /
+        # inputs.category / needs.prep.outputs.n_shards exactly.
         env:
-          DATASET: ${{ inputs.dataset }}
+          DATASET: ${{ matrix.dataset }}
           ROLLOUTS: ${{ inputs.rollouts }}
           MODEL: ${{ inputs.model }}
-          CATEGORY: ${{ inputs.category }}
+          CATEGORY: ${{ matrix.category }}
+          EXPECTED_SHARDS: ${{ matrix.expected_shards }}
         run: |
           if ! [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid rollouts_per_task: $ROLLOUTS"
@@ -900,10 +1014,12 @@ jobs:
 
       - name: "📤 Upload combined results"
         # One zip per category: the merged shard harbor data plus summary.json
-        # and per_task.jsonl.
+        # and per_task.jsonl. The single-dataset path (flat_matrix unset) keeps
+        # the plain unqualified name; a flat multi-category run qualifies it by
+        # category so each category's combined zip is distinct.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: harbor-combined-${{ steps.slug.outputs.slug }}
+          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug) }}
           path: _shards
           if-no-files-found: warn
 
@@ -916,7 +1032,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")

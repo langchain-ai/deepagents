@@ -297,16 +297,66 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     """Count successful empty shards while detecting missing artifacts."""
     workflow = HARBOR_WORKFLOW.read_text()
     harbor = _indented_block(workflow, "  harbor:")
+    prep_job = _indented_block(workflow, "  prep:")
     aggregate = _indented_block(workflow, "  aggregate:")
 
+    # Category-scoped so independently-sharded categories in a flat multi-category
+    # run can't collide on the same shard index's marker basename (aggregate_shards.py
+    # counts markers by basename alone).
     assert (
-        'touch "harbor-jobs/terminal-bench/empty-shard-$HARBOR_SHARD_INDEX"' in harbor
+        'touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"'
+        in harbor
     )
     assert "    needs: [prep, harbor]" in aggregate
-    assert "EXPECTED_SHARDS: ${{ needs.prep.outputs.n_shards }}" in aggregate
+    # expected_shards now flows per-category via aggregate_matrix (derived in prep
+    # from prep's own shard-matrix output on the single-dataset path), not a
+    # single job-level env var on the aggregate job.
+    assert (
+        "SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}"
+        in prep_job
+    )
+    assert "EXPECTED_SHARDS: ${{ matrix.expected_shards }}" in aggregate
     compute = _indented_block(aggregate, '      - name: "📊 Compute pass@k / avg@k"')
     assert 'expected_shards_args=(--expected-shards "$EXPECTED_SHARDS")' in compute
     assert '"${expected_shards_args[@]}"' in compute
+
+
+def test_aggregate_runs_per_category() -> None:
+    """Aggregate matrixes over categories instead of hardcoding a single one."""
+    text = HARBOR_WORKFLOW.read_text()
+    # aggregate loops over the categories present in the flat matrix
+    assert "for cat in" in text or "matrix.category" in text
+    assert "aggregate_shards.py" in text
+    assert "--category" in text
+
+    workflow = HARBOR_WORKFLOW.read_text()
+    prep_job = _indented_block(workflow, "  prep:")
+    aggregate_job = _indented_block(workflow, "  aggregate:")
+
+    assert "aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}" in prep_job
+    derive_step = _indented_block(prep_job, '      - name: "🗂️ Derive aggregate matrix"')
+    assert "FLAT_MATRIX: ${{ inputs.flat_matrix }}" in derive_step
+    assert "expected_shards" in derive_step
+
+    aggregate_strategy = _indented_block(aggregate_job, "    strategy:")
+    assert (
+        "matrix: ${{ fromJson(needs.prep.outputs.aggregate_matrix) }}"
+        in aggregate_strategy
+    )
+
+    compute = _indented_block(
+        aggregate_job, '      - name: "📊 Compute pass@k / avg@k"'
+    )
+    assert "DATASET: ${{ matrix.dataset }}" in compute
+    assert "CATEGORY: ${{ matrix.category }}" in compute
+    assert "--category" in compute
+
+    upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
+    assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
+    assert (
+        "format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug)"
+        in upload
+    )
 
 
 def test_chart_publishers_are_serialized_and_replace_rerun_assets() -> None:

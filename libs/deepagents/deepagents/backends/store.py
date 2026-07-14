@@ -547,18 +547,7 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     async def aread(
         self,
@@ -585,18 +574,7 @@ class StoreBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     def write(
         self,

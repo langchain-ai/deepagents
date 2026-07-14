@@ -62,6 +62,16 @@ def test_read_slices_by_offset_limit() -> None:
     assert result.file_data["content"] == "2\n3\n"
 
 
+def test_read_surfaces_pagination_metadata() -> None:
+    """`ContextHubBackend.read` propagates the pagination metadata from `slice_read_response`."""
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="1\n2\n3\n4\n5")})
+    result = backend.read("/a.md", offset=1, limit=2)
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
 def test_pull_runs_only_once_for_multiple_reads() -> None:
     backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
     backend.read("/a.md")

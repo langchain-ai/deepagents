@@ -59,7 +59,7 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n    - First scan: read_file(file_path=\"...\", limit=100) to see file structure\n    - Read more sections: read_file(file_path=\"...\", offset=100, limit=200) for next 200 lines\n    - Omit `limit` to use the default window; increase it only when necessary for editing\n- Specify offset and limit: read_file(file_path=\"...\", offset=0, limit=100) reads first 100 lines\n- Results are returned with line numbers starting at the first line read (`offset` + 1, so 1 by default), followed by two spaces and the source content\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- If file details were compacted from history, call `read_file` again on the same path\n\n- You should ALWAYS make sure a file has been read before editing it.",
+      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- For text files, by default it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n    - First scan: read_file(file_path=\"...\", limit=100) to see file structure\n    - Read more sections: read_file(file_path=\"...\", offset=100, limit=200) for next 200 lines\n    - Omit `limit` to use the default window; increase it only when necessary for editing\n- Specify offset and limit: read_file(file_path=\"...\", offset=0, limit=100) reads first 100 lines\n- Results are returned with line numbers starting at the first line read (`offset` + 1, so 1 by default), followed by two spaces and the source content\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.\n- If file details were compacted from history, call `read_file` again on the same path\n\n- You should ALWAYS make sure a file has been read before editing it.",
       "name": "read_file",
       "parameters": {
         "properties": {
@@ -69,12 +69,12 @@
           },
           "limit": {
             "default": 100,
-            "description": "Maximum number of lines to read. Use for pagination of large files.",
+            "description": "Maximum number of lines to read for text files. For videos, seconds of source to sample.",
             "type": "integer"
           },
           "offset": {
             "default": 0,
-            "description": "Line number to start reading from (0-indexed). Use for pagination of large files.",
+            "description": "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
             "type": "integer"
           }
         },
@@ -211,19 +211,6 @@
             ],
             "default": null,
             "description": "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', '*.ts'). A pattern without '/' matches the file name at any depth; a pattern containing '/' matches the search-root-relative path (e.g. 'src/**/*.py'). This is an in-tool file filter, not a call to the separate glob tool. Brace expansion (e.g. '*.{ts,tsx}') is not supported on all backends; run a separate search per extension for reliable results."
-          },
-          "max_count": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Optional cap on the total number of matches returned across all files. Leave unset to use the configured default. When the cap is hit, results are truncated and a note says so; narrow the pattern or path to see the rest."
           },
           "output_mode": {
             "default": "files_with_matches",

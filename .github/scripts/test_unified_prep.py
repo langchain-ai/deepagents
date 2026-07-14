@@ -371,3 +371,13 @@ def test_main_routes_unknown_provider_into_other_bucket(tmp_path, monkeypatch):
     other = _j.loads(lines["other_matrix"])
     assert [e["model"] for e in other["include"]] == ["weirdvendor:x"]
     assert other["include"][0]["provider"] == "other"
+
+
+def test_total_job_guard_allows_within_budget():
+    up.total_job_guard(n_models=2, est_tasks_per_model=142)  # 284 <= 400, no raise
+
+
+def test_total_job_guard_rejects_over_budget():
+    import pytest
+    with pytest.raises(SystemExit, match=r"worker pool"):
+        up.total_job_guard(n_models=3, est_tasks_per_model=142)  # 426 > 400

@@ -65,6 +65,26 @@ CODE_AGENT_IMPLS = {"dcode", "bare"}
 # high-signal subset from lite_tasks.py (fewer tasks, full rollouts).
 PROFILES = {"full", "lite"}
 
+TOTAL_JOB_BUDGET = 400
+
+
+def total_job_guard(n_models: int, est_tasks_per_model: int) -> None:
+    """Fail when the flat matrix would generate too many total jobs.
+
+    At 1-task/shard the run generates n_models * est_tasks jobs. GitHub-hosted
+    Actions become unreliable well before that count needs to be large, so cap
+    it and point at the worker-pool escalation instead of silently launching a
+    firehose.
+    """
+    total = n_models * est_tasks_per_model
+    if total > TOTAL_JOB_BUDGET:
+        raise SystemExit(
+            f"Flat matrix would generate ~{total} jobs "
+            f"({n_models} models x ~{est_tasks_per_model} tasks), over "
+            f"TOTAL_JOB_BUDGET={TOTAL_JOB_BUDGET}. Reduce the model set or task "
+            "count, or move to a worker pool orchestrator (see the flat-pool spec)."
+        )
+
 
 def parse_int_input(
     name: str,

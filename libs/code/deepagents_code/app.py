@@ -149,10 +149,11 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     return parsed, None
 
 
-# Serializes process-local read-modify-write operations for `config.toml`.
-# Without this, overlapping global-theme and per-terminal-theme saves can each
-# read the same pre-mutation state and then clobber the other's keys.
-_CONFIG_WRITE_LOCK = threading.Lock()
+# Config `config.toml` writes are serialized by the single process-wide lock
+# `model_config._config_write_lock`, imported lazily at each write site (below).
+# It is shared with `model_config`'s writers so a theme/UI write here cannot
+# clobber, e.g., an effort or default-model write; a lock local to this module
+# would not mutually exclude against those. See that lock's docstring.
 
 _DEEPAGENTS_IMPORT_LOCK = threading.RLock()
 """Serializes process-local cold imports into the Deep Agents SDK graph.
@@ -932,10 +933,13 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1121,11 +1125,14 @@ def _save_terminal_theme_mapping_result(
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         repair_messages: list[str] = []
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1219,10 +1226,13 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1278,10 +1288,13 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -2747,8 +2760,10 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
 
-        self._model_params_override: dict[str, Any] | None = None
-        """Per-turn model params override set via `/model --model-params`."""
+        self._model_params_override: dict[str, Any] | None = (
+            model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
+        )
+        """Per-turn model params override set via startup or `/model` params."""
 
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
@@ -3354,6 +3369,9 @@ class DeepAgentsApp(App):
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        model_spec = self._effective_model_spec()
+        if model_spec:
+            await self._restore_effort_override(model_spec)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
@@ -4282,6 +4300,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
             save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
@@ -12311,6 +12330,58 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
+    async def _restore_effort_override(self, model_spec: str) -> None:
+        """Restore a persisted reasoning effort when valid for the model.
+
+        Explicit per-session or resumed-thread model params take precedence:
+        a saved effort only fills in when the active params do not already
+        specify one, so `/model ... --model-params` and adopted checkpoints
+        are never silently overridden.
+
+        Config reads (and the stale-entry write below) are offloaded to a
+        worker thread so a slow or locked `config.toml` cannot stall the UI
+        event loop, matching `_set_effort_override`.
+        """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            load_effort_for_model,
+        )
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            merge_effort_model_params,
+            model_params_for_effort,
+        )
+
+        if (
+            current_effort_from_model_params(model_spec, self._model_params_override)
+            is not None
+        ):
+            return
+        effort = await asyncio.to_thread(load_effort_for_model, model_spec)
+        if effort is None:
+            return
+        params = model_params_for_effort(model_spec, effort)
+        if params is None:
+            # Saved label is no longer valid for this model; drop the stale
+            # entry so the model default applies. The active params carry no
+            # effort here (checked above), so there is nothing to strip.
+            #
+            # Best-effort housekeeping: on failure we log rather than mounting a
+            # UI error, because the user did not request this clear. The
+            # interactive `/effort clear` path does surface failures, since
+            # there the clear is user-initiated.
+            if not await asyncio.to_thread(clear_effort_for_model, model_spec):
+                logger.warning(
+                    "Could not clear invalid reasoning effort %r for %s",
+                    effort,
+                    model_spec,
+                )
+            return
+        self._model_params_override = merge_effort_model_params(
+            self._model_params_override,
+            params,
+        )
+
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
         """Resolve the active model spec and its supported reasoning efforts.
 
@@ -12409,6 +12480,10 @@ class DeepAgentsApp(App):
         Args:
             effort: Effort label or clear/reset token.
         """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            save_effort_for_model,
+        )
         from deepagents_code.reasoning_effort import (
             merge_effort_model_params,
             model_params_for_effort,
@@ -12426,7 +12501,16 @@ class DeepAgentsApp(App):
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )
+            saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
+            if not saved:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Reasoning effort cleared for {spec} in this session, but "
+                        "the saved preference could not be removed."
+                    )
+                )
+                return
             message = (
                 f"Reasoning effort override cleared for {spec}."
                 if had_override
@@ -12449,7 +12533,16 @@ class DeepAgentsApp(App):
         self._model_params_override = merge_effort_model_params(
             self._model_params_override, params
         )
+        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
         self._sync_status_model()
+        if not saved:
+            await self._mount_message(
+                ErrorMessage(
+                    f"Reasoning effort for {spec} set to {effort} in this session, "
+                    "but the preference could not be saved."
+                )
+            )
+            return
         await self._mount_message(
             AppMessage(f"Reasoning effort for {spec} set to {effort}."),
         )
@@ -19218,6 +19311,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                await self._restore_effort_override(current)
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
@@ -19271,6 +19365,8 @@ class DeepAgentsApp(App):
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
 
@@ -19300,7 +19396,6 @@ class DeepAgentsApp(App):
                 # touch_recent_model always gets a valid "provider:model"
                 # string. Silent on failure — the debug log captures it when
                 # debug logging is enabled.
-                resolved_spec = f"{result.provider}:{result.model_name}"
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",

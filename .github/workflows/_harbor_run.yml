@@ -293,7 +293,9 @@ jobs:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
+          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
+          # so this key is required regardless of the model under test.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
@@ -432,10 +434,10 @@ jobs:
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
       - name: "🗂️ Populate local dataset corpus"
-        if: ${{ inputs.dataset_path != '' }}
+        if: ${{ (matrix.dataset_path || inputs.dataset_path) != '' }}
         working-directory: libs/evals
         env:
-          HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+          HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
         # The per-task corpus is single-sourced (git-ignored) and regenerated from
         # the vendored copy so each task's build context has its files/ before
         # Harbor builds the task images.
@@ -455,7 +457,9 @@ jobs:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ (startsWith(matrix.model, 'openai:') || contains(inputs.dataset, 'tau3') || contains(inputs.dataset, 'harbor-index')) && secrets.OPENAI_API_KEY || '' }}
+          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
+          # so this key is required regardless of the model under test.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |

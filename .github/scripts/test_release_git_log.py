@@ -53,6 +53,7 @@ def _run_git_log_step(
     *,
     previous_tag: str,
     release_sha: str,
+    max_commits: int | None = None,
 ) -> str:
     output = repo / "github-output.txt"
     env = {
@@ -63,8 +64,13 @@ def _run_git_log_step(
         "REPOSITORY": REPOSITORY,
         "WORKING_DIR": str(PACKAGE_PATH),
     }
+    step = _workflow_step("generate-git-log")
+    if max_commits is not None:
+        production_setting = "MAX_COMMITS=100"
+        assert step.count(production_setting) == 1
+        step = step.replace(production_setting, f"MAX_COMMITS={max_commits}")
     subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", _workflow_step("generate-git-log")],
+        ["bash", "-eo", "pipefail", "-c", step],
         cwd=repo,
         env=env,
         check=True,
@@ -365,9 +371,10 @@ def test_git_log_escapes_and_limits_commit_subjects(tmp_path: Path) -> None:
 
 
 def test_git_log_limits_large_release_history(tmp_path: Path) -> None:
+    max_commits = 3
     commits = _create_history(tmp_path)
     tip = commits["hotfix"]
-    for index in range(101):
+    for index in range(max_commits + 1):
         tip = _commit(
             tmp_path,
             PACKAGE_PATH / "module.py",
@@ -379,14 +386,15 @@ def test_git_log_limits_large_release_history(tmp_path: Path) -> None:
         tmp_path,
         previous_tag="example==1.0.0",
         release_sha=tip,
+        max_commits=max_commits,
     )
 
-    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == 100
+    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == max_commits
     assert (
-        "The log is truncated to the newest 100 commits to keep the release "
-        "notes a reasonable size."
+        f"The log is truncated to the newest {max_commits} commits to keep the "
+        "release notes a reasonable size."
     ) in details
-    assert "fix(example): generated 100" in details
+    assert f"fix(example): generated {max_commits}" in details
     assert "fix(example): generated 0\n" not in details
 
 
@@ -613,14 +621,15 @@ def test_resolve_refs_initial_release_has_no_predecessor_or_warning(
 def test_git_log_includes_exactly_max_commits_without_truncation(
     tmp_path: Path,
 ) -> None:
-    # Exactly MAX_COMMITS (100) in-range package commits must yield 100 entries and
+    # Exactly MAX_COMMITS in-range package commits must yield that many entries and
     # no truncation banner — the boundary where the `--max-count=N+1` fetch and the
     # `-ge`/`-gt` checks could hide an off-by-one.
+    max_commits = 3
     _init_repo(tmp_path)
     _commit(tmp_path, PACKAGE_PATH / "module.py", "BASE = 0\n", "feat(example): base")
     _git(tmp_path, "tag", "example==1.0.0")
     tip = ""
-    for index in range(100):
+    for index in range(max_commits):
         tip = _commit(
             tmp_path,
             PACKAGE_PATH / "module.py",
@@ -632,7 +641,8 @@ def test_git_log_includes_exactly_max_commits_without_truncation(
         tmp_path,
         previous_tag="example==1.0.0",
         release_sha=tip,
+        max_commits=max_commits,
     )
 
-    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == 100
+    assert details.count(f"https://github.com/{REPOSITORY}/commit/") == max_commits
     assert "The log is truncated to the newest" not in details

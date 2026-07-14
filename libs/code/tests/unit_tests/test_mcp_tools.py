@@ -1067,26 +1067,116 @@ class TestGetMCPTools:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_remote_headers_are_resolved_and_passed(
+    async def test_remote_url_and_headers_are_resolved_and_passed(
         self,
         monkeypatch: pytest.MonkeyPatch,
         fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
     ) -> None:
-        """Resolved static headers are attached to remote connections."""
+        """Resolved URLs and static headers reach remote connections."""
+        monkeypatch.setenv("DA_MCP_HOST", "mcp.linear.app")
         monkeypatch.setenv("DA_TOKEN", "tok-123")
         _session, recorded = fake_create_session
         config = {
             "mcpServers": {
                 "linear": {
                     "transport": "http",
-                    "url": "https://mcp.linear.app/mcp",
+                    "url": "https://${DA_MCP_HOST}/mcp",
                     "headers": {"Authorization": "Bearer ${DA_TOKEN}"},
                 }
             }
         }
 
         await _load_tools_from_config(config)
+        assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
+
+    async def test_stdio_fields_resolve_before_preflight_and_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Stdio preflight and connection creation use resolved values."""
+        monkeypatch.setenv("DA_MCP_HOME", "/opt/mcp")
+        monkeypatch.setenv("DA_MCP_TOKEN", "token")
+        _session, recorded = fake_create_session
+        checked: list[dict[str, Any]] = []
+        config = {
+            "mcpServers": {
+                "srv": {
+                    "command": "${DA_MCP_HOME}/server",
+                    "args": ["--root", "${DA_MCP_HOME}"],
+                    "env": {"TOKEN": "${DA_MCP_TOKEN}"},
+                }
+            }
+        }
+
+        with patch(
+            "deepagents_code.mcp_tools._check_stdio_server",
+            side_effect=lambda _name, server: checked.append(server),
+        ):
+            await _load_tools_from_config(config)
+
+        assert checked[0]["command"] == "/opt/mcp/server"
+        assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert recorded[0] == {
+            "command": "/opt/mcp/server",
+            "args": ["--root", "/opt/mcp"],
+            "env": {"TOKEN": "token"},
+            "transport": "stdio",
+        }
+
+    async def test_unset_variable_skips_only_affected_server(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """An unresolved field does not prevent sibling servers from loading."""
+        monkeypatch.delenv("MISSING_DA_MCP_PATH", raising=False)
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                "broken": {
+                    "command": "node",
+                    "args": ["${MISSING_DA_MCP_PATH}"],
+                },
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.args[0]" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_non_string_field_skips_only_affected_server(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """A `TypeError` from resolution skips its server, not its siblings."""
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                # `env` is a dict (passes shape validation) but its value is
+                # not a string, so resolution raises `TypeError`.
+                "broken": {"command": "node", "env": {"PORT": 1}},
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.env.PORT" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
 
     async def test_empty_env_is_coerced_to_none(
         self,
@@ -2125,7 +2215,7 @@ class TestHealthChecks:
             assert server_infos[0].name == "srv"
             assert server_infos[0].status == "error"
             error = server_infos[0].error or ""
-            assert "command 'missing' not found on PATH" in error
+            assert "configured command not found on PATH" in error
             assert manager is not None
         finally:
             if manager is not None:
@@ -2145,6 +2235,171 @@ class TestHealthChecks:
             pytest.raises(RuntimeError, match="unreachable"),
         ):
             await _check_remote_server("srv", {"url": "http://down:9999"})
+
+    async def test_expanded_url_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded URL credentials never reach status or warning text."""
+        secret = "url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        client = AsyncMock()
+        client.head.side_effect = httpx.InvalidURL(f"invalid URL containing {secret}")
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("httpx.AsyncClient", return_value=client):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "not a url?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured URL is unreachable" in (infos[0].error or "")
+        # The failure *class* is surfaced for diagnosability; it never
+        # embeds the URL, so it is safe to include even when redacting.
+        assert "InvalidURL" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_url_is_redacted_from_discovery_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved URL credentials never reach discovery status or debug logs."""
+        secret = "discovery-url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        request = httpx.Request(
+            "POST",
+            f"https://mcp.example.com/mcp?token={secret}",
+        )
+        response = httpx.Response(500, request=request)
+        discovery_error = httpx.HTTPStatusError(
+            f"server error for URL {request.url}",
+            request=request,
+            response=response,
+        )
+
+        @asynccontextmanager
+        async def _fail_discovery(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[None]:
+            raise discovery_error
+            yield
+
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "langchain_mcp_adapters.sessions.create_session",
+                _fail_discovery,
+            ),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": ("https://mcp.example.com/mcp?token=${MCP_TOKEN}"),
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "tool discovery failed" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_value_is_redacted_from_connection_build_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved values never reach the connection-build error path either.
+
+        Covers the `_preflight_and_connect` setup catch (token-store / provider
+        construction), which runs after preflight succeeds and after `${...}`
+        refs are expanded.
+        """
+        secret = "build-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        storage = MagicMock()
+        storage.get_tokens = AsyncMock(
+            side_effect=RuntimeError(f"token store failure for {secret}")
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.mcp_auth.FileTokenStorage", return_value=storage),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "https://mcp.example.com/mcp?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "setup failed after resolving environment variables" in (
+            infos[0].error or ""
+        )
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_command_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded commands never reach status or warning text."""
+        secret = "command-token-must-not-leak"
+        monkeypatch.setenv("MCP_COMMAND", secret)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("deepagents_code.mcp_tools.shutil.which", return_value=None):
+            tools, manager, infos = await _load_tools_from_config(
+                {"mcpServers": {"stdio": {"command": "${MCP_COMMAND}"}}}
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured command not found on PATH" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
 
 
 class TestToolOrdering:

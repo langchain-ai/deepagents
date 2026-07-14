@@ -44,6 +44,13 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
+"""Chat input cursor style (`block` or `underline`).
+
+Takes precedence over `[ui].cursor_style` in config.toml. Invalid values fall
+through to the config file and then the default block cursor.
+"""
+
 DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS = (
     "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
 )
@@ -130,6 +137,16 @@ setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
 shell, launch env, or global `~/.deepagents/.env` can.
 """
 
+EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
+"""Opt into experimental, unstable dcode behavior.
+
+Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
+values). Currently gates dropping the SDK's `TodoListMiddleware` (and its
+`write_todos` tool) from the agent and its subagents, along with the matching
+todo-list prompt guidance. Behavior behind this flag may change or be removed
+without notice.
+"""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -182,6 +199,21 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
+"""Minimum level for `deepagents_code` runtime logging.
+
+Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
+"""
+
+MEMORY_AUTO_SAVE = "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE"
+"""Toggle automatic memory saving (defaults to on).
+
+When enabled, the memory prompt tells the agent to proactively persist
+learnings to the `AGENTS.md` memory files. Set to a falsy value (`0`, `false`,
+`no`, `off`, or empty) to keep loading memory into context while disabling the
+auto-save guidance; explicit saves (e.g. the `remember` skill) still work.
 """
 
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"

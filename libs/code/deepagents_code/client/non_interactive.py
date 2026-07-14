@@ -745,15 +745,26 @@ def _process_rubric_event(
                 detail = f" — {gap}" if gap else ""
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
-        console.print(
-            "[yellow]⚠ Acceptance criteria not satisfied "
-            "(iteration limit reached)[/yellow]",
-            highlight=False,
-        )
-    elif result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+        message = (
+            "[yellow]⚠ Iteration limit reached with unmet acceptance criteria"
+            f"{suffix}[/yellow]"
+        )
+        console.print(message, highlight=False)
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
+    elif result == "failed":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
+    elif result == "grader_error":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[red]⚠ Grader/infrastructure failure{suffix}[/red]", highlight=False
+        )
     elif result is not None:
         # A `rubric_evaluation_end` with an unrecognized result is still a
         # terminal grading event; surface it rather than letting the run go

@@ -30,7 +30,6 @@ async def test_load_mcp_tools_delegates_to_deepagents_code_discovery(
     workspace.mkdir()
     env_path = tmp_path / "custom.mcp.json"
     calls: list[dict[str, object]] = []
-    plugin_project_dirs: list[object] = []
     tools = [DummyTool("files_read")]
     infos = [
         CodeMCPServerInfo(
@@ -39,21 +38,12 @@ async def test_load_mcp_tools_delegates_to_deepagents_code_discovery(
             tools=(MCPToolInfo(name="files_read", description=""),),
         )
     ]
-    plugin_configs = ({"mcpServers": {"plugin": {}}},)
 
     async def fake_resolver(**kwargs: object) -> FakeCodeLoaderResult:
         calls.append(kwargs)
         return tools, None, infos
 
-    def fake_plugin_configs(*, project_dir: object) -> tuple[dict[str, object], ...]:
-        plugin_project_dirs.append(project_dir)
-        return plugin_configs
-
     monkeypatch.setattr("deepagents_talon.mcp.resolve_and_load_mcp_tools", fake_resolver)
-    monkeypatch.setattr(
-        "deepagents_talon.mcp.discover_plugin_mcp_configs",
-        fake_plugin_configs,
-    )
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "test",
@@ -73,5 +63,3 @@ async def test_load_mcp_tools_delegates_to_deepagents_code_discovery(
     project_context = calls[0]["project_context"]
     assert isinstance(project_context, ProjectContext)
     assert project_context.user_cwd == workspace.resolve()
-    assert calls[0]["additional_configs"] == plugin_configs
-    assert plugin_project_dirs == [workspace.resolve()]

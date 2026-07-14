@@ -873,6 +873,11 @@ jobs:
           if [ -z "$category_safe" ]; then
             category_safe="uncategorized"
           fi
+          # Short hash keeps the category slug injective, mirroring LEAF_SLUG
+          # above: two raw categories differing only in separators (e.g.
+          # "auto.test" vs "auto_test") would otherwise sanitize alike and
+          # collide in aggregate_matrix's per-category shard glob.
+          category_safe="${category_safe}-$(printf '%s' "$HARBOR_CATEGORY" | sha256sum | cut -c1-8)"
           echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
 
       - name: "📤 Upload Harbor artifacts"
@@ -946,6 +951,9 @@ jobs:
           if [ -z "$category_safe" ]; then
             category_safe="uncategorized"
           fi
+          # Short hash keeps the category slug injective (mirrors the harbor
+          # job's HARBOR_CATEGORY_SAFE); must match it byte-for-byte.
+          category_safe="${category_safe}-$(printf '%s' "$CATEGORY" | sha256sum | cut -c1-8)"
           echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
 
       - name: "⬇️ Download shard results"
@@ -1016,7 +1024,9 @@ jobs:
         # One zip per category: the merged shard harbor data plus summary.json
         # and per_task.jsonl. The single-dataset path (flat_matrix unset) keeps
         # the plain unqualified name; a flat multi-category run qualifies it by
-        # category so each category's combined zip is distinct.
+        # raw matrix.category, which is safe only because the cat-slug step's
+        # `exit 1` validation (rejects anything outside [A-Za-z0-9_.-]) already
+        # ran earlier in this job; don't reorder past it.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug) }}

@@ -374,6 +374,7 @@ if TYPE_CHECKING:
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
     from textual.widget import Widget
+    from textual.widgets import TextArea
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
@@ -13734,14 +13735,61 @@ class DeepAgentsApp(App):
         )
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
+    def _ctrl_d_delete_target(self) -> TextArea | None:
+        """Return the focused text area Ctrl+D should edit instead of quitting.
+
+        Ctrl+D deletes forward — a non-empty selection or the content right of
+        the cursor — rather than quitting whenever the focused widget is an
+        editable prompt with something left to delete. This covers both the
+        primary chat input and the inline free-text prompts (ask-user, goal
+        review). Only at the true end of the text with no selection does Ctrl+D
+        fall through to quitting.
+
+        `self.focused` (the active screen's focused widget) is checked rather
+        than `has_focus`: a draft hidden behind a modal keeps focus but must not
+        be edited from under it, so Ctrl+D quits in that case.
+
+        Returns:
+            The focused text area with content after the cursor, or `None` when
+            Ctrl+D should quit the app.
+        """
+        from deepagents_code.tui.widgets._inline_prompt import InlinePromptTextArea
+
+        focused = self.focused
+        chat_input = self._chat_input
+        text_area: TextArea | None = None
+        if chat_input is not None:
+            input_widget = chat_input.input_widget
+            if (
+                input_widget is not None
+                and focused is input_widget
+                and chat_input.value
+            ):
+                text_area = input_widget
+        if (
+            text_area is None
+            and isinstance(focused, InlinePromptTextArea)
+            and focused.text
+        ):
+            text_area = focused
+
+        if text_area is None:
+            return None
+        if (
+            not text_area.selection.is_empty
+            or text_area.cursor_location != text_area.document.end
+        ):
+            return text_area
+        return None
+
     def action_quit_app(self) -> None:
         """Handle the Ctrl+D binding.
 
         Delete-confirm screens and the auth/thread selectors keep their own
-        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
-        deletes a non-empty selection or the character right of the cursor.
-        Only at the end of the prompt with no active selection does it exit
-        the app.
+        Ctrl+D behavior. Otherwise, when an editable prompt (the chat input or
+        an inline free-text field) is focused, Ctrl+D deletes a non-empty
+        selection or the character right of the cursor. Only at the end of the
+        prompt with no active selection does it exit the app.
         """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
@@ -13768,24 +13816,10 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
-        # Delegate Ctrl+D when delete-right can remove selected text or content
-        # after the cursor. Check `self.focused` (the active screen's focused
-        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
-        # focus but must not be edited from under it, so Ctrl+D quits in that case.
-        chat_input = self._chat_input
-        if chat_input is not None:
-            text_area = chat_input.input_widget
-            if (
-                text_area is not None
-                and self.focused is text_area
-                and chat_input.value
-                and (
-                    not text_area.selection.is_empty
-                    or text_area.cursor_location != text_area.document.end
-                )
-            ):
-                text_area.action_delete_right()
-                return
+        text_area = self._ctrl_d_delete_target()
+        if text_area is not None:
+            text_area.action_delete_right()
+            return
 
         self.exit()
 

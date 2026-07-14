@@ -7,6 +7,8 @@ tested independently of the Textual app.
 from __future__ import annotations
 
 import logging
+import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -134,8 +136,21 @@ def _offload_fallback_root() -> Path:
         A directory path suitable for use as a writable backend root.
     """
 
-    def _prepare(path: Path) -> Path:
-        path.mkdir(parents=True, exist_ok=True)
+    def _prepare(path: Path, *, private: bool = False) -> Path:
+        path.mkdir(mode=0o700 if private else 0o777, parents=True, exist_ok=True)
+        if private:
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                msg = f"Temporary offload path is not a directory: {path}"
+                raise OSError(msg)
+            getuid = getattr(os, "getuid", None)
+            if getuid is not None and info.st_uid != getuid():
+                msg = f"Temporary offload directory is owned by another user: {path}"
+                raise PermissionError(msg)
+            # `mkdir(mode=...)` does not tighten an existing directory. Archives
+            # contain conversation data, so the per-user fallback must remain
+            # inaccessible to other local accounts regardless of the process umask.
+            path.chmod(0o700)
         # Creating the directory is insufficient when it already exists on a
         # read-only mount. A temporary file proves archive writes can succeed.
         with tempfile.NamedTemporaryFile(dir=path, prefix=".write-test-"):
@@ -149,7 +164,22 @@ def _offload_fallback_root() -> Path:
             "User data directory is not writable; using temporary offload storage",
             exc_info=True,
         )
-        return _prepare(Path(tempfile.gettempdir()) / "deepagents")
+        getuid = getattr(os, "getuid", None)
+        suffix = str(getuid()) if getuid is not None else str(os.getpid())
+        temp_root = Path(tempfile.gettempdir())
+        path = temp_root / f"deepagents-{suffix}"
+        try:
+            return _prepare(path, private=True)
+        except (OSError, RuntimeError):
+            logger.debug(
+                "Per-user temporary offload directory is unavailable; creating "
+                "a private unique directory",
+                exc_info=True,
+            )
+            unique = Path(
+                tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root)
+            )
+            return _prepare(unique, private=True)
 
 
 def _fallback_offload_backend() -> FilesystemBackend:

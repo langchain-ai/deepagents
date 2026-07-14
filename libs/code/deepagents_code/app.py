@@ -358,7 +358,10 @@ def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
     """Return whether `msg` is a tool message in object or serialized form."""
     if isinstance(msg, dict):
         return msg.get("type") == "tool" or msg.get("role") == "tool"
-    return type(msg).__name__ == "ToolMessage"
+    from langchain_core.messages import ToolMessage
+
+    # `isinstance` (not a by-name check) so `ToolMessage` subclasses still match.
+    return isinstance(msg, ToolMessage)
 
 
 def _find_compaction_failure(messages: list[Any]) -> str | None:
@@ -368,11 +371,17 @@ def _find_compaction_failure(messages: list[Any]) -> str | None:
     but a stream hiccup (or an update-injected `ToolMessage` that never surfaces
     on the `messages` stream) can drop that signal even though the failure
     `ToolMessage` still lands in durable state. Scanning committed state closes
-    that gap so a genuine failure is never misreported as "nothing to offload".
+    that gap so a genuine failure is not misreported as "nothing to offload".
+
+    The caller passes only the messages produced by the *current* `/offload`
+    attempt (the tail after the pre-seed prefix). This matters because the
+    failure prefix is shared with the SDK's own compaction-failure wording, so
+    an unbounded scan could match a stale failure from an unrelated prior turn;
+    slicing to the current attempt keeps detection specific to this run.
 
     Args:
-        messages: The message list from committed thread state (objects or
-            serialized dicts).
+        messages: The messages produced by this `/offload` attempt (objects or
+            serialized dicts), i.e. committed state beyond the pre-seed prefix.
 
     Returns:
         The failure message text, or `None` if no failure marker is found.
@@ -386,6 +395,35 @@ def _find_compaction_failure(messages: list[Any]) -> str | None:
         if text.startswith(COMPACTION_FAILURE_PREFIX):
             return text
     return None
+
+
+def _message_id(msg: Any) -> str | None:  # noqa: ANN401
+    """Return a message's id from object or serialized-dict form."""
+    return msg.get("id") if isinstance(msg, dict) else getattr(msg, "id", None)
+
+
+def _message_tool_call_id(msg: Any) -> str | None:  # noqa: ANN401
+    """Return the `tool_call_id` a tool message answers, if any."""
+    return (
+        msg.get("tool_call_id")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_call_id", None)
+    )
+
+
+def _message_tool_call_ids(msg: Any) -> list[str]:  # noqa: ANN401
+    """Return the ids of tool calls requested by a message (object or dict)."""
+    tool_calls = (
+        msg.get("tool_calls")
+        if isinstance(msg, dict)
+        else getattr(msg, "tool_calls", None)
+    )
+    ids: list[str] = []
+    for call in tool_calls or []:
+        cid = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        if isinstance(cid, str):
+            ids.append(cid)
+    return ids
 
 
 def _create_model_with_deepagents_import_lock(
@@ -10985,8 +11023,16 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
+            # Own the seeded tool-call id here so a failed run can clean up the
+            # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
+            import uuid
+
+            seed_tool_call_id = str(uuid.uuid4())
+
             try:
-                tool_error = await self._drive_server_side_compaction(config)
+                tool_error = await self._drive_server_side_compaction(
+                    config, seed_tool_call_id
+                )
             except Exception as stream_error:
                 # A server graph can checkpoint the tool-node update before a
                 # provider failure in the trailing model call reaches this
@@ -11003,9 +11049,19 @@ class DeepAgentsApp(App):
                         "Failed to reconcile state after offload stream error",
                         exc_info=True,
                     )
+                    await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
+                    )
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
                 if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                    # Compaction did not commit, so the seeded tool call was
+                    # never answered. Remove it before re-raising so a failed
+                    # `/offload` cannot wedge the thread with a dangling
+                    # `tool_use` that the model API rejects on the next turn.
+                    await self._remove_unanswered_offload_seed(
+                        config, seed_tool_call_id
+                    )
                     raise
             else:
                 if tool_error is not None:
@@ -11025,7 +11081,8 @@ class DeepAgentsApp(App):
                 # `ToolMessage` (e.g. an update-injected message that never
                 # surfaces on the `messages` stream), so cross-check committed
                 # state before concluding there was nothing to do.
-                failure = _find_compaction_failure(new_state.get("messages", []))
+                current_messages = new_state.get("messages", [])[len(before_messages) :]
+                failure = _find_compaction_failure(current_messages)
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
@@ -11100,7 +11157,9 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _drive_server_side_compaction(self, config: RunnableConfig) -> str | None:
+    async def _drive_server_side_compaction(
+        self, config: RunnableConfig, seed_tool_call_id: str | None = None
+    ) -> str | None:
         """Trigger the server-side `compact_conversation` tool with `force=True`.
 
         Seeds an assistant `compact_conversation` tool call attributed to the
@@ -11123,6 +11182,9 @@ class DeepAgentsApp(App):
 
         Args:
             config: Config with `configurable.thread_id`.
+            seed_tool_call_id: Id for the seeded tool call. Supplied by
+                `_handle_offload` so it can remove the seed if the run fails;
+                a fresh id is generated when omitted (e.g. direct callers).
 
         Returns:
             An error string when the tool reported a compaction failure, or
@@ -11138,15 +11200,18 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage
         from langgraph.types import Command
 
+        from deepagents_code.config import settings
         from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
 
         agent = self._agent
         if agent is None:
             return None
 
-        tool_call_id = str(uuid.uuid4())
+        tool_call_id = seed_tool_call_id or str(uuid.uuid4())
+        # Stable message id so a failed run can address the seed for removal.
         seed = AIMessage(
             content="",
+            id=f"offload-seed-{tool_call_id}",
             tool_calls=[
                 {
                     "name": "compact_conversation",
@@ -11239,8 +11304,10 @@ class DeepAgentsApp(App):
                 subgraphs=True,
                 config=config,
                 context=CLIContext(
-                    model=self._model_override,
+                    model=self._effective_model_spec(),
                     model_params=self._model_params_override or {},
+                    profile_overrides=self._profile_override or {},
+                    model_context_limit=settings.model_context_limit,
                     thread_id=self._lc_thread_id,
                 ),
                 durability="exit",
@@ -11280,19 +11347,83 @@ class DeepAgentsApp(App):
                 # Compaction itself already committed in round 1, so the caller
                 # still reports the offload. Surface the abandoned drain so the
                 # user knows the thread was left paused mid-run and may need a
-                # fresh message to reset.
-                await self._mount_message(
-                    ErrorMessage(
-                        "Offload completed, but the agent kept requesting tools "
-                        "afterward and the run could not be fully drained. Send "
-                        "a new message to continue; the thread may need to reset."
+                # fresh message to reset. Skip this when a tool failure is
+                # already pending, so the caller shows that error instead of
+                # the user seeing two conflicting messages.
+                if tool_error is None:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Offload completed, but the agent kept requesting "
+                            "tools afterward and the run could not be fully "
+                            "drained. Send a new message to continue; the "
+                            "thread may need to reset."
+                        )
                     )
-                )
                 break
             resume_payload = dict(pending)
             pending = await _drain(Command(resume=resume_payload))
 
         return tool_error
+
+    async def _remove_unanswered_offload_seed(
+        self, config: RunnableConfig, seed_tool_call_id: str
+    ) -> None:
+        """Remove a committed `/offload` seed whose tool call was never answered.
+
+        The seed `AIMessage` carrying the forced `compact_conversation` call is
+        committed via `aupdate_state` before the run advances — independently of
+        the stream's durability. If the run then fails before the tool produces
+        a `ToolMessage`, the seed is left as an unanswered `tool_use` in
+        committed state, which the model API rejects on the next turn
+        ("tool_use ids ... without tool_result"), potentially wedging the
+        thread. This best-effort removes that seed so a failed `/offload` leaves
+        a valid conversation.
+
+        If the tool *did* run (a `ToolMessage` answers the call), the seed and
+        its result form a valid pair and are left untouched — removing the seed
+        alone would orphan the `ToolMessage`.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            seed_tool_call_id: The id of the seeded `compact_conversation` call.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        agent = self._agent
+        if agent is None or not self._lc_thread_id:
+            return
+        try:
+            state = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:  # best-effort cleanup; keep the original error
+            logger.warning(
+                "Could not read state to clean up offload seed", exc_info=True
+            )
+            return
+
+        messages = state.get("messages", [])
+        # An answering ToolMessage means the tool ran; the pair is valid.
+        if any(
+            _is_tool_message(msg) and _message_tool_call_id(msg) == seed_tool_call_id
+            for msg in messages
+        ):
+            return
+
+        seed_id = next(
+            (
+                _message_id(msg)
+                for msg in messages
+                if seed_tool_call_id in _message_tool_call_ids(msg)
+            ),
+            None,
+        )
+        if not seed_id:
+            return
+        try:
+            await agent.aupdate_state(
+                config, {"messages": [RemoveMessage(id=seed_id)]}, as_node="model"
+            )
+        except Exception:  # best-effort cleanup; keep the original error
+            logger.warning("Failed to remove dangling offload seed", exc_info=True)
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

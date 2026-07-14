@@ -117,8 +117,45 @@ class TestCLICompactionMiddleware:
 
         assert actual is selected
         create_model.assert_called_once_with(
-            "provider:active-model", extra_kwargs={"temperature": 0}
+            "provider:active-model",
+            extra_kwargs={"temperature": 0},
+            profile_overrides=None,
         )
+        create_summarization.assert_called_once_with(active_model, startup._backend)
+
+    def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
+        """Server-side offload uses the CLI's effective model profile."""
+        startup = self._summarization()
+        middleware = CLICompactionMiddleware(startup)
+        runtime = MagicMock()
+        runtime.context = {
+            "model": "provider:active-model",
+            "model_params": {},
+            "profile_overrides": {"max_input_tokens": 32_000},
+            "model_context_limit": 24_000,
+        }
+        active_model = SimpleNamespace(profile={"max_input_tokens": 200_000})
+        result = SimpleNamespace(model=active_model)
+        selected = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.config.create_model", return_value=result
+            ) as create_model,
+            patch(
+                "deepagents_code.offload_middleware.create_summarization_middleware",
+                return_value=selected,
+            ) as create_summarization,
+        ):
+            actual = middleware._summarization_for_runtime(runtime)
+
+        assert actual is selected
+        create_model.assert_called_once_with(
+            "provider:active-model",
+            extra_kwargs=None,
+            profile_overrides={"max_input_tokens": 32_000},
+        )
+        assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once_with(active_model, startup._backend)
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
@@ -191,6 +228,110 @@ class TestCLICompactionMiddleware:
         )
         assert "force" not in props
 
+    def test_force_false_delegates_to_gated_path(self) -> None:
+        """`force=False` — the model's only reachable path — uses the SDK gate."""
+        middleware = CLICompactionMiddleware(self._summarization())
+        tool: Any = middleware.tools[0]
+        runtime = MagicMock()
+        with (
+            patch.object(middleware, "_run_compact", return_value="gated") as gated,
+            patch.object(
+                middleware, "_run_forced_compact", return_value="forced"
+            ) as forced,
+        ):
+            assert tool.func(runtime, force=False) == "gated"
+            gated.assert_called_once_with(runtime)
+            forced.assert_not_called()
+            assert tool.func(runtime, force=True) == "forced"
+
+    async def test_force_false_delegates_to_gated_path_async(self) -> None:
+        """The async tool likewise routes `force=False` to the gated path."""
+        middleware = CLICompactionMiddleware(self._summarization())
+        tool: Any = middleware.tools[0]
+        runtime = MagicMock()
+        with (
+            patch.object(
+                middleware,
+                "_arun_compact",
+                new_callable=AsyncMock,
+                return_value="gated",
+            ) as gated,
+            patch.object(
+                middleware,
+                "_arun_forced_compact",
+                new_callable=AsyncMock,
+                return_value="forced",
+            ) as forced,
+        ):
+            assert await tool.coroutine(runtime, force=False) == "gated"
+            gated.assert_awaited_once_with(runtime)
+            forced.assert_not_awaited()
+            assert await tool.coroutine(runtime, force=True) == "forced"
+
+    def test_sync_forced_compact_noops_when_nothing_old_enough(self) -> None:
+        """The sync forced path also no-ops at cutoff 0 (mirrors the async one)."""
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.return_value = 0
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one")]}
+        runtime.tool_call_id = "tool-call"
+
+        result = middleware._run_forced_compact(runtime)
+
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        summarization._create_summary.assert_not_called()
+        assert "Nothing to compact" in result.update["messages"][0].content
+
+    def test_sync_forced_compact_error_when_summary_fails(self) -> None:
+        """A sync summary failure returns the failure prefix and does not compact."""
+        summarization = self._summarization()
+        summarization._create_summary = MagicMock(side_effect=RuntimeError("boom"))
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        result = middleware._run_forced_compact(runtime)
+
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        content = result.update["messages"][0].content
+        assert content.startswith(COMPACTION_FAILURE_PREFIX)
+        assert "RuntimeError" in content
+
+    def test_forced_compact_error_starts_with_prefix(self) -> None:
+        """The prefix position is the load-bearing failure-detection contract."""
+        command = CLICompactionMiddleware._forced_compact_error(
+            "call-1", RuntimeError("boom")
+        )
+        assert command.update is not None
+        (message,) = command.update["messages"]
+        assert message.content.startswith(COMPACTION_FAILURE_PREFIX)
+        assert message.tool_call_id == "call-1"
+        assert "RuntimeError" in message.content
+
+    def test_factory_builds_cli_middleware_threading_system_prompt(self) -> None:
+        """The factory returns a CLI middleware carrying the SDK's config."""
+        from deepagents_code import offload_middleware as om
+
+        sdk = MagicMock()
+        sdk._summarization = MagicMock()
+        sdk.system_prompt = "SYSTEM PROMPT"
+        backend: Any = object()
+        with patch.object(
+            om, "create_summarization_tool_middleware", return_value=sdk
+        ) as factory:
+            result = om._create_cli_compaction_middleware("provider:model", backend)
+
+        factory.assert_called_once()
+        assert isinstance(result, om.CLICompactionMiddleware)
+        assert result.system_prompt == "SYSTEM PROMPT"
+        assert result._summarization is sdk._summarization
+
 
 class TestRuntimeModelConfig:
     """Cover the three context shapes `_runtime_model_config` accepts."""
@@ -206,15 +347,22 @@ class TestRuntimeModelConfig:
         assert _runtime_model_config(self._runtime(ctx)) == (
             "p:m",
             {"temperature": 0},
+            {},
+            None,
         )
 
     def test_serialized_dict(self) -> None:
         ctx = {"model": "p:m2", "model_params": {"x": 1}}
-        assert _runtime_model_config(self._runtime(ctx)) == ("p:m2", {"x": 1})
+        assert _runtime_model_config(self._runtime(ctx)) == (
+            "p:m2",
+            {"x": 1},
+            {},
+            None,
+        )
 
     def test_dict_with_bad_types_normalizes(self) -> None:
         ctx = {"model": 123, "model_params": None}
-        assert _runtime_model_config(self._runtime(ctx)) == (None, {})
+        assert _runtime_model_config(self._runtime(ctx)) == (None, {}, {}, None)
 
     def test_unknown_shape(self) -> None:
-        assert _runtime_model_config(self._runtime(object())) == (None, {})
+        assert _runtime_model_config(self._runtime(object())) == (None, {}, {}, None)

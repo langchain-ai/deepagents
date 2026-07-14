@@ -33,33 +33,51 @@ COMPACTION_FAILURE_PREFIX = "Compaction failed"
 
 `/offload` drives the tool server-side and can only observe the resulting
 `ToolMessage` text across the LangGraph server boundary, so it keys failure
-detection on this prefix. It lives here — owned by the forced-compaction path
-that emits it — rather than matching the SDK's internal wording, so the
-producer (`_forced_compact_error`) and consumer (`app._drive_server_side_compaction`)
-share one source of truth.
+detection on this prefix. Owning the literal here means the producer
+(`_forced_compact_error`) and both consumers (`app._drive_server_side_compaction`
+live-stream detection and `app._find_compaction_failure` committed-state scan)
+reference one constant instead of re-hardcoding the wording independently.
+
+Note: this value is deliberately identical to the leading text of the SDK's own
+model-initiated compaction-failure message, so a failure emitted by either path
+is recognized. Because the scan is bounded to messages produced by the current
+`/offload` attempt, a stale failure from an unrelated prior turn is not matched.
+Only the *prefix position* is load-bearing; wording after it is free to change.
 """
 
 
-def _runtime_model_config(runtime: ToolRuntime) -> tuple[str | None, dict[str, Any]]:
+def _runtime_model_config(
+    runtime: ToolRuntime,
+) -> tuple[str | None, dict[str, Any], dict[str, Any], int | None]:
     """Read the active model configuration from a tool runtime.
 
     Args:
         runtime: Runtime injected into the compaction tool.
 
     Returns:
-        The active model specification and invocation parameters.
+        The active model specification, invocation parameters, profile
+            overrides, and effective context-window limit.
     """
     context = runtime.context
     if isinstance(context, CLIContextSchema):
-        return context.model, context.model_params
+        return (
+            context.model,
+            context.model_params,
+            context.profile_overrides,
+            context.model_context_limit,
+        )
     if isinstance(context, dict):
         model = context.get("model")
         params = context.get("model_params")
+        profile_overrides = context.get("profile_overrides")
+        context_limit = context.get("model_context_limit")
         return (
             model if isinstance(model, str) else None,
             dict(params) if isinstance(params, dict) else {},
+            dict(profile_overrides) if isinstance(profile_overrides, dict) else {},
+            context_limit if isinstance(context_limit, int) else None,
         )
-    return None, {}
+    return None, {}, {}, None
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
@@ -122,13 +140,39 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The startup summarizer when no runtime model is selected, otherwise
                 a model-aware summarizer using the same resolved backend.
         """
-        model_spec, model_params = _runtime_model_config(runtime)
+        model_spec, model_params, profile_overrides, context_limit = (
+            _runtime_model_config(runtime)
+        )
         if not model_spec:
             return self._summarization
 
         from deepagents_code.config import create_model
 
-        model = create_model(model_spec, extra_kwargs=model_params or None).model
+        model = create_model(
+            model_spec,
+            extra_kwargs=model_params or None,
+            profile_overrides=profile_overrides or None,
+        ).model
+        if context_limit is not None:
+            profile = getattr(model, "profile", None)
+            native = (
+                profile.get("max_input_tokens") if isinstance(profile, dict) else None
+            )
+            if native != context_limit:
+                merged = (
+                    {**profile, "max_input_tokens": context_limit}
+                    if isinstance(profile, dict)
+                    else {"max_input_tokens": context_limit}
+                )
+                try:
+                    model.profile = merged  # ty: ignore[invalid-assignment]
+                except (AttributeError, TypeError, ValueError):
+                    logger.warning(
+                        "Could not apply runtime context limit %d to the offload "
+                        "model profile; using its resolved profile",
+                        context_limit,
+                        exc_info=True,
+                    )
         backend = self._resolve_backend(runtime)
         return create_summarization_middleware(model, backend)
 
@@ -199,11 +243,18 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     def _forced_compact_error(tool_call_id: str, exc: Exception) -> Command:
         """Build a forced-compaction failure result with a stable prefix.
 
-        Mirrors the SDK's error tool message but is owned by dcode so the
-        `/offload` client can detect failures via `COMPACTION_FAILURE_PREFIX`
-        without coupling to SDK-internal wording. The tool must return a
-        `ToolMessage` rather than raise, so the model (and the client) see the
-        failure as ordinary tool output.
+        Owned by dcode so the `/offload` client can detect failures via
+        `COMPACTION_FAILURE_PREFIX`. The tool must return a `ToolMessage` rather
+        than raise, so the model (and the client) see the failure as ordinary
+        tool output.
+
+        The message is intentionally generic about *where* the failure occurred:
+        the guarded body spans cutoff determination, summary generation, the
+        archive write, and result building, so it does not assert a specific
+        stage (and does not claim nothing was written — an archive may have been
+        persisted before a later step failed). It states only what is always
+        true on this path: the summarization event was not committed, so the
+        effective conversation is unchanged.
 
         Args:
             tool_call_id: The originating tool call ID.
@@ -219,9 +270,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                     ToolMessage(
                         content=(
                             f"{COMPACTION_FAILURE_PREFIX}: an error occurred "
-                            f"while generating the summary ({type(exc).__name__}: "
-                            f"{exc}). The conversation has not been compacted — "
-                            "no messages were summarized or removed."
+                            f"during compaction ({type(exc).__name__}: {exc}). "
+                            "Your conversation is unchanged."
                         ),
                         tool_call_id=tool_call_id,
                     )

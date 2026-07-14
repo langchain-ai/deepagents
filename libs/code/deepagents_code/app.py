@@ -161,6 +161,16 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
+_TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
+"""Tools that stay expanded instead of collapsing into step summaries.
+
+Each surfaces user-facing content worth keeping visible on its own — an
+interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
+(`write_todos`) — so it renders standalone and acts as a boundary between
+adjacent tool groups. Add a tool here only when its collapsed one-line
+summary would hide something the user needs to see.
+"""
+
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
 
@@ -361,7 +371,6 @@ if TYPE_CHECKING:
     from textual.events import MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
-    from textual.scrollbar import ScrollDown, ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
@@ -370,6 +379,7 @@ if TYPE_CHECKING:
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -875,6 +885,33 @@ def _load_cursor_blink_preference() -> bool:
     return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
 
 
+def _load_cursor_style_preference() -> CursorStyle:
+    """Resolve the chat input cursor style.
+
+    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
+    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
+    back to `"block"` when unset or invalid.
+
+    Returns:
+        The resolved cursor style.
+    """
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.cursor_style")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; using block cursor", "display.cursor_style"
+        )
+        return CURSOR_STYLE_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return cast("CursorStyle", value)
+
+
 def _load_terminal_progress_preference() -> bool:
     """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
 
@@ -1323,6 +1360,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "mcp_reconnect",
     "rubric_model_switch",
     "rubric_max_iterations_switch",
 ]
@@ -1859,6 +1897,20 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    class Scrolled(Message, namespace="chat"):
+        """Posted whenever the chat's vertical scroll offset changes.
+
+        Transcript hydration keys off the actual scroll offset instead of the
+        scrollbar `ScrollUp`/`ScrollDown` messages, because those never reach
+        the app for the common scroll paths: wheel/trackpad scrolling arrives as
+        `MouseScroll*` events, keyboard scrolling runs through key-binding scroll
+        actions, and both move `scroll_y` directly without posting a scrollbar
+        message. Scrollbar-track clicks do post `ScrollUp`/`ScrollDown`, but this
+        container's own `_on_scroll_up`/`_on_scroll_down` handlers consume them
+        via `event.stop()` before they can bubble to the app. Watching `scroll_y`
+        covers every input device uniformly. Validated against Textual 8.2.7.
+        """
+
     # The deferred-anchor logic below drives the base class through its private
     # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
     # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
@@ -1931,6 +1983,19 @@ class _ChatScroll(VerticalScroll):
             self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
         return result
 
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Announce vertical scroll changes so the app can hydrate history.
+
+        Args:
+            old_value: Previous vertical scroll offset.
+            new_value: New vertical scroll offset.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        # Guard on `is_attached` (mirrors `ThreadControlsScroll.watch_scroll_y`)
+        # so mount/teardown offset changes don't post to a detached widget.
+        if old_value != new_value and self.is_attached:
+            self.post_message(self.Scrolled())
+
     def _is_scrollable(self) -> bool:
         """Return whether current chat content overflows the viewport."""
         return self.max_scroll_y > 0
@@ -1974,6 +2039,12 @@ class DeepAgentsApp(App):
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
+
+    _hydration_failure_notified: bool = False
+    """Set once a hydration failure has been surfaced, to avoid toast spam.
+
+    Hydration now runs on every scroll-offset delta, so a persistent failure
+    would otherwise notify on every scroll tick."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
@@ -2195,6 +2266,9 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+
+        self._cursor_style = _load_cursor_style_preference()
+        """Visual style used for the chat input cursor."""
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
@@ -3104,6 +3178,7 @@ class DeepAgentsApp(App):
         self._sync_status_queued()
         self._sync_status_model()
         self._sync_status_rubric()
+        self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
@@ -5731,12 +5806,13 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
-    def on_scroll_up(self, _event: ScrollUp) -> None:
-        """Handle scroll up to check if we need to hydrate older messages."""
-        self._check_hydration_needed()
+    def on_chat_scrolled(self, _event: _ChatScroll.Scrolled) -> None:
+        """Hydrate history in both directions whenever the chat scrolls.
 
-    def on_scroll_down(self, _event: ScrollDown) -> None:
-        """Handle scroll down to hydrate newer messages below the window."""
+        Driven by `_ChatScroll.Scrolled` (see that message for why hydration
+        keys off the scroll offset rather than the scrollbar messages).
+        """
+        self._check_hydration_needed()
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:
@@ -5876,6 +5952,23 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _notify_hydration_failure(self) -> None:
+        """Surface transcript hydration failures to the user, once per session.
+
+        The `logger.warning` in the hydrate loops records every failure, but the
+        user only sees a gap where history should be. Show a single toast so the
+        missing history is explainable, without spamming on repeated scrolls.
+        """
+        if self._hydration_failure_notified:
+            return
+        self._hydration_failure_notified = True
+        self.notify(
+            "Some earlier messages couldn't be loaded. See the debug log for details.",
+            severity="warning",
+            timeout=6,
+            markup=False,
+        )
+
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
 
@@ -5977,6 +6070,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                     exc_info=True,
                 )
+                self._notify_hydration_failure()
                 break
 
         if hydrated_count > 0:
@@ -5993,6 +6087,10 @@ class DeepAgentsApp(App):
         # Collapse any completed tool runs brought in above the window so
         # hydrated history matches the live transcript.
         await self._regroup_completed_tools()
+        if hydrated_count > 0:
+            # Re-check after layout because a boundary scroll cannot emit
+            # another `Scrolled` message while its offset remains unchanged.
+            self.call_after_refresh(self._check_hydration_needed)
 
     async def _hydrate_messages_below(self) -> None:
         """Hydrate newer messages when scrolling down toward the tail."""
@@ -6036,6 +6134,7 @@ class DeepAgentsApp(App):
                     msg_data.id,
                     exc_info=True,
                 )
+                self._notify_hydration_failure()
                 break
 
         if hydrated_count == 0:
@@ -6046,6 +6145,9 @@ class DeepAgentsApp(App):
         self._sync_transcript_spacers(messages_container)
         chat.scroll_y = old_scroll_y
         await self._regroup_completed_tools()
+        # Re-check after layout because a boundary scroll cannot emit another
+        # `Scrolled` message while its offset remains unchanged.
+        self.call_after_refresh(self._check_hydration_below_needed)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, kept above the bottom anchors.
@@ -8789,8 +8891,8 @@ class DeepAgentsApp(App):
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
-        Single reset point so the clear paths cannot drift out of sync over the
-        ten correlated fields. Grader settings (`_rubric_model` and
+        Single reset point so the clear paths cannot drift across the correlated
+        fields. Grader settings (`_rubric_model` and
         `_rubric_max_iterations`) are intentionally left untouched — they are
         configured separately via `/rubric model` and `/rubric max-iterations`
         and survive `/rubric clear` and `/clear`.
@@ -8912,21 +9014,56 @@ class DeepAgentsApp(App):
         note: str,
         *,
         previous_status: str | None,
-    ) -> None:
-        """Mark a rubric-approved completion request complete."""
-        self._goal_status = "complete"
-        self._goal_status_note = note
-        self._pending_goal_completion_note = None
+    ) -> bool:
+        """Clear a rubric-approved goal after its completion is saved.
+
+        Returns:
+            `True` when the cleared state was persisted, or `False` when the active
+                goal was restored for retry.
+        """
+        active_goal = self._active_goal
+        goal_status = self._goal_status
+        goal_status_note = self._goal_status_note
+        active_rubric = self._active_rubric
+        pending_goal_completion_note = self._pending_goal_completion_note
+        pending_goal_objective = self._pending_goal_objective
+        pending_goal_rubric = self._pending_goal_rubric
+        next_rubric = self._next_rubric
+        last_consumed_next_rubric = self._last_consumed_next_rubric
+        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
+
+        self._clear_all_goal_rubric_state()
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._announce_goal_status_transition(previous_status)
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
+        if persisted:
+            if previous_status != "complete":
+                text = "Goal marked complete by the agent."
+                if note:
+                    text = f"{text}\n\n{note}"
+                await self._mount_message(AppMessage(text))
+            return True
+
+        # The checkpoint still contains the active goal and pending completion
+        # request. Restore that exact local state so the UI and next grading
+        # turn cannot diverge from it, and so a later sync can safely retry.
+        self._active_goal = active_goal
+        self._goal_status = goal_status
+        self._goal_status_note = goal_status_note
+        self._active_rubric = active_rubric
+        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_objective = pending_goal_objective
+        self._pending_goal_rubric = pending_goal_rubric
+        self._next_rubric = next_rubric
+        self._last_consumed_next_rubric = last_consumed_next_rubric
+        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
+        self._sync_status_rubric()
+        await self._mount_message(
+            ErrorMessage(
+                "Goal completion could not be saved, so the goal remains active "
+                "and its completion request is still pending for retry."
             )
+        )
+        return False
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
@@ -8949,6 +9086,28 @@ class DeepAgentsApp(App):
         if not self._active_goal or not note or self._goal_status == "complete":
             return False
 
+        if rubric_status == "grader_error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Acceptance-criteria grading failed because of a grader or "
+                    "infrastructure error. The goal remains active, and its completion "
+                    "request is still pending; it will be re-graded on your next turn."
+                )
+            )
+            return False
+        if rubric_status == "max_iterations_reached":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded: the iteration limit was reached "
+                "with unmet criteria. The goal remains active for resume, amendment, "
+                "retry, or clearing."
+            )
+            return False
+        if rubric_status == "failed":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded because the grader could not "
+                "evaluate the rubric. The goal remains active."
+            )
+            return False
         if rubric_status != "satisfied":
             await self._clear_pending_goal_completion(
                 "Goal completion was not recorded because the rubric was not satisfied."
@@ -8956,11 +9115,10 @@ class DeepAgentsApp(App):
             return False
 
         if self._session_state is not None and self._session_state.auto_approve:
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         action_requests = [
             {
@@ -8987,17 +9145,15 @@ class DeepAgentsApp(App):
         decision_type = decision.get("type") if isinstance(decision, dict) else None
         if decision_type == "auto_approve_all":
             await self._on_auto_approve_enabled()
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
         if decision_type == "approve":
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         reject_message = decision.get("message") if isinstance(decision, dict) else None
         if isinstance(reject_message, str) and reject_message.strip():
@@ -10478,12 +10634,7 @@ class DeepAgentsApp(App):
                         prefix="Previous thread",
                         thread_id=previous_thread_id,
                     )
-                    await self._mount_message(
-                        AppMessage(
-                            "Resume it with /threads -r"
-                            f" (or /threads -r {previous_thread_id})"
-                        )
-                    )
+                    await self._mount_message(AppMessage("Resume it with /threads -r"))
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -11678,6 +11829,7 @@ class DeepAgentsApp(App):
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
                 rubric=rubric,
+                goal_active=bool(self._active_goal),
                 blocked_goal_retry_context=blocked_goal_retry_context,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
@@ -11757,12 +11909,16 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
+        Leaves the queue untouched while the server is connecting so the
+        `ServerReady` path can resume draining against the fully initialized
+        session.
         """
         if (
             self._processing_pending
             or self._goal_state_mutating
             or not self._pending_messages
             or self._exit
+            or self._connecting
         ):
             return
 
@@ -12504,12 +12660,16 @@ class DeepAgentsApp(App):
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
         # then snapping shut. A groupable tool joins (or opens) the current
-        # step's group; a diff folds into it; anything else is a step boundary
-        # that closes the group.
+        # step's group; a diff from a groupable tool folds into it; anything
+        # else is a step boundary that closes the group.
         is_groupable_tool = (
-            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+            isinstance(widget, ToolCallMessage)
+            and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
         )
-        is_diff = isinstance(widget, DiffMessage)
+        is_groupable_diff = (
+            isinstance(widget, DiffMessage)
+            and widget._tool_name not in _TOOL_GROUP_EXCLUSIONS
+        )
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
@@ -12526,7 +12686,7 @@ class DeepAgentsApp(App):
         # folding it into the group hides it on the next frame — bouncing the
         # bottom-anchored transcript on every tool call.
         with self.batch_update():
-            if not (is_groupable_tool or is_diff):
+            if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
                 # Re-derive groups for any tools mounted outside this path
                 # (resumed history), which carry no live group.
@@ -12552,7 +12712,7 @@ class DeepAgentsApp(App):
             ):
                 if is_groupable_tool:
                     self._active_tool_group.add_member(widget)
-                elif is_diff:
+                elif is_groupable_diff:
                     self._active_tool_group.add_collapsible(widget)
 
         self._schedule_message_height_measurement(message_data.id)
@@ -12717,7 +12877,7 @@ class DeepAgentsApp(App):
                     continue  # footers are transparent to grouping
                 if isinstance(child, ToolCallMessage):
                     groupable = (
-                        child.tool_name != "ask_user"
+                        child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
                         and not child.has_class("-grouped")
                     )
@@ -12730,8 +12890,13 @@ class DeepAgentsApp(App):
                     run_collapsible.append(child)
                     continue
                 if isinstance(child, DiffMessage):
-                    # A diff belongs to the tool above it; never starts a run.
-                    if run_anchor is not None:
+                    # A diff belongs to the tool above it and never starts a
+                    # run: normally it folds into the open run, but a diff from
+                    # an excluded tool (e.g. edit_file) stays standalone and
+                    # ends the run so the edit and its diff remain visible.
+                    if child._tool_name in _TOOL_GROUP_EXCLUSIONS:
+                        await flush()
+                    elif run_anchor is not None:
                         run_collapsible.append(child)
                     continue
                 # Assistant text, notices, an existing summary, etc. end the run.
@@ -12811,6 +12976,7 @@ class DeepAgentsApp(App):
             widget.id,
             tool_status=data.tool_status,
             tool_output=data.tool_output,
+            tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
         )
@@ -13006,6 +13172,7 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        self._warn_dropped_mcp_reconnect()
         self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
@@ -13054,12 +13221,41 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
 
-    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+    def _warn_dropped_mcp_reconnect(self) -> None:
+        """Warn when an interrupt discards a queued MCP reconnect.
+
+        `_start_mcp_login` -> `_prompt_mcp_reconnect` can queue the server
+        restart while a run is in flight, telling the user it will fire once
+        the task completes. An interrupt (`Ctrl+C`, `Esc`, `/clear`) drops that
+        queued action before it drains, so that promise no longer holds. The
+        token is already on disk and the pending banner / `/mcp reconnect`
+        state survive the discard, so recovery is one command away — surface
+        that rather than letting the reconnect lapse silently.
+        """
+        if not any(a.kind == "mcp_reconnect" for a in self._deferred_actions):
+            return
+        self.notify(
+            "Cancelled the queued MCP reconnect. Run `/mcp reconnect` to load "
+            "the new tools when ready.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def _cancel_worker(
+        self, worker: Worker[None] | None, *, abort_pending_reconnect: bool = True
+    ) -> None:
         """Discard the message queue and cancel an active worker.
 
         Args:
             worker: The worker to cancel.
+            abort_pending_reconnect: When `True` (the interrupt default), warn
+                if the discarded queue held a promised MCP reconnect. Pass
+                `False` from paths that fulfill the reconnect another way (a
+                full server restart) so the notice does not misfire.
         """
+        if abort_pending_reconnect:
+            self._warn_dropped_mcp_reconnect()
         self._discard_queue()
         if worker is not None:
             worker.cancel()
@@ -15938,8 +16134,11 @@ class DeepAgentsApp(App):
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
-        No-op (with an inline notice) when nothing is pending so the
-        command is safe to run idempotently. `force=True` bypasses the
+        Restarts immediately when a login is pending and the session is
+        idle; when an agent or shell task is running the restart is queued
+        via `DeferredAction(kind="mcp_reconnect")` and drained once the task
+        completes. No-op (with an inline notice) when nothing is pending so
+        the command is safe to run idempotently. `force=True` bypasses the
         no-op guard via a confirmation modal — the escape hatch for
         stale-cache or externally-edited-config cases where the server
         needs a fresh load even though no login is queued in this
@@ -15950,6 +16149,22 @@ class DeepAgentsApp(App):
                 if no MCP login is queued.
         """
         if self._pending_mcp_reconnect:
+            if self._agent_running or self._shell_running:
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(
+                            "pending login"
+                        ),
+                    ),
+                )
+                self.notify(
+                    "The server will reconnect once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             await self._restart_server_for_mcp_refresh("pending login")
             return
         if not force:
@@ -16334,10 +16549,13 @@ class DeepAgentsApp(App):
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
         to restart), or while an agent switch is in progress. When the local
-        server is still connecting or the session is mid-run, the login is
-        queued via `_defer_action` and runs once the server is ready and the
-        user is idle. Config resolution and server-name validation happen
-        later, in `_run_mcp_login_worker`.
+        server is still connecting, the login is queued via `_defer_action`
+        and runs once the server is ready. An active agent or shell run does
+        *not* defer login: the OAuth handshake and token write never touch the
+        running server, so they proceed concurrently; only the follow-up
+        server restart is queued (see `_prompt_mcp_reconnect`). Config
+        resolution and server-name validation happen later, in
+        `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -16389,20 +16607,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running or self._shell_running:
-            self.notify(
-                "MCP login will start once the current task completes.",
-                timeout=5,
-                markup=False,
-            )
-            self._defer_action(
-                DeferredAction(
-                    kind="mcp_login",
-                    execute=lambda: self._run_mcp_login_worker(server_name),
-                ),
-            )
-            return
-
+        # An active agent/shell run is intentionally not a defer gate: the
+        # OAuth handshake and on-disk token write are independent of the
+        # running server, so login proceeds immediately and only the restart
+        # is queued once the task finishes (`_prompt_mcp_reconnect`).
         self.run_worker(
             self._run_mcp_login_worker(server_name),
             exclusive=False,
@@ -16593,6 +16801,30 @@ class DeepAgentsApp(App):
                 choice = "later"
 
         if choice == "reconnect":
+            if self._agent_running or self._shell_running:
+                # The restart tears down the server the active run lives on,
+                # so honor the user's "reconnect now" intent without killing
+                # the in-flight generation: queue the restart to fire once the
+                # task finishes (drained via `_maybe_drain_deferred`). The
+                # token is already on disk, so mark the reconnect pending for
+                # `/mcp reconnect` and the splash banner in the meantime.
+                self._pending_mcp_login_reconnect = True
+                self._sync_pending_mcp_reconnect()
+                self._apply_optimistic_mcp_login_pending_state(server_name)
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(server_name),
+                    ),
+                )
+                self.notify(
+                    f"Logged in to {server_name!r}. The server will reconnect "
+                    "once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
@@ -16642,6 +16874,24 @@ class DeepAgentsApp(App):
                     timeout=8,
                     markup=False,
                 )
+
+    async def _run_deferred_mcp_reconnect(self, server_name: str) -> None:
+        """Restart for MCP token refresh once the busy state clears.
+
+        Queued by `_prompt_mcp_reconnect` when the user accepts the restart
+        while an agent or shell task is still running — restarting then would
+        tear down the server the active run depends on. Re-checks the pending
+        flag so a manual `/mcp reconnect` in the interim isn't followed by a
+        redundant restart. (The queue is in-memory only, so a relaunch never
+        reaches this path — the fresh process loads the token on startup.)
+
+        Args:
+            server_name: Server whose login triggered the reconnect.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        self._clear_mcp_login_reconnect_banner_counts(server_name)
+        await self._restart_server_for_mcp_refresh(server_name)
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -16971,9 +17221,11 @@ class DeepAgentsApp(App):
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently.
+        # fire against the freshly respawned agent silently. This restart *is*
+        # the reconnect, so suppress the dropped-reconnect warning: the respawn
+        # below reloads every on-disk MCP token regardless.
         if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
+            self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
             self._agent_running = False
         else:
             self._discard_queue()

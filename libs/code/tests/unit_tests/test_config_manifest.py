@@ -21,6 +21,7 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
+    CURSOR_STYLE_DEFAULT,
     NON_OPTION_ENV_VARS,
     ConfigOption,
     OptionKind,
@@ -79,6 +80,68 @@ def test_option_keys_unique() -> None:
     """Manifest keys must be unique so `config get` lookups are unambiguous."""
     keys = option_keys()
     assert len(keys) == len(set(keys))
+
+
+def test_memory_auto_save_defaults_enabled(monkeypatch) -> None:
+    """`memory.auto_save` resolves to enabled when nothing overrides it."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_memory_auto_save_env_disables(monkeypatch) -> None:
+    """A falsy `DEEPAGENTS_CODE_MEMORY_AUTO_SAVE` disables auto-save."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "0")
+    value, _ = resolve_scalar(option, toml_data={})
+    assert value is False
+
+
+def test_memory_auto_save_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env override disables automatic memory saving."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "")
+    assert resolve_scalar(option, toml_data={}) == (
+        False,
+        f"env ({_env_vars.MEMORY_AUTO_SAVE})",
+    )
+
+
+def test_memory_auto_save_toml_disables(monkeypatch) -> None:
+    """`[memory].auto_save = false` in config.toml disables auto-save."""
+    option = get_option("memory.auto_save")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    value, _ = resolve_scalar(option, toml_data={"memory": {"auto_save": False}})
+    assert value is False
+
+
+def test_is_memory_auto_save_enabled_reads_env(monkeypatch) -> None:
+    """The `config.is_memory_auto_save_enabled` helper honors the env override."""
+    from deepagents_code.config import is_memory_auto_save_enabled
+
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    assert is_memory_auto_save_enabled() is True
+
+    monkeypatch.setenv(_env_vars.MEMORY_AUTO_SAVE, "false")
+    assert is_memory_auto_save_enabled() is False
+
+
+def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[memory].auto_save` from `config.toml` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_memory_auto_save_enabled
+
+    monkeypatch.delenv(_env_vars.MEMORY_AUTO_SAVE, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"memory": {"auto_save": False}},
+    )
+    assert is_memory_auto_save_enabled() is False
 
 
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
@@ -911,6 +974,64 @@ def test_resolve_bool_env_uses_truthy_semantics(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={})[0] is True
     monkeypatch.setenv(opt.env_var, "0")
     assert resolve_scalar(opt, toml_data={})[0] is False
+
+
+def test_cursor_style_option_definition() -> None:
+    """Cursor style supports env and config.toml and defaults to a block."""
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    assert opt.kind is OptionKind.CURSOR_STYLE_DELEGATE
+    assert opt.default == CURSOR_STYLE_DEFAULT
+    assert opt.toml_keys == ("ui", "cursor_style")
+    assert opt.env_var == _env_vars.CURSOR_STYLE
+
+
+def test_resolve_cursor_style_from_env(monkeypatch, caplog) -> None:
+    """A valid env value wins; an invalid value falls through to config.toml."""
+    import logging
+
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    toml_data = {"ui": {"cursor_style": "underline"}}
+
+    monkeypatch.setenv(_env_vars.CURSOR_STYLE, "block")
+    assert resolve_scalar(opt, toml_data=toml_data) == (
+        "block",
+        f"env ({_env_vars.CURSOR_STYLE})",
+    )
+
+    monkeypatch.setenv(_env_vars.CURSOR_STYLE, "bar")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        assert resolve_scalar(opt, toml_data=toml_data) == (
+            "underline",
+            "config.toml",
+        )
+    assert any(
+        _env_vars.CURSOR_STYLE in record.getMessage() for record in caplog.records
+    )
+
+
+def test_resolve_cursor_style_from_toml(caplog) -> None:
+    """Only supported cursor styles are accepted from config.toml."""
+    import logging
+
+    opt = get_option("display.cursor_style")
+    assert opt is not None
+    assert resolve_scalar(opt, toml_data={"ui": {"cursor_style": "underline"}}) == (
+        "underline",
+        "config.toml",
+    )
+
+    for raw in ("bar", 1):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            value, source = resolve_scalar(opt, toml_data={"ui": {"cursor_style": raw}})
+        assert (value, source) == (CURSOR_STYLE_DEFAULT, "default")
+        assert any(
+            "[ui].cursor_style" in record.getMessage() for record in caplog.records
+        )
+
+    assert resolve_scalar(opt, toml_data={}) == (CURSOR_STYLE_DEFAULT, "default")
 
 
 def test_collapse_pastes_default_enabled() -> None:

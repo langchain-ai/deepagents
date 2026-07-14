@@ -56,6 +56,8 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _apply_grep_max_count,
+    _method_accepts_max_count,
     _resolve_backend,
     _supports_delete,
     execute_accepts_timeout,
@@ -457,6 +459,36 @@ def _filter_grep_matches_by_permission(
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
+def _grep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `grep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "grep"):
+        result = backend.grep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = backend.grep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
+
+
+async def _agrep_backend(
+    backend: BackendProtocol,
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None,
+) -> GrepResult:
+    """Call `agrep` without breaking backends that use the previous signature."""
+    if _method_accepts_max_count(type(backend), "agrep"):
+        result = await backend.agrep(pattern, path=path, glob=glob, max_count=max_count)
+    else:
+        result = await backend.agrep(pattern, path=path, glob=glob)
+    return _apply_grep_max_count(result, max_count)
+
+
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
@@ -467,7 +499,7 @@ def _format_grep_tool_result(
     """Format a backend grep result for the tool boundary.
 
     Size-truncation is applied to the match body here, before any note is
-    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    appended, so a trailing `GREP_TRUNCATION_NOTE` survives instead of being
     sliced off by an outer `truncate_if_too_long` at the call site. Callers
     should use the returned content as-is rather than re-truncating it.
 
@@ -490,7 +522,7 @@ def _format_grep_tool_result(
         return f"{error}\n\nPartial matches:\n{formatted}", "error"
     notes: list[str] = []
     if result.truncated:
-        notes.append(SEARCH_TRUNCATION_NOTE)
+        notes.append(GREP_TRUNCATION_NOTE)
     if not result.truncated and not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
         notes.append(hint)
     if notes:
@@ -528,16 +560,57 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
     """Render glob paths for the tool boundary, appending the truncation note when partial."""
     content = _format_file_paths(paths)
     if truncated:
-        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+        return f"{content}\n\n{GLOB_TRUNCATION_NOTE}"
     return content
+
+
+def _remaining_lines_notice(read_result: ReadResult) -> str:
+    """Render the read pagination notice when the backend returned a partial window.
+
+    Args:
+        read_result: Backend read result carrying the pagination metadata
+            (`start_line`, `end_line`, `next_offset`, `total_lines`).
+
+    Returns:
+        A model-facing notice describing the window that was read and where to
+            resume, or an empty string when no window metadata is present or the
+            window already reached the end of the file (nothing more to read).
+    """
+    start_line = read_result.start_line
+    end_line = read_result.end_line
+    next_offset = read_result.next_offset
+    if start_line is None or end_line is None or next_offset is None:
+        return ""
+
+    total_lines = read_result.total_lines
+    read_count = end_line - start_line + 1
+    read_unit = "line" if read_count == 1 else "lines"
+    if total_lines is None:
+        return f"\n\n[Read {read_count} {read_unit} (lines {start_line}-{end_line}). More lines remain from offset {next_offset}.]"
+    if end_line >= total_lines:
+        return ""
+
+    remaining = total_lines - end_line
+    remaining_unit = "line" if remaining == 1 else "lines"
+    return (
+        f"\n\n[Read {read_count} {read_unit} "
+        f"(lines {start_line}-{end_line} of {total_lines} total). "
+        f"{remaining} {remaining_unit} remaining from offset {next_offset}.]"
+    )
 
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
-LINE_NUMBER_WIDTH = 6
-SEARCH_TRUNCATION_NOTE = (
-    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
-    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
+GREP_TRUNCATION_NOTE = (
+    "Note: the search stopped early (it hit its time limit or the maximum match count). "
+    "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
+    "narrower path), or raise max_count, to see the rest."
+)
+# Glob has no match-count cap and no `max_count` argument, so its note names only
+# the time/size limit and omits the (inapplicable) "raise max_count" remedy.
+GLOB_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The paths above are valid but "
+    "incomplete. Narrow the search (a more specific pattern or a narrower path) to see the rest."
 )
 
 
@@ -572,6 +645,107 @@ READ_FILE_TRUNCATION_MSG = (
 # Using 4 chars per token as a conservative approximation (actual ratio varies by content)
 # This errs on the high side to avoid premature eviction of content that might fit
 NUM_CHARS_PER_TOKEN = 4
+
+
+def _truncate_paginated_read(
+    content: str,
+    file_path: str,
+    read_result: ReadResult,
+    token_limit: int | None,
+) -> str:
+    """Truncate a paginated read without skipping undisplayed source lines.
+
+    The backend computes the pagination notice from the full window it
+    returned, but the char budget may drop trailing rows from what the model
+    actually sees. Appending the backend's notice verbatim would then advertise
+    a `next_offset` past those dropped lines, so a re-read would silently skip
+    them. This recomputes the notice from the last *complete* rendered row that
+    still fits, and falls back to the size warning alone (no stale offset) when
+    not even one full source line fits.
+
+    Args:
+        content: Line-numbered content produced by
+            `format_content_with_line_numbers` (a marker followed by two spaces
+            and the source content).
+        file_path: Path used to format the truncation message.
+        read_result: Backend read result carrying the window metadata; the
+            adjusted `next_offset` is derived from its 1-indexed line range.
+        token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
+            falsy, content is returned with its notice untouched.
+
+    Returns:
+        The (possibly truncated) content with a notice that never overstates
+            which source lines were shown.
+
+    Examples:
+        If the backend returns source lines 11-20 with `next_offset=20`, but
+        the budget fits only through line 14, the returned notice reports lines
+        11-14 and tells the caller to resume from offset 14 rather than 20.
+
+        A long source line may be rendered as rows `14` and `14.1`. If the
+        budget fits row `14` but not `14.1`, neither row is retained: the notice
+        reports line 13 as the last displayed line and resumes from offset 13.
+    """
+    notice = _remaining_lines_notice(read_result)
+    if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
+        return content + notice
+
+    truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
+    threshold = NUM_CHARS_PER_TOKEN * token_limit
+    if read_result.start_line is not None and read_result.end_line is not None:
+        # Build the safe places where the content can be truncated. A long source
+        # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
+        # at every newline could keep only part of that source line. `position`
+        # tracks each rendered row's end in `content`; comparing the integer part
+        # of adjacent row markers records a boundary only after the final row for
+        # a source line. The loop below uses these boundaries to find the latest
+        # complete source line that fits alongside the truncation message and the
+        # pagination notice.
+        rows = content.split("\n")
+        position = 0
+        boundaries: list[tuple[int, int]] = []
+        for index, row in enumerate(rows):
+            position += len(row)
+            marker = row.lstrip().partition("  ")[0].partition(".")[0]
+            source_line = int(marker)
+            # Rows numbered past the window's last source line are not file
+            # content: a byte-capped backend page appends its own truncation
+            # banner (preceded by a blank line), which `format_content_with_line_numbers`
+            # then numbers as `end_line + 1`, `end_line + 2`, .... Stop before
+            # them so a banner row is never chosen as a boundary — resuming from
+            # its inflated number would overshoot `total_lines` and skip real
+            # lines. Rows are numbered monotonically, so the first out-of-range
+            # row means the rest are banner too.
+            if source_line > read_result.end_line:
+                break
+            next_source_line = None
+            if index + 1 < len(rows):
+                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
+                next_source_line = int(next_marker)
+            if next_source_line != source_line:
+                boundaries.append((position, source_line))
+            position += 1
+
+        # Only advertise source lines whose complete rendered rows fit. If the
+        # byte cut landed partway through a row, resuming after that row would
+        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
+        # after the last one shown, which for a 1-indexed `end_line` is exactly
+        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
+        for boundary, end_line in reversed(boundaries):
+            adjusted_result = ReadResult(
+                total_lines=read_result.total_lines,
+                start_line=read_result.start_line,
+                end_line=end_line,
+                next_offset=end_line,
+            )
+            adjusted_notice = _remaining_lines_notice(adjusted_result)
+            if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
+                return content[:boundary] + truncation_msg + adjusted_notice
+
+    # No complete source line fits. Keep the size warning but omit the
+    # backend's stale pagination offset.
+    max_content_length = max(0, threshold - len(truncation_msg))
+    return content[:max_content_length] + truncation_msg
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -747,6 +921,16 @@ class GrepSchema(BaseModel):
         description=GREP_OUTPUT_MODE_DESCRIPTION,
     )
 
+    max_count: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional cap on the total number of matches returned across all files. "
+            "Leave unset to use the configured default. When the cap is hit, results "
+            "are truncated and a note says so; narrow the pattern or path to see the rest."
+        ),
+    )
+
 
 class ExecuteSchema(BaseModel):
     """Input schema for the `execute` tool."""
@@ -775,7 +959,7 @@ Usage:
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
     - Omit `limit` to use the default window; increase it only when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
-- Results are returned using cat -n format, with line numbers starting at 1
+- Results are returned with line numbers starting at the first line read (`offset` + 1, so 1 by default), followed by two spaces and the source content
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 - If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.
@@ -1241,6 +1425,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
@@ -1259,6 +1444,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            grep_max_count: Default total cap on the number of matches the
+                `grep` tool returns across all files.
+
+                Defaults to `1000`, which bounds memory use and context size on
+                very large repositories. The model can override it per call via
+                the tool's `max_count` argument. Set to `None` to disable the
+                default cap (return every match unless a per-call cap is given).
             tools: Allowlist of tool names to expose to the model.
                 ``"all"` indicates all tools. If unset, defaults to `"all"`.
                 Pass a list containing any of `"ls"`, `"read_file"`,
@@ -1280,6 +1472,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        if grep_max_count is not None and grep_max_count <= 0:
+            msg = f"grep_max_count must be positive or None, got {grep_max_count}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
@@ -1313,6 +1508,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._grep_max_count = grep_max_count
         if isinstance(tools, list):
             self._enabled_tools: frozenset[str] | None = frozenset(tools)
         elif tools == "all":
@@ -1590,12 +1786,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            content = format_content_with_line_numbers(content, start_line=offset + 1)
+            content = format_content_with_line_numbers(content, start_line=read_result.start_line or offset + 1)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate(content, validated_path),
+                content=_truncate_paginated_read(content, validated_path, read_result, token_limit),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",
@@ -2131,6 +2327,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -2151,7 +2348,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
@@ -2175,6 +2373,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str | None = None,
             glob: str | None = None,
             output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
+            max_count: int | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -2195,7 +2394,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         status="error",
                     )
             resolved_backend = self._get_backend(runtime)
-            grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
+            effective_max_count = max_count if max_count is not None else self._grep_max_count
+            grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(

@@ -21,6 +21,8 @@ from deepagents_code.tui.widgets.ask_user import (
 )
 
 if TYPE_CHECKING:
+    import pytest
+
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 
 
@@ -230,6 +232,38 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
+
+    async def test_text_answer_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in a text answer expands in the submitted value."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp([{"question": "Paste config?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            big = "key=value\n" * 5
+            await text_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert text_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
 
     async def test_text_input_soft_wraps_long_answers(self) -> None:
         """Soft-wrap is enabled so long answers wrap visually without newlines."""

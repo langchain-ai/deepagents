@@ -17,7 +17,10 @@ from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import ImageData, create_multimodal_content
-from deepagents_code.tui.widgets import chat_input as chat_input_module
+from deepagents_code.tui.widgets import (
+    _paste_textarea as paste_textarea_module,
+    chat_input as chat_input_module,
+)
 from deepagents_code.tui.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.tui.widgets.chat_input import (
     ChatInput,
@@ -3092,8 +3095,10 @@ class TestDroppedImagePaste:
         # This test exercises burst parsing behavior, not scheduler precision.
         # CI workers can exceed the default 30ms inter-key gap, which would
         # flush mid-sequence and make the test flaky.
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 1.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
 
         img_path = tmp_path / "vscode-burst.png"
         from PIL import Image
@@ -4306,9 +4311,9 @@ class TestPasteBurstEnterSuppression:
         """A fast keystroke run followed by enter inserts a newline."""
         # Widen the burst gap so wall-clock delays between pilot.press calls on
         # slow CI runners still register as a single rapid burst.
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
         monkeypatch.setattr(
-            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
         )
 
         app = _RecordingApp()
@@ -4331,7 +4336,7 @@ class TestPasteBurstEnterSuppression:
     ) -> None:
         """Deliberate typing (no burst) keeps enter as submit."""
         # Force every inter-key gap to exceed the burst threshold.
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
 
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -4351,9 +4356,9 @@ class TestPasteBurstEnterSuppression:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Single-line paste followed by manual enter still submits."""
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
         monkeypatch.setattr(
-            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
         )
 
         app = _RecordingApp()
@@ -4365,10 +4370,10 @@ class TestPasteBurstEnterSuppression:
             ta.text = "abc"
             now = chat_input_module.time.monotonic()
             ta._paste_burst_last_key_time = (
-                now - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS - 0.01
+                now - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS - 0.01
             )
             ta._paste_burst_window_until = (
-                now + chat_input_module._PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
+                now + paste_textarea_module.PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
             )
 
             await ta._on_key(events.Key("enter", None))
@@ -4382,9 +4387,9 @@ class TestPasteBurstEnterSuppression:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A suppressed enter extends the window so trailing lines stay grouped."""
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
         monkeypatch.setattr(
-            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 0.12
         )
 
         app = _RecordingApp()
@@ -4413,9 +4418,9 @@ class TestPasteBurstEnterSuppression:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A delayed second enter in a blank-line paste does not submit."""
-        monkeypatch.setattr(chat_input_module, "_PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.03)
         monkeypatch.setattr(
-            chat_input_module, "_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
         )
 
         app = _RecordingApp()
@@ -4436,7 +4441,7 @@ class TestPasteBurstEnterSuppression:
 
             ta._paste_burst_last_key_time = (
                 chat_input_module.time.monotonic()
-                - chat_input_module._PASTE_BURST_CHAR_GAP_SECONDS
+                - paste_textarea_module.PASTE_BURST_CHAR_GAP_SECONDS
                 - 0.01
             )
             await ta._on_key(events.Key("enter", None))

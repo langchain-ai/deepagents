@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -15,6 +16,9 @@ from deepagents_code.tui.widgets.goal_review import (
     GoalReviewResult,
     GoalReviewTextArea,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class _GoalReviewTestApp(App[None]):
@@ -190,6 +194,39 @@ class TestGoalReviewMenu:
                 "type": "rejected",
                 "message": "include docs and migration notes",
             }
+
+    async def test_edit_expands_collapsed_paste_on_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in the editor expands in the submitted criteria."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_edit()
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+            text_input.text = ""
+            text_input.focus()
+
+            big = "- crit\n" * 5
+            await text_input._on_paste(events.Paste(big))
+            await pilot.pause()
+            assert text_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+
+            assert await future == {"type": "edited", "criteria": big.strip()}
 
     async def test_keypress_accept_resolves_accepted(self) -> None:
         """The accept quick-key resolves through the real binding dispatch."""

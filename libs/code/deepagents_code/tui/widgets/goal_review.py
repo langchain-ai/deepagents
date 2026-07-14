@@ -331,7 +331,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as revised criteria."""
         if self._edit_input is None:
             return
-        criteria = self._edit_input.text.strip()
+        criteria = self._edit_input.submitted_value.strip()
         if not criteria:
             self._hint_empty_submission("criteria")
             return
@@ -341,7 +341,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as regeneration feedback."""
         if self._edit_input is None:
             return
-        message = self._edit_input.text.strip()
+        message = self._edit_input.submitted_value.strip()
         if not message:
             self._hint_empty_submission("feedback")
             return

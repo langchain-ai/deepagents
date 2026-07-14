@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Static, TextArea
+from textual.widgets import Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
 ResultT = TypeVar("ResultT")
 
@@ -76,8 +78,14 @@ class InlinePromptCompletion(Generic[ResultT]):
         return True
 
 
-class InlinePromptTextArea(TextArea):
-    """Soft-wrapping text input shared by inline prompts."""
+class InlinePromptTextArea(CollapsingPasteTextArea):
+    """Soft-wrapping text input shared by inline prompts.
+
+    Matches the primary chat input's paste handling: a multi-line paste stays
+    grouped instead of submitting on the first embedded newline, and a large
+    paste collapses into a compact `[Pasted text #N]` placeholder that expands
+    back to the full text via `submitted_value`.
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding(
@@ -109,7 +117,8 @@ class InlinePromptTextArea(TextArea):
 
             Args:
                 text_area: Input that emitted the submission.
-                value: Complete input text at submission time.
+                value: Complete input text at submission time, with any
+                    collapsed-paste placeholders expanded to their full content.
             """
             super().__init__()
             self.text_area = text_area
@@ -127,15 +136,39 @@ class InlinePromptTextArea(TextArea):
         self.show_line_numbers = False
         self.soft_wrap = True
 
-    def action_insert_newline(self) -> None:
-        """Insert a newline at the cursor."""
-        self.insert("\n")
-
     async def _on_key(self, event: events.Key) -> None:
+        now = time.monotonic()
+
+        # A paste replayed as rapid key events (no bracketed paste) is buffered
+        # so it can be collapsed and kept grouped rather than submitting on the
+        # first embedded newline.
+        if await self._absorb_key_into_burst(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        if self._maybe_start_burst(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        self._track_burst_run(event, now)
+
+        if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
+            event.prevent_default()
+            event.stop()
+            return
+
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            self.post_message(self.Submitted(self, self.text))
+            # Keep a paste's embedded newlines from submitting mid-stream.
+            if self._consume_enter_as_burst_newline(now):
+                return
+            self.post_message(self.Submitted(self, self.submitted_value))
+            return
+
+        await super()._on_key(event)
 
 
 class InlinePromptOption(Static):

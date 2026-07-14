@@ -81,7 +81,7 @@ APP_SLUG=<app-slug>
 gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
 ```
 
-Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `DCODE_RELEASE_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
+Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `DCODE_RELEASE_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
 
 | `DCODE_RELEASE_MODEL` provider | Environment secret name |
 | ------------------------------ | ----------------------- |

@@ -1,0 +1,48 @@
+libs/code/tests/unit_tests/test_agent.py
+  s_929b263abfaa1f::t_efedca583a990e 3300-3303,3342-3348,3350-3401
+  s_929b263abfaa1f::t_4b51b1edbeb7a6 3402
+libs/code/deepagents_code/_glm_5p2_profile.py
+  s_929b263abfaa1f::t_28fccfbe63f411 44
+  s_929b263abfaa1f::t_87bbfbb3c6364d 411-417
+  s_929b263abfaa1f::t_ab80368ee6fefe 93,98
+  s_929b263abfaa1f::t_3881147501a32c 437
+  s_929b263abfaa1f::t_757221ef3498a2 424-430,435-436,438-440,442-444
+  s_929b263abfaa1f::t_3b4c5ed00c1dd9 321-323,327-334,336-340,343-407
+  s_929b263abfaa1f::t_f0596ab9fb6530 83
+  s_929b263abfaa1f::t_2e5310d9a6035a 324-326,335,341-342
+  s_929b263abfaa1f::t_0f07c647b0b19d 189
+libs/code/tests/unit_tests/test_glm_5p2_profile.py
+  s_929b263abfaa1f::t_3881147501a32c 198
+  s_929b263abfaa1f::t_19037f2afd7439 73,93,96-97
+  s_929b263abfaa1f::t_305f0483abe740 621,623-625,628,630,634,642,652
+  s_929b263abfaa1f::t_113954871a7d31 29-32
+  s_929b263abfaa1f::t_de0f67ad271d1d 171-172,180-181,194-197,199-218
+  s_929b263abfaa1f::t_b2b128bcca7ac5 609
+  s_929b263abfaa1f::t_a9e50990033386 556,575,598,602,617,645
+  s_929b263abfaa1f::t_cfb8e3ad9f9f39 224-225,228
+  s_929b263abfaa1f::t_0e4079a13bae57 555,566
+  s_929b263abfaa1f::t_2afec047b7b71f 219-220
+libs/code/deepagents_code/agent.py
+  s_929b263abfaa1f::t_9c24b2e0749a3e 1586-1589
+  s_929b263abfaa1f::t_2fd7e7c9648e88 1513-1517,1519-1520
+  s_929b263abfaa1f::t_d16a82cd9b8f33 1358-1361
+  s_929b263abfaa1f::t_8389e3c8500947 72
+  s_929b263abfaa1f::t_a4fd3285ce8a24 1518
+  s_929b263abfaa1f::t_12caa80813cfe6 1584
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "22ae41c050a1234f1d9258ae3cc8ee53155ff5b4",
+  "prompts": {},
+  "sessions": {
+    "s_929b263abfaa1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ed6b94c6-592a-4233-a69b-b5d57357062e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

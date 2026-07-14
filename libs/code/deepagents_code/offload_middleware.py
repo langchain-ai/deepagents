@@ -45,6 +45,45 @@ is recognized. Because the scan is bounded to messages produced by the current
 Only the *prefix position* is load-bearing; wording after it is free to change.
 """
 
+_OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
+
+
+def _offload_seed_message_id(tool_call_id: str) -> str:
+    """Return the stable message ID for a forced `/offload` tool call.
+
+    Args:
+        tool_call_id: The seeded `compact_conversation` tool call ID.
+
+    Returns:
+        The synthetic assistant message ID associated with the tool call.
+    """
+    return f"{_OFFLOAD_SEED_ID_PREFIX}{tool_call_id}"
+
+
+def _without_offload_seed(messages: list[Any], tool_call_id: str) -> list[Any]:
+    """Exclude the synthetic `/offload` seed from retention calculations.
+
+    Args:
+        messages: Effective conversation messages including the forced tool call.
+        tool_call_id: The seeded `compact_conversation` tool call ID.
+
+    Returns:
+        Conversation messages without the matching synthetic assistant message.
+    """
+    if not tool_call_id:
+        return messages
+    seed_id = _offload_seed_message_id(tool_call_id)
+    return [
+        message
+        for message in messages
+        if (
+            message.get("id")
+            if isinstance(message, dict)
+            else getattr(message, "id", None)
+        )
+        != seed_id
+    ]
+
 
 def _runtime_model_config(
     runtime: ToolRuntime,
@@ -188,6 +227,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             messages = runtime.state.get("messages", [])
             event = runtime.state.get("_summarization_event")
             effective = summarization._apply_event_to_messages(messages, event)
+            effective = _without_offload_seed(effective, tool_call_id)
             cutoff = summarization._determine_cutoff_index(effective)
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)
@@ -222,6 +262,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             messages = runtime.state.get("messages", [])
             event = runtime.state.get("_summarization_event")
             effective = summarization._apply_event_to_messages(messages, event)
+            effective = _without_offload_seed(effective, tool_call_id)
             cutoff = summarization._determine_cutoff_index(effective)
             if cutoff == 0:
                 return self._nothing_to_compact(tool_call_id)

@@ -1065,12 +1065,17 @@ class TestFallbackOffloadBackend:
     per-user directory.
     """
 
-    def test_fallback_root_prefers_home(
+    def test_fallback_root_prefers_home_and_tightens_permissions(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`~/.deepagents` is preferred when it can be written."""
+        """`~/.deepagents` is preferred and made private when writable."""
+        root = tmp_path / ".deepagents"
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert _offload_fallback_root() == tmp_path / ".deepagents"
+
+        assert _offload_fallback_root() == root
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
     def test_fallback_root_uses_temp_when_home_is_read_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

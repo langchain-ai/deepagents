@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
@@ -174,6 +174,58 @@ class TestCLICompactionMiddleware:
         assert "_summarization_event" not in result.update
         summarization._acreate_summary.assert_not_awaited()
         assert "Nothing to compact" in result.update["messages"][0].content
+
+    async def test_async_force_excludes_seed_from_retention_cutoff(self) -> None:
+        """The async cutoff is calculated from the pre-seed conversation."""
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.side_effect = lambda messages: (
+            0 if len(messages) == 6 else 1
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        conversation = [HumanMessage(str(index)) for index in range(6)]
+        seed = AIMessage(
+            content="",
+            id="offload-seed-tool-call",
+            tool_calls=[
+                {
+                    "name": "compact_conversation",
+                    "args": {"force": True},
+                    "id": "tool-call",
+                }
+            ],
+        )
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [*conversation, seed]}
+        runtime.tool_call_id = "tool-call"
+
+        result = await middleware._arun_forced_compact(runtime)
+
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        summarization._determine_cutoff_index.assert_called_once_with(conversation)
+        summarization._partition_messages.assert_not_called()
+
+    def test_sync_force_excludes_serialized_seed_from_retention_cutoff(self) -> None:
+        """The sync cutoff also ignores a serialized synthetic seed."""
+        summarization = self._summarization()
+        summarization._determine_cutoff_index.side_effect = lambda messages: (
+            0 if len(messages) == 6 else 1
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        conversation = [HumanMessage(str(index)) for index in range(6)]
+        seed = {"id": "offload-seed-tool-call", "type": "ai", "content": ""}
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [*conversation, seed]}
+        runtime.tool_call_id = "tool-call"
+
+        result = middleware._run_forced_compact(runtime)
+
+        assert result.update is not None
+        assert "_summarization_event" not in result.update
+        summarization._determine_cutoff_index.assert_called_once_with(conversation)
+        summarization._partition_messages.assert_not_called()
 
     async def test_forced_compact_error_when_summary_fails(self) -> None:
         """A summary failure returns the failure prefix and does not compact."""

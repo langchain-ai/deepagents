@@ -158,7 +158,7 @@ def _offload_fallback_root() -> Path:
         return path
 
     try:
-        return _prepare(Path.home() / ".deepagents")
+        return _prepare(Path.home() / ".deepagents", private=True)
     except (RuntimeError, OSError):
         logger.debug(
             "User data directory is not writable; using temporary offload storage",

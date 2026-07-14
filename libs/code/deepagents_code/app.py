@@ -11791,7 +11791,10 @@ class DeepAgentsApp(App):
         from langgraph.types import Command
 
         from deepagents_code.config import settings
-        from deepagents_code.offload_middleware import COMPACTION_FAILURE_PREFIX
+        from deepagents_code.offload_middleware import (
+            COMPACTION_FAILURE_PREFIX,
+            _offload_seed_message_id,
+        )
 
         agent = self._agent
         if agent is None:
@@ -11801,7 +11804,7 @@ class DeepAgentsApp(App):
         # Stable message id so a failed run can address the seed for removal.
         seed = AIMessage(
             content="",
-            id=f"offload-seed-{tool_call_id}",
+            id=_offload_seed_message_id(tool_call_id),
             tool_calls=[
                 {
                     "name": "compact_conversation",

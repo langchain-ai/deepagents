@@ -16,7 +16,11 @@ from deepagents_code.plugins import (
     set_installed_plugin_enabled,
     uninstall_plugin,
 )
-from deepagents_code.plugins.marketplace import MarketplaceError
+from deepagents_code.plugins.marketplace import (
+    MarketplaceError,
+    redact_marketplace_source,
+    redact_urls_in_text,
+)
 from deepagents_code.plugins.store import load_marketplace_records
 
 
@@ -170,8 +174,12 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
                 {
                     "name": record.name,
                     "source_type": record.source_type,
-                    "source": record.source,
-                    "install_location": record.install_location,
+                    "source": redact_marketplace_source(record.source),
+                    "install_location": (
+                        record.install_location
+                        if record.source_type in {"directory", "file"}
+                        else "<managed cache>"
+                    ),
                 }
                 for record in records.values()
             ]
@@ -191,7 +199,11 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             try:
                 marketplace = add_marketplace_source(args.source)
             except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
-                text = f"Failed to add marketplace {args.source}: {exc}"
+                source = redact_marketplace_source(args.source)
+                text = (
+                    f"Failed to add marketplace {source}: "
+                    f"{redact_urls_in_text(str(exc))}"
+                )
                 print(text)  # noqa: T201
                 raise SystemExit(1) from exc
             text = (

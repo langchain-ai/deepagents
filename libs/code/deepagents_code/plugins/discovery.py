@@ -19,6 +19,7 @@ from deepagents_code.plugins.marketplace import (
     materialize_marketplace_source,
     materialize_plugin_source,
     parse_marketplace_source,
+    redact_urls_in_text,
 )
 from deepagents_code.plugins.models import (
     MarketplacePluginEntry,
@@ -107,7 +108,9 @@ def remove_marketplace(name: str) -> bool:
     if record is None:
         return False
 
-    plugin_ids = set(load_installed_plugins()) | set(load_enabled_plugin_ids())
+    installed = load_installed_plugins(strict=True)
+    enabled = load_enabled_plugin_ids(strict=True)
+    plugin_ids = set(installed) | set(enabled)
     for plugin_id in plugin_ids:
         try:
             _plugin_name, marketplace_name = split_plugin_id(plugin_id)
@@ -139,7 +142,7 @@ def _require_installed_plugin(plugin_id: str) -> None:
     Raises:
         MarketplaceError: If the plugin is not installed.
     """
-    if plugin_id not in load_installed_plugins():
+    if plugin_id not in load_installed_plugins(strict=True):
         msg = f"Plugin {plugin_id!r} is not installed"
         raise MarketplaceError(msg)
 
@@ -205,11 +208,14 @@ def install_plugin(plugin_id: str) -> PluginInstance:
         MarketplaceError: If the marketplace/plugin cannot be resolved, the
             source is unsupported, or the cached plugin fails to load.
     """
+    load_installed_plugins(strict=True)
+    load_enabled_plugin_ids(strict=True)
     marketplace, entry = _resolve_marketplace_and_entry(plugin_id)
     source_root = materialize_plugin_source(marketplace, entry)
     if source_root is None:
         msg = (
-            f"Plugin {plugin_id} has unsupported source {entry.source!r}; "
+            f"Plugin {plugin_id} has unsupported source "
+            f"{redact_urls_in_text(repr(entry.source))}; "
             "use a local path, GitHub repository, or Git repository source"
         )
         raise MarketplaceError(msg)
@@ -287,16 +293,19 @@ def _plugin_from_install_path(
     warnings.extend(manifest_warnings)
     name = manifest.name if manifest and manifest.name else fallback_name
     inventory = build_inventory(root, manifest, tuple(warnings))
-    instance = PluginInstance(
-        plugin_id=plugin_id,
-        name=name,
-        marketplace=marketplace_name,
-        version=manifest.version if manifest is not None else None,
-        root=root,
-        data_dir=plugin_data_dir(plugin_id),
-        manifest=manifest,
-        inventory=inventory,
-    )
+    try:
+        instance = PluginInstance(
+            plugin_id=plugin_id,
+            name=name,
+            marketplace=marketplace_name,
+            version=manifest.version if manifest is not None else None,
+            root=root,
+            data_dir=plugin_data_dir(plugin_id),
+            manifest=manifest,
+            inventory=inventory,
+        )
+    except ValueError as exc:
+        return None, (f"Skipping plugin {plugin_id}: {exc}",)
     return instance, inventory.warnings
 
 
@@ -325,18 +334,27 @@ def discover_plugins() -> PluginDiscoveryResult:
             )
             continue
         root = Path(entry.install_path)
-        if not root.is_dir():
+        try:
+            root_exists = root.is_dir()
+        except (OSError, RuntimeError) as exc:
+            warnings.append(f"Plugin {plugin_id} cache could not be inspected: {exc}")
+            continue
+        if not root_exists:
             warnings.append(
                 f"Plugin {plugin_id} cache miss at {entry.install_path}; "
                 "re-run install to refresh"
             )
             continue
-        plugin, plugin_warnings = _plugin_from_install_path(
-            plugin_id=plugin_id,
-            root=root,
-            marketplace_name=marketplace_name,
-            fallback_name=plugin_name,
-        )
+        try:
+            plugin, plugin_warnings = _plugin_from_install_path(
+                plugin_id=plugin_id,
+                root=root,
+                marketplace_name=marketplace_name,
+                fallback_name=plugin_name,
+            )
+        except (OSError, RuntimeError) as exc:
+            warnings.append(f"Skipping plugin {plugin_id}: {exc}")
+            continue
         warnings.extend(plugin_warnings)
         if plugin is not None:
             plugins.append(plugin)

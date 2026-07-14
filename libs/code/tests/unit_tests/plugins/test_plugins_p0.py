@@ -29,11 +29,18 @@ from deepagents_code.plugins import (
     uninstall_plugin,
 )
 from deepagents_code.plugins.adapters.mcp import (
+    discover_plugin_mcp_configs,
     plugin_mcp_configs,
     scoped_mcp_server_name,
 )
-from deepagents_code.plugins.adapters.skills import plugin_skill_sources
-from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
+from deepagents_code.plugins.adapters.skills import (
+    discover_plugin_skill_sources_and_roots,
+    plugin_skill_sources,
+)
+from deepagents_code.plugins.adapters.skills_middleware import (
+    PluginSkillsMiddleware,
+    discover_skill_dirs,
+)
 from deepagents_code.plugins.commands_cli import execute_plugin_command
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
@@ -41,7 +48,9 @@ from deepagents_code.plugins.marketplace import (
     parse_marketplace_source,
 )
 from deepagents_code.plugins.models import (
+    GithubPluginSource,
     LocalMarketplaceSource,
+    MarketplaceRecord,
     RepositoryMarketplaceSource,
     UrlMarketplaceSource,
 )
@@ -52,10 +61,16 @@ from deepagents_code.plugins.store import (
     load_installed_plugins,
     load_marketplace_records,
     sanitize_plugin_id,
+    save_marketplace_record,
+    set_plugin_enabled,
     versioned_cache_path,
 )
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
+from deepagents_code.tui.modals.plugin_manager.state import (
+    _list_plugin_skill_names,
+    _load_manager_state,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -195,6 +210,36 @@ async def test_plugin_manager_installed_row_shows_restart_hint_before_connect(
         prompt = str(options.get_option_at_index(0).prompt)
         assert "restart to connect" in prompt
         assert "connected" not in prompt.replace("restart to connect", "")
+
+
+def test_plugin_manager_uses_recursive_skill_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    marketplace_root = tmp_path / "marketplace"
+    _make_marketplace(marketplace_root)
+    _write_skill(
+        marketplace_root
+        / "plugins"
+        / "quality-review-plugin"
+        / "skills"
+        / "Policies"
+        / "audit"
+        / "SKILL.md",
+        name="audit",
+    )
+    add_local_marketplace(marketplace_root)
+    instance = install_plugin("quality-review-plugin@company-tools")
+
+    assert set(_list_plugin_skill_names(instance)) == {
+        "quality-review-plugin@company-tools:review",
+        "quality-review-plugin@company-tools:policies:audit",
+    }
 
 
 def test_local_marketplace_install_caches_and_discovers(
@@ -579,6 +624,46 @@ def test_marketplace_remove_cli_reports_missing_and_removed(
     assert missing == "Marketplace company-tools is not configured."
 
 
+def test_marketplace_list_redacts_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    save_marketplace_record(
+        MarketplaceRecord(
+            name="private-tools",
+            source_type="url",
+            source="https://user:secret@example.com/catalog?token=hidden",
+            install_location="/cache/secret-derived-path",
+        )
+    )
+    args = argparse.Namespace(
+        plugin_command="marketplace",
+        marketplace_command="list",
+        output_format="text",
+    )
+
+    result = execute_plugin_command(args)
+    manager_state = _load_manager_state()
+
+    assert result is not None
+    assert "secret" not in result
+    assert "hidden" not in result
+    assert "***" in result
+    assert "secret" not in capsys.readouterr().out
+    assert "secret" not in manager_state.marketplaces[0].source
+
+    args.output_format = "json"
+    execute_plugin_command(args)
+    json_output = capsys.readouterr().out
+    assert "secret" not in json_output
+    assert "hidden" not in json_output
+    assert "<managed cache>" in json_output
+
+
 async def test_plugin_manager_confirms_marketplace_removal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -870,6 +955,47 @@ async def test_plugin_skill_adapter_namespaces_nested_subfolders(
     } == expected_names
 
 
+def test_plugin_skill_discovery_skips_symlinks_outside_source(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "plugin" / "skills"
+    outside = tmp_path / "outside"
+    _write_skill(outside / "review" / "SKILL.md")
+    skills_root.mkdir(parents=True)
+    (skills_root / "outside").symlink_to(outside, target_is_directory=True)
+    backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=False)
+
+    assert discover_skill_dirs(backend, str(skills_root)) == []
+
+
+def test_plugin_skill_discovery_breaks_directory_symlink_cycles(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "plugin" / "skills"
+    _write_skill(skills_root / "review" / "SKILL.md")
+    (skills_root / "loop").symlink_to(skills_root, target_is_directory=True)
+    backend = FilesystemBackend(root_dir=str(skills_root), virtual_mode=False)
+
+    discovered = discover_skill_dirs(backend, str(skills_root))
+
+    assert discovered == [(str((skills_root / "review").resolve()), ())]
+
+
+def test_plugin_adapters_do_not_hide_programming_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> None:
+        msg = "adapter bug"
+        raise TypeError(msg)
+
+    monkeypatch.setattr("deepagents_code.plugins.discover_plugins", fail)
+
+    with pytest.raises(TypeError, match="adapter bug"):
+        discover_plugin_skill_sources_and_roots()
+    with pytest.raises(TypeError, match="adapter bug"):
+        discover_plugin_mcp_configs()
+
+
 def test_cache_keys_do_not_collide(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1017,10 +1143,15 @@ def test_url_marketplace_remote_github_plugin_installs(
     )
     _write_skill(plugin_root / "skills" / "review" / "SKILL.md")
 
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        lambda *_args, **_kwargs: io.BytesIO(json.dumps(catalog).encode()),
-    )
+    class Response(io.BytesIO):
+        def geturl(self) -> str:
+            return "https://example.com/marketplace.json"
+
+    class Opener:
+        def open(self, *_args: object, **_kwargs: object) -> Response:
+            return Response(json.dumps(catalog).encode())
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: Opener())
 
     def clone(args: list[str]) -> None:
         shutil.copytree(plugin_root, Path(args[-1]), dirs_exist_ok=True)
@@ -1032,6 +1163,94 @@ def test_url_marketplace_remote_github_plugin_installs(
 
     assert instance.plugin_id == "remote-plugin@remote-tools"
     assert instance.inventory.skills
+
+
+def test_marketplace_sources_are_parsed_to_typed_variants(tmp_path: Path) -> None:
+    root = tmp_path / "marketplace"
+    _write_json(
+        root / ".claude-plugin" / "marketplace.json",
+        {
+            "name": "remote-tools",
+            "plugins": [
+                {
+                    "name": "remote-plugin",
+                    "source": {
+                        "source": "github",
+                        "repo": "owner/remote-plugin",
+                        "ref": "main",
+                    },
+                }
+            ],
+        },
+    )
+
+    marketplace = load_marketplace(root)
+
+    assert marketplace.plugins[0].source == GithubPluginSource(
+        source_type="github",
+        repo="owner/remote-plugin",
+        ref="main",
+    )
+
+
+def test_marketplace_name_cannot_contain_plugin_id_separator(tmp_path: Path) -> None:
+    root = tmp_path / "marketplace"
+    _write_json(
+        root / ".claude-plugin" / "marketplace.json",
+        {"name": "tools@team", "plugins": []},
+    )
+
+    with pytest.raises(MarketplaceError, match="Invalid plugin name"):
+        load_marketplace(root)
+
+
+def test_plugin_manager_surfaces_discovery_and_marketplace_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    root = tmp_path / "marketplace"
+    _write_json(
+        root / ".claude-plugin" / "marketplace.json",
+        {
+            "name": "tools",
+            "plugins": [
+                {"name": "broken", "source": {"source": "unknown"}},
+            ],
+        },
+    )
+    add_local_marketplace(root)
+    set_plugin_enabled("missing@tools", True)
+
+    state = _load_manager_state()
+
+    assert any("unsupported source" in error for error in state.errors)
+    assert any("enabled but not installed" in error for error in state.errors)
+
+
+def test_manifest_name_must_match_plugin_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    root = tmp_path / "marketplace"
+    _make_marketplace(root)
+    _write_json(
+        root / "plugins" / "quality-review-plugin" / ".claude-plugin" / "plugin.json",
+        {"name": "different-name", "version": "1.0.0"},
+    )
+    add_local_marketplace(root)
+
+    with pytest.raises(MarketplaceError, match="does not match"):
+        install_plugin("quality-review-plugin@company-tools")
 
 
 async def test_plugin_manager_renders_bracketed_errors_as_plain_text(

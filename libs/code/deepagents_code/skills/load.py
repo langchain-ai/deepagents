@@ -122,7 +122,9 @@ def list_skills(
                     load_namespaced_skills,
                 )
 
-                skills = load_namespaced_skills(backend, ".", namespace)
+                skills = load_namespaced_skills(
+                    backend, str(skill_dir.resolve()), namespace
+                )
             else:
                 skills = list_skills_from_backend(backend=backend, source_path=".")
             if experimental and skills:

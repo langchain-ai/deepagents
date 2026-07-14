@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 import os
 import subprocess
+import urllib.request
+from http.client import HTTPMessage
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,7 @@ from deepagents_code.plugins._json import json_object, json_value
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     _download_marketplace,
+    _HttpsOnlyRedirectHandler,
     _redact_url_credentials,
     _root_for_marketplace_file,
     _run_git,
@@ -25,7 +30,7 @@ from deepagents_code.plugins.models import (
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("https://[invalid", "https://[invalid"),
+        ("https://[invalid", "https://***"),
         ("git@github.com:owner/repo.git", "git@github.com:owner/repo.git"),
         (
             "https://user:pass@example.com:8443/repo",
@@ -33,7 +38,7 @@ from deepagents_code.plugins.models import (
         ),
         (
             "https://user:pass@example.com:invalid/repo",
-            "https://user:pass@example.com:invalid/repo",
+            "https://***",
         ),
         (
             "https://example.com/catalog?token=secret&channel=stable",
@@ -186,6 +191,65 @@ def test_download_marketplace_rejects_plain_http() -> None:
         _download_marketplace("http://example.com/marketplace.json")
 
 
+def test_download_marketplace_rejects_http_redirect() -> None:
+    handler = _HttpsOnlyRedirectHandler()
+    request = urllib.request.Request("https://example.com/marketplace.json")
+
+    with pytest.raises(MarketplaceError, match="redirect must use https"):
+        handler.redirect_request(
+            request,
+            io.BytesIO(),
+            302,
+            "Found",
+            HTTPMessage(),
+            "http://example.com/marketplace.json",
+        )
+
+
+def test_download_marketplace_rejects_non_https_final_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Response(io.BytesIO):
+        def geturl(self) -> str:
+            return "http://example.com/marketplace.json"
+
+    class Opener:
+        def open(self, *_args: object, **_kwargs: object) -> Response:
+            return Response(json.dumps({"name": "x", "plugins": []}).encode())
+
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: Opener())
+
+    with pytest.raises(MarketplaceError, match="response must use https"):
+        _download_marketplace("https://example.com/marketplace.json")
+
+
+def test_download_marketplace_cache_path_is_opaque(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Response(io.BytesIO):
+        def geturl(self) -> str:
+            return "https://example.com/marketplace.json"
+
+    class Opener:
+        def open(self, *_args: object, **_kwargs: object) -> Response:
+            return Response(json.dumps({"name": "x", "plugins": []}).encode())
+
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+    monkeypatch.setattr("urllib.request.build_opener", lambda *_handlers: Opener())
+
+    path = _download_marketplace(
+        "https://user:secret@example.com/marketplace.json?token=hidden"
+    )
+
+    assert "secret" not in str(path)
+    assert "hidden" not in str(path)
+
+
 def test_run_git_passes_fixed_argv_and_noninteractive_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,6 +322,24 @@ def test_run_git_wraps_execution_errors(
     monkeypatch.setattr("subprocess.run", fail)
     with pytest.raises(MarketplaceError, match="Failed to run git"):
         _run_git(["clone"])
+
+
+def test_run_git_redacts_credentials_from_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/git")
+    error = subprocess.TimeoutExpired(
+        ["git", "clone", "https://user:secret@example.com/repo.git"], 120
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr("subprocess.run", fail)
+    with pytest.raises(MarketplaceError) as exc_info:
+        _run_git(["clone"])
+
+    assert "secret" not in str(exc_info.value)
 
 
 def test_json_normalization_is_recursive_and_precisely_typed() -> None:

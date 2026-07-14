@@ -546,17 +546,27 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         row = self._selected_plugin
         if row is None:
             return
-        if row.enabled:
-            set_installed_plugin_enabled(row.plugin_id, enabled=False)
-            self._status = f"Disabled {row.plugin_id}. Run /reload-plugins to unload."
-            self._mode = "list"
-            self._selected_plugin = None
-        else:
-            set_installed_plugin_enabled(row.plugin_id, enabled=True)
-            self._status = f"Enabled {row.plugin_id}. Run /reload-plugins to activate."
-            self._mode = "list"
-            self._tab = "installed"
-            self._selected_plugin = None
+        try:
+            if row.enabled:
+                set_installed_plugin_enabled(row.plugin_id, enabled=False)
+                self._status = (
+                    f"Disabled {row.plugin_id}. Run /reload-plugins to unload."
+                )
+                self._mode = "list"
+                self._selected_plugin = None
+            else:
+                set_installed_plugin_enabled(row.plugin_id, enabled=True)
+                self._status = (
+                    f"Enabled {row.plugin_id}. Run /reload-plugins to activate."
+                )
+                self._mode = "list"
+                self._tab = "installed"
+                self._selected_plugin = None
+        except OSError as exc:
+            self._error = f"Could not update plugin state: {exc}"
+            self._status = None
+            self._refresh_view()
+            return
         self._error = None
         await self._refresh_state()
 
@@ -564,7 +574,13 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         row = self._selected_plugin
         if row is None:
             return
-        await asyncio.to_thread(uninstall_plugin, row.plugin_id)
+        try:
+            await asyncio.to_thread(uninstall_plugin, row.plugin_id)
+        except OSError as exc:
+            self._error = f"Could not uninstall plugin: {exc}"
+            self._status = None
+            self._refresh_view()
+            return
         self._mode = "list"
         self._selected_plugin = None
         reload_hint = " Run /reload-plugins to unload." if row.enabled else ""

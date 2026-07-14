@@ -41,7 +41,7 @@ def namespaced_skill_name(
     Returns:
         The qualified skill name.
     """
-    return ":".join((namespace, *subfolders, name))
+    return ":".join((namespace, *subfolders, name)).lower()
 
 
 def plugin_skill_sources(
@@ -114,7 +114,7 @@ def discover_plugin_skill_sources_and_roots() -> tuple[
                 for path, _label, namespace in plugin_skill_sources(plugins)
             )
             plugin_roots = tuple(plugin_skill_roots(plugins))
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (OSError, RuntimeError):
         logger.warning("Could not discover plugin skills", exc_info=True)
         return (), ()
 

@@ -872,3 +872,31 @@ class TestListSkillsPluginNamespacing:
         namespaced = {s["name"] for s in skills}
         assert namespaced == {"my-plugin:review", "my-plugin:foo:lookup"}
         assert all(s["source"] == "plugin" for s in skills)
+
+    def test_root_plugin_skill_is_discoverable(self, tmp_path: Path) -> None:
+        plugin_root = tmp_path / "root-plugin"
+        _create_skill(plugin_root, "root-plugin", "Root skill")
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_root, "root-plugin@tools")],
+        )
+
+        assert [skill["name"] for skill in skills] == ["root-plugin@tools:root-plugin"]
+
+    def test_plugin_namespace_and_subfolders_are_normalized(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_skills = tmp_path / "plugin" / "skills"
+        _create_skill(
+            plugin_skills / "Policies" / "review",
+            "review",
+            "Policy review",
+        )
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_skills, "Quality@Company")],
+        )
+
+        assert [skill["name"] for skill in skills] == [
+            "quality@company:policies:review"
+        ]

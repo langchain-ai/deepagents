@@ -19,22 +19,29 @@ from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.manifest import _resolve_component_path, _validate_name
 from deepagents_code.plugins.models import (
     ExternalPluginRepositorySourceType,
+    GithubPluginSource,
+    GitSubdirectoryPluginSource,
     JsonObject,
     JsonValue,
     LocalMarketplaceSource,
+    LocalPluginSource,
     MarketplacePluginEntry,
     MarketplaceSource,
     PluginMarketplace,
+    PluginSource,
     RepositoryMarketplaceSource,
     UrlMarketplaceSource,
+    UrlPluginSource,
 )
 from deepagents_code.plugins.store import (
     ensure_marketplace_cache_dir,
-    sanitize_plugin_id,
+    opaque_cache_key,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from http.client import HTTPMessage
+    from typing import IO
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +80,15 @@ def _redact_url_credentials(value: str) -> str:
 
     For example, `https://user:pass@example.com/?token=x` becomes
     `https://***@example.com/?token=%2A%2A%2A`. Non-HTTP values pass through.
-    A malformed URL is returned unchanged solely so error logging cannot fail.
+    A malformed HTTP URL is reduced to its scheme so error logging cannot leak it.
 
     Returns:
-        The redacted URL, or the original value when it cannot be parsed safely.
+        The redacted URL, or a scheme-only placeholder when parsing fails.
     """
     try:
         parsed = urlparse(value)
     except ValueError:
-        return value
+        return "https://***" if value.startswith("https://") else "http://***"
     if parsed.scheme not in {"http", "https"}:
         return value
     netloc = parsed.netloc
@@ -91,7 +98,7 @@ def _redact_url_credentials(value: str) -> str:
             if parsed.port is not None:
                 host = f"{host}:{parsed.port}"
         except ValueError:
-            return value
+            return f"{parsed.scheme}://***"
         netloc = f"***@{host}"
     query = urlencode(
         [
@@ -117,11 +124,16 @@ def _redact_url_credentials(value: str) -> str:
 
 
 def redact_marketplace_source(value: str) -> str:
-    """Return a marketplace source safe for persistence and display."""
+    """Return a marketplace source safe for display."""
     return _redact_url_credentials(value)
 
 
-def _redact_urls_in_text(value: str) -> str:
+def redact_urls_in_text(value: str) -> str:
+    """Redact credentials from every HTTP URL embedded in text.
+
+    Returns:
+        Text with URL credentials replaced.
+    """
     return _HTTP_URL_RE.sub(
         lambda match: _redact_url_credentials(match.group(0)), value
     )
@@ -255,11 +267,11 @@ def _run_git(args: list[str]) -> None:
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        msg = f"Failed to run git: {exc}"
+        msg = f"Failed to run git: {redact_urls_in_text(str(exc))}"
         raise MarketplaceError(msg) from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown git error"
-        msg = f"Git command failed: {_redact_urls_in_text(detail)}"
+        msg = f"Git command failed: {redact_urls_in_text(detail)}"
         raise MarketplaceError(msg)
 
 
@@ -270,7 +282,9 @@ def _clone_repository_to_cache(
     cache_key: str,
     validate: Callable[[Path], None] | None = None,
 ) -> Path:
-    cache_path = ensure_marketplace_cache_dir() / sanitize_plugin_id(cache_key)
+    cache_path = ensure_marketplace_cache_dir() / (
+        f"repository-{opaque_cache_key(cache_key)}"
+    )
     temp_path = Path(
         tempfile.mkdtemp(prefix=f".{cache_path.name}.", dir=cache_path.parent)
     )
@@ -325,23 +339,47 @@ def _materialize_plugin_repository(
     return _clone_repository_to_cache(source, git_url, cache_key=cache_key)
 
 
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if urlparse(newurl).scheme != "https":
+            detail = _redact_url_credentials(newurl)
+            error = f"Marketplace redirect must use https: {detail}"
+            raise MarketplaceError(error)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _download_marketplace(url: str) -> Path:
     parsed = urlparse(url)
     if parsed.scheme != "https":
         msg = f"Marketplace URL must use https: {_redact_url_credentials(url)}"
         raise MarketplaceError(msg)
-    cache_path = ensure_marketplace_cache_dir() / f"{sanitize_plugin_id(url)}.json"
+    cache_path = (
+        ensure_marketplace_cache_dir() / f"marketplace-url-{opaque_cache_key(url)}.json"
+    )
     request = urllib.request.Request(  # noqa: S310  # Scheme is restricted above.
         url, headers={"User-Agent": "dcode-plugin-manager"}
     )
+    opener = urllib.request.build_opener(_HttpsOnlyRedirectHandler())
     try:
-        with urllib.request.urlopen(  # noqa: S310  # Scheme is restricted above.
-            request, timeout=10
-        ) as response:
+        with opener.open(request, timeout=10) as response:
+            final_url = response.geturl()
+            if urlparse(final_url).scheme != "https":
+                detail = _redact_url_credentials(final_url)
+                msg = f"Marketplace response must use https: {detail}"
+                raise MarketplaceError(msg)
             data = json.load(response)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         msg = (
-            f"Failed to download marketplace from {_redact_url_credentials(url)}: {exc}"
+            "Failed to download marketplace from "
+            f"{_redact_url_credentials(url)}: {redact_urls_in_text(str(exc))}"
         )
         raise MarketplaceError(msg) from exc
     if not isinstance(data, dict):
@@ -465,14 +503,8 @@ def find_marketplace_manifest(root: Path) -> Path | None:
     return None
 
 
-def _source_path(source: str | JsonObject) -> str | None:
-    if isinstance(source, str):
-        return source
-    kind = source.get("source") if isinstance(source, dict) else None
-    path = source.get("path")
-    if kind == "local" and isinstance(path, str):
-        return path
-    return None
+def _source_path(source: PluginSource) -> str | None:
+    return source.path if isinstance(source, LocalPluginSource) else None
 
 
 def _external_plugin_repository_source_type(
@@ -498,26 +530,27 @@ def _plugin_repository_source(
     Returns:
         `(source, clone_url, subpath)` or `None` for unsupported metadata.
     """
-    if not isinstance(plugin.source, dict):
+    if not isinstance(
+        plugin.source,
+        (GithubPluginSource, GitSubdirectoryPluginSource, UrlPluginSource),
+    ):
         return None
-    kind = _external_plugin_repository_source_type(plugin.source.get("source"))
-    ref = plugin.source.get("ref")
-    ref_value = ref if isinstance(ref, str) else None
-    subpath = plugin.source.get("path")
-    subpath_value = subpath if isinstance(subpath, str) else None
+    kind = plugin.source.source_type
+    ref_value = plugin.source.ref
+    subpath_value = plugin.source.path
     if kind == "github":
-        repo = plugin.source.get("repo")
-        if not isinstance(repo, str):
+        if not isinstance(plugin.source, GithubPluginSource):
             return None
+        repo = plugin.source.repo
         parsed = parse_marketplace_source(f"{repo}#{ref_value}" if ref_value else repo)
         if not isinstance(parsed, RepositoryMarketplaceSource):
             return None
         return parsed, f"https://github.com/{parsed.value}.git", subpath_value
     if kind not in {"git-subdir", "url"}:
         return None
-    raw_url = plugin.source.get("url")
-    if not isinstance(raw_url, str):
+    if not isinstance(plugin.source, (GitSubdirectoryPluginSource, UrlPluginSource)):
         return None
+    raw_url = plugin.source.url
     parsed = parse_marketplace_source(
         f"{raw_url}#{ref_value}" if ref_value else raw_url
     )
@@ -569,10 +602,7 @@ def materialize_plugin_source(
     root = _materialize_plugin_repository(
         source,
         git_url,
-        cache_key=(
-            f"plugin-source-{marketplace.name}-{plugin.name}-"
-            f"{json.dumps(plugin.source, sort_keys=True)}"
-        ),
+        cache_key=(f"plugin-source-{marketplace.name}-{plugin.name}-{plugin.source!r}"),
     )
     if subpath is None:
         return root
@@ -585,27 +615,119 @@ def materialize_plugin_source(
     return resolved
 
 
-def _parse_entry(entry: object) -> MarketplacePluginEntry | None:
-    if not isinstance(entry, dict):
-        logger.warning(
-            "Skipping marketplace plugin entry: expected object, got %s",
-            type(entry).__name__,
+def _optional_source_string(
+    source: JsonObject,
+    field: str,
+    *,
+    plugin_name: object,
+    warnings: list[str],
+) -> tuple[str | None, bool]:
+    value = source.get(field)
+    if value is None:
+        return None, True
+    if isinstance(value, str):
+        return value, True
+    warnings.append(
+        f"Skipping marketplace plugin {plugin_name!r}: source.{field} must be a string"
+    )
+    return None, False
+
+
+def _parse_plugin_source(
+    value: object, *, plugin_name: object, warnings: list[str]
+) -> PluginSource | None:
+    if isinstance(value, str):
+        return LocalPluginSource(source_type="local", path=value)
+    if not isinstance(value, dict):
+        warnings.append(f"Skipping marketplace plugin {plugin_name!r}: missing source")
+        return None
+    source = json_object(value)
+    kind = source.get("source")
+    path, path_valid = _optional_source_string(
+        source, "path", plugin_name=plugin_name, warnings=warnings
+    )
+    ref, ref_valid = _optional_source_string(
+        source, "ref", plugin_name=plugin_name, warnings=warnings
+    )
+    if not path_valid or not ref_valid:
+        return None
+    if kind == "local":
+        if path is None:
+            warnings.append(
+                f"Skipping marketplace plugin {plugin_name!r}: "
+                "local source requires path"
+            )
+            return None
+        return LocalPluginSource(source_type="local", path=path)
+    source_type = _external_plugin_repository_source_type(kind)
+    if source_type is None:
+        warnings.append(
+            f"Skipping marketplace plugin {plugin_name!r}: unsupported source {kind!r}"
         )
         return None
-    source_value = entry.get("source")
-    if isinstance(source_value, str):
-        source: str | JsonObject = source_value
-    elif isinstance(source_value, dict):
-        source = json_object(source_value)
-    else:
-        logger.warning(
-            "Skipping marketplace plugin %r: missing source", entry.get("name")
+    repo, repo_valid = _optional_source_string(
+        source, "repo", plugin_name=plugin_name, warnings=warnings
+    )
+    url, url_valid = _optional_source_string(
+        source, "url", plugin_name=plugin_name, warnings=warnings
+    )
+    if not repo_valid or not url_valid:
+        return None
+    if source_type == "github" and repo is None:
+        warnings.append(
+            f"Skipping marketplace plugin {plugin_name!r}: github source requires repo"
         )
+        return None
+    if source_type in {"git-subdir", "url"} and url is None:
+        warnings.append(
+            f"Skipping marketplace plugin {plugin_name!r}: "
+            f"{source_type} source requires url"
+        )
+        return None
+    if source_type == "github":
+        if repo is None:
+            return None
+        return GithubPluginSource(
+            source_type="github",
+            repo=repo,
+            ref=ref,
+            path=path,
+        )
+    if url is None:
+        return None
+    if source_type == "git-subdir":
+        return GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url=url,
+            ref=ref,
+            path=path,
+        )
+    return UrlPluginSource(
+        source_type="url",
+        url=url,
+        ref=ref,
+        path=path,
+    )
+
+
+def _parse_entry(
+    entry: object, *, warnings: list[str]
+) -> MarketplacePluginEntry | None:
+    if not isinstance(entry, dict):
+        warnings.append(
+            "Skipping marketplace plugin entry: "
+            f"expected object, got {type(entry).__name__}"
+        )
+        return None
+    source = _parse_plugin_source(
+        entry.get("source"), plugin_name=entry.get("name"), warnings=warnings
+    )
+    if source is None:
         return None
     try:
         name = _validate_name(entry.get("name"))
     except ValueError as exc:
-        logger.warning("Skipping marketplace plugin with invalid name: %s", exc)
+        warnings.append(f"Skipping marketplace plugin with invalid name: {exc}")
         return None
     description_value = entry.get("description")
     author_value = entry.get("author")
@@ -637,16 +759,21 @@ def _load_marketplace_from_path(root: Path, manifest_path: Path) -> PluginMarket
         msg = f"Marketplace manifest {manifest_path} must be a JSON object"
         raise MarketplaceError(msg)
     try:
-        name = _validate_name(raw.get("name"))
+        name = _validate_name(raw.get("name"), allow_at=False)
     except ValueError as exc:
         raise MarketplaceError(str(exc)) from exc
     plugins_raw = raw.get("plugins")
     if not isinstance(plugins_raw, list):
         msg = f"Marketplace {name} must contain a plugins array"
         raise MarketplaceError(msg)
+    warnings: list[str] = []
     plugins = tuple(
-        plugin for entry in plugins_raw if (plugin := _parse_entry(entry)) is not None
+        plugin
+        for entry in plugins_raw
+        if (plugin := _parse_entry(entry, warnings=warnings)) is not None
     )
+    for warning in warnings:
+        logger.warning("%s", warning)
     metadata = json_object(raw.get("metadata"))
     return PluginMarketplace(
         name=name,
@@ -654,6 +781,7 @@ def _load_marketplace_from_path(root: Path, manifest_path: Path) -> PluginMarket
         manifest_path=manifest_path,
         metadata=metadata,
         plugins=plugins,
+        warnings=tuple(warnings),
     )
 
 

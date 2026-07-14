@@ -98,13 +98,70 @@ class PluginInstance:
     manifest: PluginManifest | None
     inventory: ComponentInventory
 
+    def __post_init__(self) -> None:
+        """Validate the canonical plugin identity.
+
+        Raises:
+            ValueError: If `plugin_id` disagrees with `name` and `marketplace`.
+        """
+        expected = f"{self.name}@{self.marketplace}"
+        if self.plugin_id != expected:
+            msg = f"Plugin id {self.plugin_id!r} does not match {expected!r}"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LocalPluginSource:
+    """A plugin stored relative to its marketplace."""
+
+    source_type: Literal["local"]
+    path: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GithubPluginSource:
+    """A plugin sourced from a GitHub repository."""
+
+    source_type: Literal["github"]
+    repo: str
+    ref: str | None = None
+    path: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GitSubdirectoryPluginSource:
+    """A plugin sourced from a subdirectory in a Git repository."""
+
+    source_type: Literal["git-subdir"]
+    url: str
+    ref: str | None = None
+    path: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UrlPluginSource:
+    """A plugin sourced from a Git repository URL."""
+
+    source_type: Literal["url"]
+    url: str
+    ref: str | None = None
+    path: str | None = None
+
+
+PluginSource = (
+    LocalPluginSource
+    | GithubPluginSource
+    | GitSubdirectoryPluginSource
+    | UrlPluginSource
+)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MarketplacePluginEntry:
     """A catalog entry from a marketplace manifest."""
 
     name: str
-    source: str | JsonObject
+    source: PluginSource
     description: str | None = None
     author: str | JsonObject | None = None
 
@@ -118,6 +175,7 @@ class PluginMarketplace:
     manifest_path: Path
     metadata: JsonObject
     plugins: tuple[MarketplacePluginEntry, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

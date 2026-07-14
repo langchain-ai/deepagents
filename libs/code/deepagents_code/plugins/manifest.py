@@ -47,7 +47,9 @@ def find_manifest_path(root: Path) -> Path | None:
     return None
 
 
-def _validate_name(name: object, *, fallback: str | None = None) -> str:
+def _validate_name(
+    name: object, *, fallback: str | None = None, allow_at: bool = True
+) -> str:
     """Validate a nonempty plugin name with no whitespace.
 
     Names such as `code-review` and `review@team` are valid; `code review` and
@@ -59,9 +61,14 @@ def _validate_name(name: object, *, fallback: str | None = None) -> str:
     Raises:
         PluginManifestError: If neither value is a valid name.
     """
-    if isinstance(name, str) and name and _NAME_RE.fullmatch(name):
+    if (
+        isinstance(name, str)
+        and name
+        and _NAME_RE.fullmatch(name)
+        and (allow_at or "@" not in name)
+    ):
         return name
-    if fallback and _NAME_RE.fullmatch(fallback):
+    if fallback and _NAME_RE.fullmatch(fallback) and (allow_at or "@" not in fallback):
         return fallback
     msg = f"Invalid plugin name: {name!r}"
     raise PluginManifestError(msg)

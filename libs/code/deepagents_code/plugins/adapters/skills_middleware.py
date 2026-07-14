@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, cast
 
 from deepagents.backends.protocol import FileInfo, LsResult
@@ -113,14 +114,25 @@ def discover_skill_dirs(
     # and including `current`. A skill directory's own name is dropped when
     # naming, since the skill's terminal identifier is its frontmatter name;
     # only the directories above it form the namespace segments.
-    stack: list[tuple[str, tuple[str, ...]]] = [(source_path, ())]
+    source_root = Path(source_path).resolve()
+    visited: set[Path] = set()
+    stack: list[tuple[str, tuple[str, ...]]] = [(str(source_root), ())]
     while stack:
         current, path_segments = stack.pop()
-        entries = _entries(backend.ls(current))
-        if _has_skill_file(entries, current):
-            found.append((current, path_segments[:-1]))
+        try:
+            resolved = Path(current).resolve()
+        except (OSError, RuntimeError):
+            logger.warning("Could not resolve plugin skill directory %s", current)
             continue
-        for name, path in _child_dirs(entries, current):
+        if not resolved.is_relative_to(source_root) or resolved in visited:
+            continue
+        visited.add(resolved)
+        resolved_path = str(resolved)
+        entries = _entries(backend.ls(resolved_path))
+        if _has_skill_file(entries, resolved_path):
+            found.append((resolved_path, path_segments[:-1]))
+            continue
+        for name, path in _child_dirs(entries, resolved_path):
             stack.append((path, (*path_segments, name)))
     return found
 
@@ -135,14 +147,25 @@ async def adiscover_skill_dirs(
         Skill directories paired with their intermediate subfolder segments.
     """
     found: list[tuple[str, tuple[str, ...]]] = []
-    stack: list[tuple[str, tuple[str, ...]]] = [(source_path, ())]
+    source_root = await asyncio.to_thread(Path(source_path).resolve)
+    visited: set[Path] = set()
+    stack: list[tuple[str, tuple[str, ...]]] = [(str(source_root), ())]
     while stack:
         current, path_segments = stack.pop()
-        entries = _entries(await backend.als(current))
-        if _has_skill_file(entries, current):
-            found.append((current, path_segments[:-1]))
+        try:
+            resolved = await asyncio.to_thread(Path(current).resolve)
+        except (OSError, RuntimeError):
+            logger.warning("Could not resolve plugin skill directory %s", current)
             continue
-        for name, path in _child_dirs(entries, current):
+        if not resolved.is_relative_to(source_root) or resolved in visited:
+            continue
+        visited.add(resolved)
+        resolved_path = str(resolved)
+        entries = _entries(await backend.als(resolved_path))
+        if _has_skill_file(entries, resolved_path):
+            found.append((resolved_path, path_segments[:-1]))
+            continue
+        for name, path in _child_dirs(entries, resolved_path):
             stack.append((path, (*path_segments, name)))
     return found
 

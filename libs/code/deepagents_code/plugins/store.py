@@ -10,7 +10,7 @@ import tempfile
 from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Never
 
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
@@ -31,6 +31,10 @@ _CACHE_DIGEST_LENGTH = 32
 SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset(
     {"directory", "file", "github", "git", "url"}
 )
+
+
+class PluginStateError(OSError):
+    """Raised when existing plugin state cannot be safely modified."""
 
 
 def plugin_storage_root() -> Path:
@@ -79,6 +83,11 @@ def sanitize_plugin_id(value: str) -> str:
     slug = slug.strip("-")[:_CACHE_SLUG_LENGTH] or "plugin"
     digest = sha256(value.encode()).hexdigest()[:_CACHE_DIGEST_LENGTH]
     return f"{slug}-{digest}"
+
+
+def opaque_cache_key(value: str) -> str:
+    """Return a cache key that cannot disclose source credentials."""
+    return sha256(value.encode()).hexdigest()
 
 
 def ensure_marketplace_cache_dir() -> Path:
@@ -135,22 +144,47 @@ def _installed_plugins_path() -> Path:
     return _state_dir() / "installed_plugins.json"
 
 
-def _load_json(path: Path, *, max_version: int = _STORAGE_VERSION) -> dict[str, Any]:
+def _invalid_state(
+    path: Path, detail: str, *, strict: bool, cause: Exception | None = None
+) -> dict[str, Any]:
+    msg = f"Plugin state file {path} {detail}"
+    if strict:
+        raise PluginStateError(msg) from cause
+    logger.warning("%s", msg)
+    return {}
+
+
+def _load_json(
+    path: Path,
+    *,
+    max_version: int = _STORAGE_VERSION,
+    strict: bool = False,
+) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("Could not read plugin state file %s: %s", path, exc)
-        return {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return _invalid_state(
+            path, f"could not be read: {exc}", strict=strict, cause=exc
+        )
     if not isinstance(data, dict):
-        logger.warning("Plugin state file %s is not a JSON object", path)
-        return {}
+        return _invalid_state(path, "is not a JSON object", strict=strict)
     version = data.get("version")
-    if version is not None and (not isinstance(version, int) or version > max_version):
-        logger.warning("Plugin state file %s has unsupported version %r", path, version)
-        return {}
+    if version is not None and (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version > max_version
+    ):
+        return _invalid_state(
+            path, f"has unsupported version {version!r}", strict=strict
+        )
     return data
+
+
+def _raise_state_shape(path: Path, detail: str) -> Never:
+    msg = f"Plugin state file {path} {detail}"
+    raise PluginStateError(msg)
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -169,15 +203,17 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
-def load_marketplace_records() -> dict[str, MarketplaceRecord]:
+def load_marketplace_records(*, strict: bool = False) -> dict[str, MarketplaceRecord]:
     """Load persisted marketplace records.
 
     Returns:
         Marketplace records keyed by marketplace name.
     """
-    data = _load_json(_marketplaces_path())
+    data = _load_json(_marketplaces_path(), strict=strict)
     raw_records = data.get("marketplaces", {})
     if not isinstance(raw_records, dict):
+        if strict:
+            _raise_state_shape(_marketplaces_path(), "has invalid marketplaces data")
         return {}
     records: dict[str, MarketplaceRecord] = {}
     for name, record in raw_records.items():
@@ -205,10 +241,12 @@ def load_marketplace_records() -> dict[str, MarketplaceRecord]:
 
 def save_marketplace_record(record: MarketplaceRecord) -> None:
     """Persist a marketplace record."""
-    data = _load_json(_marketplaces_path())
+    data = _load_json(_marketplaces_path(), strict=True)
     marketplaces = data.get("marketplaces")
-    if not isinstance(marketplaces, dict):
+    if marketplaces is None:
         marketplaces = {}
+    elif not isinstance(marketplaces, dict):
+        _raise_state_shape(_marketplaces_path(), "has invalid marketplaces data")
     marketplaces[record.name] = {
         "install_location": record.install_location,
         "source_type": record.source_type,
@@ -228,9 +266,13 @@ def remove_marketplace_record(name: str) -> bool:
     Returns:
         `True` when a record was removed.
     """
-    data = _load_json(_marketplaces_path())
+    data = _load_json(_marketplaces_path(), strict=True)
     marketplaces = data.get("marketplaces")
-    if not isinstance(marketplaces, dict) or name not in marketplaces:
+    if marketplaces is None:
+        return False
+    if not isinstance(marketplaces, dict):
+        _raise_state_shape(_marketplaces_path(), "has invalid marketplaces data")
+    if name not in marketplaces:
         return False
     marketplaces.pop(name, None)
     _atomic_write_json(
@@ -240,16 +282,23 @@ def remove_marketplace_record(name: str) -> bool:
     return True
 
 
-def load_enabled_plugin_ids() -> frozenset[str]:
+def load_enabled_plugin_ids(*, strict: bool = False) -> frozenset[str]:
     """Load enabled plugin ids.
 
     Returns:
         Enabled plugin ids.
     """
-    data = _load_json(_plugin_state_path())
+    data = _load_json(_plugin_state_path(), strict=strict)
     enabled = data.get("enabledPlugins", {})
     if not isinstance(enabled, dict):
+        if strict:
+            _raise_state_shape(_plugin_state_path(), "has invalid enabledPlugins data")
         return frozenset()
+    if strict and any(
+        not isinstance(key, str) or not isinstance(value, bool)
+        for key, value in enabled.items()
+    ):
+        _raise_state_shape(_plugin_state_path(), "has malformed enabledPlugins entries")
     return frozenset(
         key for key, value in enabled.items() if isinstance(key, str) and value is True
     )
@@ -267,7 +316,7 @@ def _write_plugin_state(*, enabled_plugin_ids: set[str]) -> None:
 
 def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
     """Persist a plugin enablement value."""
-    enabled_plugin_ids = set(load_enabled_plugin_ids())
+    enabled_plugin_ids = set(load_enabled_plugin_ids(strict=True))
     if enabled:
         enabled_plugin_ids.add(plugin_id)
     else:
@@ -296,19 +345,29 @@ def _parse_installed_plugin_json_entry(
     )
 
 
-def load_installed_plugins() -> dict[str, InstalledPluginEntry]:
+def load_installed_plugins(*, strict: bool = False) -> dict[str, InstalledPluginEntry]:
     """Load installed plugin records.
 
     Returns:
         Map of plugin id to its install entry.
     """
-    data = _load_json(_installed_plugins_path(), max_version=_INSTALLED_STORAGE_VERSION)
+    data = _load_json(
+        _installed_plugins_path(),
+        max_version=_INSTALLED_STORAGE_VERSION,
+        strict=strict,
+    )
     raw_plugins = data.get("plugins", {})
     if not isinstance(raw_plugins, dict):
+        if strict:
+            _raise_state_shape(_installed_plugins_path(), "has invalid plugins data")
         return {}
     result: dict[str, InstalledPluginEntry] = {}
     for plugin_id, entries in raw_plugins.items():
         if not isinstance(plugin_id, str) or not isinstance(entries, list):
+            if strict:
+                _raise_state_shape(
+                    _installed_plugins_path(), "has malformed plugin entries"
+                )
             continue
         parsed = next(
             (
@@ -320,6 +379,10 @@ def load_installed_plugins() -> dict[str, InstalledPluginEntry]:
         )
         if parsed is not None:
             result[plugin_id] = parsed
+        elif strict:
+            _raise_state_shape(
+                _installed_plugins_path(), f"has malformed entry for {plugin_id!r}"
+            )
     return result
 
 
@@ -364,7 +427,7 @@ def add_installed_plugin(
         The written install entry.
 
     """
-    plugins = dict(load_installed_plugins())
+    plugins = dict(load_installed_plugins(strict=True))
     entry = InstalledPluginEntry(
         install_path=install_path,
         version=version,
@@ -390,7 +453,7 @@ def remove_installed_plugin(
     Returns:
         Removed install entry, if present.
     """
-    plugins = dict(load_installed_plugins())
+    plugins = dict(load_installed_plugins(strict=True))
     removed = plugins.pop(plugin_id, None)
     _write_installed_plugins(plugins)
     return removed
@@ -480,6 +543,8 @@ def uninstall_plugin(
     Args:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
     """
+    load_installed_plugins(strict=True)
+    load_enabled_plugin_ids(strict=True)
     removed = remove_installed_plugin(plugin_id)
 
     set_plugin_enabled(plugin_id, False)

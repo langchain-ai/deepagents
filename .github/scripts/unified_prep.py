@@ -120,8 +120,6 @@ def build_provider_matrices(
     n_shards_by_cat: dict[str, int],
     dcode_impl: str = "dcode",
     profile: str = "full",
-    concurrency: int = 4,
-    rollouts: int = 3,
 ) -> dict[str, list[dict]]:
     matrices: dict[str, list[dict]] = {}
     for spec in models_list:
@@ -132,21 +130,18 @@ def build_provider_matrices(
             # conversation category's tau3 harness is left untouched.
             agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
             # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks).
-            # Size shards to saturate a runner's `--concurrency`: give each shard
-            # `ceil(concurrency / rollouts)` tasks so its trial count
-            # (tasks * rollouts) is at least `concurrency` and no slot sits idle.
-            # This is rollout-aware -- fewer rollouts pack more tasks per shard --
-            # and when the task list is large the resulting shard count exceeds
-            # shard_parallel, forming a queue GitHub drains dynamically. Bounded by
-            # shard_matrix.MAX_SHARDS (and its 256-job matrix guard).
+            # One task per shard: `shard_parallel` (the leaf's matrix max-parallel)
+            # is the number of concurrent runner slots, and GitHub pulls the next
+            # single-task shard in the instant one finishes. That gives dynamic
+            # load-balancing across runners -- the long pole is the slowest single
+            # task, not a static bucket -- and scatters each task's image onto its
+            # own runner so heavy images never concentrate and blow the disk.
+            # Bounded by shard_matrix.MAX_SHARDS (and its 256-job matrix guard).
             include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
             n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
             if include:
                 n_tasks = len(include.split())
-                tasks_per_shard = max(1, -(-concurrency // max(rollouts, 1)))
-                n_shards = min(
-                    -(-n_tasks // tasks_per_shard), shard_matrix.MAX_SHARDS
-                )
+                n_shards = min(n_tasks, shard_matrix.MAX_SHARDS)
             entry = {
                 "model": spec,
                 "provider": prov,
@@ -197,11 +192,6 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.get("UNIFIED_CONCURRENCY", "4"),
         minimum=1,
         maximum=MAX_TASKS_PER_MODEL,
-    )
-    rollouts = parse_int_input(
-        "UNIFIED_ROLLOUTS",
-        os.environ.get("UNIFIED_ROLLOUTS", "3"),
-        minimum=1,
     )
     requested_sp = parse_int_input(
         "UNIFIED_SHARD_PARALLEL",
@@ -261,14 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     assert len(providers_present) * shard_parallel <= MAX_RUNNERS
 
     matrices = build_provider_matrices(
-        model_specs,
-        categories,
-        shard_parallel,
-        n_shards_by_cat,
-        dcode_impl,
-        profile,
-        concurrency,
-        rollouts,
+        model_specs, categories, shard_parallel, n_shards_by_cat, dcode_impl, profile
     )
 
     outputs: dict[str, object] = {

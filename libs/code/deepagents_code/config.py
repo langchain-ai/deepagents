@@ -1542,9 +1542,9 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
     return repo
 
 
-# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
-CODING_AGENT_KIND = "coding_agent"
-"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+# coding-agent-v1 contract literals. See `build_coding_agent_metadata`.
+CODING_AGENT_PURPOSE = "coding"
+"""Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
 CODING_AGENT_INTEGRATION = "deepagents-code"
 """Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
@@ -1568,9 +1568,9 @@ def build_coding_agent_metadata(
 ) -> dict[str, Any]:
     """Build the shared coding-agent-v1 trace-metadata block.
 
-    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    Implements the `coding-agent-v1` contract for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
-    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    markers, and repo/git/cwd attribution. The six identity/version keys and
     `thread_id` are always present; the optional keys whose value is unknown are
     omitted (per the contract), so callers can pass `None` for any of them.
 
@@ -1603,7 +1603,7 @@ def build_coding_agent_metadata(
         The contract metadata dict with unknown keys omitted.
     """
     metadata: dict[str, Any] = {
-        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_agent_purpose": CODING_AGENT_PURPOSE,
         "ls_integration": CODING_AGENT_INTEGRATION,
         "ls_agent_runtime": CODING_AGENT_RUNTIME,
         "thread_id": thread_id,
@@ -1650,7 +1650,7 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    Stamps the shared `coding-agent-v1` trace-metadata contract via
     `build_coding_agent_metadata` — identity block, plugin/runtime versions,
     turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
     here propagates trace-wide to every run in the graph (root, llm, tool, and

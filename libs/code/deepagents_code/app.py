@@ -15581,7 +15581,7 @@ class DeepAgentsApp(App):
 
     async def _show_plugin_manager(self) -> None:
         """Open the interactive plugin manager."""
-        from deepagents_code.tui.widgets.plugin_manager import PluginManagerScreen
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 
         self.push_screen(
             PluginManagerScreen(

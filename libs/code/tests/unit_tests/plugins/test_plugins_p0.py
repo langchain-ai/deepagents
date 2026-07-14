@@ -56,10 +56,8 @@ from deepagents_code.plugins.store import (
     sanitize_plugin_id,
     versioned_cache_path,
 )
-from deepagents_code.tui.widgets.plugin_manager import (
-    PluginManagerScreen,
-    _ManagerState,
-)
+from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
+from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 
 
 @pytest.fixture(autouse=True)
@@ -973,7 +971,7 @@ async def test_plugin_manager_renders_bracketed_errors_as_plain_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "deepagents_code.tui.widgets.plugin_manager._load_manager_state",
+        "deepagents_code.tui.modals.plugin_manager._load_manager_state",
         lambda *_args, **_kwargs: _ManagerState(
             available_plugins=(),
             installed_plugins=(),

@@ -9026,8 +9026,9 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-0-timestamp-footer", Static)
 
-            await app._hydrate_messages_above()
-            await pilot.pause()
+            while app._message_store.has_messages_above:
+                await app._hydrate_messages_above()
+                await pilot.pause()
 
             footer = app.query_one("#hist-0-timestamp-footer", Static)
             assert footer.display is True

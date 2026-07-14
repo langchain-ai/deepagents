@@ -158,6 +158,19 @@ _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
 
+_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
+"""Match a `read_file` gutter row into (marker, source).
+
+The marker is a bare `N` or `N.M` (the latter a wrapped-line continuation) —
+both sides of the dot required, so a stray `.5` head is not a gutter. The
+separator is exactly two spaces (current format) or a single tab (legacy
+`cat -n`). Only the separator is consumed and leading padding is spaces-only, so
+source indentation — including leading tabs — after the gutter stays put. Kept in
+sync with the separator emitted by deepagents' `format_content_with_line_numbers`
+(the authoritative producer). See `ToolCallMessage._compact_line_gutter`.
+"""
+
+
 def _strip_success_exit_line(text: str) -> str:
     """Remove the `[Command succeeded with exit code 0]` trailer.
 
@@ -1983,48 +1996,49 @@ class ToolCallMessage(Vertical):
 
     @staticmethod
     def _compact_line_gutter(output: str) -> str:
-        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+        r"""Tighten `read_file`'s line-number gutter for display.
 
-        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — so even single-digit line numbers carry five
-        leading spaces and the tab pushes content to a distant tab stop. The
-        model needs that raw format for edits, but the TUI renders a compact
-        gutter instead: numbers right-justified to the widest number actually
-        present, then two spaces, mirroring how grep/glob results sit flush
-        left. Source indentation after the gutter is preserved untouched.
+        `read_file` prefixes each row with a right-justified line marker — `N`,
+        or `N.M` for a wrapped-line continuation — then two spaces, then the
+        original source content. (Output from deepagents versions predating the
+        gutter disambiguation in #4561 used the older `cat -n` gutter — a wide
+        right-justified number and a tab — which may still surface from cached or
+        persisted transcripts.) The model needs the raw gutter for edits, but the
+        TUI re-justifies markers to the widest marker actually present, then two
+        spaces, mirroring how grep/glob results sit flush left. Source
+        indentation after the gutter is preserved untouched.
 
-        Lines that don't match the cat -n shape (e.g. test fixtures or
-        non-numbered output) are passed through unchanged.
+        The gutter shape is `_READ_FILE_GUTTER_RE`. Lines that don't match a
+        gutter shape (e.g. test fixtures or non-numbered output) are passed
+        through unchanged.
 
         Returns:
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
         lines = output.split("\n")
-        # Split each line on its gutter tab into (number, source). The gutter
-        # tab is always the first one; any tabs in `text` are real source
-        # indentation and stay put. The head must be a bare `N` or `N.M` (the
-        # latter is a wrapped-line continuation marker) — both sides of the dot
-        # are required, so a stray `.5` head marks a non-gutter line.
         parsed: list[tuple[str, str] | None] = []
         width = 0
         for line in lines:
-            head, tab, text = line.partition("\t")
-            num = head.strip()
-            whole, dot, frac = num.partition(".")
-            if tab and whole.isdigit() and (not dot or frac.isdigit()):
-                parsed.append((num, text))
-                width = max(width, len(num))
+            match = _READ_FILE_GUTTER_RE.match(line)
+            if match:
+                marker, source = match.groups()
+                parsed.append((marker, source))
+                width = max(width, len(marker))
             else:
                 parsed.append(None)
 
         if width == 0:
             return output
 
-        return "\n".join(
-            f"{row[0]:>{width}}  {row[1]}" if row else line
-            for line, row in zip(lines, parsed, strict=True)
-        )
+        compacted: list[str] = []
+        for line, row in zip(lines, parsed, strict=True):
+            if row is None:
+                compacted.append(line)
+            else:
+                marker, source = row
+                compacted.append(f"{marker:>{width}}  {source}")
+        return "\n".join(compacted)
 
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False

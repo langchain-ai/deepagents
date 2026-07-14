@@ -5547,6 +5547,21 @@ class TestWarnDiscardedGoalChannels:
         """A recognized status must not be reported as discarded."""
         assert _warn_discarded_goal_channels({"_goal_status": "complete"}) == []
 
+    def test_flags_unknown_pending_goal_kind(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unrecognized pending proposal kind is discarded and warned."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            discarded = _warn_discarded_goal_channels({"_pending_goal_kind": "replace"})
+
+        assert discarded == ["_pending_goal_kind"]
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    def test_known_pending_goal_kind_is_not_flagged(self) -> None:
+        """A recognized pending proposal kind must not be reported as discarded."""
+        assert _warn_discarded_goal_channels({"_pending_goal_kind": "amend"}) == []
+
 
 class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
@@ -5668,6 +5683,53 @@ class TestGoalCommand:
                 criteria="- passkeys work",
             )
 
+    async def test_goal_amend_persists_cleared_proposal_before_drafting(
+        self,
+    ) -> None:
+        """Replacing a pending review must remove it from the checkpoint first."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "stale proposal"
+            app._pending_goal_rubric = "- stale criteria"
+            app._pending_goal_kind = "create"
+            events: list[str] = []
+            persisted_updates: list[dict[str, Any]] = []
+
+            def persist() -> bool:
+                events.append("persist")
+                persisted_updates.append(app._goal_state_update())
+                return True
+
+            def fail_generation(*_args: object) -> tuple[str, str]:
+                events.append("generate")
+                msg = "model down"
+                raise RuntimeError(msg)
+
+            with (
+                patch.object(app, "_persist_goal_rubric_state", side_effect=persist),
+                patch.object(
+                    app,
+                    "_generate_goal_amendment",
+                    side_effect=fail_generation,
+                ),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._handle_command("/goal amend add passkeys")
+                for _ in range(20):
+                    await pilot.pause()
+                    if "generate" in events:
+                        break
+
+            assert events == ["persist", "generate"]
+            persisted = persisted_updates[0]
+            assert persisted["_pending_goal_objective"] is None
+            assert persisted["_pending_goal_rubric"] is None
+            assert persisted["_pending_goal_kind"] is None
+
     async def test_goal_amend_without_active_goal_shows_guidance(self) -> None:
         """Amending without a goal should explain how to create one."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5707,6 +5769,234 @@ class TestGoalCommand:
 
             assert execute.await_args is not None
             assert execute.await_args.kwargs["rubric"] is None
+
+    async def test_pause_goal_persist_failure_reverts_and_warns(self) -> None:
+        """A failed pause write reverts to active and surfaces an inline error."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+
+            await app._pause_goal()
+
+            assert app._goal_status == "active"
+            assert any(
+                "Goal pause could not be saved" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            assert not any(
+                str(w._content).startswith("Goal paused.")
+                for w in app.query(AppMessage)
+            )
+
+    async def test_resume_goal_persist_failure_reverts_and_warns(self) -> None:
+        """A failed resume write reverts to paused and surfaces an inline error."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "ship login"
+            app._goal_status = "paused"
+            app._active_rubric = "- tests pass"
+            send = AsyncMock()
+
+            with patch.object(app, "_send_to_agent", send):
+                await app._resume_goal()
+
+            assert app._goal_status == "paused"
+            assert any(
+                "Goal resume could not be saved" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            send.assert_not_awaited()
+
+    async def test_pause_goal_rejects_when_no_goal_or_non_pausable(self) -> None:
+        """Pause guards cover the absent, already-paused, and blocked cases."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._pause_goal()  # no active goal
+            app._active_goal = "ship login"
+            app._goal_status = "paused"
+            await app._pause_goal()  # already paused
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting for input"
+            await app._pause_goal()  # blocked, awaiting user
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No active goal to pause" in rendered
+            assert "Goal is already paused." in rendered
+            assert "Goal is blocked and already waiting" in rendered
+            # A rejected pause never mutates status.
+            assert app._goal_status == "blocked"
+
+    async def test_resume_goal_requires_paused_state(self) -> None:
+        """Resume guards cover the absent and not-paused cases."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._resume_goal()  # no goal
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            await app._resume_goal()  # active, not paused
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No paused goal to resume" in rendered
+            assert "Goal is not paused" in rendered
+            assert app._goal_status == "active"
+
+    async def test_queued_goal_apply_failure_requeues_and_releases_gate(
+        self,
+    ) -> None:
+        """A raising boundary apply re-queues the goal, drains, and frees the gate."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            application = _GoalApplication("ship login", "- tests pass", "amend")
+            app._queued_goal_application = application
+            process = AsyncMock()
+            with (
+                patch.object(
+                    app,
+                    "_apply_goal_application",
+                    new=AsyncMock(side_effect=RuntimeError("dom torn down")),
+                ),
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
+                patch.object(app, "_process_next_from_queue", process),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._cleanup_agent_task()
+
+            # The goal stays queued for the next turn instead of being lost, the
+            # failure is surfaced, the queue is still drained (not stranded), and
+            # the quiescence gate is released so a parked mutation can't deadlock.
+            assert app._queued_goal_application is application
+            assert any(
+                "could not be applied" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            process.assert_awaited()
+            assert app._agent_quiescent.is_set()
+
+    async def test_cleanup_releases_quiescence_when_reconciliation_raises(
+        self,
+    ) -> None:
+        """The gate must free even if reconciliation raises, or waiters deadlock."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "_sync_goal_rubric_state_from_thread",
+                    new=AsyncMock(side_effect=RuntimeError("reconcile boom")),
+                ),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+                pytest.raises(RuntimeError, match="reconcile boom"),
+            ):
+                await app._cleanup_agent_task()
+
+            assert app._agent_reconciling is False
+            assert app._agent_quiescent.is_set()
+
+    async def test_apply_goal_application_aborts_when_goal_ended(self) -> None:
+        """A queued amendment must abort if the goal vanished before it applied."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = None
+            app._goal_status = None
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            persist = AsyncMock(return_value=True)
+            with patch.object(app, "_persist_goal_rubric_state", persist):
+                result = await app._apply_goal_application(
+                    _GoalApplication(
+                        "ship login with passkeys", "- passkeys work", "amend"
+                    ),
+                    continue_work=False,
+                    at_boundary=True,
+                )
+
+            assert result is None
+            persist.assert_not_awaited()
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_kind is None
+            assert any(
+                "The goal ended before the amendment could be applied"
+                in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_accept_amendment_after_goal_cleared_shows_guidance(self) -> None:
+        """Accepting an amendment whose goal was cleared must not resurrect it."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = None
+            app._goal_status = None
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            apply_mock = AsyncMock()
+            with patch.object(app, "_apply_goal_application", apply_mock):
+                await app._accept_goal_rubric("- passkeys work")
+
+            apply_mock.assert_not_awaited()
+            assert app._queued_goal_application is None
+            assert any(
+                "The goal is no longer active" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_goal_panel_renders_note_only_for_terminal_states(self) -> None:
+        """Blocker/completion notes render for blocked/complete goals only."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel = app.query_one("#goal-status-panel", GoalStatusPanel)
+
+            panel.set_goal("ship login", "blocked", "waiting for review")
+            assert "waiting for review" in str(panel.content)
+
+            panel.set_goal("ship login", "active", "stale note")
+            assert "stale note" not in str(panel.content)
+
+    async def test_goal_panel_hides_when_goal_cleared(self) -> None:
+        """Clearing the goal hides the persistent panel and empties its content."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel = app.query_one("#goal-status-panel", GoalStatusPanel)
+
+            panel.set_goal("ship login", "active", None)
+            assert panel.display is True
+
+            panel.set_goal(None, None, None)
+            assert panel.display is False
+            assert str(panel.content) == ""
+
+    async def test_goal_application_rejects_empty_fields(self) -> None:
+        """The queued-goal value object refuses an empty objective or rubric."""
+        with pytest.raises(ValueError, match="non-empty objective and rubric"):
+            _GoalApplication("", "- tests pass", "create")
+        with pytest.raises(ValueError, match="non-empty objective and rubric"):
+            _GoalApplication("ship login", "", "create")
 
     async def test_completed_goal_suppresses_rubric_for_later_turns(self) -> None:
         """A completed goal remains terminal and does not keep grading."""
@@ -6915,6 +7205,9 @@ class TestGoalCommand:
             app._goal_status = "active"
             app._active_rubric = "- tests pass"
             app._pending_goal_completion_note = "all acceptance tests pass"
+            app._pending_goal_objective = "add refresh tokens safely"
+            app._pending_goal_rubric = "- security tests pass"
+            app._pending_goal_kind = "amend"
 
             committed = await app._resolve_pending_goal_completion(
                 rubric_status="satisfied",
@@ -6927,6 +7220,9 @@ class TestGoalCommand:
             assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note == "all acceptance tests pass"
+            assert app._pending_goal_objective == "add refresh tokens safely"
+            assert app._pending_goal_rubric == "- security tests pass"
+            assert app._pending_goal_kind == "amend"
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Goal marked complete by the agent." not in rendered
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
@@ -7428,8 +7724,8 @@ class TestGoalCommand:
             )
             handle.assert_awaited_once_with("add refresh tokens")
 
-    async def test_goal_amend_continues_when_persist_fails(self) -> None:
-        """A failed thread write should not leave an accepted amendment inert."""
+    async def test_goal_amend_does_not_continue_when_persist_fails(self) -> None:
+        """Synthetic continuation must not read an unchanged checkpoint."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7454,7 +7750,7 @@ class TestGoalCommand:
                 "could not be saved to the thread" in str(w._content)
                 for w in app.query(ErrorMessage)
             )
-            continuation.assert_awaited_once_with("amended")
+            continuation.assert_not_awaited()
 
     async def test_goal_cancel_omits_unsaved_thread_warning(self) -> None:
         """Cancelling a goal proposal should not render the generic save warning."""

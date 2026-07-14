@@ -199,7 +199,7 @@ jobs:
             if [ -n "${INPUT_SHA}" ]; then
               echo "| \`release-sha\` | \`$(escape_cell "${INPUT_SHA}")\` |"
             else
-              echo "| \`release-sha\` | (not provided — only dangerous non-main releases resolve this to the workflow SHA; otherwise invalid) |"
+              echo "| \`release-sha\` | (not provided — resolved to the workflow SHA only when \`dangerous-nonmain-release\` is enabled; otherwise invalid) |"
             fi
             if [ "${IS_DANGEROUS}" = "true" ]; then
               echo "| \`dangerous-nonmain-release\` | ⚠️ enabled |"
@@ -611,10 +611,15 @@ jobs:
               # Skip "future" siblings: a tag that descends from RELEASE_SHA cannot be a
               # predecessor. --is-ancestor exits 0 (ancestor -> skip), 1 (not -> keep),
               # or 128 (error); treat any non-1 as skip so a git error never silently
-              # accepts a bad candidate.
+              # accepts a bad candidate. Warn on the error case (non-0, non-1) so it is
+              # not silently bucketed with the expected future-sibling skip, matching
+              # the git-tag-list and parse-failure warnings above.
               ahead_status=0
               git merge-base --is-ancestor "$RELEASE_SHA" "$tag" || ahead_status=$?
               if [ "$ahead_status" -ne 1 ]; then
+                if [ "$ahead_status" -ne 0 ]; then
+                  echo "::warning::git merge-base --is-ancestor exited $ahead_status for '$tag'; skipping as a predecessor candidate"
+                fi
                 continue
               fi
               # Track the latest earlier sibling: highest rank, then highest serial.

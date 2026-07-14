@@ -809,6 +809,39 @@ def test_prerelease_resolve_refs_ignores_different_base_prerelease(
     assert outputs["prev-tag"] == "example==1.0.0"
 
 
+def test_prerelease_resolve_refs_ignores_later_phase_sibling(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    base = _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "BASE = 1\n",
+        "feat(example): base",
+    )
+    _git(tmp_path, "tag", "example==1.0.0")
+    # A later-phase sibling of the SAME base version (1.1.0rc1, rank rc) is not a valid
+    # predecessor of an earlier phase (1.1.0b1, rank b). It shares history with the
+    # release and does not descend from it, so it survives both the history-sharing and
+    # future-sibling ancestry checks; only the `candidate_rank > current_rank` guard
+    # excludes it. If that guard regressed it would be selected as the predecessor.
+    _create_sibling_prerelease_tag(tmp_path, base=base, version="1.1.0rc1", index=0)
+
+    _git(tmp_path, "checkout", "-b", "current-prerelease", base)
+    _commit(
+        tmp_path,
+        PACKAGE_PATH / "module.py",
+        "CURRENT = 1\n",
+        "hotfix(example): prerelease 1.1.0b1",
+    )
+
+    outputs = _run_resolve_refs_step(tmp_path, version="1.1.0b1").outputs
+
+    # No earlier sibling and no example==1.1.0 base tag, so selection falls through to
+    # the latest reachable stable tag.
+    assert outputs["prev-tag"] == "example==1.0.0"
+
+
 def test_prerelease_resolve_refs_warns_on_unparseable_prerelease(
     tmp_path: Path,
 ) -> None:

@@ -736,7 +736,8 @@ def _process_rubric_event(
     elif result == "needs_revision":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]↻ Changes need revision{suffix}[/yellow]", highlight=False
+            f"[yellow]↻ Acceptance criteria not yet satisfied{suffix}[/yellow]",
+            highlight=False,
         )
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and not criterion.get("passed", True):
@@ -746,25 +747,25 @@ def _process_rubric_event(
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        message = (
-            "[yellow]⚠ Iteration limit reached with unmet acceptance criteria"
-            f"{suffix}[/yellow]"
+        console.print(
+            "[yellow]⚠ Acceptance criteria not yet satisfied "
+            f"(iteration limit reached){suffix}[/yellow]",
+            highlight=False,
         )
-        console.print(message, highlight=False)
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and not criterion.get("passed", True):
                 name = escape_markup(str(criterion.get("name", "criterion")))
                 gap = escape_markup(str(criterion.get("gap", "")).strip())
                 detail = f" — {gap}" if gap else ""
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
-    elif result == "failed":
-        suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
-    elif result == "grader_error":
-        suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(
-            f"[red]⚠ Grader/infrastructure failure{suffix}[/red]", highlight=False
+    elif result in {"failed", "grader_error"}:
+        label = (
+            "Rubric is invalid or cannot be evaluated"
+            if result == "failed"
+            else "Acceptance criteria check failed"
         )
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(f"[red]⚠ {label}{suffix}[/red]", highlight=False)
     elif result is not None:
         # A `rubric_evaluation_end` with an unrecognized result is still a
         # terminal grading event; surface it rather than letting the run go
@@ -772,7 +773,8 @@ def _process_rubric_event(
         # interactive fallback in `textual_adapter._format_rubric_event`.
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+            f"[yellow]⚠ Acceptance criteria check ended{suffix}[/yellow]",
+            highlight=False,
         )
 
     if state.spinner:

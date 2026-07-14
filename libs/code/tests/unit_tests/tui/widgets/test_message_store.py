@@ -16,6 +16,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -145,6 +146,28 @@ class TestMessageData:
         assert restored._content == "Session started"
         assert restored.id == "test-app-1"
         assert restored._is_markdown is False
+
+    def test_rubric_result_roundtrip_preserves_complete_details(self) -> None:
+        """Virtualization must not discard or flatten expandable grader output."""
+        details = "Explanation\nfull output\n\nNext step\nfix it"
+        original = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            details,
+            id="test-rubric-1",
+        )
+        original._expanded = True
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.RUBRIC
+        assert data.content == "Acceptance criteria not yet satisfied"
+        assert data.rubric_details == details
+        assert data.rubric_expanded is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, RubricResultMessage)
+        assert restored._summary == "Acceptance criteria not yet satisfied"
+        assert restored._details == details
+        assert restored._deferred_expanded is True
 
     def test_app_message_markdown_roundtrip(self):
         """Markdown AppMessages must survive dehydrate/rehydrate with their flag.

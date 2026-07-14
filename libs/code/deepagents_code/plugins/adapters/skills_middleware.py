@@ -101,8 +101,8 @@ def discover_skill_dirs(
     """Return `(skill_dir, subfolders)` pairs found under `source_path`.
 
     Walks the source tree, treating any directory that directly contains a
-    `SKILL.md` as a skill directory (a recursion leaf, like Claude Code's
-    plugin walker). `subfolders` holds the directory names between the source
+    `SKILL.md` as a skill directory (a recursion leaf, like a plugin walker).
+    `subfolders` holds the directory names between the source
     root and the skill directory, excluding the skill directory's own name.
 
     Returns:
@@ -210,7 +210,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     recursively so nested skill directories (`skills/foo/bar/review/SKILL.md`)
     are discovered, and each skill's name is qualified as
     `plugin_id:foo:bar:review` before the last-one-wins merge — matching
-    Claude Code's plugin skill naming.
+    the plugin skill naming convention.
     """
 
     def __init__(

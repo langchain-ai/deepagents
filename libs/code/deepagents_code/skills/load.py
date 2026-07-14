@@ -117,7 +117,7 @@ def list_skills(
             if namespace:
                 # Plugin sources are walked recursively so nested skill
                 # directories are namespaced as `plugin:sub:skill`, matching
-                # both the runtime middleware and Claude Code.
+                # both the runtime middleware and plugin conventions.
                 from deepagents_code.plugins.adapters.skills_middleware import (
                     load_namespaced_skills,
                 )

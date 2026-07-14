@@ -29,8 +29,8 @@ def namespaced_skill_name(
     """Qualify a skill name under its plugin namespace.
 
     Nested skill directories contribute intermediate `:`-joined segments
-    between the plugin namespace and the skill name, matching Claude Code's
-    plugin skill naming (e.g. `plugin:sub:review`).
+    between the plugin namespace and the skill name, matching the plugin skill
+    naming convention (e.g. `plugin:sub:review`).
 
     Args:
         namespace: Plugin namespace (its `plugin_id`).

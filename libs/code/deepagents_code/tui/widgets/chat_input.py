@@ -1011,11 +1011,12 @@ class ChatTextArea(PasteBurstTextArea):
             event.stop()
             return
 
-        # Track rapid keystroke runs so a terminal replaying a paste as key
-        # events (no bracketed paste) arms the Enter-suppression window, keeping
-        # the paste's newlines from submitting mid-stream. `enter` is exempt so
-        # newlines within a paste don't break the run.
-        self._track_burst_run(event, now)
+        # Promote rapid keystroke runs into the paste buffer so terminals without
+        # bracketed paste still get newline grouping and large-paste collapsing.
+        if self._track_burst_run(event, now):
+            event.prevent_default()
+            event.stop()
+            return
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the

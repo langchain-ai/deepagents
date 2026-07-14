@@ -4346,7 +4346,7 @@ class TestPasteBurstEnterSuppression:
                 await pilot.press(char)
             await pilot.press("enter")
             await pilot.press("w")
-            await pilot.pause()
+            await pilot.pause(0.15)
 
             assert len(app.submitted) == 0
             assert "\n" in ta.text

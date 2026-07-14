@@ -6,7 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from textual.app import App
-from textual.events import Paste
+from textual.events import Key, Paste
 
 from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
 from deepagents_code.tui.widgets._inline_prompt import (
@@ -62,6 +62,34 @@ class TestInlinePromptPaste:
             await pilot.pause()
 
             assert app.submissions == [big]
+
+    async def test_unquoted_key_event_paste_collapses_and_expands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A large unquoted key-event paste reaches collapse handling."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        payload = "alpha\nbeta\ngamma\ndelta"
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in payload:
+                event = Key("enter", None) if char == "\n" else Key(char, char)
+                await ta._on_key(event)
+
+            assert ta.text == ""
+            await pilot.pause(0.35)
+
+            assert ta.text == "[Pasted text #1 +3 lines]"
+            assert ta.submitted_value == payload
 
     async def test_backspace_deletes_collapsed_placeholder_atomically(
         self, monkeypatch: pytest.MonkeyPatch
@@ -129,7 +157,7 @@ class TestInlinePromptPaste:
                 await pilot.press(char)
             await pilot.press("enter")
             await pilot.press("w")
-            await pilot.pause()
+            await pilot.pause(0.15)
 
             assert app.submissions == []
             assert "\n" in ta.text

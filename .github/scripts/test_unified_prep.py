@@ -381,3 +381,38 @@ def test_total_job_guard_rejects_over_budget():
     import pytest
     with pytest.raises(SystemExit, match=r"worker pool"):
         up.total_job_guard(n_models=3, est_tasks_per_model=142)  # 426 > 400
+
+
+def test_build_flat_matrix_one_entry_per_task_across_categories():
+    tasks = {
+        "autonomous": ["harbor-index/a", "harbor-index/b"],
+        "context": ["cb-cloud-0"],
+    }
+    entries = up.build_flat_matrix(
+        "openai:gpt", ["autonomous", "context"], tasks, dcode_impl="bare"
+    )
+    # 2 autonomous + 1 context = 3 single-task shards
+    assert len(entries) == 3
+    auto = [e for e in entries if e["category"] == "autonomous"]
+    assert {e["include_tasks"] for e in auto} == {"harbor-index/a", "harbor-index/b"}
+    assert all(e["n_shards"] == 1 and e["shard"] == 0 for e in entries)
+    assert all(e["agent_impl"] == "bare" for e in auto)  # dcode override applies
+    ctx = next(e for e in entries if e["category"] == "context")
+    assert ctx["dataset_path"] == "datasets/context-retrieval-evals"
+    assert ctx["agent_impl"] == "bare"
+    assert all(e["langsmith_dataset"] == "" for e in entries)
+
+
+def test_build_flat_matrix_conversation_stays_tau3():
+    tasks = {"conversation": ["sierra-research/tau3-bench__x"]}
+    entries = up.build_flat_matrix("openai:gpt", ["conversation"], tasks, dcode_impl="bare")
+    assert entries[0]["agent_impl"] == "tau3"
+
+
+def test_build_flat_matrix_packs_above_cap():
+    tasks = {"autonomous": [f"harbor-index/t{i}" for i in range(shard_matrix.MAX_SHARDS + 5)]}
+    entries = up.build_flat_matrix("openai:gpt", ["autonomous"], tasks, dcode_impl="dcode")
+    assert len(entries) <= shard_matrix.MAX_SHARDS
+    # every task still present, split across include_tasks strings
+    seen = " ".join(e["include_tasks"] for e in entries).split()
+    assert seen == tasks["autonomous"]

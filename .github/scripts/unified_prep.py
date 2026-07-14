@@ -150,6 +150,42 @@ def derive_pool(
     return max_parallel, model_parallel
 
 
+def build_flat_matrix(
+    model: str,
+    categories: list[str],
+    tasks_by_cat: dict[str, list[str]],
+    dcode_impl: str = "dcode",
+) -> list[dict]:
+    """One flat matrix of single-`harbor run` shards spanning all categories.
+
+    Each category's task list is packed into <= MAX_SHARDS groups (1 task each
+    below the cap); each group is one matrix entry carrying its own dataset and
+    agent so the leaf's max-parallel pool drains the mixed queue across category
+    boundaries. `provider` is retained only as an aggregation tag.
+    """
+    prov = provider_of(model)
+    entries: list[dict] = []
+    for cat in categories:
+        cm = CATEGORY_MAP[cat]
+        agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
+        for group in shard_matrix.pack_tasks(tasks_by_cat.get(cat, [])):
+            entries.append(
+                {
+                    "model": model,
+                    "provider": prov,
+                    "category": cat,
+                    "dataset": cm["dataset"],
+                    "dataset_path": cm["dataset_path"],
+                    "agent_impl": agent_impl,
+                    "include_tasks": " ".join(group),
+                    "langsmith_dataset": "",
+                    "n_shards": 1,
+                    "shard": 0,
+                }
+            )
+    return entries
+
+
 def build_provider_matrices(
     models_list: list[str],
     categories: list[str],

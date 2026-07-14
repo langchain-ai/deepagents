@@ -37,18 +37,21 @@ from deepagents_code.model_config import (
     clear_caches,
     clear_default_agent,
     clear_default_model,
+    clear_effort_for_model,
     get_available_models,
     get_model_profiles,
     get_provider_auth_status,
     has_provider_credentials,
     is_warning_suppressed,
     load_default_agent,
+    load_effort_for_model,
     load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
     load_startup_mode,
     load_thread_columns,
     save_default_agent,
+    save_effort_for_model,
     save_recent_agent,
     save_recent_model,
     save_thread_columns,
@@ -2183,6 +2186,51 @@ recent = "openai:gpt-5.2"
         result = clear_default_model(config_path)
 
         assert result is True
+
+
+class TestEffortPersistence:
+    """Tests for per-model reasoning effort persistence."""
+
+    def test_saves_and_loads_effort_by_model(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        assert save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        assert save_effort_for_model("anthropic:claude-opus-4-8", "xhigh", config_path)
+
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) == "max"
+        assert (
+            load_effort_for_model("anthropic:claude-opus-4-8", config_path) == "xhigh"
+        )
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
+
+    def test_preserves_unrelated_config(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "openai:gpt-5.5"\n')
+
+        assert save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+
+        content = config_path.read_text()
+        assert '[models]\ndefault = "openai:gpt-5.5"' in content
+        assert "[effort.by_model]" in content
+        assert '"openai:gpt-5.6-luna" = "max"' in content
+
+    def test_clears_only_requested_model(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        save_effort_for_model("anthropic:claude-opus-4-8", "high", config_path)
+
+        assert clear_effort_for_model("openai:gpt-5.6-luna", config_path)
+
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) is None
+        assert load_effort_for_model("anthropic:claude-opus-4-8", config_path) == "high"
+
+    def test_rejects_malformed_effort_table(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('effort = "high"\n')
+
+        assert not save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) is None
+        assert config_path.read_text() == 'effort = "high"\n'
 
 
 class TestModelPersistenceBetweenSessions:

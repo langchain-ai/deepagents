@@ -1,6 +1,7 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -64,12 +65,16 @@ class _FakeModelResult:
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings() -> Iterator[None]:
+def _restore_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
     """Save and restore global settings mutated by tests."""
     original_name = settings.model_name
     original_provider = settings.model_provider
     original_context_limit = settings.model_context_limit
     original_modalities = settings.model_unsupported_modalities
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     yield
     settings.model_name = original_name
     settings.model_provider = original_provider
@@ -387,6 +392,28 @@ class TestModelSwitchNoOp:
 
         assert app._model_override == "anthropic:claude-opus-4-5"
         assert app._model_params_override is None
+
+    async def test_switch_restores_persisted_effort_for_model(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+        model_config.save_effort_for_model(
+            "anthropic:claude-opus-4-5",
+            "high",
+        )
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert app._model_params_override == {
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": "high"},
+        }
 
 
 class TestModelSwitchErrorHandling:

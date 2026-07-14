@@ -3190,6 +3190,9 @@ class DeepAgentsApp(App):
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        model_spec = self._effective_model_spec()
+        if model_spec:
+            self._restore_effort_override(model_spec)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
@@ -4118,6 +4121,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
+            self._restore_effort_override(resolved_spec)
             save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
@@ -11714,6 +11718,38 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
+    def _restore_effort_override(self, model_spec: str) -> None:
+        """Restore a persisted reasoning effort when valid for the model."""
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            load_effort_for_model,
+        )
+        from deepagents_code.reasoning_effort import (
+            merge_effort_model_params,
+            model_params_for_effort,
+            without_effort_model_params,
+        )
+
+        effort = load_effort_for_model(model_spec)
+        if effort is None:
+            return
+        params = model_params_for_effort(model_spec, effort)
+        if params is None:
+            self._model_params_override = without_effort_model_params(
+                self._model_params_override
+            )
+            if not clear_effort_for_model(model_spec):
+                logger.warning(
+                    "Could not clear invalid reasoning effort %r for %s",
+                    effort,
+                    model_spec,
+                )
+            return
+        self._model_params_override = merge_effort_model_params(
+            self._model_params_override,
+            params,
+        )
+
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
         """Resolve the active model spec and its supported reasoning efforts.
 
@@ -11812,6 +11848,10 @@ class DeepAgentsApp(App):
         Args:
             effort: Effort label or clear/reset token.
         """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            save_effort_for_model,
+        )
         from deepagents_code.reasoning_effort import (
             merge_effort_model_params,
             model_params_for_effort,
@@ -11829,7 +11869,16 @@ class DeepAgentsApp(App):
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )
+            saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
+            if not saved:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Reasoning effort cleared for {spec} in this session, but "
+                        "the saved preference could not be removed."
+                    )
+                )
+                return
             message = (
                 f"Reasoning effort override cleared for {spec}."
                 if had_override
@@ -11852,7 +11901,16 @@ class DeepAgentsApp(App):
         self._model_params_override = merge_effort_model_params(
             self._model_params_override, params
         )
+        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
         self._sync_status_model()
+        if not saved:
+            await self._mount_message(
+                ErrorMessage(
+                    f"Reasoning effort for {spec} set to {effort} in this session, "
+                    "but the preference could not be saved."
+                )
+            )
+            return
         await self._mount_message(
             AppMessage(f"Reasoning effort for {spec} set to {effort}."),
         )
@@ -18616,6 +18674,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                self._restore_effort_override(current)
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
@@ -18669,6 +18728,8 @@ class DeepAgentsApp(App):
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
 
@@ -18698,7 +18759,6 @@ class DeepAgentsApp(App):
                 # touch_recent_model always gets a valid "provider:model"
                 # string. Silent on failure — the debug log captures it when
                 # debug logging is enabled.
-                resolved_spec = f"{result.provider}:{result.model_name}"
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",

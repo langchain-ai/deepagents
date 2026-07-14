@@ -2983,6 +2983,154 @@ def clear_default_model(config_path: Path | None = None) -> bool:
         return True
 
 
+def save_effort_for_model(
+    model_spec: str,
+    effort: str,
+    config_path: Path | None = None,
+) -> bool:
+    """Persist the selected reasoning effort for a model.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        effort: Reasoning effort label selected by the user.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed.
+    """
+    return _update_effort_for_model(model_spec, effort, config_path)
+
+
+def load_effort_for_model(
+    model_spec: str,
+    config_path: Path | None = None,
+) -> str | None:
+    """Load the selected reasoning effort for a model.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The persisted effort label, or `None` when no valid value is stored.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        return None
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        effort_section = data.get("effort")
+        if not isinstance(effort_section, dict):
+            return None
+        by_model = effort_section.get("by_model")
+        if not isinstance(by_model, dict):
+            return None
+        effort = by_model.get(model_spec)
+        if not isinstance(effort, str):
+            return None
+        return effort.strip() or None
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception(
+            "Could not load reasoning effort preference for %s", model_spec
+        )
+        return None
+
+
+def clear_effort_for_model(
+    model_spec: str,
+    config_path: Path | None = None,
+) -> bool:
+    """Remove the selected reasoning effort for a model.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if the entry was removed or absent, `False` if clearing failed.
+    """
+    return _update_effort_for_model(model_spec, None, config_path)
+
+
+def _update_effort_for_model(
+    model_spec: str,
+    effort: str | None,
+    config_path: Path | None = None,
+) -> bool:
+    """Read-modify-write one entry in `[effort.by_model]`.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        effort: Reasoning effort label to save, or `None` to clear it.
+        config_path: Path to config file.
+
+    Returns:
+        `True` if the update succeeded, `False` if it failed.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    if effort is None and not config_path.exists():
+        return True
+
+    def _require_table(value: object, name: str) -> dict:
+        if not isinstance(value, dict):
+            msg = f"{name} must be a table"
+            raise TypeError(msg)
+        return value
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.exists():
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
+        else:
+            data = {}
+
+        effort_section = _require_table(data.setdefault("effort", {}), "[effort]")
+        by_model = _require_table(
+            effort_section.setdefault("by_model", {}), "[effort.by_model]"
+        )
+
+        if effort is None:
+            if model_spec not in by_model:
+                return True
+            del by_model[model_spec]
+            if not by_model:
+                del effort_section["by_model"]
+            if not effort_section:
+                del data["effort"]
+        else:
+            by_model[model_spec] = effort
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        logger.exception(
+            "Could not update reasoning effort preference for %s", model_spec
+        )
+        return False
+    else:
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+        _default_config_cache = None
+        return True
+
+
 def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
     """Check if a warning key is suppressed in the config file.
 

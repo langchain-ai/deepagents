@@ -16785,6 +16785,13 @@ class DeepAgentsApp(App):
         )
         await asyncio.wait_for(outcome_future, timeout=5.0)
 
+        # Persist a transcript record of the successful login. The modal and
+        # reconnect toasts are transient, so an inline message is the only
+        # lasting confirmation once they dismiss.
+        await self._mount_message(
+            AppMessage(f"Logged in to {server_name!r}."),
+        )
+
         # Ask the user whether to restart now or defer. Deferring lets them
         # authenticate against additional MCP servers before paying the
         # restart cost. `/mcp reconnect` (or another login confirmed with

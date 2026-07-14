@@ -129,13 +129,17 @@ def build_provider_matrices(
             # `dcode_impl` swaps the harness for the code categories only; the
             # conversation category's tau3 harness is left untouched.
             agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
-            # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks);
-            # right-size shards so a ~15-task slice doesn't spin 10 runners.
+            # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks).
+            # Spread ~2 tasks per shard, capped at shard_parallel so every shard
+            # runs at once: this maxes concurrency (categories are serialized per
+            # provider, so a category never exceeds shard_parallel*concurrency
+            # trials in flight) and scatters heavy task images one-per-runner
+            # instead of concentrating them in a fat shard.
             include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
             n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
             if include:
                 n_tasks = len(include.split())
-                n_shards = min(n_shards, max(1, (n_tasks + 4) // 5))
+                n_shards = min(shard_parallel, max(1, (n_tasks + 1) // 2))
             entry = {
                 "model": spec,
                 "provider": prov,

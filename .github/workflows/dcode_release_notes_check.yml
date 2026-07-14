@@ -89,7 +89,10 @@ jobs:
               });
               core.info(`Curated release-note state: ${result.status}.`);
               if (refreshCheck !== null) {
-                const passing = new Set(['bypassed', 'draft', 'passed']);
+                // 'not-applicable' means the PR is no longer the release branch, so
+                // the gate isn't required — treat it as passing, matching the
+                // pull_request path's early green return for non-release PRs.
+                const passing = new Set(['bypassed', 'draft', 'passed', 'not-applicable']);
                 await github.rest.checks.update({
                   owner,
                   repo,

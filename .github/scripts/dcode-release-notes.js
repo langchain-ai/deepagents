@@ -481,9 +481,10 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, runnerT
   const work = fs.mkdtempSync(path.join(runnerTemp, 'dcode-release-notes-'));
   const input = path.join(work, 'input.md');
   const output = path.join(work, 'output.md');
-  // Keep the trusted draft state OUTSIDE `work`, the agent's writable working
-  // directory. The agent writes only output.md inside `work`; it must not be able
-  // to overwrite the state postDraft re-validates the PR/head/version against.
+  // Keep the trusted draft state OUTSIDE `work`, the drafting helper's working
+  // directory. The helper (draft-dcode-release-notes.js) writes only output.md
+  // inside `work`; it must not be able to overwrite the state postDraft
+  // re-validates the PR/head/version against.
   const state = path.join(runnerTemp, 'dcode-draft-state.json');
   fs.writeFileSync(
     input,
@@ -502,11 +503,16 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, runnerT
   return { work, input, output, state };
 }
 
+// Re-validate the drafting helper's output before it becomes the curated draft.
+// Rejecting bot metadata markers and version headings is a prompt-injection guard:
+// model output must not be able to forge a `<!-- dcode-release-notes-* -->` marker
+// (which parseMetadata would later trust) or smuggle a second `## [` heading (which
+// the exactly-one-heading rule in sectionRange fails closed on).
 function validateDraftOutput(output) {
   const notes = canonical(output);
-  if (notes.trim().length < 10) throw new Error('Drafting agent returned empty release notes');
+  if (notes.trim().length < 10) throw new Error('Drafting helper returned empty release notes');
   if (notes.includes('<!-- dcode-release-notes-') || /^## \[/m.test(notes)) {
-    throw new Error('Drafting agent output must contain only section content, without metadata or a version heading');
+    throw new Error('Drafting helper output must contain only section content, without metadata or a version heading');
   }
   return notes;
 }
@@ -581,6 +587,9 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   const override = latestOverride(comments, login, id, version);
   if (!override) throw new Error('No valid bot-authored curated release-note draft exists');
   if (!override.comment.updated_at) throw new Error('Curated release-note draft is missing its GitHub revision');
+  if (!(await isDescendant(github, owner, repo, override.metadata['release-pr-head'], pr.head.sha))) {
+    throw new Error(`Release PR was rewritten after drafting; run ${COMMAND_MENTION} draft before apply`);
+  }
 
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const currentSection = extractVersionSection(changelog, version);

@@ -155,8 +155,16 @@ jobs:
               throw error;
             }
 
-      - name: Draft polished release notes without agent tools
-        id: agent
+      # Pin Node so the drafting helper (which relies on global fetch and
+      # AbortSignal.timeout) doesn't depend on whatever the runner image
+      # preinstalls; matches the version the helper tests run under in ci.yml.
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Draft polished release notes without model tools
+        id: draft-model
         continue-on-error: true
         env:
           MODEL_SPEC: ${{ vars.DCODE_RELEASE_MODEL }}
@@ -174,7 +182,7 @@ jobs:
 
       - name: Post bot-authored curated draft
         id: post
-        if: steps.agent.outcome == 'success'
+        if: steps.draft-model.outcome == 'success'
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -207,7 +215,7 @@ jobs:
       # leave the maintainer with no PR feedback). `!cancelled()` keeps it firing
       # after an earlier step failed the job.
       - name: Comment on drafting failure
-        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.agent.outcome != 'success' || steps.post.outcome != 'success') }}
+        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.draft-model.outcome != 'success' || steps.post.outcome != 'success') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
@@ -217,7 +225,7 @@ jobs:
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
           POST_ERROR: ${{ steps.post.outputs.error }}
-          AGENT_OUTCOME: ${{ steps.agent.outcome }}
+          DRAFT_OUTCOME: ${{ steps.draft-model.outcome }}
           CHECKOUT_TRUSTED_OUTCOME: ${{ steps.checkout-trusted.outcome }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -227,7 +235,7 @@ jobs:
               || process.env.POST_ERROR
               || (process.env.CHECKOUT_TRUSTED_OUTCOME !== 'success'
                 ? 'Checking out the trusted automation failed; see the workflow logs.'
-                : `The drafting agent step did not succeed (outcome: ${process.env.AGENT_OUTCOME || 'skipped'}); see the workflow logs.`);
+                : `The drafting step did not succeed (outcome: ${process.env.DRAFT_OUTCOME || 'skipped'}); see the workflow logs.`);
             try {
               const { postDraftFailure } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
               await postDraftFailure({
@@ -255,7 +263,7 @@ jobs:
             }
 
       - name: Fail when drafting or comment publication failed
-        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.agent.outcome != 'success' || steps.post.outcome != 'success') }}
+        if: ${{ !cancelled() && (steps.prepare.outcome != 'success' || steps.draft-model.outcome != 'success' || steps.post.outcome != 'success') }}
         run: |
           echo "::error::Curated release-note drafting failed; see the PR comment and earlier step logs."
           exit 1

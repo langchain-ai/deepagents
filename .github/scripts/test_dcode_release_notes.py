@@ -158,22 +158,22 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     # Untrusted release text goes through a deterministic one-request helper, not
     # dcode's agent/tool loop. Only the selected model key is placed in that
     # process, under a provider-neutral variable that the model never sees.
-    agent_step = next(
+    draft_step = next(
         step
         for step in workflow["jobs"]["draft"]["steps"]
-        if step.get("id") == "agent"
+        if step.get("id") == "draft-model"
     )
-    assert "uses" not in agent_step
-    assert agent_step["run"] == (
+    assert "uses" not in draft_step
+    assert draft_step["run"] == (
         "node ./trusted-source/.github/scripts/draft-dcode-release-notes.js"
     )
-    assert set(agent_step["env"]) == {
+    assert set(draft_step["env"]) == {
         "INPUT_FILE",
         "MODEL_API_KEY",
         "MODEL_SPEC",
         "OUTPUT_FILE",
     }
-    selected_key = agent_step["env"]["MODEL_API_KEY"]
+    selected_key = draft_step["env"]["MODEL_API_KEY"]
     assert "secrets.OPENAI_API_KEY" in selected_key
     assert "secrets.ANTHROPIC_API_KEY" in selected_key
     assert "secrets.GOOGLE_API_KEY" in selected_key

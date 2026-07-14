@@ -220,6 +220,15 @@ test('extracts and replaces exactly one version section', () => {
   assert.throws(() => releaseNotes.extractVersionSection('# Changelog\n', VERSION), /exactly one/);
 });
 
+test('release version and section extraction accept prerelease and build metadata', () => {
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 0.2.0-rc.1'), '0.2.0-rc.1');
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 1.0.0+build.5'), '1.0.0+build.5');
+  const version = '0.2.0-rc.1';
+  const heading = `## [${version}](https://example.test) (2026-07-09)`;
+  const doc = `# Changelog\n\n${heading}\n\n* Prerelease note\n\n## [0.1.34](https://example.test) (2026-07-01)\n\n* Older\n`;
+  assert.match(releaseNotes.extractVersionSection(doc, version), /Prerelease note/);
+});
+
 test('requires exactly one PR-body preview terminator', () => {
   const valid = `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\nFooter\n`;
   assert.equal(releaseNotes.extractPreviewSection(valid, VERSION), releaseNotes.canonical(GENERATED_SECTION));
@@ -229,6 +238,14 @@ test('requires exactly one PR-body preview terminator', () => {
   );
   assert.throws(
     () => releaseNotes.extractPreviewSection(`${valid}\n_End release notes preview._\n`, VERSION),
+    /exactly one release-notes preview terminator/,
+  );
+  // A second version heading smuggled into the preview region (before the
+  // terminator) must fail closed: the gate compares the preview against the
+  // curated override, so an injected heading can't be allowed to redirect it.
+  const smuggled = `Release notes preview\n\n${GENERATED_SECTION}\n## [9.9.9](https://example.test) (2026-07-09)\n\n* smuggled\n\n_End release notes preview._\n`;
+  assert.throws(
+    () => releaseNotes.extractPreviewSection(smuggled, VERSION),
     /exactly one release-notes preview terminator/,
   );
 });
@@ -450,6 +467,20 @@ test('prepare apply rejects new generated entries but permits idempotent recover
   assert.equal(recovered.alreadyApplied, true);
 });
 
+test('prepare apply rejects a draft from a rewritten release branch with unchanged entries', async t => {
+  const rewrittenHead = 'c'.repeat(40);
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const pr = releasePr({ head: { ...releasePr().head, sha: rewrittenHead } });
+  const files = new Map([[rewrittenHead, changelog(GENERATED_SECTION)]]);
+  const { github } = makeGithub({ pr, comments: [overrideComment()], files, comparison: 'diverged' });
+
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: rewrittenHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /Release PR was rewritten after drafting; run @dcode-release-bot draft before apply/,
+  );
+});
+
 test('required check passes only when applied metadata, changelog, body, and ancestry match', async () => {
   const pr = releasePr({
     head: { ...releasePr().head, sha: APPLIED_HEAD },
@@ -475,6 +506,31 @@ test('required check accepts apply after unrelated branch advancement', async ()
     body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
   });
   const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment({ sourceHead: advancedHead })] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'passed', core.failed);
+  assert.equal(core.failed, null);
+});
+
+test('required check accepts an identical-ancestry comparison as a descendant', async () => {
+  // source-head differs from the override head, so ancestry goes through the compare
+  // API rather than the base===head short-circuit; 'identical' must count as ok.
+  const advancedHead = 'c'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment(), appliedComment({ sourceHead: advancedHead })],
+    comparison: 'identical',
+  });
   const core = makeCore();
   const result = await releaseNotes.checkCuratedState({
     github,
@@ -589,6 +645,27 @@ test('required check warns when generated entries change after draft before appl
   assert.equal(calls.createComment.length, 1);
 });
 
+test('a failed new-entries warning comment does not mask the actionable gate reason', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github } = makeGithub({ pr, comments: [overrideComment()], files });
+  // The courtesy warning comment fails (rate limit / transient 5xx). The gate must
+  // still fail closed with its specific, actionable reason and only log a warning
+  // about the comment, rather than surfacing the raw API error.
+  github.rest.issues.createComment = async () => { throw new Error('rate limited'); };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then/);
+  assert.ok(core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
 test('draft, unrelated package, and bypass label pass without metadata', async () => {
   for (const pr of [
     releasePr({ draft: true }),
@@ -597,6 +674,9 @@ test('draft, unrelated package, and bypass label pass without metadata', async (
       head: { ...releasePr().head, ref: 'release-please--branches--main--components--deepagents' },
     }),
     releasePr({ labels: [{ name: releaseNotes.BYPASS_LABEL }] }),
+    // Labels can also arrive as plain strings; the bypass escape hatch and the
+    // TOCTOU label snapshot both depend on labelNames handling that shape.
+    releasePr({ labels: [releaseNotes.BYPASS_LABEL] }),
   ]) {
     const { github } = makeGithub({ pr });
     const core = makeCore();

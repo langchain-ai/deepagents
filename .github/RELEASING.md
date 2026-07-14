@@ -81,7 +81,15 @@ APP_SLUG=<app-slug>
 gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
 ```
 
-Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add the model-provider API key matching `DCODE_RELEASE_MODEL` as an environment secret (only the configured provider's key is required), and add `DCODE_RELEASE_MODEL` as an environment variable. Use an explicit `provider:model` value with one of the supported providers: `openai`, `anthropic`, or `google_genai`.
+Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `DCODE_RELEASE_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
+
+| `DCODE_RELEASE_MODEL` provider | Environment secret name |
+| ------------------------------ | ----------------------- |
+| `openai`                       | `OPENAI_API_KEY`        |
+| `anthropic`                    | `ANTHROPIC_API_KEY`     |
+| `google_genai`                 | `GOOGLE_API_KEY`        |
+
+A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 
 For the check to actually gate merges, add the literal `curated release notes` workflow job name to `main`'s required status checks (repo settings). Without that required check, failures remain visible on the PR but do not prevent a stale or unapplied changelog from being merged. The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.
 

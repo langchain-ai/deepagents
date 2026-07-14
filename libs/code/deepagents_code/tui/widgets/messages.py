@@ -2000,17 +2000,17 @@ class ToolCallMessage(Vertical):
 
         `read_file` prefixes each row with a right-justified line marker — `N`,
         or `N.M` for a wrapped-line continuation — then two spaces, then the
-        original source content. (Deprecated string backends may still emit the
-        older `cat -n` gutter: a wide right-justified number and a tab.) The
-        model needs the raw gutter for edits, but the TUI re-justifies markers
-        to the widest marker actually present, then two spaces, mirroring how
-        grep/glob results sit flush left. Source indentation after the gutter is
-        preserved untouched.
+        original source content. (Output from deepagents versions predating the
+        gutter disambiguation in #4561 used the older `cat -n` gutter — a wide
+        right-justified number and a tab — which may still surface from cached or
+        persisted transcripts.) The model needs the raw gutter for edits, but the
+        TUI re-justifies markers to the widest marker actually present, then two
+        spaces, mirroring how grep/glob results sit flush left. Source
+        indentation after the gutter is preserved untouched.
 
-        The gutter shape is `_READ_FILE_GUTTER_RE`, kept in sync with deepagents'
-        `format_content_with_line_numbers` (the authoritative producer). Lines
-        that don't match a gutter shape (e.g. test fixtures or non-numbered
-        output) are passed through unchanged.
+        The gutter shape is `_READ_FILE_GUTTER_RE`. Lines that don't match a
+        gutter shape (e.g. test fixtures or non-numbered output) are passed
+        through unchanged.
 
         Returns:
             The output with compacted gutters, or the original string if no
@@ -2031,10 +2031,14 @@ class ToolCallMessage(Vertical):
         if width == 0:
             return output
 
-        return "\n".join(
-            f"{row[0]:>{width}}  {row[1]}" if row else line
-            for line, row in zip(lines, parsed, strict=True)
-        )
+        compacted: list[str] = []
+        for line, row in zip(lines, parsed, strict=True):
+            if row is None:
+                compacted.append(line)
+            else:
+                marker, source = row
+                compacted.append(f"{marker:>{width}}  {source}")
+        return "\n".join(compacted)
 
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False

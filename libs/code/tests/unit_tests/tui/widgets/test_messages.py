@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from deepagents.backends.utils import format_content_with_line_numbers
+from deepagents.backends.utils import (
+    MAX_LINE_LENGTH,
+    format_content_with_line_numbers,
+)
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content
@@ -2798,11 +2801,12 @@ class TestToolCallMessageFileOutput:
     def test_format_output_compacts_legacy_cat_n_gutter(self) -> None:
         r"""Legacy `cat -n` gutters are tightened, all rows aligned to one column.
 
-        Deprecated string backends still emit `f"{line_num:6d}\t{line}"` — a
-        6-wide right-justified number plus a tab — which renders far from the
+        deepagents versions predating #4561 emitted `f"{line_num:6d}\t{line}"` —
+        a 6-wide right-justified number plus a tab — which renders far from the
         line numbers and (when the first row's padding was stripped) misaligned.
-        The TUI recomputes a compact gutter: numbers right-justified to the
-        widest number present, two spaces, then the original source indentation.
+        Such output may still surface from cached or persisted transcripts. The
+        TUI recomputes a compact gutter: numbers right-justified to the widest
+        number present, two spaces, then the original source indentation.
         """
         msg = ToolCallMessage("read_file", {"path": "/tmp/a.py"})
         # cat -n style: 6-wide right-justified number + tab + source line.
@@ -2862,17 +2866,20 @@ class TestToolCallMessageFileOutput:
         assert compacted == "1  \tdef foo():"
 
     def test_compact_line_gutter_preserves_source_tabs_current(self) -> None:
-        r"""A current-format row's leading source tab survives compaction.
+        r"""A current-format row's leading source tab (and a blank row) survive.
 
         The current gutter separator is two spaces, so a tab-indented source
         line reads as `"N  \tsource"`. Only the two spaces are consumed; the
         source tab must remain. This is the regression guard for the tab-
-        splitting gutter that used to drop it.
+        splitting gutter that used to drop it. A blank source line (`"N  "` —
+        marker, separator, empty source) round-trips unchanged too; the
+        `_compact_line_gutter` return preserves its trailing separator (the
+        display path may later strip trailing space, but the compactor does not).
         """
-        output = "1  def foo():\n2  \treturn 1"
+        output = "1  def foo():\n2  \treturn 1\n3  "
         compacted = ToolCallMessage._compact_line_gutter(output)
 
-        assert compacted == "1  def foo():\n2  \treturn 1"
+        assert compacted == "1  def foo():\n2  \treturn 1\n3  "
 
     def test_compact_line_gutter_parses_real_producer_output(self) -> None:
         r"""Round-trip guard against producer/consumer separator drift.
@@ -2891,6 +2898,44 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == "1  def f():\n2  \treturn 1"
 
+    def test_compact_line_gutter_round_trips_continuation_and_padding(self) -> None:
+        r"""Real-producer round-trip exercising continuation + multi-digit padding.
+
+        The base round-trip test feeds short, unpadded lines. This one forces a
+        wrapped line (an `N.M` continuation marker) and a two-digit line number,
+        so the continuation marker drives the column width and the shorter
+        markers get leading-space padding — all through the real producer, not a
+        hand-built string. Line 3 is tab-indented source, which must survive.
+        Extends drift protection to the continuation and padding paths, not just
+        the base separator.
+        """
+        long_line = "x" * (MAX_LINE_LENGTH + 5)  # forces an `N.1` continuation
+        output = format_content_with_line_numbers(
+            ["short", long_line, "\treturn 1"], start_line=9
+        )
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        lines = compacted.split("\n")
+        assert lines[0] == "   9  short"  # width 4, driven by the "10.1" marker
+        assert lines[2].startswith("10.1  ")
+        assert lines[-1] == "  11  \treturn 1"  # tab-indented source survives
+
+    def test_compact_line_gutter_preserves_double_spaced_source(self) -> None:
+        r"""Only the first separator is consumed; the rest of the source is verbatim.
+
+        A source line whose own text starts with digits and two spaces
+        (`"42  meaning"`) must survive intact: the regex captures the leading
+        gutter marker and emits everything after the first two-space separator
+        untouched, including the embedded double space. Guards the `(.*)` capture
+        against a future separator group that might reprocess or collapse
+        interior spacing (e.g. widening `(?:  |\t)` to `\s+`).
+        """
+        # width 2 (max marker "10"); row 5's source begins with digits + 2 spaces.
+        output = "5  42  meaning\n10  ok"
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == " 5  42  meaning\n10  ok"
+
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
         """Output without a gutter is returned unchanged."""
         output = "plain text\nno line numbers here"
@@ -2899,11 +2944,18 @@ class TestToolCallMessageFileOutput:
     def test_compact_line_gutter_rejects_malformed_number_heads(self) -> None:
         r"""Heads that aren't a bare `N`/`N.M` are treated as source, not gutter.
 
-        Guards against corrupting tab-separated data whose first column merely
-        resembles a number (leading/trailing dot, multiple dots).
+        Guards against corrupting data whose first column merely resembles a
+        number (leading/trailing dot, multiple dots) — in both the legacy tab
+        and current two-space forms, since a malformed head fails the marker
+        pattern before the separator alternation is ever reached.
         """
-        # Leading dot, trailing dot, and multi-dot heads must all pass through.
-        output = "   .5\tweird\n   5.\talso\n 1.2.3\tnope"
+        # Leading dot, trailing dot, and multi-dot heads must all pass through,
+        # whichever separator follows. All lines are non-gutter, so nothing
+        # matches and the whole output is returned verbatim.
+        output = (
+            "   .5\tweird\n   5.\talso\n 1.2.3\tnope\n"
+            ".5  two-space\n5.  two-space\n1.2.3  two-space"
+        )
         assert ToolCallMessage._compact_line_gutter(output) == output
 
     def test_compact_line_gutter_preview_truncates_with_compacted_gutters(

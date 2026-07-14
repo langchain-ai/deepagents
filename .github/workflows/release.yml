@@ -249,13 +249,6 @@ jobs:
             SHA="$INPUT_SHA"
           fi
 
-          # Canonicalize to a full 40-char commit SHA so the `sha` output and the
-          # summary permalink below never carry a symbolic ref (HEAD, a branch, or a
-          # short SHA). Use `-q --verify` (as resolve-refs does): it prints only the
-          # SHA on success and stays silent otherwise, so git's stderr is never folded
-          # into the value — plain `--verify` with `2>&1` would capture the
-          # "refname is ambiguous" warning (emitted on success for a name that is both
-          # a branch and a tag) and corrupt SHA into a multi-line string.
           REQUESTED_SHA="$SHA"
           if ! RESOLVED_SHA=$(git rev-parse -q --verify "${REQUESTED_SHA}^{commit}"); then
             echo "::error::release-sha $REQUESTED_SHA does not resolve to a commit in this repository"
@@ -524,20 +517,6 @@ jobs:
               --list "$PKG_NAME==*")
           }
 
-          # Parse a version into comparable pre-release components, returned via the
-          # globals PRE_BASE / PRE_RANK / PRE_SERIAL (an out-param idiom: read them
-          # immediately, before the next parse_prerelease call overwrites them).
-          # Returns non-zero for anything not a recognized pre-release.
-          #
-          # PRE_RANK encodes PEP 440 phase precedence: dev(0) < a(1) < b(2) < rc(3).
-          # Three spellings of that ordering are accepted:
-          #   1. PEP 440 canonical dev:    X.Y.Z.devN
-          #   2. PEP 440 canonical a/b/rc: X.Y.ZaN / X.Y.ZbN / X.Y.ZrcN
-          #   3. Dash form with aliases:   X.Y.Z-<phase>[.-]?N
-          # In the dash form, alpha/beta alias a/b, and pre/preview are a project
-          # convention mapped to the rc rank (not a PEP 440 rule). The $((10#...))
-          # prefix forces base-10 so a zero-padded serial (e.g. a08/a09) is not read
-          # as invalid octal, which would abort the step under `set -e`.
           parse_prerelease() {
             local version="$1"
             PRE_BASE=""
@@ -570,19 +549,6 @@ jobs:
             fi
           }
 
-          # Find the immediately-preceding sibling pre-release tag for $VERSION: the
-          # highest same-base pre-release that is strictly earlier in PEP 440 order
-          # and not ahead of the release commit. The result is returned via the global
-          # EARLIER_PRERELEASE_TAG (empty if none), which keeps stdout free for the
-          # ::warning:: commands below.
-          #
-          # Unlike latest_stable_tag, this scans ALL package tags (`git tag --list`,
-          # not `--merged`): sibling pre-releases are cut on short-lived parallel
-          # branches that are never merged into this pre-release's commit, so
-          # `--merged` (and valid_previous_tag's `--is-ancestor "$tag" "$RELEASE_SHA"`)
-          # would reject them and defeat the purpose. Ancestry is therefore only
-          # constrained to "not a descendant of RELEASE_SHA"; selecting a same-base
-          # sibling from a divergent branch is a deliberate, accepted trade-off.
           latest_earlier_prerelease_tag() {
             local best_rank=-1
             local best_serial=-1
@@ -600,10 +566,6 @@ jobs:
             EARLIER_PRERELEASE_TAG=""
 
             if ! parse_prerelease "$VERSION"; then
-              # IS_PRERELEASE (set by a looser test above) flagged this as a
-              # pre-release, but it does not match a grammar we can order. Warn so the
-              # divergence between the two notions is visible, then let the caller fall
-              # back to the base-version / latest-stable tag.
               echo "::warning::VERSION '$VERSION' is treated as a pre-release but does not match a recognized pre-release format; predecessor selection will fall back to the base-version or latest stable tag"
               return
             fi

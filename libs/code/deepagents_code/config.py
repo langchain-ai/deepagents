@@ -1542,7 +1542,7 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
     return repo
 
 
-# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
+# coding-agent-v1 contract literals. See `build_coding_agent_metadata`.
 CODING_AGENT_PURPOSE = "coding"
 """Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
@@ -1568,7 +1568,7 @@ def build_coding_agent_metadata(
 ) -> dict[str, Any]:
     """Build the shared coding-agent-v1 trace-metadata block.
 
-    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    Implements the `coding-agent-v1` contract for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
     markers, and repo/git/cwd attribution. The six identity/version keys and
     `thread_id` are always present; the optional keys whose value is unknown are
@@ -1650,7 +1650,7 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    Stamps the shared `coding-agent-v1` trace-metadata contract via
     `build_coding_agent_metadata` — identity block, plugin/runtime versions,
     turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
     here propagates trace-wide to every run in the graph (root, llm, tool, and

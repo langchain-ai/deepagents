@@ -1,4 +1,4 @@
-"""Contract tests for the coding-agent-v1 trace-metadata standard (LSEN-277).
+"""Contract tests for the coding-agent-v1 trace-metadata standard.
 
 These load the machine-readable contract (`validator.json`, vendored under
 `data/`) and assert that the metadata Deep Agents Code stamps onto its

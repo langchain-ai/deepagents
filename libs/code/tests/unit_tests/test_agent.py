@@ -3609,8 +3609,8 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1\tfirst" in allowed.content
-        assert "2\tsecond" in allowed.content
+        assert "1  first" in allowed.content
+        assert "2  second" in allowed.content
         assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:

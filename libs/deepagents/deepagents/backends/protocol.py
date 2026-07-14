@@ -207,15 +207,62 @@ class FileData(TypedDict):
 
 @dataclass
 class ReadResult:
-    """Result from backend read operations.
-
-    Attributes:
-        error: Error message on failure, None on success.
-        file_data: FileData dict on success, None on failure.
-    """
+    """Result from backend read operations."""
 
     error: str | None = None
+    """Error message on failure, `None` on success."""
+
     file_data: FileData | None = None
+    """File data on success, `None` on failure."""
+
+    total_lines: int | None = None
+    """Total number of source lines when the backend can determine it."""
+
+    start_line: int | None = None
+    """1-indexed first source line returned in `file_data`."""
+
+    end_line: int | None = None
+    """1-indexed last source line returned in `file_data`."""
+
+    next_offset: int | None = None
+    """0-indexed offset for the next unread source line."""
+
+    def __post_init__(self) -> None:
+        """Reject malformed pagination-field combinations at construction.
+
+        The window fields are not independent: `start_line`/`end_line` are a
+        pair, and neither `next_offset` nor `total_lines` describes anything
+        without the window it refers to. Beyond co-presence, the values must
+        agree numerically: a window runs forward (`1 <= start_line <=
+        end_line`), the file is at least as long as the window
+        (`total_lines >= end_line`), and the resume point is the 0-indexed line
+        immediately after the last one shown (`next_offset == end_line`, since
+        `end_line` is 1-indexed). Fail loudly here to keep a backend from
+        emitting a `next_offset` that would silently skip unshown source lines
+        once it reaches the middleware.
+        """
+        if (self.start_line is None) != (self.end_line is None):
+            msg = "ReadResult.start_line and end_line must be set together or both left unset"
+            raise ValueError(msg)
+        if self.next_offset is not None and self.start_line is None:
+            msg = "ReadResult.next_offset requires start_line and end_line to be set"
+            raise ValueError(msg)
+        if self.total_lines is not None and self.start_line is None:
+            msg = "ReadResult.total_lines requires start_line and end_line to be set"
+            raise ValueError(msg)
+
+        # Numeric consistency of a present window. `start_line`/`end_line` are
+        # bound together above, so testing `start_line` covers both.
+        if self.start_line is not None and self.end_line is not None:
+            if self.start_line < 1 or self.end_line < self.start_line:
+                msg = f"ReadResult window must satisfy 1 <= start_line <= end_line, got start_line={self.start_line}, end_line={self.end_line}"
+                raise ValueError(msg)
+            if self.total_lines is not None and self.total_lines < self.end_line:
+                msg = f"ReadResult.total_lines ({self.total_lines}) cannot be less than end_line ({self.end_line})"
+                raise ValueError(msg)
+            if self.next_offset is not None and self.next_offset != self.end_line:
+                msg = f"ReadResult.next_offset ({self.next_offset}) must equal end_line ({self.end_line}), the 0-indexed line after the last shown"
+                raise ValueError(msg)
 
 
 class _Unset:
@@ -436,7 +483,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
@@ -444,12 +491,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers (`cat -n` format),
-                starting at line 1.
+            `ReadResult` with raw (unformatted) content for the requested window,
+                or an error if the file doesn't exist or can't be read.
 
-                Lines longer than 2000 characters are truncated.
-
-                Returns an error string if the file doesn't exist or can't be read.
+                Line-number formatting is applied downstream by the filesystem
+                middleware (`format_content_with_line_numbers`), not by backends:
+                it adds the gutter, starts numbering at `offset + 1`, and splits
+                lines longer than 5000 characters into continuation rows
+                (e.g., `5.1`, `5.2`).
         """
         raise NotImplementedError
 

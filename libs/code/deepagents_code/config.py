@@ -1570,7 +1570,7 @@ def build_coding_agent_metadata(
 
     Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
-    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    markers, and repo/git/cwd attribution. The six identity/version keys and
     `thread_id` are always present; the optional keys whose value is unknown are
     omitted (per the contract), so callers can pass `None` for any of them.
 

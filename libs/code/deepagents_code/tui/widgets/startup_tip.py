@@ -25,7 +25,6 @@ _TIPS: dict[str, int] = {
     "Use /effort high to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
-    r"Press Ctrl+\ to open the Debug Console and inspect session state and logs": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
     "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,

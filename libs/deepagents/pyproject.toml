@@ -143,6 +143,7 @@ filterwarnings = [
 ]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
+    "video_extra: pin the read_file video gate on to snapshot the [video]-extra variant",
 ]
 
 [tool.ty.environment]

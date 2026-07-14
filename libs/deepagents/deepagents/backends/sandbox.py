@@ -103,12 +103,12 @@ pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 # (glob filtering is irrelevant for a single-file search).
 if os.path.isdir(search_path):
     os.chdir(search_path)
-    # A leading `/` would make `glob.glob` treat the pattern as an
+    # A leading slash would make glob.glob treat the pattern as an
     # absolute filesystem path, searching outside the search root (e.g.
-    # `/*.py` after `chdir('/workspace')` would match `/top.py` on
-    # the host, not `/workspace/top.py`). Strip it so anchored globs
-    # stay relative to the search root, matching the `FilesystemBackend`
-    # semantics where `/` anchors to the root, not the filesystem.
+    # /*.py after chdir('/workspace') would match /top.py on
+    # the host, not /workspace/top.py). Strip it so anchored globs
+    # stay relative to the search root, matching the FilesystemBackend
+    # semantics where slash anchors to the root, not the filesystem.
     rel_glob = glob_pat.lstrip('/')
     if any(seg == '..' for seg in rel_glob.replace(chr(92), '/').split('/')):
         sys.stderr.write('glob contains path traversal\\n')
@@ -117,7 +117,7 @@ if os.path.isdir(search_path):
     rel_files = sorted(glob.glob(rel_glob, recursive=True))
     # Open the glob-relative path (cwd is the search root) but report the
     # path prefixed with the search root, so GrepResult.path matches the
-    # `<root>/<match>` form that `grep -r` emits on the --include route.
+    # root/match form that grep -r emits on the --include route.
     targets = []
     for rel in rel_files:
         real_open = os.path.realpath(rel)
@@ -355,7 +355,7 @@ script reads them, performs the replacement on the source file (which never
 leaves the sandbox), and cleans up the temp files.
 
 Output: single-line JSON with `{{"count": N}}` on success or
-`{{"error": ...}}` on failure.  Same success contract as
+`{{"error": ...}}` on failure. Same success contract as
 `_EDIT_COMMAND_TEMPLATE`; additionally produces
 `{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
 files cannot be read.
@@ -366,6 +366,7 @@ import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
+MAX_LINE_COUNT_BYTES = 1024 * 1024
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -422,14 +423,21 @@ try:
     msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
     effective_limit = MAX_OUTPUT_BYTES - msg_bytes
 
+    at_eof = False
     with open(path, 'r', encoding='utf-8', newline=None) as f:
-        for raw_line in f:
-            line_count += 1
-            if line_count <= offset:
-                continue
-            if returned_lines >= limit:
+        while line_count < offset:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
                 break
+            line_count += 1
 
+        while not at_eof and returned_lines < limit and not truncated:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
+                break
+            line_count += 1
             line = raw_line.rstrip('\\n').rstrip('\\r')
             piece = line if returned_lines == 0 else '\\n' + line
             piece_bytes = len(piece.encode('utf-8'))
@@ -447,15 +455,63 @@ try:
             current_bytes += piece_bytes
             returned_lines += 1
 
+        # The page can fill (returned_lines == limit) exactly at EOF without the
+        # loop readline ever returning an empty string. Detect that via position:
+        # after reading whole lines from a UTF-8 handle the decoder state is clean
+        # at a line boundary, so tell() is the raw byte offset and equals st_size
+        # at EOF. Worst case if this ever misjudges is a surfaced offset-exceeds-
+        # length error on the next re-read (large files only, where total_lines
+        # stays None) -- never a silent skip, since a false at_eof of True cannot
+        # arise (a clean or packed tell() past EOF cannot equal st_size).
+        if not at_eof:
+            at_eof = f.tell() == st.st_size
+
     if returned_lines == 0 and not truncated:
         print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
         sys.exit(0)
+
+    # When the page already reached EOF, reuse its scan's count for free.
+    # Otherwise re-scan for the total only when the file is small enough that
+    # the extra pass stays bounded; surrogateescape keeps an invalid byte after
+    # the requested page from invalidating content that was decoded successfully.
+    if at_eof:
+        total_lines = line_count
+    elif st.st_size <= MAX_LINE_COUNT_BYTES:
+        with open(path, 'r', encoding='utf-8', errors='surrogateescape', newline=None) as f:
+            total_lines = sum(1 for _ in f)
+    else:
+        total_lines = None
 
     text = ''.join(parts)
     if truncated:
         text += TRUNCATION_MSG
 
-    print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+    # A byte cap can cut the final rendered line mid-way; that partial line is
+    # deliberately not counted toward returned_lines (see the truncation
+    # branch), so next_offset resumes at its start and the whole boundary line
+    # is re-read. If even the first requested line overflows the cap no full
+    # line was returned: advance by one so the read still makes progress instead
+    # of looping on the same page (that line's tail is unreadable via line
+    # offsets).
+    if truncated and returned_lines == 0:
+        returned_lines = 1
+
+    end_line = offset + returned_lines
+    if total_lines is not None:
+        next_offset = end_line if end_line < total_lines else None
+    else:
+        # total_lines is None only via the large-file branch above, which is
+        # reached only when the page stopped short of EOF, so lines always
+        # remain here.
+        next_offset = end_line
+    print(json.dumps({{
+        'encoding': 'utf-8',
+        'content': text,
+        'total_lines': total_lines,
+        'start_line': offset + 1,
+        'end_line': end_line,
+        'next_offset': next_offset,
+    }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
 except PermissionError:
@@ -468,8 +524,15 @@ avoiding full-file transfer for paginated text reads. The path is
 base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
 (safe because they come from internal code, not user input).
 
-Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
-success or `{{"error": ...}}` on failure.
+Output: single-line JSON. On success (text): `{{"encoding", "content",
+"total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
+and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
+next unread line (`null` once the file is fully read). `total_lines` is `null`
+when the file is large enough that a full re-scan to count its lines would be
+unbounded. On success
+(binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
+An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
+reminder>}}`, also without pagination keys. On failure: `{{"error": ...}}`.
 """
 
 
@@ -542,12 +605,22 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
     if "error" in data:
         return ReadResult(error=f"File '{file_path}': {data['error']}")
-    return ReadResult(
-        file_data=FileData(
-            content=data["content"],
-            encoding=data.get("encoding", "utf-8"),
+    # A parseable-but-malformed payload (missing `content`, or a pagination-key
+    # combination `ReadResult.__post_init__` rejects) must degrade to the same
+    # clean error result as a decode failure, not escape as a raw traceback.
+    try:
+        return ReadResult(
+            file_data=FileData(
+                content=data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            ),
+            total_lines=data.get("total_lines"),
+            start_line=data.get("start_line"),
+            end_line=data.get("end_line"),
+            next_offset=data.get("next_offset"),
         )
-    )
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")
 
 
 def _build_write_preflight_cmd(file_path: str) -> str:

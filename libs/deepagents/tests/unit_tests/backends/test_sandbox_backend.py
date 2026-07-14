@@ -36,6 +36,7 @@ from deepagents.backends.sandbox import (
     _check_preflight_result,
     _map_edit_error,
     _parse_grep_output,
+    _parse_read_output,
 )
 
 
@@ -283,6 +284,82 @@ def test_read_allows_truncated_paginated_output() -> None:
         "encoding": "utf-8",
         "content": truncated_content,
     }
+
+
+def test_parse_read_output_plumbs_pagination_fields() -> None:
+    """`_parse_read_output` carries the server's pagination keys onto `ReadResult`."""
+    output = json.dumps(
+        {
+            "encoding": "utf-8",
+            "content": "a\nb",
+            "total_lines": 10,
+            "start_line": 1,
+            "end_line": 2,
+            "next_offset": 2,
+        }
+    )
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.error is None
+    assert result.total_lines == 10
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
+def test_parse_read_output_defaults_pagination_fields_to_none() -> None:
+    """A payload without pagination keys (e.g. binary) leaves the fields unset."""
+    output = json.dumps({"encoding": "utf-8", "content": "a\nb"})
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.error is None
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_parse_read_output_missing_content_returns_error() -> None:
+    """A success payload lacking `content` degrades to an error, not a KeyError."""
+    output = json.dumps({"encoding": "utf-8", "total_lines": 3})
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+
+
+def test_parse_read_output_inconsistent_pagination_returns_error() -> None:
+    """A payload whose pagination keys violate the ReadResult invariants errors cleanly."""
+    # start_line without end_line trips ReadResult.__post_init__.
+    output = json.dumps({"encoding": "utf-8", "content": "a\nb", "start_line": 1})
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+
+
+def test_parse_read_output_invalid_pagination_type_returns_error() -> None:
+    """A nonnumeric pagination value degrades to an error, not a TypeError."""
+    output = json.dumps(
+        {
+            "content": "a",
+            "start_line": "1",
+            "end_line": "2",
+            "next_offset": 2,
+        }
+    )
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
 
 
 # -- ls tests -----------------------------------------------------------------
@@ -1296,6 +1373,24 @@ def test_build_read_cmd_classifies_mkv_as_video() -> None:
     assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="/bin/sh is unavailable on Windows")
+def test_build_read_cmd_shell_outputs_single_json_document(tmp_path: Path) -> None:
+    """The generated sandbox command must not append prose after the JSON result."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree")
+
+    proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+        ["/bin/sh", "-c", _build_read_cmd(str(target), 0, 100)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    result = json.loads(proc.stdout.strip())
+    assert result["content"] == "one\ntwo\nthree"
+    assert result["total_lines"] == 3
+
+
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
     """Corruption inside the prefix must still route to base64 (not swallowed)."""
     target = tmp_path / "midbad.dat"
@@ -1314,6 +1409,81 @@ def test_read_script_ascii_larger_than_prefix(tmp_path: Path) -> None:
     result = _run_read_script(target)
 
     assert result["encoding"] == "utf-8"
+
+
+def test_read_script_reports_pagination_metadata(tmp_path: Path) -> None:
+    """The read script emits the source-line range and next offset for a partial page."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+
+    result = _run_read_script(target, offset=1, limit=2)
+
+    assert result["total_lines"] == 5
+    assert result["start_line"] == 2
+    assert result["end_line"] == 3
+    assert result["next_offset"] == 3
+
+
+def test_read_script_final_window_has_null_next_offset(tmp_path: Path) -> None:
+    """Reaching EOF reports `next_offset` as null while still counting all lines."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree")
+
+    result = _run_read_script(target, offset=1, limit=100)
+
+    assert result["total_lines"] == 3
+    assert result["start_line"] == 2
+    assert result["end_line"] == 3
+    assert result["next_offset"] is None
+
+
+def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tmp_path: Path) -> None:
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"first\n" + (b"a" * (1024 * 1024)) + b"\xff")
+
+    result = _run_read_script(target, offset=0, limit=1)
+
+    assert result["encoding"] == "utf-8"
+    assert result["content"] == "first"
+    assert result["total_lines"] is None
+    assert result["start_line"] == 1
+    assert result["end_line"] == 1
+    assert result["next_offset"] == 1
+
+
+def test_read_script_truncation_next_offset_reflects_rendered_lines(tmp_path: Path) -> None:
+    """A byte-capped page must not advance `next_offset` past lines it dropped.
+
+    Regression: counting a partially rendered boundary line toward the resume
+    offset made a re-read from `next_offset` skip that line's remaining bytes.
+    """
+    line = "x" * 100_000
+    target = tmp_path / "big.txt"
+    target.write_text("\n".join([line] * 8))
+
+    result = _run_read_script(target, offset=0, limit=8)
+
+    assert result["total_lines"] == 8
+    assert result["start_line"] == 1
+    assert "truncated" in result["content"].lower()
+    assert result["next_offset"] is not None
+    # Resume at the count of fully rendered lines, short of the 8-line window.
+    assert result["end_line"] == result["next_offset"]
+    assert 0 < result["next_offset"] < 8
+
+
+def test_read_script_single_oversized_line_advances_to_avoid_loop(tmp_path: Path) -> None:
+    """A lone line larger than the byte cap still advances `next_offset` (no re-read loop)."""
+    target = tmp_path / "huge_line.txt"
+    target.write_text("small0\n" + ("y" * 600_000) + "\nsmall2")
+
+    result = _run_read_script(target, offset=1, limit=5)
+
+    assert result["total_lines"] == 3
+    assert result["start_line"] == 2
+    # The oversized line cannot be paginated within, so resume past it.
+    assert result["end_line"] == 2
+    assert result["next_offset"] == 2
 
 
 # -- script-level permission/error tests --------------------------------------

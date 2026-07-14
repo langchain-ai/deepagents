@@ -1114,7 +1114,11 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 await adapter._mount_message(
-                                    DiffMessage(record.diff, record.display_path)
+                                    DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                    )
                                 )
 
                         # Reshow spinner only when all in-flight tools have

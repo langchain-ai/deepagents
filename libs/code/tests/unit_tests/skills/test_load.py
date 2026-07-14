@@ -854,3 +854,21 @@ class TestListSkillsClaudeDirectories:
         assert len(skills) == 2
         names = {s["name"] for s in skills}
         assert names == {"user-skill", "claude-skill"}
+
+
+class TestListSkillsPluginNamespacing:
+    """Plugin sources namespace names, including nested subfolders."""
+
+    def test_plugin_skills_namespaced_with_nesting(self, tmp_path: Path) -> None:
+        """The TUI loader namespaces plugin skills like the middleware does."""
+        plugin_skills = tmp_path / "plugin" / "skills"
+        _create_skill(plugin_skills / "review", "review", "Top-level skill")
+        _create_skill(plugin_skills / "foo" / "lookup", "lookup", "Nested skill")
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_skills, "my-plugin")],
+        )
+
+        namespaced = {s["name"] for s in skills}
+        assert namespaced == {"my-plugin:review", "my-plugin:foo:lookup"}
+        assert all(s["source"] == "plugin" for s in skills)

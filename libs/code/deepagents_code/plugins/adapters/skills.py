@@ -21,13 +21,27 @@ PluginSkillSource: TypeAlias = tuple[SkillPath, SkillLabel, SkillNamespace]
 CodeSkillSource: TypeAlias = DirectorySkillSource | PluginSkillSource
 
 
-def namespaced_skill_name(namespace: SkillNamespace, name: str) -> str:
+def namespaced_skill_name(
+    namespace: SkillNamespace,
+    name: str,
+    subfolders: tuple[str, ...] = (),
+) -> str:
     """Qualify a skill name under its plugin namespace.
+
+    Nested skill directories contribute intermediate `:`-joined segments
+    between the plugin namespace and the skill name, matching Claude Code's
+    plugin skill naming (e.g. `plugin:sub:review`).
+
+    Args:
+        namespace: Plugin namespace (its `plugin_id`).
+        name: Skill name from the skill's frontmatter.
+        subfolders: Directory names between the plugin skills root and the
+            skill directory, in path order.
 
     Returns:
         The qualified skill name.
     """
-    return f"{namespace}:{name}"
+    return ":".join((namespace, *subfolders, name))
 
 
 def plugin_skill_sources(

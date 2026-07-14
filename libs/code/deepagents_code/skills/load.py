@@ -114,20 +114,17 @@ def list_skills(
             continue
         try:
             backend = FilesystemBackend(root_dir=str(skill_dir), virtual_mode=False)
-            skills = list_skills_from_backend(backend=backend, source_path=".")
             if namespace:
-                from deepagents_code.plugins.adapters.skills import (
-                    namespaced_skill_name,
+                # Plugin sources are walked recursively so nested skill
+                # directories are namespaced as `plugin:sub:skill`, matching
+                # both the runtime middleware and Claude Code.
+                from deepagents_code.plugins.adapters.skills_middleware import (
+                    load_namespaced_skills,
                 )
 
-                namespaced_skills: list[SkillMetadata] = [
-                    {
-                        **skill,
-                        "name": namespaced_skill_name(namespace, skill["name"]),
-                    }
-                    for skill in skills
-                ]
-                skills = namespaced_skills
+                skills = load_namespaced_skills(backend, ".", namespace)
+            else:
+                skills = list_skills_from_backend(backend=backend, source_path=".")
             if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",

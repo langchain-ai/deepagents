@@ -602,6 +602,59 @@ class TestSlashCommandControllerUpdateCommands:
         assert any("/skill:code-review" in s[0] for s in suggestions)
 
 
+class TestSlashCommandControllerDisplaySeparation:
+    """Popup shows the label but completion inserts the machine name."""
+
+    @pytest.fixture
+    def mock_view(self) -> MagicMock:
+        return MagicMock()
+
+    @pytest.fixture
+    def controller(self, mock_view: MagicMock) -> SlashCommandController:
+        commands = [
+            CommandEntry(
+                name="/skill:my-plugin:review",
+                description="(my-plugin) Review code",
+                hidden_keywords="my-plugin review",
+                argument_hint="",
+                display_name="/skill:review",
+            ),
+        ]
+        return SlashCommandController(commands, mock_view)
+
+    def test_popup_shows_short_label(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """The suggestion popup renders the short display label."""
+        controller.on_text_changed("/skill:rev", 10)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
+
+    def test_completion_inserts_machine_name(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Applying the completion inserts the full namespaced name."""
+        controller.on_text_changed("/skill:rev", 10)
+        applied = controller._apply_selected_completion(10)
+
+        assert applied is True
+        mock_view.replace_completion_range.assert_called_once_with(
+            0, 10, "/skill:my-plugin:review"
+        )
+
+    def test_terminal_segment_fuzzy_matches_plugin_skill(
+        self, controller: SlashCommandController, mock_view: MagicMock
+    ) -> None:
+        """Typing just the terminal segment surfaces the plugin skill."""
+        controller.on_text_changed("/review", 7)
+
+        mock_view.render_completion_suggestions.assert_called()
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/skill:review"
+
+
 class TestFuzzyFileControllerSetCwd:
     """Tests for FuzzyFileController.set_cwd switching completion roots."""
 

@@ -837,6 +837,39 @@ async def test_plugin_skill_adapter_preserves_colliding_names(
     } == expected_names
 
 
+async def test_plugin_skill_adapter_namespaces_nested_subfolders(
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "plugin" / "skills"
+    _write_skill(skills_root / "review" / "SKILL.md", name="review")
+    _write_skill(skills_root / "foo" / "lookup" / "SKILL.md", name="lookup")
+    _write_skill(skills_root / "foo" / "bar" / "audit" / "SKILL.md", name="audit")
+
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False),
+        sources=[(str(skills_root), "Plugin", "myplugin")],
+        system_prompt=None,
+    )
+    sync_update = middleware.before_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+    )
+    async_update = await middleware.abefore_agent(
+        cast("Any", {"messages": []}), runtime=cast("Any", None), config={}
+    )
+
+    expected_names = {
+        "myplugin:review",
+        "myplugin:foo:lookup",
+        "myplugin:foo:bar:audit",
+    }
+    assert sync_update is not None
+    assert async_update is not None
+    assert {skill["name"] for skill in sync_update["skills_metadata"]} == expected_names
+    assert {
+        skill["name"] for skill in async_update["skills_metadata"]
+    } == expected_names
+
+
 def test_cache_keys_do_not_collide(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

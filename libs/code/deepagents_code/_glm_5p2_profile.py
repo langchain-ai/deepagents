@@ -37,6 +37,11 @@ _GLM_5P2_MODEL_IDENTIFIERS: frozenset[str] = frozenset(
 )
 """Provider-native identifiers recognized as GLM-5.2."""
 
+_SPEC_BY_IDENTIFIER: dict[str, str] = {
+    spec.partition(":")[2]: spec for spec in _GLM_5P2_MODEL_SPECS
+}
+"""Provider-native identifier to full registry spec, for ownership lookups."""
+
 _FIREWORKS_GLM_5P2_IDENTIFIER = _GLM_5P2_MODEL_SPECS[0].partition(":")[2]
 """Fireworks model identifier whose terminal output cap was measured."""
 
@@ -135,6 +140,28 @@ def _is_fireworks_glm_5p2_model(model: str | BaseChatModel) -> bool:
     return _model_identifier(model) == _FIREWORKS_GLM_5P2_IDENTIFIER
 
 
+def _dcode_owns_suffix(model: str | BaseChatModel) -> bool:
+    """Return whether the dcode suffix is the one registered for this spec.
+
+    The harness registry is authoritative. When a user override or built-in has
+    claimed the spec with a different suffix (registration deferred to it), the
+    guard must leave that suffix alone instead of appending the dcode one, so an
+    override actually wins rather than getting the dcode suffix bolted on.
+    """
+    identifier = _model_identifier(model)
+    spec = _SPEC_BY_IDENTIFIER.get(identifier) if identifier is not None else None
+    if spec is None:
+        return False
+    from deepagents.profiles.harness.harness_profiles import (
+        _HARNESS_PROFILES,  # noqa: PLC2701
+    )
+
+    existing = _HARNESS_PROFILES.get(spec)
+    return (
+        existing is not None and existing.system_prompt_suffix == _SYSTEM_PROMPT_SUFFIX
+    )
+
+
 def _without_trusted_suffix(prompt: str) -> str:
     """Remove exact, delimited GLM suffixes without changing surrounding text.
 
@@ -201,12 +228,19 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
     ) -> tuple[ModelRequest, bool]:
         """Classify the resolved model and transition its trusted prompt suffix.
 
+        The returned flag drives `read_file` media gating and tracks GLM-5.2 by
+        model identity, since a text-only model cannot consume media regardless
+        of which profile owns the prompt. The suffix transition is narrower: it
+        only manages the dcode suffix for a spec the dcode profile actually owns,
+        so a user/built-in override that won registration keeps its own suffix.
+
         Returns:
             The request to send downstream and whether its model is GLM-5.2.
         """
         active = _is_glm_5p2_model(request.model)
+        suffix_active = active and _dcode_owns_suffix(request.model)
         prompt = request.system_prompt
-        transitioned = _transition_system_prompt(prompt, active=active)
+        transitioned = _transition_system_prompt(prompt, active=suffix_active)
         if transitioned != prompt:
             request = request.override(system_prompt=transitioned)
         return request, active

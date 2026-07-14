@@ -44,6 +44,23 @@ _NON_GLM = "openai:gpt-5.5"
 _MISSING = object()
 
 
+@pytest.fixture(autouse=True)
+def _dcode_owns_all_glm_specs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default: the dcode profile owns every GLM spec, as after registration.
+
+    The suffix transition only manages a spec the dcode profile actually owns, so
+    guard tests need the registry populated. Tests that model a user/built-in
+    override override `_HARNESS_PROFILES` themselves.
+    """
+    import deepagents.profiles.harness.harness_profiles as core_profiles
+
+    monkeypatch.setattr(
+        core_profiles,
+        "_HARNESS_PROFILES",
+        dict.fromkeys(glm_profile._GLM_5P2_MODEL_SPECS, glm_profile._GLM_5P2_PROFILE),
+    )
+
+
 def _model(identifier: str) -> BaseChatModel:
     model = MagicMock(spec=BaseChatModel)
     model.model_name = identifier
@@ -216,6 +233,36 @@ def test_registration_defers_to_existing_suffix_profile(
     glm_profile._ensure_glm_5p2_profile_registered()
 
     assert calls == [_OPENROUTER_GLM, _BASETEN_GLM]
+
+
+def test_deferred_override_spec_keeps_its_own_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import deepagents.profiles.harness.harness_profiles as core_profiles
+    from deepagents.profiles import HarnessProfile as RuntimeHarnessProfile
+
+    # A user override owns the Fireworks GLM spec; the dcode profile deferred to
+    # it at registration, so the runtime guard must not append the dcode suffix.
+    monkeypatch.setattr(
+        core_profiles,
+        "_HARNESS_PROFILES",
+        {_FIREWORKS_GLM: RuntimeHarnessProfile(system_prompt_suffix="CUSTOM")},
+    )
+    middleware = _GlmReadFileMediaGuard(_NON_GLM)
+
+    model_result, actual = _run_model(
+        middleware,
+        _model_request(
+            "accounts/fireworks/models/glm-5p2",
+            prompt="base prompt\n\nCUSTOM",
+        ),
+    )
+
+    # Media gating still applies (text-only model), but the override's suffix is
+    # left untouched rather than getting the dcode suffix bolted on.
+    assert _model_update(model_result) is True
+    assert actual.system_prompt == "base prompt\n\nCUSTOM"
+    assert glm_profile._SYSTEM_PROMPT_SUFFIX not in actual.system_prompt
 
 
 def test_prompt_is_concise_and_execution_focused() -> None:

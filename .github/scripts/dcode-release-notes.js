@@ -841,8 +841,15 @@ async function checkCuratedState({
     return { status: 'bypassed' };
   }
 
-  let comments = await listComments(github, owner, repo, number);
-  let override = latestOverride(comments, login, id, version);
+  let comments = [];
+  let override = null;
+  try {
+    comments = await listComments(github, owner, repo, number);
+    override = latestOverride(comments, login, id, version);
+  } catch (error) {
+    if (initialDraftPollAttempts === 0) throw error;
+    core.warning(`Reading comments before polling for the curated release-note draft failed; retrying: ${error instanceof Error ? error.message : String(error)}`);
+  }
   if (!override && initialDraftPollAttempts > 0) {
     core.info('Waiting for the automatic curated release-note draft to be published');
     for (let attempt = 0; attempt < initialDraftPollAttempts && !override; attempt += 1) {

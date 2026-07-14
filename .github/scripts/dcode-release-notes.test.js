@@ -871,6 +871,31 @@ test('required check keeps polling through a transient read failure', async () =
   assert.ok(core.warnings.some(message => /Polling for the curated release-note draft failed/.test(message)));
 });
 
+test('required check retries when the initial comments read fails', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 1) throw new Error('transient 502');
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'unapplied');
+  assert.equal(sleeps, 1);
+  assert.ok(core.warnings.some(message => /Reading comments before polling.*transient 502/.test(message)));
+});
+
 test('required check stops polling as soon as the draft appears', async () => {
   let sleeps = 0;
   const comments = [];

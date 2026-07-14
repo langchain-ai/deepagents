@@ -6079,9 +6079,6 @@ class TestGoalCommand:
                     "_goal_status": "active",
                     "_goal_rubric": "- tests pass",
                     "_goal_status_note": None,
-                    "_completed_goal_objective": None,
-                    "_completed_goal_rubric": None,
-                    "_completed_goal_status_note": None,
                     "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
@@ -6481,21 +6478,21 @@ class TestGoalCommand:
             assert app._goal_status_note is None
             assert app._active_rubric is None
             assert app._pending_goal_completion_note is None
-            assert app._completed_goal_objective == "add refresh tokens"
-            assert app._completed_goal_rubric == "- tests pass"
-            assert app._completed_goal_status_note == "tests pass"
             assert updater.aupdate_state.await_args is not None
             state_update = updater.aupdate_state.await_args.args[1]
-            assert state_update["rubric"] is None
-            assert state_update["_goal_objective"] is None
-            assert state_update["_goal_status"] is None
-            assert state_update["_goal_rubric"] is None
-            assert state_update["_completed_goal_objective"] == "add refresh tokens"
-            assert state_update["_pending_goal_completion_note"] is None
+            assert state_update == {
+                "rubric": None,
+                "_sticky_rubric": None,
+                "_goal_objective": None,
+                "_goal_status": None,
+                "_goal_rubric": None,
+                "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+            }
 
-    async def test_completed_goal_is_inactive_on_next_turn_with_history_visible(
-        self,
-    ) -> None:
+    async def test_completed_goal_is_cleared_before_next_turn(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -6510,8 +6507,8 @@ class TestGoalCommand:
 
             assert app._active_goal is None
             assert app._active_rubric is None
-            assert app._completed_goal_objective == "add refresh tokens"
-            assert app._completed_goal_status_note == "all acceptance tests pass"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == ""
 
             with (
                 patch(
@@ -6533,12 +6530,11 @@ class TestGoalCommand:
             await app._show_goal_state()
             await pilot.pause()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Last completed goal:\nadd refresh tokens" in rendered
-            assert "Status:\ncomplete" in rendered
-            assert "Completion note:\nall acceptance tests pass" in rendered
+            assert "No goal set." in rendered
+            assert "Last completed goal:" not in rendered
 
     async def test_failed_completion_persistence_restores_retryable_goal(self) -> None:
-        """A failed archival write must leave local state aligned for retry."""
+        """A failed clear write must leave local state aligned for retry."""
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -6562,7 +6558,6 @@ class TestGoalCommand:
             assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note == "all acceptance tests pass"
-            assert app._completed_goal_objective is None
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Goal marked complete by the agent." not in rendered
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
@@ -6615,7 +6610,6 @@ class TestGoalCommand:
             assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note is None
-            assert app._completed_goal_objective is None
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "iteration limit was reached with unmet criteria" in rendered
             assert (
@@ -6645,38 +6639,11 @@ class TestGoalCommand:
             assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_completion_note is None
-            assert app._completed_goal_objective is None
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "grader could not evaluate the rubric" in rendered
             assert "The goal remains active." in rendered
             assert "Goal marked complete" not in rendered
             assert "rubric was not satisfied" not in rendered
-
-    async def test_restore_reads_archived_completed_goal_fields(self) -> None:
-        """Restoring an already-archived checkpoint reads the completed trio."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            payload = _ThreadHistoryPayload(
-                [],
-                0,
-                "",
-                goal_objective=None,
-                goal_status=None,
-                completed_goal_objective="add refresh tokens",
-                completed_goal_rubric="- tests pass",
-                completed_goal_status_note="all acceptance tests pass",
-            )
-
-            app._restore_goal_rubric_state(payload)
-
-            assert app._active_goal is None
-            assert app._goal_status is None
-            assert app._active_rubric is None
-            assert app._pending_goal_completion_note is None
-            assert app._completed_goal_objective == "add refresh tokens"
-            assert app._completed_goal_rubric == "- tests pass"
-            assert app._completed_goal_status_note == "all acceptance tests pass"
 
     async def test_sync_goal_completion_rejects_when_rubric_not_satisfied(
         self,
@@ -6754,7 +6721,6 @@ class TestGoalCommand:
             assert app._active_goal is None
             assert app._goal_status is None
             assert app._active_rubric is None
-            assert app._completed_goal_objective == "add refresh tokens"
             assert app._pending_goal_completion_note is None
 
     async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
@@ -7191,9 +7157,6 @@ class TestGoalCommand:
         app._active_goal = "g"
         app._goal_status = "blocked"
         app._goal_status_note = "note"
-        app._completed_goal_objective = "done"
-        app._completed_goal_rubric = "done-rubric"
-        app._completed_goal_status_note = "evidence"
         app._active_rubric = "r"
         app._next_rubric = "x"
         app._last_consumed_next_rubric = "x"
@@ -7206,9 +7169,6 @@ class TestGoalCommand:
         assert app._active_goal is None
         assert app._goal_status is None
         assert app._goal_status_note is None
-        assert app._completed_goal_objective is None
-        assert app._completed_goal_rubric is None
-        assert app._completed_goal_status_note is None
         assert app._active_rubric is None
         assert app._next_rubric is None
         assert app._last_consumed_next_rubric is None
@@ -7394,9 +7354,6 @@ class TestRubricCommand:
                     "_goal_status": "active",
                     "_goal_rubric": "tests pass",
                     "_goal_status_note": None,
-                    "_completed_goal_objective": None,
-                    "_completed_goal_rubric": None,
-                    "_completed_goal_status_note": None,
                     "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
@@ -7652,9 +7609,6 @@ class TestRubricCommand:
                 "_goal_status": None,
                 "_goal_rubric": None,
                 "_goal_status_note": None,
-                "_completed_goal_objective": None,
-                "_completed_goal_rubric": None,
-                "_completed_goal_status_note": None,
                 "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
@@ -7724,9 +7678,6 @@ class TestRubricCommand:
                 "_goal_status": None,
                 "_goal_rubric": None,
                 "_goal_status_note": None,
-                "_completed_goal_objective": None,
-                "_completed_goal_rubric": None,
-                "_completed_goal_status_note": None,
                 "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,

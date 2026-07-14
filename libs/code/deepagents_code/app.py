@@ -253,9 +253,6 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
         "_goal_status",
         "_goal_rubric",
         "_goal_status_note",
-        "_completed_goal_objective",
-        "_completed_goal_rubric",
-        "_completed_goal_status_note",
         "_pending_goal_completion_note",
         "_pending_goal_objective",
         "_pending_goal_rubric",
@@ -1447,15 +1444,6 @@ class _ThreadHistoryPayload:
     goal_status_note: str | None = None
     """Persisted evidence or blocker note, if any."""
 
-    completed_goal_objective: str | None = None
-    """Most recently completed goal retained for history display."""
-
-    completed_goal_rubric: str | None = None
-    """Criteria associated with the most recently completed goal."""
-
-    completed_goal_status_note: str | None = None
-    """Completion evidence retained for history display."""
-
     pending_goal_completion_note: str | None = None
     """Persisted completion evidence awaiting rubric/user approval."""
 
@@ -2597,15 +2585,6 @@ class DeepAgentsApp(App):
 
         self._goal_status_note: str | None = None
         """Evidence or blocker note recorded by the model's goal tool."""
-
-        self._completed_goal_objective: str | None = None
-        """Most recently completed goal retained after active state is cleared."""
-
-        self._completed_goal_rubric: str | None = None
-        """Criteria associated with the most recently completed goal."""
-
-        self._completed_goal_status_note: str | None = None
-        """Evidence associated with the most recently completed goal."""
 
         self._pending_goal_completion_note: str | None = None
         """Agent-requested completion awaiting rubric and user approval."""
@@ -8741,9 +8720,6 @@ class DeepAgentsApp(App):
             "_goal_status": self._goal_status if self._active_goal else None,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
             "_goal_status_note": self._goal_status_note if self._active_goal else None,
-            "_completed_goal_objective": self._completed_goal_objective,
-            "_completed_goal_rubric": self._completed_goal_rubric,
-            "_completed_goal_status_note": self._completed_goal_status_note,
             "_pending_goal_completion_note": (
                 self._pending_goal_completion_note if self._active_goal else None
             ),
@@ -8815,9 +8791,7 @@ class DeepAgentsApp(App):
         """Clear goal objective, status, note, and pending fields.
 
         Leaves the sticky and one-shot rubric untouched; used when a rubric is
-        being set directly (not via the goal workflow). The `_completed_goal_*`
-        history trio is also intentionally preserved so a finished goal keeps
-        displaying as history after its active state is reset.
+        being set directly (not via the goal workflow).
         """
         self._active_goal = None
         self._goal_status = None
@@ -8844,21 +8818,6 @@ class DeepAgentsApp(App):
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
         self._reset_goal_tracking()
-        self._completed_goal_objective = None
-        self._completed_goal_rubric = None
-        self._completed_goal_status_note = None
-
-    def _archive_completed_goal(self) -> None:
-        """Move a completed goal out of active grading state into history."""
-        self._completed_goal_objective = self._active_goal
-        self._completed_goal_rubric = self._active_rubric
-        self._completed_goal_status_note = self._goal_status_note
-        self._active_rubric = None
-        self._next_rubric = None
-        self._last_consumed_next_rubric = None
-        self._last_consumed_next_previous_rubric = None
-        self._reset_goal_tracking()
-        self._sync_status_rubric()
 
     @staticmethod
     def _goal_rubric_payload_from_state(
@@ -8902,13 +8861,6 @@ class DeepAgentsApp(App):
             goal_status=coerce_goal_status(state_values.get("_goal_status")),
             goal_rubric=_as_str(state_values.get("_goal_rubric")),
             goal_status_note=_as_str(state_values.get("_goal_status_note")),
-            completed_goal_objective=_as_str(
-                state_values.get("_completed_goal_objective")
-            ),
-            completed_goal_rubric=_as_str(state_values.get("_completed_goal_rubric")),
-            completed_goal_status_note=_as_str(
-                state_values.get("_completed_goal_status_note")
-            ),
             pending_goal_completion_note=_as_str(
                 state_values.get("_pending_goal_completion_note")
             ),
@@ -8919,9 +8871,6 @@ class DeepAgentsApp(App):
 
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
         """Restore TUI-owned goal/rubric metadata from a thread payload."""
-        self._completed_goal_objective = payload.completed_goal_objective
-        self._completed_goal_rubric = payload.completed_goal_rubric
-        self._completed_goal_status_note = payload.completed_goal_status_note
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -8971,18 +8920,16 @@ class DeepAgentsApp(App):
         *,
         previous_status: str | None,
     ) -> bool:
-        """Mark a rubric-approved completion request complete.
+        """Clear a rubric-approved goal after its completion is saved.
 
         Returns:
-            `True` when archival was persisted, or `False` when it was rolled back.
+            `True` when the cleared state was persisted, or `False` when the active
+                goal was restored for retry.
         """
         active_goal = self._active_goal
         goal_status = self._goal_status
         goal_status_note = self._goal_status_note
         active_rubric = self._active_rubric
-        completed_goal_objective = self._completed_goal_objective
-        completed_goal_rubric = self._completed_goal_rubric
-        completed_goal_status_note = self._completed_goal_status_note
         pending_goal_completion_note = self._pending_goal_completion_note
         pending_goal_objective = self._pending_goal_objective
         pending_goal_rubric = self._pending_goal_rubric
@@ -8990,10 +8937,8 @@ class DeepAgentsApp(App):
         last_consumed_next_rubric = self._last_consumed_next_rubric
         last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
 
-        self._goal_status = "complete"
-        self._goal_status_note = note
-        self._pending_goal_completion_note = None
-        self._archive_completed_goal()
+        self._clear_all_goal_rubric_state()
+        self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
         if persisted:
             if previous_status != "complete":
@@ -9010,9 +8955,6 @@ class DeepAgentsApp(App):
         self._goal_status = goal_status
         self._goal_status_note = goal_status_note
         self._active_rubric = active_rubric
-        self._completed_goal_objective = completed_goal_objective
-        self._completed_goal_rubric = completed_goal_rubric
-        self._completed_goal_status_note = completed_goal_status_note
         self._pending_goal_completion_note = pending_goal_completion_note or note
         self._pending_goal_objective = pending_goal_objective
         self._pending_goal_rubric = pending_goal_rubric
@@ -9189,9 +9131,6 @@ class DeepAgentsApp(App):
                 payload.goal_status,
                 payload.goal_rubric,
                 payload.goal_status_note,
-                payload.completed_goal_objective,
-                payload.completed_goal_rubric,
-                payload.completed_goal_status_note,
                 payload.pending_goal_completion_note,
                 payload.pending_goal_objective,
                 payload.pending_goal_rubric,
@@ -9377,17 +9316,6 @@ class DeepAgentsApp(App):
             lines.append(f"Status note:\n{self._goal_status_note}")
         if self._active_rubric:
             lines.append(f"Criteria:\n{self._active_rubric}")
-        if not self._active_goal and self._completed_goal_objective:
-            lines.extend(
-                [
-                    f"Last completed goal:\n{self._completed_goal_objective}",
-                    "Status:\ncomplete",
-                ]
-            )
-            if self._completed_goal_status_note:
-                lines.append(f"Completion note:\n{self._completed_goal_status_note}")
-            if self._completed_goal_rubric:
-                lines.append(f"Completed criteria:\n{self._completed_goal_rubric}")
         if self._pending_goal_objective and self._pending_goal_rubric:
             lines.extend(
                 [
@@ -9627,11 +9555,6 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
-        # A newly accepted goal supersedes any prior completed-goal history so it
-        # is not persisted (hidden) alongside the new active goal.
-        self._completed_goal_objective = None
-        self._completed_goal_rubric = None
-        self._completed_goal_status_note = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
         await self._mount_message(
@@ -9667,8 +9590,6 @@ class DeepAgentsApp(App):
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric: next turn")
         elif self._active_rubric:
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric set")
-        elif self._completed_goal_objective:
-            self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal complete")
         else:
             self._status_bar.set_rubric_label("")
 

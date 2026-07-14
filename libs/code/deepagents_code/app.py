@@ -14340,8 +14340,8 @@ class DeepAgentsApp(App):
         be edited from under it, so Ctrl+D quits in that case.
 
         Returns:
-            The focused text area with content after the cursor, or `None` when
-            Ctrl+D should quit the app.
+            The focused text area when it has a non-empty selection or content
+            after the cursor, or `None` when Ctrl+D should quit the app.
         """
         from deepagents_code.tui.widgets._inline_prompt import InlinePromptTextArea
 
@@ -14365,12 +14365,11 @@ class DeepAgentsApp(App):
 
         if text_area is None:
             return None
-        if (
+        has_content_to_delete = (
             not text_area.selection.is_empty
             or text_area.cursor_location != text_area.document.end
-        ):
-            return text_area
-        return None
+        )
+        return text_area if has_content_to_delete else None
 
     def action_quit_app(self) -> None:
         """Handle the Ctrl+D binding.

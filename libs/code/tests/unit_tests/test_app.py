@@ -2310,6 +2310,53 @@ class TestCtrlDInlinePrompt:
             assert text_input.text == "ello"
             exit_mock.assert_not_called()
 
+    async def test_ctrl_d_quits_at_end_of_ask_user_text_input(self) -> None:
+        """Ctrl+D at the end of an ask-user answer with no selection quits."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hello"
+            text_input.focus()
+            text_input.move_cursor(text_input.document.end)
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.selection.is_empty
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert text_input.text == "hello"
+            exit_mock.assert_called_once()
+
+    async def test_ctrl_d_quits_when_ask_user_text_input_empty(self) -> None:
+        """Ctrl+D in an empty ask-user answer quits rather than swallowing it."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            menu = AskUserMenu([{"question": "Name?", "type": "text"}])
+            await messages.mount(menu)
+            app._pending_ask_user_widget = menu
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            await pilot.pause()
+            assert app.focused is text_input
+            assert text_input.text == ""
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+
 
 class TestCtrlCCopySelection:
     """Test Ctrl+C copying a focused input's selection instead of quitting."""

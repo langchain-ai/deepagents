@@ -8808,8 +8808,8 @@ class DeepAgentsApp(App):
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
-        Single reset point so the clear paths cannot drift out of sync over the
-        ten correlated fields. Grader settings (`_rubric_model` and
+        Single reset point so the clear paths cannot drift across the correlated
+        fields. Grader settings (`_rubric_model` and
         `_rubric_max_iterations`) are intentionally left untouched — they are
         configured separately via `/rubric model` and `/rubric max-iterations`
         and survive `/rubric clear` and `/clear`.
@@ -8920,21 +8920,56 @@ class DeepAgentsApp(App):
         note: str,
         *,
         previous_status: str | None,
-    ) -> None:
-        """Mark a rubric-approved completion request complete."""
-        self._goal_status = "complete"
-        self._goal_status_note = note
-        self._pending_goal_completion_note = None
+    ) -> bool:
+        """Clear a rubric-approved goal after its completion is saved.
+
+        Returns:
+            `True` when the cleared state was persisted, or `False` when the active
+                goal was restored for retry.
+        """
+        active_goal = self._active_goal
+        goal_status = self._goal_status
+        goal_status_note = self._goal_status_note
+        active_rubric = self._active_rubric
+        pending_goal_completion_note = self._pending_goal_completion_note
+        pending_goal_objective = self._pending_goal_objective
+        pending_goal_rubric = self._pending_goal_rubric
+        next_rubric = self._next_rubric
+        last_consumed_next_rubric = self._last_consumed_next_rubric
+        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
+
+        self._clear_all_goal_rubric_state()
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._announce_goal_status_transition(previous_status)
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
+        if persisted:
+            if previous_status != "complete":
+                text = "Goal marked complete by the agent."
+                if note:
+                    text = f"{text}\n\n{note}"
+                await self._mount_message(AppMessage(text))
+            return True
+
+        # The checkpoint still contains the active goal and pending completion
+        # request. Restore that exact local state so the UI and next grading
+        # turn cannot diverge from it, and so a later sync can safely retry.
+        self._active_goal = active_goal
+        self._goal_status = goal_status
+        self._goal_status_note = goal_status_note
+        self._active_rubric = active_rubric
+        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_objective = pending_goal_objective
+        self._pending_goal_rubric = pending_goal_rubric
+        self._next_rubric = next_rubric
+        self._last_consumed_next_rubric = last_consumed_next_rubric
+        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
+        self._sync_status_rubric()
+        await self._mount_message(
+            ErrorMessage(
+                "Goal completion could not be saved, so the goal remains active "
+                "and its completion request is still pending for retry."
             )
+        )
+        return False
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
@@ -8957,6 +8992,28 @@ class DeepAgentsApp(App):
         if not self._active_goal or not note or self._goal_status == "complete":
             return False
 
+        if rubric_status == "grader_error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Acceptance-criteria grading failed because of a grader or "
+                    "infrastructure error. The goal remains active, and its completion "
+                    "request is still pending; it will be re-graded on your next turn."
+                )
+            )
+            return False
+        if rubric_status == "max_iterations_reached":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded: the iteration limit was reached "
+                "with unmet criteria. The goal remains active for resume, amendment, "
+                "retry, or clearing."
+            )
+            return False
+        if rubric_status == "failed":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded because the grader could not "
+                "evaluate the rubric. The goal remains active."
+            )
+            return False
         if rubric_status != "satisfied":
             await self._clear_pending_goal_completion(
                 "Goal completion was not recorded because the rubric was not satisfied."
@@ -8964,11 +9021,10 @@ class DeepAgentsApp(App):
             return False
 
         if self._session_state is not None and self._session_state.auto_approve:
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         action_requests = [
             {
@@ -8995,17 +9051,15 @@ class DeepAgentsApp(App):
         decision_type = decision.get("type") if isinstance(decision, dict) else None
         if decision_type == "auto_approve_all":
             await self._on_auto_approve_enabled()
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
         if decision_type == "approve":
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         reject_message = decision.get("message") if isinstance(decision, dict) else None
         if isinstance(reject_message, str) and reject_message.strip():
@@ -9497,6 +9551,7 @@ class DeepAgentsApp(App):
         self._active_goal = objective
         self._goal_status = "active"
         self._goal_status_note = None
+        self._pending_goal_completion_note = None
         self._active_rubric = rubric
         self._next_rubric = None
         self._pending_goal_objective = None
@@ -11335,6 +11390,7 @@ class DeepAgentsApp(App):
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
                 rubric=rubric,
+                goal_active=bool(self._active_goal),
                 blocked_goal_retry_context=blocked_goal_retry_context,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at

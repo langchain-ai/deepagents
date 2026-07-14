@@ -154,9 +154,9 @@ def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         enabled: Whether to enable the plugin.
     """
-    _require_installed_plugin(plugin_id)
-    set_plugin_enabled(plugin_id, enabled)
     if enabled:
+        ensure_plugin_data_dir(plugin_id)
+    set_plugin_enabled(plugin_id, enabled)
         ensure_plugin_data_dir(plugin_id)
 
 

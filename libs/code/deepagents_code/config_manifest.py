@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, assert_never, cast
+from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
@@ -47,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 
 # --- Canonical typed defaults ----------------------------------------------
-# These are the single source of truth for `[interpreter]` defaults. The
-# `Settings` dataclass references them so the default is defined once.
+# These are single sources of truth for defaults shared across the manifest and
+# their runtime consumers.
 
 INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
@@ -63,6 +63,13 @@ LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 
 Single source of truth shared by the `tracing.langsmith_project` option and
 `config.get_langsmith_project_name`."""
+
+CursorStyle = Literal["block", "underline"]
+"""Visual style for the chat input cursor (a block cell or an underline)."""
+
+CURSOR_STYLE_DEFAULT: CursorStyle = "block"
+VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
+"""Allowlist derived from `CursorStyle` so the two never drift."""
 
 
 class OptionKind(Enum):
@@ -105,6 +112,9 @@ class OptionKind(Enum):
     PTC_DELEGATE = "ptc"
     """Delegates to `config._parse_interpreter_ptc`."""
 
+    CURSOR_STYLE_DELEGATE = "cursor_style"
+    """Validates the `[ui].cursor_style` display allowlist."""
+
     STARTUP_MODE_DELEGATE = "startup_mode"
     """Delegates to the `[startup].mode` runtime allowlist."""
 
@@ -125,6 +135,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.SHELL_LIST_DELEGATE: "list[str]",
     OptionKind.SKILLS_DIRS_DELEGATE: "list[path]",
     OptionKind.PTC_DELEGATE: "str | list[str]",
+    OptionKind.CURSOR_STYLE_DELEGATE: "str",
     OptionKind.STARTUP_MODE_DELEGATE: "str",
     OptionKind.THEME_DELEGATE: "theme",
     OptionKind.STRUCTURED: "table",
@@ -146,6 +157,7 @@ _KIND_DEFAULT_TYPES: dict[OptionKind, tuple[type, ...]] = {
     OptionKind.INT: (int,),
     OptionKind.FLOAT: (int, float),
     OptionKind.STR: (str,),
+    OptionKind.CURSOR_STYLE_DELEGATE: (str,),
     OptionKind.STARTUP_MODE_DELEGATE: (str,),
 }
 
@@ -230,6 +242,9 @@ class ConfigOption:
     of `key`. `None` for every other option.
     """
 
+    empty_env_is_false: bool = False
+    """Whether an explicitly present empty env value disables a bool option."""
+
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
 
@@ -242,8 +257,9 @@ class ConfigOption:
 
         Raises:
             TypeError: When `fallback_env_vars` is not a tuple of non-empty
-                strings, `default` is mutable, a `STRUCTURED` option declares a
-                default, or a scalar option's default has the wrong type.
+                strings, `empty_env_is_false` is set on a non-bool option,
+                `default` is mutable, a `STRUCTURED` option declares a default,
+                or a scalar option's default has the wrong type.
         """
         # Guard `fallback_env_vars` independently of `default` (which has its own
         # early-return path below): like `default`, it is shared by reference
@@ -257,6 +273,9 @@ class ConfigOption:
                 f"{self.key}: fallback_env_vars must be a tuple of non-empty "
                 f"strings, got {self.fallback_env_vars!r}"
             )
+            raise TypeError(msg)
+        if self.empty_env_is_false and self.kind is not OptionKind.BOOL:
+            msg = f"{self.key}: empty_env_is_false requires a bool option kind"
             raise TypeError(msg)
 
         default = self.default
@@ -430,6 +449,15 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         # Resolved upstream in `resolve_scalar` and never reaches here; the raw
         # passthrough is a defensive fallback only.
         return raw
+    if kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r (expected 'block' or 'underline')",
+            name,
+            raw,
+        )
+        return _INVALID
     if kind is OptionKind.PTC_DELEGATE or kind is OptionKind.STRUCTURED:
         # Neither kind declares an `env_var`, so the `if option.env_var` guard in
         # `resolve_scalar` means this is unreachable today. If a future option
@@ -497,6 +525,15 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         except ValueError as exc:
             logger.warning("Ignoring %s in config.toml: %s", label, exc)
             return _INVALID
+    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
+            return raw
+        logger.warning(
+            "Ignoring %s=%r in config.toml (expected 'block' or 'underline')",
+            label,
+            raw,
+        )
+        return _INVALID
     elif kind is OptionKind.STARTUP_MODE_DELEGATE:
         from deepagents_code.model_config import VALID_STARTUP_MODES
 
@@ -587,10 +624,11 @@ def resolve_scalar(
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
-        treated as unset (mirroring `resolve_env_var`), so it falls through to
-        the next env var, then `config.toml`/`default`, rather than counting as
-        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
-        `config.toml [ui.*]` sources.
+        normally treated as unset (mirroring `resolve_env_var`), so it falls
+        through to the next env var, then `config.toml`/`default`, rather than
+        counting as set. Options declaring `empty_env_is_false` instead resolve
+        an explicitly present empty value to `False`. Theme resolution
+        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
@@ -602,15 +640,18 @@ def resolve_scalar(
         if option.env_var:
             names.append(resolved_env_var_name(option.env_var))
         names.extend(option.fallback_env_vars)
-        # An empty string counts as unset, matching `resolve_env_var`, so it is
-        # skipped and the loop continues to the next name. This keeps
-        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
-        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
-        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
-        # tried in order, so the primary `env_var` wins over any fallback.
+        # An empty string normally counts as unset, matching `resolve_env_var`,
+        # so it is skipped and the loop continues to the next name. Options
+        # with an explicitly documented empty-value opt-out declare
+        # `empty_env_is_false`. Names are tried in order, so the primary
+        # `env_var` wins over any fallback.
         for name in names:
             raw = os.environ.get(name)
+            if raw is None:
+                continue
             if not raw:
+                if option.empty_env_is_false:
+                    return False, f"env ({name})"
                 continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
@@ -828,6 +869,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "theme"),
     ),
     ConfigOption(
+        key="display.cursor_style",
+        group="Display",
+        summary="Chat input cursor style ('block' or 'underline').",
+        kind=OptionKind.CURSOR_STYLE_DELEGATE,
+        default=CURSOR_STYLE_DEFAULT,
+        env_var=_env_vars.CURSOR_STYLE,
+        toml_keys=("ui", "cursor_style"),
+    ),
+    ConfigOption(
         key="display.show_header",
         group="Display",
         summary="Show Textual's native header bar at the top of the TUI.",
@@ -1035,6 +1085,27 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.OLLAMA_DISCOVERY,
+    ),
+    ConfigOption(
+        key="memory.auto_save",
+        group="Tools",
+        summary=(
+            "Let the agent proactively save learnings to memory (AGENTS.md); "
+            "disable to keep loading memory but stop auto-saving."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.MEMORY_AUTO_SAVE,
+        empty_env_is_false=True,
+        toml_keys=("memory", "auto_save"),
+    ),
+    ConfigOption(
+        key="features.experimental",
+        group="Tools",
+        summary="Opt into experimental, unstable dcode behavior.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.EXPERIMENTAL,
     ),
     ConfigOption(
         key="events.external_socket",

@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from textual.events import Click
     from textual.timer import Timer
 
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
 
 
@@ -1668,6 +1669,12 @@ class ChatInput(Vertical):
         padding: 0;
     }
 
+    ChatInput ChatTextArea.cursor-underline .text-area--cursor {
+        background: transparent;
+        color: $text;
+        text-style: underline;
+    }
+
     ChatInput ChatTextArea:focus {
         border: none;
     }
@@ -2992,6 +2999,15 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def set_cursor_style(self, *, style: CursorStyle) -> None:
+        """Set the input cursor's visual style.
+
+        Args:
+            style: Whether to render a block or underlined character cell.
+        """
+        if self._text_area is not None:
+            self._text_area.set_class(style == "underline", "cursor-underline")
 
     def set_cursor_blink(self, *, blink: bool) -> None:
         """Toggle the input's cursor blink without changing focus.

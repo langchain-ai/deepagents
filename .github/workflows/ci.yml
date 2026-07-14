@@ -22,8 +22,6 @@ concurrency:
 
 permissions:
   contents: read
-  # Required for CodSpeed OIDC authentication in _benchmark.yml
-  id-token: write
 
 env:
   UV_NO_SYNC: "true"
@@ -77,14 +75,12 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             code:
               - 'libs/code/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             talon:
               - 'libs/talon/**'
@@ -147,7 +143,6 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
-              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
   # Run linting on changed packages
   lint-deepagents:
@@ -439,37 +434,6 @@ jobs:
           STATUS="$(git status)"
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
-
-  # Run CodSpeed benchmarks on SDK changes
-  benchmark-deepagents:
-    name: "⏱️ Benchmark deepagents"
-    needs: changes
-    if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/deepagents"
-    secrets: inherit
-
-  # Run CodSpeed benchmarks on code changes
-  benchmark-code:
-    name: "⏱️ Benchmark code"
-    needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/code"
-    secrets: inherit
-
-  # # TODO(hntrl): re-enable when bench flakiness is under control
-  # benchmark-quickjs:
-  #   name: "⏱️ Benchmark quickjs"
-  #   needs: changes
-  #   if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-  #   uses: ./.github/workflows/_benchmark.yml
-  #   with:
-  #     working-directory: "libs/partners/quickjs"
-  #     has-memory-benchmarks: true
-  #   secrets: inherit
 
   # Validates every helper script under .github/scripts/test_*.py. Job id/name
   # are kept for branch-protection compatibility; rename only with a coordinated PR.

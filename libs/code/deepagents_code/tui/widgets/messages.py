@@ -3232,17 +3232,26 @@ class DiffMessage(Static):
     """
     """Diff syntax coloring per theme: additions, removals, muted context."""
 
-    def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        diff_content: str,
+        file_path: str = "",
+        *,
+        tool_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a diff message.
 
         Args:
             diff_content: The unified diff content
             file_path: Path to the file being modified
+            tool_name: Name of the file tool that produced the diff
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
+        self._tool_name = tool_name
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.

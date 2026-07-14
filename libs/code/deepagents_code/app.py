@@ -160,6 +160,16 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
+_TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
+"""Tools that stay expanded instead of collapsing into step summaries.
+
+Each surfaces user-facing content worth keeping visible on its own — an
+interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
+(`write_todos`) — so it renders standalone and acts as a boundary between
+adjacent tool groups. Add a tool here only when its collapsed one-line
+summary would hide something the user needs to see.
+"""
+
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
 
@@ -12128,12 +12138,16 @@ class DeepAgentsApp(App):
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
         # then snapping shut. A groupable tool joins (or opens) the current
-        # step's group; a diff folds into it; anything else is a step boundary
-        # that closes the group.
+        # step's group; a diff from a groupable tool folds into it; anything
+        # else is a step boundary that closes the group.
         is_groupable_tool = (
-            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+            isinstance(widget, ToolCallMessage)
+            and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
         )
-        is_diff = isinstance(widget, DiffMessage)
+        is_groupable_diff = (
+            isinstance(widget, DiffMessage)
+            and widget._tool_name not in _TOOL_GROUP_EXCLUSIONS
+        )
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
@@ -12150,7 +12164,7 @@ class DeepAgentsApp(App):
         # folding it into the group hides it on the next frame — bouncing the
         # bottom-anchored transcript on every tool call.
         with self.batch_update():
-            if not (is_groupable_tool or is_diff):
+            if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
                 # Re-derive groups for any tools mounted outside this path
                 # (resumed history), which carry no live group.
@@ -12176,7 +12190,7 @@ class DeepAgentsApp(App):
             ):
                 if is_groupable_tool:
                     self._active_tool_group.add_member(widget)
-                elif is_diff:
+                elif is_groupable_diff:
                     self._active_tool_group.add_collapsible(widget)
 
         self._schedule_message_height_measurement(message_data.id)
@@ -12341,7 +12355,7 @@ class DeepAgentsApp(App):
                     continue  # footers are transparent to grouping
                 if isinstance(child, ToolCallMessage):
                     groupable = (
-                        child.tool_name != "ask_user"
+                        child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
                         and not child.has_class("-grouped")
                     )
@@ -12354,8 +12368,13 @@ class DeepAgentsApp(App):
                     run_collapsible.append(child)
                     continue
                 if isinstance(child, DiffMessage):
-                    # A diff belongs to the tool above it; never starts a run.
-                    if run_anchor is not None:
+                    # A diff belongs to the tool above it and never starts a
+                    # run: normally it folds into the open run, but a diff from
+                    # an excluded tool (e.g. edit_file) stays standalone and
+                    # ends the run so the edit and its diff remain visible.
+                    if child._tool_name in _TOOL_GROUP_EXCLUSIONS:
+                        await flush()
+                    elif run_anchor is not None:
                         run_collapsible.append(child)
                     continue
                 # Assistant text, notices, an existing summary, etc. end the run.

@@ -17,6 +17,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain_core.language_models import BaseChatModel
+
 _DEFAULT_WORKDIR = Path("/app")
 
 _SHELL_ENV_DENYLIST = frozenset(
@@ -100,7 +102,7 @@ def _model_name(configurable: dict[str, object]) -> str:
     return value
 
 
-def _build_model(configurable: dict[str, object]) -> object:
+def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     """Build the chat model, defaulting OpenAI to the Responses API.
 
     OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for

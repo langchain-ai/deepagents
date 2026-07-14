@@ -11,6 +11,7 @@ from deepagents_code.mcp_login_service import (
     ConfigResolution,
     ConfigResolutionError,
     ServerSelection,
+    format_legacy_ignored_notice,
     format_untrusted_project_notice,
     resolve_mcp_config,
     select_server,
@@ -136,6 +137,33 @@ class TestResolveMcpConfigAutodiscover:
         assert isinstance(result, ConfigResolutionError)
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
         assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_legacy_enabled_project_servers_is_surfaced(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A legacy flat allowlist is reported so login can explain the change.
+
+        `mcp login` is non-interactive (no approval prompt), so a user who
+        relied on the removed `[mcp].enabled_project_servers` key must be told
+        why their server stopped loading rather than have it vanish silently.
+        """
+        _isolate_project_mcp_trust_lists(
+            monkeypatch, tmp_path, '[mcp]\nenabled_project_servers = ["notion"]\n'
+        )
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+        assert isinstance(result, ConfigResolutionError)
+        assert result.legacy_ignored == ("notion",)
 
     def test_unreadable_policy_fails_closed_and_surfaces_error(
         self,
@@ -289,6 +317,66 @@ class TestResolveMcpConfigAutodiscover:
         assert isinstance(result, ConfigResolution)
         assert result.used_paths == (project_cfg,)
         assert set(result.config["mcpServers"]) == {"slack"}
+        assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_changed_override_hides_approved_lower_precedence_server(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Login cannot select a stale approval shadowed by a changed server."""
+        project = tmp_path / "project"
+        nested_cfg = project / ".deepagents" / ".mcp.json"
+        root_cfg = project / ".mcp.json"
+        nested_cfg.parent.mkdir(parents=True)
+        approved = {"type": "http", "url": "https://safe.test/mcp"}
+        nested_cfg.write_text(
+            '{"mcpServers":{"docs":{"type":"http","url":"https://safe.test/mcp"}}}'
+        )
+        root_cfg.write_text(
+            '{"mcpServers":{"docs":{"type":"http","url":"https://changed.test/mcp"}}}'
+        )
+        _isolate_project_mcp_trust_lists(
+            monkeypatch,
+            tmp_path,
+            _project_approval_config(project, "docs", approved),
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[nested_cfg, root_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert result.untrusted_project_paths == (root_cfg,)
+
+    def test_env_approval_survives_unreadable_trust_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Login retains explicit env approvals when trust TOML is unreadable."""
+        from deepagents_code import _env_vars
+
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text(
+            '{"mcpServers":{"docs":{"type":"http",'
+            '"url":"https://docs.test/mcp"},'
+            '"other":{"type":"http","url":"https://other.test/mcp"}}}'
+        )
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path, "[[not valid toml")
+        monkeypatch.setenv(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, "docs")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert set(result.config["mcpServers"]) == {"docs"}
+        assert result.used_paths == (project_cfg,)
         assert result.untrusted_project_paths == (project_cfg,)
 
     def test_invalid_unapproved_sibling_does_not_block_login(
@@ -456,3 +544,19 @@ class TestFormatUntrustedProjectNotice:
         assert str(a) in notice
         assert str(b) in notice
         assert "pass --mcp-config <path> to use the file explicitly" in notice
+
+
+class TestFormatLegacyIgnoredNotice:
+    """`format_legacy_ignored_notice` rendering."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No ignored names means no notice."""
+        assert format_legacy_ignored_notice(()) == ""
+
+    def test_names_and_migration_hint(self) -> None:
+        """The notice names each ignored server and how to re-approve."""
+        notice = format_legacy_ignored_notice(("docs", "slack"))
+        assert "docs" in notice
+        assert "slack" in notice
+        assert "enabled_project_servers is no longer used" in notice
+        assert "dcode" in notice

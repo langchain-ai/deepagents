@@ -112,6 +112,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigErrorKind,
         ConfigResolution,
         ConfigResolutionError,
+        format_legacy_ignored_notice,
         format_untrusted_project_notice,
         resolve_mcp_config,
         select_server,
@@ -134,6 +135,9 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
     if notice:
         print(notice, file=sys.stderr)  # noqa: T201
+    legacy_notice = format_legacy_ignored_notice(resolution.legacy_ignored)
+    if legacy_notice:
+        print(legacy_notice, file=sys.stderr)  # noqa: T201
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -239,14 +243,20 @@ def run_mcp_config() -> int:
 
 
 def _print_resolution_error(error: ConfigResolutionError) -> None:
-    """Print the untrusted-paths notice (if any) then `error.message` to stderr.
+    """Print the untrusted-paths and legacy-migration notices then the message.
 
-    Note: the untrusted-paths notice is also surfaced independently for
-    successful resolutions in `run_mcp_login`.
+    Note: both notices are also surfaced independently for successful
+    resolutions in `run_mcp_login`.
     """
-    from deepagents_code.mcp_login_service import format_untrusted_project_notice
+    from deepagents_code.mcp_login_service import (
+        format_legacy_ignored_notice,
+        format_untrusted_project_notice,
+    )
 
     notice = format_untrusted_project_notice(error.untrusted_project_paths)
     if notice:
         print(notice, file=sys.stderr)  # noqa: T201
+    legacy_notice = format_legacy_ignored_notice(error.legacy_ignored)
+    if legacy_notice:
+        print(legacy_notice, file=sys.stderr)  # noqa: T201
     print(error.message, file=sys.stderr)  # noqa: T201

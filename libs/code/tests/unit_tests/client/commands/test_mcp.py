@@ -241,6 +241,50 @@ class TestRunMCPLogin:
         assert "Skipping untrusted project MCP server entries" in err
         assert "pass --mcp-config <path> to use the file explicitly" in err
 
+    async def test_legacy_allowlist_prints_migration_hint(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+    ) -> None:
+        """A legacy `enabled_project_servers` key prints the migration hint.
+
+        Login is non-interactive, so the removed flat allowlist would otherwise
+        drop the server with no explanation.
+        """
+        from deepagents_code import _env_vars
+        from deepagents_code.client.commands.mcp import run_mcp_login
+
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["notion"]\n')
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        monkeypatch.delenv(
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False
+        )
+        monkeypatch.delenv(_env_vars.DISABLED_PROJECT_MCP_SERVERS, raising=False)
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
+        ):
+            exit_code = await run_mcp_login(server="notion", config_path=None)
+
+        err = capsys.readouterr().err
+        assert exit_code == 1
+        mock_login.assert_not_awaited()
+        assert "enabled_project_servers is no longer used" in err
+        assert "notion" in err
+
     async def test_user_level_config_is_trusted_without_approval(
         self,
         tmp_path: Path,

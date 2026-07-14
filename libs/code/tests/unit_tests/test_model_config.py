@@ -5503,6 +5503,13 @@ class TestMcpServerTrustLists:
             frozenset(), frozenset(), read_error="boom"
         ) == McpServerTrustLists(frozenset(), frozenset())
 
+    def test_third_positional_argument_remains_read_error(self) -> None:
+        """The pre-approval constructor position remains backward compatible."""
+        lists = McpServerTrustLists(frozenset(), frozenset(), "boom")
+
+        assert lists.read_error == "boom"
+        assert lists.approvals == frozenset()
+
     def test_load_failed_tracks_read_error(self) -> None:
         """`load_failed` names the fail-closed contract for `read_error`."""
         assert not McpServerTrustLists(frozenset(), frozenset()).load_failed
@@ -6711,6 +6718,28 @@ class TestAddEnabledProjectMcpServers:
         )
         # The unparseable file is left exactly as-is — no partial atomic clobber.
         assert config_path.read_text() == corrupt
+
+    def test_returns_false_on_os_error(self, tmp_path: Path) -> None:
+        """An I/O failure while writing fails closed (returns False).
+
+        Direct coverage of the `OSError` arm the docstring promises: the config
+        directory cannot be created because a regular file sits where a
+        directory must go.
+        """
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        blocker = tmp_path / "afile"
+        blocker.write_text("")  # a file where a parent directory is needed
+        config_path = blocker / "config.toml"
+        assert (
+            add_enabled_project_mcp_servers(
+                ["docs"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
 
 
 class TestLoadStartupMode:

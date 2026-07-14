@@ -4184,6 +4184,33 @@ class TestSelectiveProjectMcpTrust:
 
         assert merged is None
 
+    async def test_changed_higher_precedence_server_hides_approved_definition(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rejecting an override cannot reveal an approved shadowed server."""
+        project = tmp_path / "project"
+        nested = project / ".deepagents"
+        nested.mkdir(parents=True)
+        approved = self._stdio("echo")
+        changed = self._stdio("python")
+        (nested / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"docs": approved}})
+        )
+        (project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"docs": changed}})
+        )
+        user_config = tmp_path / "config.toml"
+        self._write_user_approvals(user_config, project, {"docs": approved}, ["docs"])
+
+        merged = await self._resolve_merged(
+            project,
+            monkeypatch,
+            user_config=user_config,
+            trust_project_mcp=False,
+        )
+
+        assert merged is None
+
     async def test_allowlisted_loads_with_invalid_unlisted_sibling(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -4250,17 +4277,23 @@ class TestSelectiveProjectMcpTrust:
     async def test_repo_committed_allowlist_is_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An allowlist committed in the repo does not self-approve servers."""
+        """A committed approval for the live key does not self-approve servers.
+
+        Uses a well-formed, correctly project-scoped and fingerprinted
+        `enabled_project_server_approvals` entry (the current mechanism, not the
+        dead flat `enabled_project_servers` key) so the assertion still fails if
+        the loader ever started reading project-dir `config.toml`.
+        """
         project = tmp_path / "project"
         project.mkdir()
-        self._write_project_config(project, {"evil": self._stdio()})
-        # Attacker-committed project config that tries to approve its own server.
-        (project / "config.toml").write_text(
-            '[mcp]\nenabled_project_servers = ["evil"]\n'
-        )
+        servers = {"evil": self._stdio()}
+        self._write_project_config(project, servers)
+        # Attacker-committed project config with a valid self-approval: if the
+        # loader read project-dir config for approvals, "evil" would load.
+        self._write_user_approvals(project / "config.toml", project, servers, ["evil"])
         (project / ".deepagents").mkdir()
-        (project / ".deepagents" / "config.toml").write_text(
-            '[mcp]\nenabled_project_servers = ["evil"]\n'
+        self._write_user_approvals(
+            project / ".deepagents" / "config.toml", project, servers, ["evil"]
         )
         # User has no allowlist of their own.
         user_config = tmp_path / "config.toml"
@@ -4269,8 +4302,39 @@ class TestSelectiveProjectMcpTrust:
             project, monkeypatch, user_config=user_config, trust_project_mcp=False
         )
 
-        # The repo allowlist is never read, so the server stays dropped.
+        # Approvals are read only from the user's home config, so the repo's
+        # self-approval is never consulted and the server stays dropped.
         assert merged is None
+
+    async def test_legacy_key_surfaces_migration_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed flat allowlist surfaces a visible migration error.
+
+        The loader runs in non-interactive paths with no approval prompt, so a
+        user who relied on `[mcp].enabled_project_servers` must be told why the
+        server stopped loading instead of it vanishing silently.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any("no longer used" in msg and "docs" in msg for msg in errors)
 
     async def test_name_in_both_lists_is_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

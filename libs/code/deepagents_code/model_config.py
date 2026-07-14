@@ -3286,9 +3286,6 @@ class McpServerTrustLists:
     disabled: frozenset[str]
     """Server names always rejected; reject wins over approvals and over trust."""
 
-    approvals: frozenset[McpProjectServerApproval] = frozenset()
-    """Project-scoped approvals loaded from user `config.toml`."""
-
     read_error: str | None = field(default=None, compare=False)
     """Non-`None` when the user's `config.toml` existed but its trust policy
     could not be fully read: the file was unreadable/unparseable, its `[mcp]`
@@ -3301,7 +3298,14 @@ class McpServerTrustLists:
     continue to apply. Excluded from equality so a failed load still compares
     equal to empty lists for tests that only care about the resolved names."""
 
-    legacy_ignored: frozenset[str] = field(default=frozenset(), compare=False)
+    approvals: frozenset[McpProjectServerApproval] = field(
+        default_factory=frozenset, kw_only=True
+    )
+    """Project-scoped approvals loaded from user `config.toml`."""
+
+    legacy_ignored: frozenset[str] = field(
+        default_factory=frozenset, compare=False, kw_only=True
+    )
     """Names found in a legacy `[mcp].enabled_project_servers` list that this
     build no longer honors. Non-empty means the user relied on the removed flat
     allowlist, so those servers silently stopped loading; callers should surface
@@ -3678,7 +3682,8 @@ def add_enabled_project_mcp_servers(
 
     Returns:
         `True` if the save succeeded (or there was nothing to add), `False` on
-            I/O, parse failure, or missing project/server context.
+            I/O, parse failure, an unknown server name, or missing
+            project/server context.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3741,7 +3746,12 @@ def add_enabled_project_mcp_servers(
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # Matches `suppress_warning`: `TypeError` covers `tomli_w.dump`
+        # rejecting a non-serializable payload; `ValueError` covers things like
+        # `os.fdopen` on a closed fd. Folding them in keeps the `bool` contract
+        # intact so the caller degrades to a "could not remember" warning
+        # instead of crashing with a raw traceback.
         logger.exception(
             "Could not save enabled project MCP servers to %s", config_path
         )

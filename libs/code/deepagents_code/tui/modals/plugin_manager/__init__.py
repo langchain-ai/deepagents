@@ -112,10 +112,13 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             Widgets for the plugin manager UI.
         """
         with Vertical():
-            yield Static("Plugins", classes="plugin-manager-title")
+            yield Static(
+                "Plugins", id="plugin-manager-title", classes="plugin-manager-title"
+            )
             yield Static(self._tabs_text(), id="plugin-manager-tabs")
             yield Rule(
                 line_style="heavy" if not is_ascii_mode() else "ascii",
+                id="plugin-manager-divider",
                 classes="plugin-manager-divider",
             )
             yield Static(
@@ -132,10 +135,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             )
             yield OptionList(id="plugin-manager-options")
             yield Input(
-                placeholder=(
-                    "owner/repo, git@github.com:owner/repo.git, "
-                    "https://.../marketplace.json, or ./path"
-                ),
+                placeholder="",
                 id="plugin-marketplace-source",
             )
             yield Static("", id="plugin-manager-help", classes="plugin-manager-help")
@@ -243,7 +243,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         }
 
     def _refresh_view(self) -> None:
-        self.query_one("#plugin-manager-tabs", Static).update(self._tabs_text())
+        title = self.query_one("#plugin-manager-title", Static)
+        tabs = self.query_one("#plugin-manager-tabs", Static)
+        divider = self.query_one("#plugin-manager-divider", Rule)
+        tabs.update(self._tabs_text())
         status_widget = self.query_one("#plugin-manager-status", Static)
         if self._mode == "plugin_details" and self._selected_plugin is not None:
             status_widget.update(_plugin_details_content(self._selected_plugin))
@@ -276,14 +279,28 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         glyphs = get_glyphs()
 
         if self._mode == "add_marketplace":
+            title.update("Add Marketplace")
+            tabs.display = False
+            divider.display = False
+            if self._status is None:
+                status_widget.update(
+                    "Enter marketplace source:\n"
+                    "\n"
+                    "Examples:\n"
+                    f"  {glyphs.bullet} owner/repo (GitHub)\n"
+                    f"  {glyphs.bullet} git@github.com:owner/repo.git (SSH)\n"
+                    f"  {glyphs.bullet} https://example.com/marketplace.json\n"
+                    f"  {glyphs.bullet} ./path/to/marketplace"
+                )
             options.display = False
             source_input.display = True
             source_input.focus()
-            help_text.update(
-                f"Enter to add {glyphs.bullet} Esc cancel "
-                f"{glyphs.bullet} paste a marketplace source"
-            )
+            help_text.update(f"Enter to add {glyphs.bullet} Esc to cancel")
             return
+
+        title.update("Plugins")
+        tabs.display = True
+        divider.display = True
 
         if self._details_mode_active():
             source_input.display = False

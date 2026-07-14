@@ -747,6 +747,20 @@ async def test_plugin_manager_opens_add_marketplace_input(
         source_input = screen.query_one("#plugin-marketplace-source", Input)
         assert source_input.display is True
         assert source_input.has_focus
+        assert (
+            str(screen.query_one("#plugin-manager-title").render()) == "Add Marketplace"
+        )
+        assert screen.query_one("#plugin-manager-tabs").display is False
+        tip = str(screen.query_one("#plugin-manager-status").render())
+        assert "Enter marketplace source:" in tip
+        assert "Examples:" in tip
+        assert "owner/repo (GitHub)" in tip
+        assert "git@github.com:owner/repo.git (SSH)" in tip
+        assert "https://example.com/marketplace.json" in tip
+        assert "./path/to/marketplace" in tip
+        help_text = str(screen.query_one("#plugin-manager-help").render())
+        assert "Enter to add" in help_text
+        assert "Esc to cancel" in help_text
 
 
 async def test_plugin_manager_discover_rows_show_description_below_name(

@@ -1,6 +1,7 @@
 """Tests for autocomplete fuzzy search functionality."""
 
 import asyncio
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -1032,6 +1033,106 @@ class TestGetProjectFiles:
         files = _get_project_files(tmp_path)
 
         assert "a/b/c/d/e/deep.py" in files
+
+    def test_git_stderr_uses_stable_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git diagnostics must use the English locale expected by log filtering."""
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        captured: dict[str, object] = {}
+
+        def fake_run(*_args: object, **kwargs: object) -> _Result:
+            captured.update(kwargs)
+            return _Result()
+
+        monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
+        monkeypatch.setenv("AUTOCOMPLETE_TEST_ENV", "preserved")
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        _run_git_ls_files("git", tmp_path, [])
+
+        env = cast("dict[str, str]", captured["env"])
+        assert env["LC_ALL"] == "C"
+        assert env["AUTOCOMPLETE_TEST_ENV"] == "preserved"
+
+    def test_non_repo_directory_is_quiet(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-Git directory (exit 128) must not emit a debug log.
+
+        Running `git ls-files` outside a work tree is the expected trigger for
+        the glob fallback, so the failure path stays silent.
+        """
+        git_path = _get_git_executable()
+        assert git_path is not None
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            ok, files = _run_git_ls_files(git_path, tmp_path, [])
+
+        assert ok is False
+        assert files == []
+        assert caplog.records == []
+
+    def test_genuine_failure_logs_details(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A real Git failure logs root/cwd, args, exit code, and stderr."""
+
+        class _Result:
+            returncode = 129
+            stdout = ""
+            stderr = "fatal: unknown option `--bogus'\n"
+
+        def fake_run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result()
+
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            ok, files = _run_git_ls_files("git", tmp_path, ["--bogus"])
+
+        assert ok is False
+        assert files == []
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert str(tmp_path) in message
+        assert "--bogus" in message
+        assert "exit=129" in message
+        assert "unknown option" in message
+
+    def test_failure_stderr_is_sanitized(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Control characters in git stderr are neutralized before logging."""
+
+        class _Result:
+            returncode = 1
+            stdout = ""
+            stderr = "fatal: broken\x1b[31mred\r\nsecond line\n"
+
+        def fake_run(*_args: object, **_kwargs: object) -> _Result:
+            return _Result()
+
+        monkeypatch.setattr(autocomplete_module.subprocess, "run", fake_run)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
+            _run_git_ls_files("git", tmp_path, [])
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert "\x1b" not in message
+        assert "\r" not in message
 
     def test_glob_fallback_when_git_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

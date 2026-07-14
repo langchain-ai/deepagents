@@ -241,8 +241,13 @@ async def test_compact_resumed_thread_uses_persisted_history(
             cutoff = _event_field(summarization_event, "cutoff_index")
             assert isinstance(cutoff, int)
             assert cutoff > 0
-            archive_path = f"/conversation_history/{thread_id}.md"
-            assert _event_field(summarization_event, "file_path") == archive_path
+            # In local mode the history prefix lives under a stable per-user
+            # `artifacts_root`, so assert the suffix rather than a fixed prefix.
+            # The path stays resolvable after restart because `artifacts_root`
+            # is deterministic (Server 3 below reuses it).
+            archive_path = _event_field(summarization_event, "file_path")
+            assert isinstance(archive_path, str)
+            assert archive_path.endswith(f"/conversation_history/{thread_id}.md")
 
             # The archive must be readable THROUGH THE AGENT, proving the bytes
             # live in the agent's own composite backend server-side rather than

@@ -134,11 +134,11 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
 
         # Patch generated backend roots so host-path mappings are deterministic
         # across machines and runs.
-        def _fake_mkdtemp(prefix: str = "", **_kw: Any) -> str:
-            return str(tmp_path / prefix.rstrip("_"))
-
         with (
-            patch("deepagents_code.agent.tempfile.mkdtemp", _fake_mkdtemp),
+            patch(
+                "deepagents_code.agent._artifacts_root",
+                return_value=tmp_path / "dcode-artifacts",
+            ),
             patch(
                 "deepagents_code.agent._offload_fallback_root",
                 return_value=tmp_path / ".deepagents",

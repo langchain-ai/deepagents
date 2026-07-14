@@ -125,12 +125,45 @@ def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
             cwd=tmp_path,
         )
 
-    result = backend.write("/conversation_history/thread.md", "archived")
+    # Conversation history is addressed under the backend's `artifacts_root`
+    # (a per-session temp dir in local mode) and routed to persistent storage.
+    result = backend.write(
+        f"{backend.artifacts_root}/conversation_history/thread.md", "archived"
+    )
 
     assert result.error is None
     assert (
         history_root / "conversation_history" / "thread.md"
     ).read_text() == "archived"
+
+
+def test_local_large_tool_results_land_on_real_filesystem(tmp_path: Path) -> None:
+    """Offloaded large results write to the real default fs, not a virtual mount.
+
+    `<artifacts_root>/large_tool_results/` has no composite route, so writes fall
+    through to the default backend at a real path the agent can inspect with
+    `execute` -- the whole point of the local-mode rewire.
+    """
+    artifacts_root = tmp_path / "artifacts"
+    model = _make_fake_chat_model()
+
+    with patch("deepagents_code.agent._artifacts_root", return_value=artifacts_root):
+        _agent, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+        )
+
+    assert backend.artifacts_root == str(artifacts_root)
+    result = backend.write(f"{artifacts_root}/large_tool_results/call-1", "payload")
+
+    assert result.error is None
+    # The bytes are on the real filesystem at the advertised path.
+    assert (artifacts_root / "large_tool_results" / "call-1").read_text() == "payload"
 
 
 def _request_with_context(
@@ -3665,6 +3698,27 @@ class TestCreateCliAgentInterpreterWiring:
         assert "1  first" in allowed.content
         assert "2  second" in allowed.content
         assert "can only read" in denied
+
+    def test_rubric_grader_prefix_tracks_artifacts_root(self, tmp_path: Path) -> None:
+        """The grader read allow-list follows the backend's `artifacts_root`.
+
+        With a non-default `artifacts_root`, offloaded results live under
+        `<root>/large_tool_results/`, so the grader must allow that prefix and
+        reject the old, unrelated `/large_tool_results/` path.
+        """
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        project = FilesystemBackend(root_dir=tmp_path / "project", virtual_mode=False)
+        backend = CompositeBackend(
+            default=project, routes={}, artifacts_root="/srv/art"
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        denied = read_tool.func(file_path="/large_tool_results/x", runtime=runtime)
+
+        assert "can only read files under /srv/art/large_tool_results/" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware

@@ -319,7 +319,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 ## Large Tool Results
 
-When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`.
+When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `<tmp_path>/dcode-artifacts/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `<tmp_path>/dcode-artifacts/large_tool_results/<tool_call_id>`.
 
 ## Execute Tool `execute`
 
@@ -340,8 +340,7 @@ Some paths returned by the file tools are virtual mounts:
 Do not assume that a path returned by a file tool can be used directly in a shell command.
 
 Host path mappings:
-- `/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
-- `/large_tool_results/` -> `<tmp_path>/deepagents_large_results/` (e.g. `/large_tool_results/dir/x.py` -> `<tmp_path>/deepagents_large_results/dir/x.py`)
+- `<tmp_path>/dcode-artifacts/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `<tmp_path>/dcode-artifacts/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
 
 ## `task` (subagent spawner)
 

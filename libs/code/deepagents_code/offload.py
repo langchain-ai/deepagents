@@ -32,6 +32,97 @@ def offload_storage_is_ephemeral() -> bool:
     return _EPHEMERAL_OFFLOAD_STORAGE
 
 
+def _harden_dir(path: Path) -> None:
+    """Create `path` if needed and restrict it to the current user.
+
+    Only ever call this on directories owned by this process's storage (a temp
+    dir or a dedicated subdirectory), never on the shared `~/.deepagents` config
+    root.
+
+    Args:
+        path: Directory to create and harden to `0o700`.
+
+    Raises:
+        OSError: If the path exists but is not a directory, or the directory
+            cannot be created or its mode changed (e.g. a read-only mount).
+        PermissionError: If the existing directory is owned by another local user.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        msg = f"Path is not a directory: {path}"
+        raise OSError(msg)
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and info.st_uid != getuid():
+        msg = f"Directory is owned by another user: {path}"
+        raise PermissionError(msg)
+    # `mkdir(mode=...)` does not tighten an existing directory. These directories
+    # can hold conversation data and offloaded tool results, so they must remain
+    # inaccessible to other local accounts regardless of the process umask.
+    path.chmod(0o700)
+
+
+def _probe_writable(path: Path) -> None:
+    """Confirm `path` accepts new files (catches read-only mounts).
+
+    Creating the directory is insufficient when it already exists on a read-only
+    mount; a temporary file proves writes can succeed.
+
+    Args:
+        path: Directory to probe.
+    """
+    with tempfile.NamedTemporaryFile(dir=path, prefix=".write-test-"):
+        pass
+
+
+def _artifacts_root() -> Path:
+    """Return a stable, private per-user directory for offloaded artifacts.
+
+    In local mode, large tool results are written here on the real filesystem
+    (rather than a hidden virtual backend) so the agent can inspect them with
+    `execute` (`jq`, `grep`, `python`) using the exact path the offload message
+    hands it. The directory is:
+
+    - stable across process restarts (keyed by user id) so paths embedded in a
+      resumed thread's history stay resolvable, and
+    - hardened to `0o700` and owned by the current user so other local accounts
+      cannot read offloaded results.
+
+    It is used as the `CompositeBackend` `artifacts_root`, which the SDK
+    filesystem and summarization middleware turn into the
+    `<root>/large_tool_results/` and `<root>/conversation_history/` prefixes.
+
+    If the predictable per-user path is unusable -- e.g. squatted by another
+    local user or symlinked (rejected by `_harden_dir`'s ownership / `S_ISDIR`
+    guards) -- this falls back to a private unique directory rather than reusing
+    a foreign-owned path or failing agent startup. The fallback is not stable
+    across restarts, but it never trusts a directory owned by someone else.
+
+    Returns:
+        A private, writable directory for offloaded artifacts.
+    """
+    getuid = getattr(os, "getuid", None)
+    suffix = str(getuid()) if getuid is not None else str(os.getpid())
+    temp_root = Path(tempfile.gettempdir())
+    root = temp_root / f"dcode-artifacts-{suffix}"
+    try:
+        _harden_dir(root)
+        _probe_writable(root)
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Predictable per-user artifacts directory is unavailable; creating "
+            "a private unique directory (paths will not be stable across restarts)",
+            exc_info=True,
+        )
+        unique = Path(
+            tempfile.mkdtemp(prefix=f"dcode-artifacts-{suffix}-", dir=temp_root)
+        )
+        _harden_dir(unique)
+        _probe_writable(unique)
+        return unique
+    return root
+
+
 def _offload_fallback_root() -> Path:
     """Return a writable base directory for offloaded conversation history.
 
@@ -63,47 +154,13 @@ def _offload_fallback_root() -> Path:
         writable.
     """
 
-    def _harden(path: Path) -> None:
-        """Create `path` if needed and restrict it to the current user.
-
-        Only ever called on directories owned by offload (a fresh temp dir or
-        the dedicated `conversation_history` subdirectory), never on the shared
-        `~/.deepagents` config root.
-
-        Raises:
-            OSError: If the path exists but is not a directory, or the
-                directory cannot be created or its mode changed (e.g. a
-                read-only mount).
-            PermissionError: If the existing directory is owned by another
-                local user.
-        """
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        info = path.lstat()
-        if not stat.S_ISDIR(info.st_mode):
-            msg = f"Offload path is not a directory: {path}"
-            raise OSError(msg)
-        getuid = getattr(os, "getuid", None)
-        if getuid is not None and info.st_uid != getuid():
-            msg = f"Offload directory is owned by another user: {path}"
-            raise PermissionError(msg)
-        # `mkdir(mode=...)` does not tighten an existing directory. Archives
-        # contain conversation data, so the offload directory must remain
-        # inaccessible to other local accounts regardless of the process umask.
-        path.chmod(0o700)
-
-    def _probe_writable(path: Path) -> None:
-        # Creating the directory is insufficient when it already exists on a
-        # read-only mount. A temporary file proves archive writes can succeed.
-        with tempfile.NamedTemporaryFile(dir=path, prefix=".write-test-"):
-            pass
-
     def _prepare_user_dir() -> Path:
         base = Path.home() / ".deepagents"
         # Ensure the shared config root exists and is usable, but leave its
         # permissions untouched -- hardening belongs on the archive subdir only.
         base.mkdir(parents=True, exist_ok=True)
         archive_dir = base / "conversation_history"
-        _harden(archive_dir)
+        _harden_dir(archive_dir)
         _probe_writable(archive_dir)
         return base
 
@@ -111,7 +168,7 @@ def _offload_fallback_root() -> Path:
         # A temp dir is created solely for offload and is not shared config, so
         # hardening the whole directory (which protects its archive subdir) is
         # both safe and necessary in world-writable temp locations.
-        _harden(path)
+        _harden_dir(path)
         _probe_writable(path)
         return path
 

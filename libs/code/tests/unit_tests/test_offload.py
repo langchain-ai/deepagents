@@ -15,7 +15,7 @@ import pytest
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import SLASH_COMMANDS
-from deepagents_code.offload import _offload_fallback_root
+from deepagents_code.offload import _artifacts_root, _offload_fallback_root
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -1182,6 +1182,61 @@ class TestOffloadFallbackRoot:
         from deepagents_code.offload import offload_storage_is_ephemeral
 
         assert offload_storage_is_ephemeral() is False
+
+
+class TestArtifactsRoot:
+    """Cover the real-filesystem artifacts root for offloaded tool results."""
+
+    def test_artifacts_root_is_stable_and_hardened(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-user artifacts dir is predictable, private, and reused."""
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        getuid = getattr(os, "getuid", None)
+        uid = getuid() if getuid is not None else os.getpid()
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+
+        root = _artifacts_root()
+
+        assert root == temp_dir / f"dcode-artifacts-{uid}"
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        # Stable across calls (paths embedded in resumed threads stay resolvable).
+        assert _artifacts_root() == root
+
+    def test_artifacts_root_falls_back_when_predictable_path_foreign_owned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A predictable dir owned by another user is rejected for a unique one."""
+        from types import SimpleNamespace
+
+        getuid = getattr(os, "getuid", None)
+        if getuid is None:
+            pytest.skip("uid ownership check requires os.getuid")
+
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        uid = getuid()
+        reserved = temp_dir / f"dcode-artifacts-{uid}"
+        reserved.mkdir()  # a real, us-owned directory; lstat is faked below
+
+        real_lstat = Path.lstat
+
+        def fake_lstat(self: Path) -> Any:  # noqa: ANN401
+            info = real_lstat(self)
+            if self == reserved:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+            return info
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+        root = _artifacts_root()
+
+        assert root != reserved
+        assert root.name.startswith(f"dcode-artifacts-{uid}-")
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
 class TestOffloadStorageCaveat:

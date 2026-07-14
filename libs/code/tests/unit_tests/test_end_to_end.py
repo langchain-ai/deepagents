@@ -231,8 +231,10 @@ class TestDeepAgentsCLIEndToEnd:
             assert "summary goes here" in summary_message.content
             assert agent_response.generations[0].message.content == "response"
 
-            # Verify conversation history was offloaded to backend
-            assert backend.ls("/conversation_history/").entries
+            # Verify conversation history was offloaded to backend. In local
+            # mode the history prefix lives under the backend's `artifacts_root`
+            # (a per-session temp dir), routed to persistent storage.
+            assert backend.ls(f"{backend.artifacts_root}/conversation_history/").entries
 
     def test_cli_agent_with_fake_llm_with_tools(self, tmp_path: Path) -> None:
         """Test CLI agent with tools using a fake LLM model.

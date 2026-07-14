@@ -3320,8 +3320,10 @@ class TestSelectProjectServersToPersist:
         """Up at the first row and down at the last row wrap around."""
         from rich.console import Console
 
+        from deepagents_code.config import get_glyphs
         from deepagents_code.main import _run_project_mcp_server_checkbox_picker
 
+        cursor = get_glyphs().cursor
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
@@ -3353,11 +3355,11 @@ class TestSelectProjectServersToPersist:
 
                 up(event)
                 rendered = "".join(text for _style, text in rows_control.text())
-                assert "› [x] reference" in rendered
+                assert f"{cursor} [x] reference" in rendered
 
                 down(event)
                 rendered = "".join(text for _style, text in rows_control.text())
-                assert "› [x] docs" in rendered
+                assert f"{cursor} [x] docs" in rendered
                 return ["docs", "reference"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)

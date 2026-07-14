@@ -9017,9 +9017,13 @@ class TestMessageTimestampFooters:
                 0,
                 "",
             )
-            await app._load_thread_history(
-                thread_id="t-long", preloaded_payload=payload
-            )
+            # Suppress history loading's delayed scroll-to-bottom timer. If it
+            # fires after the explicit hydrate-above call below, the resulting
+            # scroll offset change hydrates the tail and prunes `hist-0` again.
+            with patch.object(app, "set_timer"):
+                await app._load_thread_history(
+                    thread_id="t-long", preloaded_payload=payload
+                )
             await pilot.pause()
 
             # Older messages start archived (no widget/footer mounted yet).

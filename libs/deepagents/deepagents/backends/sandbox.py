@@ -97,6 +97,8 @@ import glob, os, base64, sys
 search_path = base64.b64decode('{path_b64}').decode('utf-8')
 glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+max_count = {max_count}
+match_count = 0
 
 # When the search path is a directory, chdir to it so glob patterns
 # resolve relative to it. When it is a single file, search it directly
@@ -139,6 +141,13 @@ for open_path, display_path in targets:
                     # one so records never concatenate when a file's last
                     # line lacks a final newline.
                     sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
+                    match_count += 1
+                    # Emit one record past the cap (match_count > max_count, not
+                    # >=) so the parser can tell "exactly at the cap" (complete)
+                    # from "capped early" (truncated). Mirrors the `head -n
+                    # max_count+1` route in `_build_grep_cmd`.
+                    if max_count is not None and match_count > max_count:
+                        sys.exit(0)
     except OSError:
         pass
 " 2>/dev/null"""
@@ -635,7 +644,7 @@ def _check_preflight_result(result: ExecuteResponse, file_path: str) -> WriteRes
     return None
 
 
-def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
+def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count: int | None = None) -> str:
     search_path = shlex.quote(path or ".")
     # `-Z` separates the filename from line data with NUL, so filenames may
     # contain `:` without making the output ambiguous.
@@ -655,13 +664,30 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
             path_b64=path_b64,
             glob_b64=glob_b64,
             pattern_b64=pattern_b64,
+            max_count=None if max_count is None else int(max_count),
         )
 
     glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
-    return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+    # Known limitation (pre-existing): `2>/dev/null` + `|| true` means a genuine
+    # grep failure (exit 2 — unreadable root, bad option) is swallowed and parses
+    # as an empty "no matches" result, indistinguishable from a real zero-match.
+    # Surfacing exit 2 while still tolerating no-match (exit 1) AND the SIGPIPE
+    # (exit 141) that `head` sends grep on the cap path requires `set -o pipefail`
+    # (bash/zsh only, not POSIX sh/dash/busybox); buffering to a temp file instead
+    # would defeat the `head` early-stop below. A portable fix belongs in its own
+    # sandbox-tested change. The in-process `_GREP_PATH_GLOB_TEMPLATE` route does
+    # surface its errors (see its docstring); only this GNU-grep route swallows.
+    base = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null"
+    if max_count is not None:
+        # Read one record beyond the cap so the parser can distinguish "exactly
+        # at the cap" (complete) from "capped early" (truncated). `head` closing
+        # the pipe delivers SIGPIPE to grep, stopping it early rather than
+        # letting it keep scanning a huge tree after the cap is met.
+        return f"{base} | head -n {int(max_count) + 1} || true"
+    return f"{base} || true"
 
 
-def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
+def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int | None = None) -> GrepResult:
     output = result.output.rstrip("\n")
     if result.exit_code is not None and result.exit_code != 0:
         detail = output.strip() if output else f"exit code {result.exit_code}"
@@ -680,6 +706,10 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
             parse_error = line
     if parse_error is not None and not matches:
         return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
+    if max_count is not None and len(matches) > max_count:
+        # More matches existed than the caller asked for; return the cap and
+        # flag the result as incomplete.
+        return GrepResult(matches=matches[:max_count], truncated=True)
     return GrepResult(matches=matches)
 
 
@@ -1354,6 +1384,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search file contents for a literal string using `grep -F`.
 
@@ -1367,23 +1399,28 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
                 `grep --include`; patterns containing a `/` (e.g.
                 `'src/**/*.py'`) match the search-root-relative path via an
                 in-process Python glob.
+            max_count: Optional total cap on returned matches across all files.
+                `None` returns every match; an int stops the search once the cap
+                is reached and flags the result with `truncated=True`.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
-        result = self.execute(_build_grep_cmd(pattern, path, glob))
-        return _parse_grep_output(result, path)
+        result = self.execute(_build_grep_cmd(pattern, path, glob, max_count))
+        return _parse_grep_output(result, path, max_count)
 
     async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Async version of `grep`, delegating to `aexecute` with timeout guard."""
         try:
             result = await asyncio.wait_for(
-                self.aexecute(_build_grep_cmd(pattern, path, glob)),
+                self.aexecute(_build_grep_cmd(pattern, path, glob, max_count)),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:
@@ -1397,7 +1434,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return GrepResult(
                 error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
             )
-        return _parse_grep_output(result, path)
+        return _parse_grep_output(result, path, max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Structured glob matching returning `GlobResult`."""

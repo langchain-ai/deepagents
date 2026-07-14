@@ -594,6 +594,39 @@ def test_build_grep_cmd_no_glob_uses_grep() -> None:
     assert "python3" not in cmd
 
 
+def test_build_grep_cmd_max_count_adds_head_guard() -> None:
+    """A `max_count` bounds output with `head -n <cap+1>` so grep stops early via SIGPIPE."""
+    cmd = _build_grep_cmd("needle", "/test", None, 10)
+    # One record beyond the cap so the parser can distinguish complete from capped.
+    assert "head -n 11" in cmd
+
+
+def test_build_grep_cmd_no_head_guard_without_max_count() -> None:
+    """Without `max_count`, the command carries no `head` guard (unchanged behavior)."""
+    cmd = _build_grep_cmd("needle", "/test", None)
+    assert "head -n" not in cmd
+
+
+def test_parse_grep_output_caps_and_flags_truncation() -> None:
+    """`_parse_grep_output` caps matches to `max_count` and flags truncation when exceeded."""
+    lines = [f"/test/f{i}.py\x001:needle" for i in range(5)]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+    result = _parse_grep_output(resp, "/test", 3)
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_parse_grep_output_below_cap_not_truncated() -> None:
+    """When matches are at or below the cap, the result is not flagged truncated."""
+    lines = [f"/test/f{i}.py\x001:needle" for i in range(3)]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+    result = _parse_grep_output(resp, "/test", 3)
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
 def test_grep_slash_glob_returns_matches_from_python_template() -> None:
     """grep() with a slash-containing glob parses output from the Python template."""
     sandbox = MockSandbox()
@@ -1628,7 +1661,12 @@ def test_glob_script_rejects_traversal_pattern(tmp_path: Path) -> None:
 # the silent-zero-results class this route exists to fix.
 
 
-def _run_grep_glob_script(path: Path, pattern: str, glob: str) -> subprocess.CompletedProcess[str]:
+def _run_grep_glob_script(
+    path: Path,
+    pattern: str,
+    glob: str,
+    max_count: int | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Execute the formatted `_GREP_PATH_GLOB_TEMPLATE` script directly.
 
     Extracts the inline `python3 -c` body from the command `_build_grep_cmd`
@@ -1637,7 +1675,7 @@ def _run_grep_glob_script(path: Path, pattern: str, glob: str) -> subprocess.Com
     assert on both stdout and the exit code — the template's error-surfacing
     contract depends on a non-zero exit propagating rather than being masked.
     """
-    cmd = _build_grep_cmd(pattern, str(path), glob)
+    cmd = _build_grep_cmd(pattern, str(path), glob, max_count)
     _, _, tail = cmd.partition('python3 -c "')
     script, _, _ = tail.rpartition('"')
     return subprocess.run(  # noqa: S603  # script is the project's own _GREP_PATH_GLOB_TEMPLATE, not user input
@@ -1679,6 +1717,25 @@ def test_grep_glob_script_matches_recursively_and_prefixes_path(tmp_path: Path) 
     ]
     assert "c.txt" not in proc.stdout
     assert "other.py" not in proc.stdout
+
+
+def test_grep_glob_script_stops_after_cap_probe(tmp_path: Path) -> None:
+    """A slash-glob search emits only the cap plus one truncation probe record."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "matches.py").write_text("needle\n" * 20)
+
+    proc = _run_grep_glob_script(tmp_path, "needle", "src/*.py", max_count=2)
+
+    assert proc.returncode == 0
+    assert len(_parse_script_records(proc.stdout)) == 3
+    result = _parse_grep_output(
+        ExecuteResponse(output=proc.stdout, exit_code=proc.returncode, truncated=False),
+        str(tmp_path),
+        max_count=2,
+    )
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
 
 
 def test_grep_glob_script_terminates_records_end_to_end(tmp_path: Path) -> None:

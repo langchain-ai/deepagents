@@ -11,7 +11,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
@@ -406,6 +406,13 @@ class GrepResult:
     truncated: bool = False
 
 
+def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResult:
+    """Enforce a match cap after a backend search has completed."""
+    if max_count is None or result.matches is None or len(result.matches) <= max_count:
+        return result
+    return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
+
+
 @dataclass
 class GlobResult:
     """Result from backend `glob` operations.
@@ -516,6 +523,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -543,6 +552,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches single character
                 - `[abc]` matches one character from set
 
+            max_count: Optional total cap on the number of matches returned
+                across all files.
+
+                `None` (the default) preserves existing backend behavior and
+                returns every match. When set to an int, at most that many
+                matches are returned; if more exist the search stops and the
+                result is flagged with `GrepResult.truncated=True`. Exactly
+                `max_count` matches with none dropped is reported complete
+                (`truncated=False`). Interpreted as a total cap, not a per-file
+                cap.
+
         Examples:
             - `'*.py'` - only search Python files
             - `'**/*.txt'` - search all `.txt` files recursively
@@ -566,6 +586,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             result = self.grep_raw(pattern, path, glob)
             if isinstance(result, str):
                 return GrepResult(error=result)
+            # `grep_raw` predates `max_count`, so enforce the cap post-hoc for
+            # legacy backends that only implement it.
+            if max_count is not None and result is not None and len(result) > max_count:
+                return GrepResult(matches=result[:max_count], truncated=True)
             return GrepResult(matches=result)
 
         raise NotImplementedError
@@ -575,18 +599,29 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
         """Async version of `grep`.
 
         Wraps the sync call with an async timeout as a safety net. The timeout
         bounds how long the caller waits; it does not stop the worker thread
         created by `asyncio.to_thread`.
+
+        `max_count` is forwarded when the concrete `grep` accepts it (so the
+        search can bound itself); backends that don't accept it run uncapped and
+        are trimmed afterward. Either way the return value is always passed
+        through `_apply_grep_max_count` (a no-op when already within the cap), so
+        callers get the same guarantee regardless of which path runs.
         """
+        grep_kwargs = {"max_count": max_count} if _method_accepts_max_count(type(self), "grep") else {}
+        grep_call = partial(self.grep, pattern, path, glob, **grep_kwargs)
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self.grep, pattern, path, glob),
+            result = await asyncio.wait_for(
+                asyncio.to_thread(grep_call),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
+            return _apply_grep_max_count(result, max_count)
         except TimeoutError:
             logger.warning(
                 "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
@@ -1009,6 +1044,24 @@ class SandboxBackendProtocol(BackendProtocol):
         if timeout is not None and execute_accepts_timeout(type(self)):
             return await asyncio.to_thread(self.execute, command, timeout=timeout)
         return await asyncio.to_thread(self.execute, command)
+
+
+@lru_cache(maxsize=256)
+def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["grep", "agrep"]) -> bool:
+    """Check whether a backend method accepts the optional `max_count` keyword."""
+    try:
+        sig = inspect.signature(getattr(cls, method_name))
+    except (AttributeError, ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.%s; assuming max_count is not supported. "
+            "The cap will be enforced after the search instead of bounding it, so a huge "
+            "result set is fully materialized before being trimmed.",
+            cls.__qualname__,
+            method_name,
+            exc_info=True,
+        )
+        return False
+    return "max_count" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
 
 
 @lru_cache(maxsize=128)

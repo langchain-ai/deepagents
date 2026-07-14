@@ -31,10 +31,10 @@ The `autonomous` and `context` categories run a deep-agents graph: by default th
 
 Four principles cut across all three categories and explain why the task sets look the way they do:
 
-1. **Reuse credible external benchmarks; don't invent tasks.** Every category is sourced from an established, independently-authored benchmark (Harbor / Terminal-Bench, τ³-bench, Context-Bench). This keeps the eval honest — we aren't grading ourselves on tasks we wrote to flatter our agent.
-2. **Curate small subsets by *measured* difficulty, not by hand.** Where we take a subset, tasks are tiered by the **empirical pass rate of a strong reference model (Opus 4.8)** over multiple rollouts, not by an author's guess at how hard they are.
-3. **Optimize for a discriminating spread with headroom, not saturation.** A benchmark every model solves (or every model fails) ranks nothing. We deliberately keep the scarce *intermittent* tasks — the ones a strong model solves only some of the time — because they carry the most signal, and we weight toward hard tasks so the set doesn't saturate as models improve.
-4. **Keep set sizes small enough to fit the CI budget while preserving signal.** Where we subset (conversation and context), sets are sized to ~30 tasks to fit GitHub's 6-hour per-job limit and the workflow's concurrency caps; autonomous runs the full published index (see below). Runs default to 3 rollouts each.
+1. **Reuse credible external benchmarks.** Every category is sourced from an established, independently-authored benchmark (Harbor / Terminal-Bench, τ³-bench, Context-Bench). This keeps the eval honest but also doesn't preclude us from adding our own Harbor-style dataset.
+2. **Curate small subsets by *measured* difficulty.** Where we take a subset, tasks are tiered by the **empirical pass rate of a strong reference model (Opus 4.8)** over multiple rollouts.
+3. **Optimize for a discriminating spread with headroom.** A benchmark every model solves (or every model fails) ranks nothing. We deliberately keep the scarce *intermittent* tasks because they carry the most signal, and we weight toward hard tasks so the set doesn't saturate as models improve.
+4. **Keep set sizes small enough to fit the CI budget while preserving signal.** Subsets are sized (~30 tasks/category) to fit GitHub's 6-hour per-job limit and the workflow's concurrency caps, run at 3 rollouts each.
 
 ## Category detail
 

@@ -472,6 +472,11 @@ class CollapsingPasteTextArea(PasteBurstTextArea):
         if not self._delete_placeholder_token(backwards=False):
             super().action_delete_right()
 
+    def action_delete_word_left(self) -> None:
+        """Delete a bound paste placeholder atomically or the previous word."""
+        if not self._delete_placeholder_token(backwards=True):
+            super().action_delete_word_left()
+
     async def _on_paste(self, event: events.Paste) -> None:
         """Collapse a large bracketed paste, else let the base area insert it."""
         if self._paste_burst_buffer:

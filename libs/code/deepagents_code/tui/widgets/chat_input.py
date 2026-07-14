@@ -1134,6 +1134,11 @@ class ChatTextArea(PasteBurstTextArea):
         if not self._delete_placeholder_token(backwards=False):
             super().action_delete_right()
 
+    def action_delete_word_left(self) -> None:
+        """Delete a bound placeholder atomically or the previous word."""
+        if not self._delete_placeholder_token(backwards=True):
+            super().action_delete_word_left()
+
     def _delete_placeholder_token(self, *, backwards: bool) -> bool:
         """Delete a full placeholder token (image, video, or paste) in one keypress.
 

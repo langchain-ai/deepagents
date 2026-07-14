@@ -3924,6 +3924,26 @@ class TestModifiedBackspaceDeleteWordLeft:
             assert ta.text == "hello "
             assert ta.cursor_location == (0, 6)
 
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_deletes_paste_placeholder_atomically(
+        self, key: str
+    ) -> None:
+        """Modified Backspace should not corrupt a collapsed-paste token."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("p" * 900)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
 
 class _TextAreaTypingApp(App[None]):
     """Minimal app that captures ChatTextArea.Typing and ChatInput.Typing events."""

@@ -85,6 +85,30 @@ class TestInlinePromptPaste:
 
             assert ta.text == ""
 
+    async def test_modified_backspace_deletes_collapsed_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Modified Backspace removes a whole collapsed-paste token."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+
+        for key in ("ctrl+backspace", "alt+backspace"):
+            app = _PromptApp()
+            async with app.run_test() as pilot:
+                ta = app.query_one(InlinePromptTextArea)
+                ta.focus()
+                await pilot.pause()
+
+                await ta._on_paste(Paste("a\nb\nc\nd"))
+                await pilot.pause()
+                assert ta.text == "[Pasted text #1 +3 lines]"
+
+                await pilot.press(key)
+                await pilot.pause()
+
+                assert ta.text == ""
+
     async def test_key_burst_with_newline_does_not_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

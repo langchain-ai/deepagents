@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -83,6 +83,7 @@ class TestRetryParamByProvider:
         """Major retry-enabled providers use `max_retries`."""
         assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
         assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
@@ -1443,6 +1444,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1461,6 +1463,10 @@ class TestProviderBaseUrlEnv:
             "BASETEN_BASE_URL",
             "BASETEN_API_BASE",
         )
+
+    def test_meta_matches_langchain_meta(self) -> None:
+        """Meta reads its dedicated model API base URL variable."""
+        assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
 
 
 class TestModelConfigLoad:
@@ -2758,6 +2764,82 @@ class _BytesContext:
 class TestFetchOllamaInstalledModels:
     """Tests for the `_fetch_ollama_installed_models` HTTP probe."""
 
+    @pytest.fixture(autouse=True)
+    def _assume_host_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bypass the TCP presence preflight so HTTP parsing paths are exercised."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: True,
+        )
+
+    def test_skips_http_probe_when_host_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreachable daemon short-circuits before any HTTP request."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: False,
+        )
+
+        with patch("urllib.request.urlopen") as fake:
+            assert (
+                model_config._fetch_ollama_installed_models("http://localhost:11434")
+                == []
+            )
+
+        fake.assert_not_called()
+
+    def test_hosted_endpoint_skips_tcp_preflight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hosted endpoints proceed through the proxy-aware HTTP probe."""
+        import json
+
+        reachable = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_BytesContext(json.dumps({"models": []}).encode("utf-8")),
+        ) as urlopen:
+            assert (
+                model_config._fetch_ollama_installed_models(
+                    "https://ollama.example.com"
+                )
+                == []
+            )
+
+        reachable.assert_not_called()
+        urlopen.assert_called_once()
+
+    def test_forwards_normalized_base_and_timeout_to_preflight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rstrip'd base and the caller's timeout reach the preflight."""
+        import json
+
+        reachable = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OLLAMA_API_KEY", raising=False)
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_BytesContext(json.dumps({"models": []}).encode("utf-8")),
+        ):
+            assert (
+                model_config._fetch_ollama_installed_models(
+                    "http://localhost:11434/", timeout=0.5
+                )
+                == []
+            )
+
+        reachable.assert_called_once_with("http://localhost:11434", timeout=0.5)
+
     def test_returns_sorted_names_from_payload(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2930,6 +3012,146 @@ class TestFetchOllamaInstalledModels:
         fake.assert_not_called()
 
 
+class TestOllamaHostReachable:
+    """Tests for the `_ollama_host_reachable` TCP presence preflight."""
+
+    def test_true_when_connection_succeeds(self) -> None:
+        """A successful TCP connection reports the daemon as present.
+
+        Also pins that the default timeout reaches `socket.create_connection`:
+        the preflight exists to fail *fast*, so a dropped timeout would let an
+        absent host stall on the OS connect timeout -- the hang this removes.
+        """
+        captured: list[tuple[tuple[str, int], float]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int], *, timeout: float
+        ) -> MagicMock:
+            captured.append((address, timeout))
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert model_config._ollama_host_reachable("http://localhost:11434") is True
+
+        assert captured == [
+            (("localhost", 11434), model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS)
+        ]
+
+    def test_forwards_explicit_timeout(self) -> None:
+        """A caller-supplied timeout is forwarded to the socket connect."""
+        captured: list[float] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],  # noqa: ARG001
+            *,
+            timeout: float,
+        ) -> MagicMock:
+            captured.append(timeout)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert (
+                model_config._ollama_host_reachable(
+                    "http://localhost:11434", timeout=0.25
+                )
+                is True
+            )
+
+        assert captured == [0.25]
+
+    def test_false_and_silent_when_connection_refused(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Connection refused (an `OSError`) reports absent without warning."""
+        refused = ConnectionRefusedError(61, "Connection refused")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise refused
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"),
+            patch("socket.create_connection", side_effect=boom),
+        ):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+        assert caplog.records == []
+
+    def test_false_and_warns_when_error_unexpected(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`OSError` failure reports absent and surfaces a warning.
+
+        Covers `pytest-socket`'s `SocketBlockedError`, which inherits from
+        `Exception` (not `OSError`); an unexpected error here is a possible
+        real bug, so it is logged rather than silently swallowed.
+        """
+        blocked = RuntimeError("sockets disabled")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise blocked
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"),
+            patch("socket.create_connection", side_effect=boom),
+        ):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+        assert any("unexpected RuntimeError" in r.getMessage() for r in caplog.records)
+
+    def test_defers_to_probe_when_host_unparseable(self) -> None:
+        """A URL without a host defers to the HTTP probe instead of blocking it."""
+        with patch("socket.create_connection") as fake:
+            assert model_config._ollama_host_reachable("http://") is True
+
+        fake.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["http://localhost:notaport", "http://localhost:99999"],
+    )
+    def test_defers_to_probe_when_port_invalid(self, endpoint: str) -> None:
+        """An invalid port defers to the best-effort HTTP probe."""
+        with patch("socket.create_connection") as fake:
+            assert model_config._ollama_host_reachable(endpoint) is True
+
+        fake.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            ("https://ollama.example.com", ("ollama.example.com", 443)),
+            ("http://ollama.internal", ("ollama.internal", 80)),
+        ],
+    )
+    def test_defaults_scheme_port_when_absent(
+        self, endpoint: str, expected: tuple[str, int]
+    ) -> None:
+        """A schemed URL without an explicit port falls back to the scheme default.
+
+        The preflight and the HTTP probe must agree on the target, so a portless
+        `http` host resolves to 80 and `https` to 443 -- matching what urllib
+        would connect to.
+        """
+        captured: list[tuple[str, int]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],
+            *,
+            timeout: float,  # noqa: ARG001
+        ) -> MagicMock:
+            captured.append(address)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert model_config._ollama_host_reachable(endpoint) is True
+
+        assert captured == [expected]
+
+
 class TestFetchOllamaInstalledModelProfiles:
     """Tests for Ollama `/api/show` profile discovery."""
 
@@ -3004,7 +3226,7 @@ class TestFetchOllamaInstalledModelProfiles:
         """Unexpected capability shape does not produce false flags."""
         payload = {"model_info": {}, "capabilities": "tools"}
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             profile = model_config._profile_from_ollama_show_payload(payload)
 
         assert profile == {}

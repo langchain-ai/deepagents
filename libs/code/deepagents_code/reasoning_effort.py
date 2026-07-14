@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec
 
 logger = logging.getLogger(__name__)
@@ -456,7 +457,7 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
         return "anthropic"
     if provider == "google_genai" and model_lower.startswith("gemini-3"):
         return "google_genai"
-    if provider == "fireworks" and model_lower.startswith("accounts/fireworks/models/"):
+    if provider == "fireworks" and model_lower.startswith(FIREWORKS_MODEL_ID_PREFIXES):
         return "fireworks"
     if provider == "xai" and _is_xai_grok_45(model_lower):
         return "xai"

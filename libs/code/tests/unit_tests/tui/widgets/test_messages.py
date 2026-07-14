@@ -680,6 +680,43 @@ class TestToolCallMessageMarkupSafety:
         assert msg.has_expandable_args is True
 
 
+class TestDiffMessageCredentialRedaction:
+    """`DiffMessage` must not render the contents of credential files."""
+
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
+    def test_env_file_diff_is_hidden(self) -> None:
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        texts = self._texts(DiffMessage(diff, file_path=".env"))
+        assert any("may contain credentials" in text for text in texts)
+        assert all("supersecret" not in text for text in texts)
+
+    def test_regular_file_diff_is_rendered(self) -> None:
+        diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
+        texts = self._texts(DiffMessage(diff, file_path="main.py"))
+        assert all("may contain credentials" not in text for text in texts)
+        assert any("print('b')" in text for text in texts)
+
+    def test_empty_file_path_renders_diff(self) -> None:
+        """An unknown (empty) path renders normally rather than falsely hiding.
+
+        Callers always populate `file_path`, so a blank path means "unknown",
+        not "credential"; it must not surface the redaction notice.
+        """
+        diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
+        texts = self._texts(DiffMessage(diff, file_path=""))
+        assert all("may contain credentials" not in text for text in texts)
+        assert any("print('b')" in text for text in texts)
+
+
 class TestToolCallMessageDuration:
     """Tests for the post-run duration shown on long-running tool calls."""
 

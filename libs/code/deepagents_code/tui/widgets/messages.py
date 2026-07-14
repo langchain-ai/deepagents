@@ -29,6 +29,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -3245,17 +3246,26 @@ class DiffMessage(Static):
     """
     """Diff syntax coloring per theme: additions, removals, muted context."""
 
-    def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        diff_content: str,
+        file_path: str = "",
+        *,
+        tool_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a diff message.
 
         Args:
             diff_content: The unified diff content
             file_path: Path to the file being modified
+            tool_name: Name of the file tool that produced the diff
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
+        self._tool_name = tool_name
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -3269,8 +3279,15 @@ class DiffMessage(Static):
                 classes="diff-header",
             )
 
-        # Render the diff with per-line Statics (CSS-driven backgrounds)
-        yield from compose_diff_lines(self._diff_content, max_lines=100)
+        # Never render the contents of credential files (e.g. `.env`) — the diff
+        # would leak secrets into the terminal UI and scrollback.
+        if is_sensitive_file_path(self._file_path):
+            yield Static(
+                Content.styled("Diff hidden — file may contain credentials", "dim")
+            )
+        else:
+            # Render the diff with per-line Statics (CSS-driven backgrounds)
+            yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

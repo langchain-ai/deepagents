@@ -391,15 +391,41 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     return result
 
 
+def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
+    """Clone `file_data` with replaced content, preserving timestamps when present.
+
+    Unlike `update_file_data`, this carries `created_at`/`modified_at` through
+    verbatim rather than restamping `modified_at`, since slicing a read window
+    does not mutate the underlying file.
+
+    Args:
+        file_data: Source `FileData` whose encoding and timestamps are copied.
+        content: Replacement content for the returned copy.
+
+    Returns:
+        A new `FileData` with `content` set and metadata carried over.
+    """
+    sliced_fd = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        sliced_fd["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        sliced_fd["modified_at"] = file_data["modified_at"]
+    return sliced_fd
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
-) -> str | ReadResult:
+) -> ReadResult:
     """Slice file data to the requested line range without formatting.
 
-    Returns raw text for the requested window. Line-number formatting
-    is applied downstream by the middleware layer.
+    The returned `ReadResult` carries the raw (unformatted) window in
+    `file_data`; line-number formatting is applied downstream by the
+    middleware layer.
 
     Args:
         file_data: `FileData` dict.
@@ -407,13 +433,16 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content string on success, or `ReadResult` with
-            `error` set when the offset exceeds the file length.
+        `ReadResult` with the sliced raw content and pagination metadata
+            (`total_lines`, `start_line`, `end_line`, `next_offset`). The
+            pagination fields are left unset for empty or whitespace-only
+            content. `error` is set instead when the offset exceeds the file
+            length.
     """
     content = file_data_to_string(file_data)
 
     if not content or content.strip() == "":
-        return content
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
@@ -424,14 +453,23 @@ def slice_read_response(
     lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
+    total_lines = len(lines)
 
-    if start_idx >= len(lines):
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+    if start_idx >= total_lines:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    next_offset = end_idx if end_idx < total_lines else None
+    return ReadResult(
+        file_data=_copy_file_data_with_content(file_data, sliced),
+        total_lines=total_lines,
+        start_line=start_idx + 1,
+        end_line=end_idx,
+        next_offset=next_offset,
+    )
 
 
 def perform_string_replacement(
@@ -871,7 +909,57 @@ def format_grep_matches(
     """Format structured grep matches using existing formatting logic."""
     if not matches:
         return "No matches found"
-    return _format_grep_results(build_grep_results_dict(matches), output_mode)
+
+    # Presence of the context keys signals "context mode" for the whole result;
+    # the producer sets both keys on every match or none. `_format_grep_with_context`
+    # still tolerates a hand-built mix of matches with and without context, because
+    # `format_grep_matches` is public and may be handed such input.
+    if output_mode != "content" or not any("context_before" in match or "context_after" in match for match in matches):
+        return _format_grep_results(build_grep_results_dict(matches), output_mode)
+    return _format_grep_with_context(matches)
+
+
+def _format_grep_with_context(matches: list[GrepMatch]) -> str:
+    """Render `content`-mode grep output including surrounding context lines.
+
+    Matched lines are marked with `:` and context lines with `-`. Non-adjacent
+    line groups within a file are separated by a `--` line, mirroring `grep -C`.
+    """
+    matches_by_path: dict[str, list[GrepMatch]] = {}
+    for match in matches:
+        matches_by_path.setdefault(match["path"], []).append(match)
+
+    lines: list[str] = []
+    for file_path in sorted(matches_by_path):
+        file_matches = matches_by_path[file_path]
+        matching_lines = {match["line"] for match in file_matches}
+        displayed_lines: dict[int, str] = {}
+        for match in file_matches:
+            for context_line in match.get("context_before", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+            displayed_lines[match["line"]] = match["text"]
+            for context_line in match.get("context_after", []):
+                displayed_lines[context_line["line"]] = context_line["text"]
+
+        lines.append(f"{file_path}:")
+        for group_index, group in enumerate(_group_adjacent_lines(displayed_lines)):
+            if group_index:
+                lines.append("  --")
+            for line_num, text in group:
+                separator = ":" if line_num in matching_lines else "-"
+                lines.append(f"  {line_num}{separator} {text}")
+    return "\n".join(lines)
+
+
+def _group_adjacent_lines(displayed_lines: dict[int, str]) -> list[list[tuple[int, str]]]:
+    """Split `{line_number: text}` into runs of consecutive line numbers."""
+    groups: list[list[tuple[int, str]]] = []
+    for item in sorted(displayed_lines.items()):
+        if not groups or item[0] > groups[-1][-1][0] + 1:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
+    return groups
 
 
 _REGEX_SIGNAL_RE = re.compile(

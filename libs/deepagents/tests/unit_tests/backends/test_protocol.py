@@ -20,6 +20,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepResult,
     LsResult,
+    ReadResult,
     SandboxBackendProtocol,
     _supports_delete,
 )
@@ -305,3 +306,45 @@ class TestMapFileOperationError:
         assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"
+
+
+class TestReadResultPaginationInvariants:
+    """`ReadResult.__post_init__` rejects malformed pagination-field combinations."""
+
+    def test_no_pagination_is_valid(self) -> None:
+        """A bare result and an error result carry no window and must not raise."""
+        assert ReadResult().start_line is None
+        assert ReadResult(error="boom").total_lines is None
+
+    def test_full_valid_window(self) -> None:
+        """A well-formed window with matching metadata is accepted."""
+        result = ReadResult(total_lines=5, start_line=2, end_line=3, next_offset=3)
+        assert result.next_offset == result.end_line
+
+    def test_terminal_window_has_no_next_offset(self) -> None:
+        """The final page (`next_offset` unset) is valid even when it reaches EOF."""
+        result = ReadResult(total_lines=3, start_line=2, end_line=3, next_offset=None)
+        assert result.next_offset is None
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"start_line": 1}, id="start_without_end"),
+            pytest.param({"end_line": 1}, id="end_without_start"),
+            pytest.param({"next_offset": 5}, id="next_offset_without_window"),
+            pytest.param({"total_lines": 10}, id="total_without_window"),
+            pytest.param({"start_line": 3, "end_line": 2}, id="start_after_end"),
+            pytest.param({"start_line": 0, "end_line": 2}, id="start_below_one"),
+            pytest.param(
+                {"start_line": 1, "end_line": 5, "total_lines": 3},
+                id="total_below_end",
+            ),
+            pytest.param(
+                {"start_line": 1, "end_line": 3, "next_offset": 99},
+                id="next_offset_not_end_line",
+            ),
+        ],
+    )
+    def test_malformed_combinations_raise(self, kwargs: dict[str, int]) -> None:
+        with pytest.raises(ValueError, match="ReadResult"):
+            ReadResult(**kwargs)

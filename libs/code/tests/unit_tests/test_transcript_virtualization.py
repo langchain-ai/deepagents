@@ -161,6 +161,7 @@ class TestScrollDrivenHydration:
             # above the mounted tail (the state after a long transcript grows).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             await app._prune_old_messages()
             await pilot.pause()
 
@@ -222,13 +223,15 @@ class TestScrollDrivenHydration:
             await pilot.pause()
             chat.scroll_end(animate=False)
 
-            for _ in range(app._message_store.total_count):
-                if not app._message_store.has_messages_below:
-                    break
-                chat.scroll_to(y=0, animate=False)
-                await pilot.pause()
-                chat.scroll_end(animate=False)
-                await pilot.pause()
+            async def wait_for_tail_hydration() -> None:
+                while app._message_store.has_messages_below:
+                    chat.scroll_to(y=0, animate=False)
+                    await pilot.pause()
+                    chat.scroll_end(animate=False)
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_tail_hydration(), timeout=5)
+            await pilot.pause()
 
             assert not app._message_store.has_messages_below
             _start_after, end_after = app._message_store.get_visible_range()

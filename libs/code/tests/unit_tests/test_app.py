@@ -62,9 +62,12 @@ from deepagents_code.app import (
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.media_utils import ImageData, VideoData
-from deepagents_code.tui.widgets.ask_user import AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
-from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+from deepagents_code.tui.widgets.goal_review import (
+    GoalReviewMenu,
+    GoalReviewResult,
+    GoalReviewTextArea,
+)
 from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
@@ -4217,7 +4220,7 @@ class TestAskUserLifecycle:
         chat.size = SimpleNamespace(height=20)
 
         with patch.object(app, "query_one", return_value=chat):
-            app._scroll_ask_user_into_view(menu)
+            app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with(animate=False, top=True)
 
@@ -4230,7 +4233,7 @@ class TestAskUserLifecycle:
         chat.size = SimpleNamespace(height=20)
 
         with patch.object(app, "query_one", return_value=chat):
-            app._scroll_ask_user_into_view(menu)
+            app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with()
 
@@ -6565,7 +6568,7 @@ class TestGoalCommand:
             await pilot.press("e")
             await pilot.pause()
 
-            edit = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            edit = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert edit.display is True
             assert app.focused is edit
 
@@ -6586,6 +6589,22 @@ class TestGoalCommand:
 
             assert app._pending_goal_review_widget is current
             assert current in app.query(GoalReviewMenu)
+
+    async def test_goal_review_decision_ignores_remove_errors(self) -> None:
+        """Decision cleanup should swallow remove races and clear tracking."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+            app._pending_goal_review_widget = widget
+            event = GoalReviewMenu.Decided({"type": "cancelled"}, widget)
+
+            await app.on_goal_review_menu_decided(event)
+            await pilot.pause()
+
+            assert app._pending_goal_review_widget is None
+            widget.remove.assert_awaited_once()
 
     async def test_goal_replacement_cancels_stale_review_before_drafting(self) -> None:
         """Replacing `/goal` should remove the old review before drafting finishes."""
@@ -16467,6 +16486,35 @@ class TestRestartServerForAgentSwap:
             defer_server_start=True,
         )
         return app, server_proc
+
+    async def test_swap_ignores_pending_ask_user_remove_error(self) -> None:
+        """A failing ask-user cleanup must not abort the agent swap.
+
+        The teardown cancels the stale prompt (rejecting its bound request)
+        and tolerates a remove race, so the swap still completes.
+        """
+        app, _server_proc = self._make_app()
+
+        widget = MagicMock()
+        widget.action_cancel = MagicMock()
+        widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_ask_user_widget = widget
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+            widget.action_cancel.assert_called_once()
+            widget.remove.assert_awaited_once()
+            assert app._pending_ask_user_widget is None
+            assert app._assistant_id == "researcher"
 
     async def test_happy_path_rebuilds_agent_and_updates_identity(
         self,

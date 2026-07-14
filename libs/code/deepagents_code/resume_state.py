@@ -71,7 +71,8 @@ GoalStatus = Literal["active", "paused", "blocked", "complete"]
 
 `active` and `blocked` are unfinished working states, `paused` preserves the goal
 without driving work, and `complete` is terminal. A blocked goal is still
-considered active (unfinished) by `get_goal`.
+considered actionable (`active=True`) by `get_goal`, whereas a paused goal is
+unfinished but reports `active=False`.
 """
 
 GoalProposalKind = Literal["create", "amend"]

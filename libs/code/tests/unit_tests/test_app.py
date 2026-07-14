@@ -5760,6 +5760,7 @@ class TestGoalCommand:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._lc_thread_id = "thread-1"
             app._active_goal = "ship login"
             app._goal_status = "active"
             app._active_rubric = "- password login works"
@@ -5768,11 +5769,25 @@ class TestGoalCommand:
             app._pending_goal_kind = "amend"
             app._agent_running = True
             persist = AsyncMock(return_value=True)
-            sync = AsyncMock()
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "ship login",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- password login works",
+                    "_pending_goal_objective": "ship login with passkeys",
+                    "_pending_goal_rubric": "- passkeys work",
+                    "_pending_goal_kind": "amend",
+                }
+            )
             continuation = AsyncMock()
             with (
                 patch.object(app, "_persist_goal_rubric_state", persist),
-                patch.object(app, "_sync_goal_rubric_state_from_thread", sync),
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "_remount_pending_goal_rubric_review",
+                    new_callable=AsyncMock,
+                ),
                 patch.object(app, "_continue_goal_work", continuation),
                 patch.object(app, "_maybe_drain_deferred", new_callable=AsyncMock),
                 patch.object(app, "_process_next_from_queue", new_callable=AsyncMock),
@@ -5784,10 +5799,11 @@ class TestGoalCommand:
 
                 await app._cleanup_agent_task()
 
-            sync.assert_awaited_once()
+            fetch.assert_awaited_once_with("thread-1")
             persist.assert_awaited_once()
             assert app._active_goal == "ship login with passkeys"
             assert app._active_rubric == "- passkeys work"
+            assert app._queued_goal_application is None
             continuation.assert_awaited_once_with("amended")
 
     async def test_inflight_amendment_preserves_queued_message_order(self) -> None:
@@ -7371,7 +7387,7 @@ class TestGoalCommand:
             assert app._active_rubric == "- existing rubric"
 
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
-        """A failed thread write should warn without dumping criteria as an error."""
+        """A failed thread write should warn and still start accepted goal work."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -7384,14 +7400,17 @@ class TestGoalCommand:
             request = AsyncMock(
                 return_value=self._goal_review_future({"type": "accepted"})
             )
+            handle = AsyncMock()
 
             with (
                 patch.object(app, "_request_goal_review", request),
-                patch.object(app, "_handle_user_message", AsyncMock()),
+                patch.object(app, "_handle_user_message", handle),
             ):
                 await app._review_pending_goal_rubric()
-            await pilot.pause()
-            await pilot.pause()
+                for _ in range(20):
+                    await pilot.pause()
+                    if handle.await_count:
+                        break
 
             # State still applies in-session, but the warning stays concise and
             # does not render the accepted criteria as an error body.
@@ -7407,6 +7426,35 @@ class TestGoalCommand:
             assert not any(
                 "- tests pass" in str(w._content) for w in app.query(ErrorMessage)
             )
+            handle.assert_awaited_once_with("add refresh tokens")
+
+    async def test_goal_amend_continues_when_persist_fails(self) -> None:
+        """A failed thread write should not leave an accepted amendment inert."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "ship login"
+            app._goal_status = "active"
+            app._active_rubric = "- password login works"
+            app._pending_goal_objective = "ship login with passkeys"
+            app._pending_goal_rubric = "- passkeys work"
+            app._pending_goal_kind = "amend"
+            continuation = AsyncMock()
+
+            with patch.object(app, "_continue_goal_work", continuation):
+                await app._accept_goal_rubric("- passkeys work")
+
+            assert app._active_goal == "ship login with passkeys"
+            assert app._active_rubric == "- passkeys work"
+            assert any(
+                "could not be saved to the thread" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            continuation.assert_awaited_once_with("amended")
 
     async def test_goal_cancel_omits_unsaved_thread_warning(self) -> None:
         """Cancelling a goal proposal should not render the generic save warning."""

@@ -2606,7 +2606,8 @@ class DeepAgentsApp(App):
         """Goal objective accepted by the user and backed by the active rubric."""
 
         self._goal_status: GoalStatus | None = None
-        """Status for the active goal (`active`, `blocked`, or `complete`)."""
+        """Status for the active goal (`active`, `paused`, `blocked`, or
+        `complete`)."""
 
         self._goal_status_note: str | None = None
         """Evidence or blocker note recorded by the model's goal tool."""
@@ -8775,6 +8776,12 @@ class DeepAgentsApp(App):
         # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
         # are gated on an active objective so the persisted dict can never
         # express a status or note without the goal they describe.
+        #
+        # The public `rubric` (the grader's middleware input) is withheld for a
+        # paused or completed goal so the grader does not run against a goal that
+        # must not drive work. `_sticky_rubric` still carries it so it is
+        # restored when the goal resumes. The same suppression is mirrored on the
+        # per-turn rubric in `_send_to_agent`.
         return {
             "rubric": (
                 None
@@ -8960,8 +8967,19 @@ class DeepAgentsApp(App):
             ),
         )
 
-    def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
-        """Restore TUI-owned goal/rubric metadata from a thread payload."""
+    def _restore_goal_rubric_state(
+        self,
+        payload: _ThreadHistoryPayload,
+        *,
+        preserve_queued_application: bool = False,
+    ) -> None:
+        """Restore TUI-owned goal/rubric metadata from a thread payload.
+
+        Args:
+            payload: Goal and rubric metadata read from a thread checkpoint.
+            preserve_queued_application: Keep an accepted in-flight goal update
+                that must be applied after turn-end reconciliation.
+        """
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -8975,7 +8993,8 @@ class DeepAgentsApp(App):
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
         self._pending_goal_kind = payload.pending_goal_kind
-        self._queued_goal_application = None
+        if not preserve_queued_application:
+            self._queued_goal_application = None
         if self._pending_goal_objective and self._pending_goal_kind is None:
             self._pending_goal_kind = "create"
         self._next_rubric = None
@@ -9245,7 +9264,10 @@ class DeepAgentsApp(App):
             # instead of re-listing all of them.
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
-        self._restore_goal_rubric_state(payload)
+        self._restore_goal_rubric_state(
+            payload,
+            preserve_queued_application=True,
+        )
         completion_committed = await self._resolve_pending_goal_completion(
             rubric_status=payload.rubric_status,
             previous_status=previous_status,
@@ -9355,6 +9377,12 @@ class DeepAgentsApp(App):
             await self._show_goal_state()
             return
 
+        # `amend` matches on the first token (like `model`/`max-iterations`),
+        # not the full remainder, because it always carries feedback text. This
+        # reserves the `amend ` prefix: `/goal amend <text>` is never treated as
+        # a new objective. That is intentional but asymmetric with the zero-arg
+        # subcommands below (`pause`/`resume`/`clear`/`show`), which match the
+        # exact word only, so `/goal show me the money` still creates a goal.
         if grader_sub == "amend":
             await self._mount_message(UserMessage(command))
             if not grader_arg:
@@ -9878,8 +9906,8 @@ class DeepAgentsApp(App):
         """Persist an accepted goal change and continue work when appropriate.
 
         Returns:
-            Continuation kind when the saved goal should keep running, otherwise
-            `None`.
+            Continuation kind when the accepted goal should keep running,
+            otherwise `None`.
         """
         is_amendment = application.kind == "amend"
         if is_amendment and (not self._active_goal or self._goal_status == "complete"):
@@ -9925,7 +9953,7 @@ class DeepAgentsApp(App):
             and application.objective == self._initial_goal
         ):
             self._initial_goal = None
-        if not persisted or self._goal_status == "paused":
+        if self._goal_status == "paused":
             return None
         transition: Literal["create", "amended"] = (
             "amended" if is_amendment else "create"
@@ -11805,6 +11833,9 @@ class DeepAgentsApp(App):
             spec = self._effective_model_spec()
             panel.prepare_turn(model_label=_display_model_label(spec))
 
+        # A paused or completed goal withholds its rubric so the grader does not
+        # run this turn (mirrors the persisted-state suppression in
+        # `_goal_state_update`). A one-shot `_next_rubric` still applies.
         rubric = self._next_rubric
         if rubric is None and not (
             self._active_goal and self._goal_status in {"paused", "complete"}
@@ -11954,7 +11985,15 @@ class DeepAgentsApp(App):
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
-        """Reconcile the completed turn before allowing checkpoint mutations."""
+        """Tear down after a turn completes or is cancelled.
+
+        Resets spinner/cursor/token display, refreshes the git branch, drains
+        deferred actions, applies any goal update queued during the turn, and
+        drains the message queue — then releases the quiescence gate so
+        out-of-run checkpoint mutations may proceed. Invoked from the `finally`
+        block of `_run_agent_task`, so it must run on interrupt as well as on
+        normal completion.
+        """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
         self._agent_running = False
@@ -11964,52 +12003,66 @@ class DeepAgentsApp(App):
         queued_transition: Literal["create", "amended"] | None = None
         queued_objective: str | None = None
         try:
-            await self._set_spinner(None)
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=True)
-            self._show_tokens(approximate=self._tokens_approximate)
-            self._schedule_git_branch_refresh()
-            await self._sync_goal_rubric_state_from_thread()
-
             try:
-                await self._maybe_drain_deferred()
-            except Exception:
-                logger.exception(
-                    "Failed to drain deferred actions during agent cleanup"
-                )
-                with suppress(Exception):
-                    await self._mount_message(
-                        ErrorMessage(
-                            "A deferred action failed after task completion. "
-                            "You may need to retry the operation.",
-                        ),
+                await self._set_spinner(None)
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=True)
+                self._show_tokens(approximate=self._tokens_approximate)
+                self._schedule_git_branch_refresh()
+                await self._sync_goal_rubric_state_from_thread()
+
+                try:
+                    await self._maybe_drain_deferred()
+                except Exception:
+                    logger.exception(
+                        "Failed to drain deferred actions during agent cleanup"
                     )
+                    with suppress(Exception):
+                        await self._mount_message(
+                            ErrorMessage(
+                                "A deferred action failed after task completion. "
+                                "You may need to retry the operation.",
+                            ),
+                        )
 
-            application = self._queued_goal_application
-            self._queued_goal_application = None
-            if application is not None:
-                queued_objective = application.objective
-                queued_transition = await self._apply_goal_application(
-                    application,
-                    continue_work=False,
-                    at_boundary=True,
-                )
+                application = self._queued_goal_application
+                self._queued_goal_application = None
+                if application is not None:
+                    queued_objective = application.objective
+                    queued_transition = await self._apply_goal_application(
+                        application,
+                        continue_work=False,
+                        at_boundary=True,
+                    )
+            finally:
+                self._agent_reconciling = False
+
+            # A user message already sitting in the queue takes precedence over
+            # the synthetic goal-continuation turn: draining it runs the user's
+            # own input first under the newly applied goal, instead of the agent
+            # racing ahead with an "amended"/"create" turn. The two
+            # `_process_next_from_queue()` calls are mutually exclusive on
+            # `had_queued_input`, so exactly one of them runs.
+            had_queued_input = bool(self._pending_messages)
+            if not self._startup_sequence_running and had_queued_input:
+                await self._process_next_from_queue()
+            if not had_queued_input and not self._agent_running:
+                if queued_transition == "amended":
+                    await self._continue_goal_work("amended")
+                elif queued_transition == "create" and queued_objective is not None:
+                    await self._handle_user_message(queued_objective)
+
+            if not self._startup_sequence_running and not had_queued_input:
+                await self._process_next_from_queue()
         finally:
-            self._agent_reconciling = False
-
-        had_queued_input = bool(self._pending_messages)
-        if not self._startup_sequence_running and had_queued_input:
-            await self._process_next_from_queue()
-        if not had_queued_input and not self._agent_running:
-            if queued_transition == "amended":
-                await self._continue_goal_work("amended")
-            elif queued_transition == "create" and queued_objective is not None:
-                await self._handle_user_message(queued_objective)
-
-        if not self._startup_sequence_running and not had_queued_input:
-            await self._process_next_from_queue()
-        if not self._agent_running and not self._agent_reconciling:
-            self._agent_quiescent.set()
+            # Release the quiescence gate last, and only when no new turn was
+            # started above (a continuation or queued message re-clears the
+            # event via `_send_to_agent`). This lives in `finally` so it runs
+            # even if reconciliation raised: otherwise a caller parked in
+            # `_wait_for_agent_quiescence` — e.g. `/goal pause` holding
+            # `_goal_state_lock` — would never be woken and would deadlock.
+            if not self._agent_running and not self._agent_reconciling:
+                self._agent_quiescent.set()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:

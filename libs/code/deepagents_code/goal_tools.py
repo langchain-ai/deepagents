@@ -92,10 +92,11 @@ class GoalSnapshot(TypedDict):
     """
 
     active: bool
-    """Whether the goal is unfinished.
+    """Whether the goal is actionable (should drive work).
 
     Derived from `status`: `active` and `blocked` goals are actionable, while
-    `paused` and `complete` goals are not. `False` when no goal is set (the
+    `paused` and `complete` goals are not. Note a `paused` goal is unfinished
+    yet reports `active=False`. `False` when no goal is set (the
     `objective is None` branch), where `status` is also `None`.
     """
 

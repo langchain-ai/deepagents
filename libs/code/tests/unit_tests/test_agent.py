@@ -3580,7 +3580,7 @@ class TestCreateCliAgentInterpreterWiring:
             patch("deepagents_code.agent.settings", mock_settings),
             patch("deepagents_code.agent.SkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
-            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3635,8 +3635,8 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1\tfirst" in allowed.content
-        assert "2\tsecond" in allowed.content
+        assert "1  first" in allowed.content
+        assert "2  second" in allowed.content
         assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:

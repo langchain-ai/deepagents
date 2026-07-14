@@ -308,7 +308,7 @@ class TestProcessRubricEvent:
         out = _render_event(
             {"type": "rubric_evaluation_end", "result": "max_iterations_reached"}
         )
-        assert "iteration limit reached" in out
+        assert "Iteration limit reached with unmet acceptance criteria" in out
 
     def test_failed(self) -> None:
         out = _render_event(
@@ -331,7 +331,7 @@ class TestProcessRubricEvent:
                 "explanation": "provider 500",
             }
         )
-        assert "grader error" in out
+        assert "Grader/infrastructure failure" in out
         assert "provider 500" in out
 
     def test_unrecognized_terminal_result_surfaced(self) -> None:

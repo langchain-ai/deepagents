@@ -15,7 +15,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
@@ -75,6 +75,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
     MessageData,
@@ -243,7 +244,10 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     Returns:
         Names of channels whose persisted value was discarded as malformed.
     """
-    from deepagents_code.resume_state import coerce_goal_status
+    from deepagents_code.resume_state import (
+        coerce_goal_proposal_kind,
+        coerce_goal_status,
+    )
 
     discarded: list[str] = []
     for channel in (
@@ -256,6 +260,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
         "_pending_goal_completion_note",
         "_pending_goal_objective",
         "_pending_goal_rubric",
+        "_pending_goal_kind",
     ):
         value = state_values.get(channel)
         if value is not None and not isinstance(value, str):
@@ -271,6 +276,13 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
             and coerce_goal_status(value) is None
         ):
             logger.warning("Discarding unknown persisted goal status %r", value)
+            discarded.append(channel)
+        elif (
+            channel == "_pending_goal_kind"
+            and isinstance(value, str)
+            and coerce_goal_proposal_kind(value) is None
+        ):
+            logger.warning("Discarding unknown persisted goal proposal kind %r", value)
             discarded.append(channel)
     return discarded
 
@@ -500,7 +512,7 @@ class _ConfigWriteResult:
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
     from langchain_core.messages import BaseMessage
@@ -522,7 +534,7 @@ if TYPE_CHECKING:
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
-    from deepagents_code.resume_state import GoalStatus
+    from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
@@ -1499,6 +1511,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "mcp_reconnect",
     "rubric_model_switch",
     "rubric_max_iterations_switch",
 ]
@@ -1606,6 +1619,32 @@ class _ThreadHistoryPayload:
 
     pending_goal_rubric: str | None = None
     """Persisted pending goal criteria, if any."""
+
+    pending_goal_kind: GoalProposalKind | None = None
+    """Whether the pending review creates or amends a goal."""
+
+
+@dataclass(frozen=True, slots=True)
+class _GoalApplication:
+    """Accepted goal proposal waiting for a safe checkpoint boundary."""
+
+    objective: str
+    rubric: str
+    kind: GoalProposalKind
+
+    def __post_init__(self) -> None:
+        """Reject empty objective or rubric at construction.
+
+        Callers already screen these (`_accept_goal_rubric`), so this only
+        guards against a future construction site skipping that check and
+        queuing a goal that would clear the active one to nothing.
+
+        Raises:
+            ValueError: If `objective` or `rubric` is empty.
+        """
+        if not self.objective or not self.rubric:
+            msg = "goal application requires a non-empty objective and rubric"
+            raise ValueError(msg)
 
 
 def _new_thread_id() -> str:
@@ -2732,7 +2771,8 @@ class DeepAgentsApp(App):
         """Goal objective accepted by the user and backed by the active rubric."""
 
         self._goal_status: GoalStatus | None = None
-        """Status for the active goal (`active`, `blocked`, or `complete`)."""
+        """Status for the active goal (`active`, `paused`, `blocked`, or
+        `complete`)."""
 
         self._goal_status_note: str | None = None
         """Evidence or blocker note recorded by the model's goal tool."""
@@ -2745,6 +2785,12 @@ class DeepAgentsApp(App):
 
         self._pending_goal_rubric: str | None = None
         """Model-proposed acceptance criteria awaiting user acceptance."""
+
+        self._pending_goal_kind: GoalProposalKind | None = None
+        """Whether the pending review creates or amends a goal."""
+
+        self._queued_goal_application: _GoalApplication | None = None
+        """Accepted proposal deferred until the active graph run is quiescent."""
 
         self._message_timestamps_visible = _load_message_timestamps_visible()
         """Whether message timestamp footers are shown in the chat surface.
@@ -2762,6 +2808,9 @@ class DeepAgentsApp(App):
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
         """Status bar widget; populated in `on_mount`."""
+
+        self._goal_status_panel: GoalStatusPanel | None = None
+        """Persistent inline goal display; populated in `on_mount`."""
 
         self._chat_input: ChatInput | None = None
         """Chat input widget; populated in `on_mount`."""
@@ -2801,6 +2850,19 @@ class DeepAgentsApp(App):
 
         self._agent_running = False
         """True while the agent worker is streaming a response."""
+
+        self._agent_reconciling = False
+        """True while turn-end checkpoint state is being synchronized."""
+
+        self._goal_state_mutating = False
+        """True while an out-of-run goal checkpoint update is in progress."""
+
+        self._goal_state_lock = asyncio.Lock()
+        """Serializes process-local goal checkpoint mutations."""
+
+        self._agent_quiescent = asyncio.Event()
+        """Set only when graph execution and turn-end reconciliation are idle."""
+        self._agent_quiescent.set()
 
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
@@ -3239,6 +3301,7 @@ class DeepAgentsApp(App):
             yield SubagentPanel(id="subagent-panel")
             if show_startup_tip():
                 yield StartupTip(id="startup-tip")
+            yield GoalStatusPanel(id="goal-status-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -3275,10 +3338,12 @@ class DeepAgentsApp(App):
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
+        self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
+        self._sync_status_rubric()
         self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
@@ -7047,15 +7112,20 @@ class DeepAgentsApp(App):
 
     async def _mount_goal_proposal_cancelled(self) -> None:
         """Clear pending goal proposal state and show a cancellation message."""
-        self._clear_pending_goal_rubric()
         await self._set_spinner(None)
-        await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            await self._persist_goal_rubric_state()
         await self._mount_message(AppMessage("Goal proposal cancelled."))
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
 
     async def _request_goal_review(
         self,
         objective: str,
         criteria: str,
+        *,
+        amendment: bool = False,
     ) -> asyncio.Future[GoalReviewResult]:
         """Display the goal review widget and return a Future with the decision.
 
@@ -7072,7 +7142,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.goal_review import GoalReviewMenu
 
         unique_id = f"goal-review-menu-{uuid.uuid4().hex[:8]}"
-        menu = GoalReviewMenu(objective, criteria, id=unique_id)
+        menu = GoalReviewMenu(
+            objective,
+            criteria,
+            amendment=amendment,
+            id=unique_id,
+        )
         menu.set_future(result_future)
         self._pending_goal_review_widget = menu
 
@@ -7998,6 +8073,8 @@ class DeepAgentsApp(App):
         # its first stable idle/running state.
         if (
             self._agent_running
+            or self._agent_reconciling
+            or self._goal_state_mutating
             or self._shell_running
             or self._connecting
             or self._startup_sequence_running
@@ -8864,8 +8941,18 @@ class DeepAgentsApp(App):
         # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
         # are gated on an active objective so the persisted dict can never
         # express a status or note without the goal they describe.
+        #
+        # The public `rubric` (the grader's middleware input) is withheld for a
+        # paused or completed goal so the grader does not run against a goal that
+        # must not drive work. `_sticky_rubric` still carries it so it is
+        # restored when the goal resumes. The same suppression is mirrored on the
+        # per-turn rubric in `_send_to_agent`.
         return {
-            "rubric": self._active_rubric,
+            "rubric": (
+                None
+                if self._active_goal and self._goal_status in {"paused", "complete"}
+                else self._active_rubric
+            ),
             "_sticky_rubric": self._active_rubric,
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status if self._active_goal else None,
@@ -8876,7 +8963,38 @@ class DeepAgentsApp(App):
             ),
             "_pending_goal_objective": self._pending_goal_objective,
             "_pending_goal_rubric": self._pending_goal_rubric,
+            # Gate the pending kind on its objective so a checkpoint can never
+            # carry an orphaned kind without the proposal it labels, mirroring
+            # `_goal_status`'s coupling to `_active_goal` above. The restore path
+            # already backfills the inverse (objective set, kind missing).
+            "_pending_goal_kind": (
+                self._pending_goal_kind if self._pending_goal_objective else None
+            ),
         }
+
+    async def _wait_for_agent_quiescence(self) -> None:
+        """Wait until graph execution and checkpoint reconciliation are idle."""
+        while self._agent_running or self._agent_reconciling:
+            await self._agent_quiescent.wait()
+
+    def _set_agent_running(self, running: bool) -> None:
+        """Keep the agent-running flag and quiescence event synchronized."""
+        if running:
+            self._agent_quiescent.clear()
+        self._agent_running = running
+        if not running and not self._agent_reconciling:
+            self._agent_quiescent.set()
+
+    @asynccontextmanager
+    async def _goal_state_mutation_boundary(self) -> AsyncIterator[None]:
+        """Serialize an out-of-run goal mutation with graph checkpoints."""
+        async with self._goal_state_lock:
+            self._goal_state_mutating = True
+            try:
+                await self._wait_for_agent_quiescence()
+                yield
+            finally:
+                self._goal_state_mutating = False
 
     async def _persist_goal_rubric_state(self) -> bool:
         """Persist TUI-owned goal/rubric metadata to the current thread.
@@ -8954,12 +9072,13 @@ class DeepAgentsApp(App):
         """Clear a draft goal proposal without touching the active goal."""
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
+        self._pending_goal_kind = None
 
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
-        Single reset point so the clear paths cannot drift out of sync over the
-        ten correlated fields. Grader settings (`_rubric_model` and
+        Single reset point so the clear paths cannot drift across the correlated
+        fields. Grader settings (`_rubric_model` and
         `_rubric_max_iterations`) are intentionally left untouched — they are
         configured separately via `/rubric model` and `/rubric max-iterations`
         and survive `/rubric clear` and `/clear`.
@@ -8968,6 +9087,7 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
+        self._queued_goal_application = None
         self._reset_goal_tracking()
 
     @staticmethod
@@ -8995,7 +9115,10 @@ class DeepAgentsApp(App):
         Returns:
             Payload with goal/rubric channels coerced to known types.
         """
-        from deepagents_code.resume_state import coerce_goal_status
+        from deepagents_code.resume_state import (
+            coerce_goal_proposal_kind,
+            coerce_goal_status,
+        )
 
         def _as_str(value: object) -> str | None:
             return value if isinstance(value, str) else None
@@ -9018,10 +9141,24 @@ class DeepAgentsApp(App):
             rubric_status=_as_str(state_values.get("_rubric_status")),
             pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
+            pending_goal_kind=coerce_goal_proposal_kind(
+                state_values.get("_pending_goal_kind")
+            ),
         )
 
-    def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
-        """Restore TUI-owned goal/rubric metadata from a thread payload."""
+    def _restore_goal_rubric_state(
+        self,
+        payload: _ThreadHistoryPayload,
+        *,
+        preserve_queued_application: bool = False,
+    ) -> None:
+        """Restore TUI-owned goal/rubric metadata from a thread payload.
+
+        Args:
+            payload: Goal and rubric metadata read from a thread checkpoint.
+            preserve_queued_application: Keep an accepted in-flight goal update
+                that must be applied after turn-end reconciliation.
+        """
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -9034,6 +9171,11 @@ class DeepAgentsApp(App):
             self._active_rubric = payload.rubric
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
+        self._pending_goal_kind = payload.pending_goal_kind
+        if not preserve_queued_application:
+            self._queued_goal_application = None
+        if self._pending_goal_objective and self._pending_goal_kind is None:
+            self._pending_goal_kind = "create"
         self._next_rubric = None
         self._sync_status_rubric()
 
@@ -9070,21 +9212,58 @@ class DeepAgentsApp(App):
         note: str,
         *,
         previous_status: str | None,
-    ) -> None:
-        """Mark a rubric-approved completion request complete."""
-        self._goal_status = "complete"
-        self._goal_status_note = note
-        self._pending_goal_completion_note = None
+    ) -> bool:
+        """Clear a rubric-approved goal after its completion is saved.
+
+        Returns:
+            `True` when the cleared state was persisted, or `False` when the active
+                goal was restored for retry.
+        """
+        active_goal = self._active_goal
+        goal_status = self._goal_status
+        goal_status_note = self._goal_status_note
+        active_rubric = self._active_rubric
+        pending_goal_completion_note = self._pending_goal_completion_note
+        pending_goal_objective = self._pending_goal_objective
+        pending_goal_rubric = self._pending_goal_rubric
+        pending_goal_kind = self._pending_goal_kind
+        next_rubric = self._next_rubric
+        last_consumed_next_rubric = self._last_consumed_next_rubric
+        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
+
+        self._clear_all_goal_rubric_state()
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._announce_goal_status_transition(previous_status)
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
+        if persisted:
+            if previous_status != "complete":
+                text = "Goal marked complete by the agent."
+                if note:
+                    text = f"{text}\n\n{note}"
+                await self._mount_message(AppMessage(text))
+            return True
+
+        # The checkpoint still contains the active goal and pending completion
+        # request. Restore that exact local state so the UI and next grading
+        # turn cannot diverge from it, and so a later sync can safely retry.
+        self._active_goal = active_goal
+        self._goal_status = goal_status
+        self._goal_status_note = goal_status_note
+        self._active_rubric = active_rubric
+        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_objective = pending_goal_objective
+        self._pending_goal_rubric = pending_goal_rubric
+        self._pending_goal_kind = pending_goal_kind
+        self._next_rubric = next_rubric
+        self._last_consumed_next_rubric = last_consumed_next_rubric
+        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
+        self._sync_status_rubric()
+        await self._mount_message(
+            ErrorMessage(
+                "Goal completion could not be saved, so the goal remains active "
+                "and its completion request is still pending for retry."
             )
+        )
+        return False
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
@@ -9107,6 +9286,28 @@ class DeepAgentsApp(App):
         if not self._active_goal or not note or self._goal_status == "complete":
             return False
 
+        if rubric_status == "grader_error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Acceptance-criteria grading failed because of a grader or "
+                    "infrastructure error. The goal remains active, and its completion "
+                    "request is still pending; it will be re-graded on your next turn."
+                )
+            )
+            return False
+        if rubric_status == "max_iterations_reached":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded: the iteration limit was reached "
+                "with unmet criteria. The goal remains active for resume, amendment, "
+                "retry, or clearing."
+            )
+            return False
+        if rubric_status == "failed":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded because the grader could not "
+                "evaluate the rubric. The goal remains active."
+            )
+            return False
         if rubric_status != "satisfied":
             await self._clear_pending_goal_completion(
                 "Goal completion was not recorded because the rubric was not satisfied."
@@ -9114,11 +9315,10 @@ class DeepAgentsApp(App):
             return False
 
         if self._session_state is not None and self._session_state.auto_approve:
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         action_requests = [
             {
@@ -9145,17 +9345,15 @@ class DeepAgentsApp(App):
         decision_type = decision.get("type") if isinstance(decision, dict) else None
         if decision_type == "auto_approve_all":
             await self._on_auto_approve_enabled()
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
         if decision_type == "approve":
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         reject_message = decision.get("message") if isinstance(decision, dict) else None
         if isinstance(reject_message, str) and reject_message.strip():
@@ -9231,6 +9429,7 @@ class DeepAgentsApp(App):
                 payload.pending_goal_completion_note,
                 payload.pending_goal_objective,
                 payload.pending_goal_rubric,
+                payload.pending_goal_kind,
             )
         ):
             self._last_consumed_next_rubric = None
@@ -9246,7 +9445,10 @@ class DeepAgentsApp(App):
             # instead of re-listing all of them.
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
-        self._restore_goal_rubric_state(payload)
+        self._restore_goal_rubric_state(
+            payload,
+            preserve_queued_application=True,
+        )
         completion_committed = await self._resolve_pending_goal_completion(
             rubric_status=payload.rubric_status,
             previous_status=previous_status,
@@ -9356,6 +9558,47 @@ class DeepAgentsApp(App):
             await self._show_goal_state()
             return
 
+        # `amend` matches on the first token (like `model`/`max-iterations`),
+        # not the full remainder, because it always carries feedback text. This
+        # reserves the `amend ` prefix: `/goal amend <text>` is never treated as
+        # a new objective. That is intentional but asymmetric with the exact-word
+        # subcommands (`show`/`status` handled above; `pause`/`resume`/`clear`
+        # below), which match the whole remainder only, so `/goal show me the
+        # money` still creates a goal.
+        if grader_sub == "amend":
+            await self._mount_message(UserMessage(command))
+            if not grader_arg:
+                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
+                return
+            if not self._active_goal or self._goal_status == "complete":
+                await self._mount_message(
+                    AppMessage(
+                        "No active goal to amend. Use `/goal <objective>` to "
+                        "create one."
+                    )
+                )
+                return
+            self._cancel_goal_proposal_worker()
+            await self._cancel_pending_goal_review(context="goal-amend cleanup")
+            async with self._goal_state_mutation_boundary():
+                self._clear_pending_goal_rubric()
+                await self._persist_goal_rubric_state()
+            self._goal_proposal_worker = self.run_worker(
+                self._propose_goal_amendment(grader_arg),
+                exclusive=False,
+            )
+            return
+
+        if subcommand == "pause":
+            await self._mount_message(UserMessage(command))
+            await self._pause_goal()
+            return
+
+        if subcommand == "resume":
+            await self._mount_message(UserMessage(command))
+            await self._resume_goal()
+            return
+
         if subcommand in {"accept", "edit"}:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
@@ -9370,18 +9613,22 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-clear cleanup")
-            self._clear_all_goal_rubric_state()
-            self._sync_status_rubric()
-            persisted = await self._persist_goal_rubric_state()
+            async with self._goal_state_mutation_boundary():
+                self._clear_all_goal_rubric_state()
+                self._sync_status_rubric()
+                persisted = await self._persist_goal_rubric_state()
             await self._mount_goal_rubric_result("Goal cleared.", persisted=persisted)
+            if self._pending_messages and not self._agent_running:
+                await self._process_next_from_queue()
             return
 
         objective = remainder
         await self._mount_message(UserMessage(command))
         self._cancel_goal_proposal_worker()
         await self._cancel_pending_goal_review(context="goal replacement cleanup")
-        self._clear_pending_goal_rubric()
-        await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            await self._persist_goal_rubric_state()
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_rubric(objective),
             exclusive=False,
@@ -9393,14 +9640,17 @@ class DeepAgentsApp(App):
         return (
             "Usage:\n"
             "  /goal <objective>\n"
+            "  /goal amend <feedback>\n"
+            "  /goal pause\n"
+            "  /goal resume\n"
             "  /goal show\n"
             "  /goal clear\n"
             "  /goal model [provider:model|clear]\n"
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist and ask before applying it. Once accepted, the "
-            "goal stays active for this thread until completed, blocked, or "
-            "cleared. Follow-up prompts continue working toward that goal."
+            "goal stays active for this thread until paused, completed, blocked, "
+            "or cleared. Follow-up prompts continue working toward that goal."
         )
 
     async def _show_goal_state(self) -> None:
@@ -9417,7 +9667,11 @@ class DeepAgentsApp(App):
             lines.extend(
                 [
                     f"Goal:\n{self._pending_goal_objective}",
-                    "Status:\npending review",
+                    (
+                        "Status:\npending amendment review"
+                        if self._pending_goal_kind == "amend"
+                        else "Status:\npending review"
+                    ),
                     f"Criteria:\n{self._pending_goal_rubric}",
                     (
                         "Review the proposal in the review prompt, or run "
@@ -9432,12 +9686,18 @@ class DeepAgentsApp(App):
             )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
-                    "Goal is active for this thread until completed, blocked, or "
-                    "cleared.\nFollow-up prompts will continue working toward this "
+                    "Goal is active for this thread until paused, completed, blocked, "
+                    "or cleared.\nFollow-up prompts will continue working toward this "
                     "goal."
                 )
+            elif self._active_goal and self._goal_status == "paused":
+                lines.append(
+                    "Goal is paused. It remains saved, but it will not drive work or "
+                    "grading until resumed."
+                )
             lines.append(
-                "Commands:\n/goal clear\n/goal show\n"
+                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
+                "/goal clear\n/goal show\n"
                 "/goal model [provider:model|clear]\n"
                 "/goal max-iterations <N|clear>"
             )
@@ -9446,6 +9706,98 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage("No goal set.\n\n" + self._goal_usage_text())
         )
+
+    async def _propose_goal_amendment(
+        self,
+        feedback: str,
+        *,
+        objective: str | None = None,
+        criteria: str | None = None,
+    ) -> None:
+        """Draft an amendment that preserves unaffected goal constraints.
+
+        Args:
+            feedback: User-requested changes to the goal.
+            objective: Base objective for a rejection retry.
+            criteria: Base criteria for a rejection retry.
+
+        Raises:
+            CancelledError: If amendment drafting is interrupted.
+        """
+        base_objective = objective or self._active_goal
+        base_criteria = criteria or self._active_rubric
+        if not base_objective or not base_criteria:
+            await self._mount_message(
+                AppMessage(
+                    "No active goal to amend. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        await self._set_spinner("Drafting acceptance criteria")
+        try:
+            amended_objective, amended_criteria = await asyncio.to_thread(
+                self._generate_goal_amendment,
+                base_objective,
+                base_criteria,
+                feedback,
+            )
+        except asyncio.CancelledError:
+            self._clear_pending_goal_rubric()
+            raise
+        except Exception as exc:
+            logger.exception("Failed to propose goal amendment")
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            await self._remount_pending_goal_rubric_review()
+            return
+        finally:
+            await self._set_spinner(None)
+        if not amended_objective or not amended_criteria:
+            await self._mount_message(
+                ErrorMessage("The model returned an incomplete goal amendment.")
+            )
+            await self._remount_pending_goal_rubric_review()
+            return
+        async with self._goal_state_mutation_boundary():
+            self._pending_goal_objective = amended_objective
+            self._pending_goal_rubric = amended_criteria
+            self._pending_goal_kind = "amend"
+            persisted = await self._persist_goal_rubric_state()
+        await self._mount_goal_rubric_result(
+            "Proposed goal amendment is ready.",
+            persisted=persisted,
+            suppress_success=True,
+        )
+        await self._start_pending_goal_rubric_review()
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
+
+    def _generate_goal_amendment(
+        self,
+        objective: str,
+        criteria: str,
+        feedback: str,
+    ) -> tuple[str, str]:
+        """Generate an amended objective and criteria with the current model.
+
+        Args:
+            objective: Current or previously proposed objective.
+            criteria: Current or previously proposed criteria.
+            feedback: User-requested changes.
+
+        Returns:
+            Proposed objective and criteria.
+        """
+        from deepagents_code.goal_rubric import generate_goal_amendment
+
+        amendment = generate_goal_amendment(
+            objective,
+            criteria,
+            feedback,
+            model_spec=self._effective_model_spec(),
+            model_params=self._model_params_override,
+            profile_override=self._profile_override,
+        )
+        return amendment["objective"], amendment["criteria"]
 
     async def _propose_goal_rubric(
         self,
@@ -9492,9 +9844,11 @@ class DeepAgentsApp(App):
             )
             await self._remount_pending_goal_rubric_review()
             return
-        self._pending_goal_objective = objective
-        self._pending_goal_rubric = rubric
-        persisted = await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._pending_goal_objective = objective
+            self._pending_goal_rubric = rubric
+            self._pending_goal_kind = "create"
+            persisted = await self._persist_goal_rubric_state()
         # On a revision the remounted review widget already shows the updated
         # criteria, so re-announcing readiness is redundant and would duplicate
         # the message from the first proposal. The unsaved-state warning still
@@ -9505,6 +9859,8 @@ class DeepAgentsApp(App):
             suppress_success=feedback is not None,
         )
         await self._start_pending_goal_rubric_review()
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
 
     def _generate_goal_rubric(
         self,
@@ -9542,7 +9898,14 @@ class DeepAgentsApp(App):
             return
 
         self._cancel_goal_review_task()
-        result_future = await self._request_goal_review(objective, rubric)
+        if self._pending_goal_kind == "amend":
+            result_future = await self._request_goal_review(
+                objective,
+                rubric,
+                amendment=True,
+            )
+        else:
+            result_future = await self._request_goal_review(objective, rubric)
         self.call_after_refresh(self._schedule_goal_review_task, result_future)
 
     async def _remount_pending_goal_rubric_review(self) -> None:
@@ -9587,12 +9950,24 @@ class DeepAgentsApp(App):
                 await self._accept_goal_rubric(result["criteria"])
                 return
             if result["type"] == "rejected":
-                self._regenerate_goal_rubric_from_feedback(result["message"])
+                if self._pending_goal_kind == "amend":
+                    self._regenerate_goal_amendment_from_feedback(result["message"])
+                else:
+                    self._regenerate_goal_rubric_from_feedback(result["message"])
                 return
             if result["type"] == "cancelled":
-                self._clear_pending_goal_rubric()
-                await self._persist_goal_rubric_state()
-                await self._mount_message(AppMessage("Goal proposal cancelled."))
+                was_amendment = self._pending_goal_kind == "amend"
+                async with self._goal_state_mutation_boundary():
+                    self._clear_pending_goal_rubric()
+                    await self._persist_goal_rubric_state()
+                message = (
+                    "Goal amendment cancelled."
+                    if was_amendment
+                    else "Goal proposal cancelled."
+                )
+                await self._mount_message(AppMessage(message))
+                if self._pending_messages and not self._agent_running:
+                    await self._process_next_from_queue()
                 return
             # Static exhaustiveness guard: a new `GoalReviewResult` variant trips
             # the type checker here instead of silently taking the cancel path.
@@ -9634,8 +10009,25 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
+    def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
+        """Revise a pending amendment from review feedback."""
+        objective = self._pending_goal_objective
+        criteria = self._pending_goal_rubric
+        feedback = feedback.strip()
+        if not objective or not criteria or not feedback:
+            return
+        self._cancel_goal_proposal_worker()
+        self._goal_proposal_worker = self.run_worker(
+            self._propose_goal_amendment(
+                feedback,
+                objective=objective,
+                criteria=criteria,
+            ),
+            exclusive=False,
+        )
+
     async def _accept_goal_rubric(self, rubric: str) -> None:
-        """Set the active goal and sticky rubric from accepted criteria."""
+        """Apply accepted criteria immediately or at the next safe boundary."""
         objective = self._pending_goal_objective
         if not objective:
             await self._mount_message(AppMessage("No pending goal to accept."))
@@ -9644,35 +10036,231 @@ class DeepAgentsApp(App):
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return
-        self._active_goal = objective
-        self._goal_status = "active"
-        self._goal_status_note = None
-        self._active_rubric = rubric
-        self._next_rubric = None
-        self._pending_goal_objective = None
-        self._pending_goal_rubric = None
-        self._sync_status_rubric()
-        persisted = await self._persist_goal_rubric_state()
-        await self._mount_message(
-            AppMessage(
-                "Goal accepted. It will stay active for this thread until completed, "
-                "blocked, or cleared.\nUse /goal show to inspect it or /goal clear "
-                "to remove it."
+        kind = self._pending_goal_kind or "create"
+        if kind == "amend" and (
+            not self._active_goal or self._goal_status == "complete"
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "The goal is no longer active. Start a new goal with "
+                    "`/goal <objective>`."
+                )
             )
+            return
+        application = _GoalApplication(objective, rubric, kind)
+        if self._agent_running or self._agent_reconciling:
+            self._queued_goal_application = application
+            await self._mount_message(
+                AppMessage(
+                    "Goal update accepted; it will apply after the current turn."
+                )
+            )
+            return
+        await self._apply_goal_application(application)
+
+    async def _write_goal_application(
+        self,
+        application: _GoalApplication,
+        *,
+        is_amendment: bool,
+    ) -> bool:
+        """Write accepted goal fields while the graph is quiescent.
+
+        Returns:
+            Whether the checkpoint update succeeded.
+        """
+        self._active_goal = application.objective
+        self._active_rubric = application.rubric
+        self._next_rubric = None
+        self._pending_goal_completion_note = None
+        if not is_amendment:
+            self._goal_status = "active"
+            self._goal_status_note = None
+        self._clear_pending_goal_rubric()
+        self._sync_status_rubric()
+        return await self._persist_goal_rubric_state()
+
+    async def _apply_goal_application(
+        self,
+        application: _GoalApplication,
+        *,
+        continue_work: bool = True,
+        at_boundary: bool = False,
+    ) -> Literal["create", "amended"] | None:
+        """Persist an accepted goal change and continue work when appropriate.
+
+        The returned literals are ephemeral transition verbs, distinct from the
+        persisted `GoalProposalKind` (`create`/`amend`); the tense difference
+        (`amend` -> `amended`) marks the boundary, and only `create` overlaps
+        the two sets by coincidence. Do not compare a return value against a
+        `GoalProposalKind`.
+
+        Returns:
+            Continuation kind when the accepted goal should keep running,
+            otherwise `None`.
+        """
+        is_amendment = application.kind == "amend"
+        if is_amendment and (not self._active_goal or self._goal_status == "complete"):
+            self._clear_pending_goal_rubric()
+            await self._mount_message(
+                AppMessage("The goal ended before the amendment could be applied.")
+            )
+            return None
+        if at_boundary:
+            persisted = await self._write_goal_application(
+                application,
+                is_amendment=is_amendment,
+            )
+        else:
+            async with self._goal_state_mutation_boundary():
+                persisted = await self._write_goal_application(
+                    application,
+                    is_amendment=is_amendment,
+                )
+        if is_amendment:
+            await self._mount_goal_rubric_result(
+                "Goal amended.",
+                persisted=persisted,
+                suppress_success=True,
+            )
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "Goal accepted. It will stay active for this thread until paused, "
+                    "completed, blocked, or cleared.\nUse /goal show to inspect it or "
+                    "/goal clear to remove it."
+                )
+            )
+            if not persisted:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Goal accepted for this session, but it could not be saved "
+                        "to the thread."
+                    )
+                )
+        if (
+            self._initial_goal is not None
+            and application.objective == self._initial_goal
+        ):
+            self._initial_goal = None
+        if is_amendment and not persisted:
+            return None
+        if self._goal_status == "paused":
+            return None
+        transition: Literal["create", "amended"] = (
+            "amended" if is_amendment else "create"
         )
+        if continue_work:
+            if is_amendment and self._pending_messages:
+                await self._process_next_from_queue()
+            elif is_amendment and not self._agent_running:
+                await self._continue_goal_work("amended")
+            elif not is_amendment and not self._agent_running:
+                await self._handle_user_message(application.objective)
+        return transition
+
+    async def _continue_goal_work(
+        self,
+        transition: Literal["amended", "resumed"],
+    ) -> None:
+        """Continue from persisted state without replaying the original objective."""
+        message = (
+            f"{SYSTEM_MESSAGE_PREFIX} Goal {transition} by the user. Read the "
+            "current objective and acceptance criteria with get_goal, then continue "
+            "from the existing conversation and work. Do not repeat completed work."
+        )
+        await self._send_to_agent(
+            message,
+            message_kwargs={"additional_kwargs": {"lc_source": "goal_control"}},
+        )
+
+    async def _pause_goal(self) -> None:
+        """Persist a paused goal without clearing its objective or criteria."""
+        if not self._active_goal or self._goal_status == "complete":
+            await self._mount_message(
+                AppMessage(
+                    "No active goal to pause. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        if self._goal_status == "paused":
+            await self._mount_message(AppMessage("Goal is already paused."))
+            return
+        if self._goal_status == "blocked":
+            await self._mount_message(
+                AppMessage(
+                    "Goal is blocked and already waiting for user input. Reply to "
+                    "continue, or clear it with `/goal clear`."
+                )
+            )
+            return
+        previous_status = self._goal_status
+        async with self._goal_state_mutation_boundary():
+            self._goal_status = "paused"
+            self._sync_status_rubric()
+            persisted = await self._persist_goal_rubric_state()
+            if not persisted:
+                self._goal_status = previous_status
+                self._sync_status_rubric()
         if not persisted:
             await self._mount_message(
                 ErrorMessage(
-                    "Goal accepted for this session, but it could not be saved "
-                    "to the thread."
+                    "Goal pause could not be saved to the thread and was reverted; "
+                    "the goal is still active."
                 )
             )
-        if self._initial_goal is not None and objective == self._initial_goal:
-            self._initial_goal = None
-        await self._handle_user_message(objective)
+            return
+        await self._mount_message(
+            AppMessage("Goal paused. Use `/goal resume` to continue it.")
+        )
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
+
+    async def _resume_goal(self) -> None:
+        """Resume a paused goal from its persisted conversation state."""
+        if not self._active_goal or self._goal_status == "complete":
+            await self._mount_message(
+                AppMessage(
+                    "No paused goal to resume. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        if self._goal_status != "paused":
+            await self._mount_message(
+                AppMessage(
+                    "Goal is not paused. Use `/goal show` to inspect its current state."
+                )
+            )
+            return
+        async with self._goal_state_mutation_boundary():
+            self._goal_status = "active"
+            self._sync_status_rubric()
+            persisted = await self._persist_goal_rubric_state()
+            if not persisted:
+                self._goal_status = "paused"
+                self._sync_status_rubric()
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "Goal resume could not be saved to the thread and was reverted; "
+                    "the goal is still paused."
+                )
+            )
+            return
+        await self._mount_message(AppMessage("Goal resumed."))
+        if self._pending_messages:
+            await self._process_next_from_queue()
+        elif not self._agent_running:
+            await self._continue_goal_work("resumed")
 
     def _sync_status_rubric(self) -> None:
-        """Reflect active rubric and goal state in the status bar."""
+        """Reflect active rubric and goal state in persistent UI."""
+        if self._goal_status_panel is not None:
+            self._goal_status_panel.set_goal(
+                self._active_goal,
+                self._goal_status,
+                self._goal_status_note,
+            )
         if self._status_bar is None:
             return
         from deepagents_code.config import get_glyphs
@@ -9682,6 +10270,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal complete")
         elif self._active_goal and self._goal_status == "blocked":
             self._status_bar.set_rubric_label(f"{glyphs.warning} Goal blocked")
+        elif self._active_goal and self._goal_status == "paused":
+            self._status_bar.set_rubric_label(f"{glyphs.pause} Goal paused")
         elif self._next_rubric:
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric: next turn")
         elif self._active_rubric:
@@ -11007,7 +11597,7 @@ class DeepAgentsApp(App):
             return
 
         # Prevent concurrent user input while offload modifies state
-        self._agent_running = True
+        self._set_agent_running(True)
         try:
             from deepagents_code.hooks import dispatch_hook
 
@@ -11151,7 +11741,7 @@ class DeepAgentsApp(App):
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
         finally:
-            self._agent_running = False
+            self._set_agent_running(False)
             try:
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
@@ -11461,7 +12051,7 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            self._agent_running = True
+            self._set_agent_running(True)
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
             self._active_turn_visible_output_started = False
@@ -11480,29 +12070,10 @@ class DeepAgentsApp(App):
                 else None
             )
 
-            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
-            # just above, so the status alone can't distinguish an already-active
-            # goal from one resumed this turn. Branch the wording on the reset
-            # signal instead. The status guard still holds: a failed reset rolls
-            # the status back to blocked, so no notice fires in that case.
-            #
-            # The `message != _active_goal` check suppresses the notice on the
-            # goal-setting turn, and works only because acceptance sends the
-            # objective verbatim as the message. If a future change wraps or
-            # annotates the objective before sending (as the skill path already
-            # does with its envelope prompt), the equality would no longer match
-            # and the notice would wrongly fire on the initial turn.
-            if (
-                self._active_goal
-                and self._goal_status == "active"
-                and message.strip() != self._active_goal.strip()
-            ):
-                notice = (
-                    f"Resuming previously blocked goal: {self._active_goal}"
-                    if resuming_blocked
-                    else f"Continuing active goal: {self._active_goal}"
+            if resuming_blocked and self._active_goal:
+                await self._mount_message(
+                    AppMessage(f"Resuming previously blocked goal: {self._active_goal}")
                 )
-                await self._mount_message(AppMessage(notice))
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
@@ -11791,7 +12362,14 @@ class DeepAgentsApp(App):
             spec = self._effective_model_spec()
             panel.prepare_turn(model_label=_display_model_label(spec))
 
-        rubric = self._next_rubric or self._active_rubric
+        # A paused or completed goal withholds its rubric so the grader does not
+        # run this turn (mirrors the persisted-state suppression in
+        # `_goal_state_update`). A one-shot `_next_rubric` still applies.
+        rubric = self._next_rubric
+        if rubric is None and not (
+            self._active_goal and self._goal_status in {"paused", "complete"}
+        ):
+            rubric = self._active_rubric
         if self._next_rubric is not None:
             self._last_consumed_next_rubric = self._next_rubric
             self._last_consumed_next_previous_rubric = self._active_rubric
@@ -11811,6 +12389,7 @@ class DeepAgentsApp(App):
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
                 rubric=rubric,
+                goal_active=bool(self._active_goal),
                 blocked_goal_retry_context=blocked_goal_retry_context,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
@@ -11890,8 +12469,17 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
+        Leaves the queue untouched while the server is connecting so the
+        `ServerReady` path can resume draining against the fully initialized
+        session.
         """
-        if self._processing_pending or not self._pending_messages or self._exit:
+        if (
+            self._processing_pending
+            or self._goal_state_mutating
+            or not self._pending_messages
+            or self._exit
+            or self._connecting
+        ):
             return
 
         self._processing_pending = True
@@ -11916,50 +12504,119 @@ class DeepAgentsApp(App):
         # Command mode messages complete synchronously without spawning
         # a worker, so cleanup won't fire again. Continue draining the
         # queue if no worker was started.
-        busy = self._agent_running or self._shell_running
+        busy = (
+            self._agent_running
+            or self._agent_reconciling
+            or self._goal_state_mutating
+            or self._shell_running
+        )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
-        """Clean up after agent task completes or is cancelled."""
-        self._agent_running = False
+        """Tear down after a turn completes or is cancelled.
+
+        Resets spinner/cursor/token display, refreshes the git branch, drains
+        deferred actions, applies any goal update queued during the turn, and
+        drains the message queue — then releases the quiescence gate so
+        out-of-run checkpoint mutations may proceed. Invoked from the `finally`
+        block of `_run_agent_task`, so it must run on interrupt as well as on
+        normal completion.
+        """
+        self._agent_quiescent.clear()
+        self._agent_reconciling = True
+        self._set_agent_running(False)
         self._agent_worker = None
         self._active_user_message = None
-        # Clear the output-started gate alongside its lifecycle siblings so the
-        # "False at turn start" invariant holds locally, not just via the
-        # start-of-turn reset in `_send_to_agent`.
         self._active_turn_visible_output_started = False
-
-        # Remove spinner if present
-        await self._set_spinner(None)
-
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
-
-        # Ensure token display is restored (in case of early cancellation).
-        # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
-        self._show_tokens(approximate=self._tokens_approximate)
-
-        # Agent-executed commands and tools can mutate repo state (e.g. git
-        # checkout inside an execute call), so refresh the footer on turn end.
-        self._schedule_git_branch_refresh()
-        await self._sync_goal_rubric_state_from_thread()
-
+        queued_transition: Literal["create", "amended"] | None = None
+        queued_objective: str | None = None
         try:
-            await self._maybe_drain_deferred()
-        except Exception:
-            logger.exception("Failed to drain deferred actions during agent cleanup")
-            with suppress(Exception):
-                await self._mount_message(
-                    ErrorMessage(
-                        "A deferred action failed after task completion. "
-                        "You may need to retry the operation.",
-                    ),
-                )
+            try:
+                await self._set_spinner(None)
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=True)
+                self._show_tokens(approximate=self._tokens_approximate)
+                self._schedule_git_branch_refresh()
+                await self._sync_goal_rubric_state_from_thread()
 
-        # Process next message from queue if any
-        if not self._startup_sequence_running:
-            await self._process_next_from_queue()
+                try:
+                    await self._maybe_drain_deferred()
+                except Exception:
+                    logger.exception(
+                        "Failed to drain deferred actions during agent cleanup"
+                    )
+                    with suppress(Exception):
+                        await self._mount_message(
+                            ErrorMessage(
+                                "A deferred action failed after task completion. "
+                                "You may need to retry the operation.",
+                            ),
+                        )
+
+                application = self._queued_goal_application
+                if application is not None:
+                    # `_apply_goal_application` touches the DOM (spinner, status
+                    # panel, mounted messages), which can raise during teardown.
+                    # Guard it so a failure can't (a) escape and skip the
+                    # queue-drain block below, stranding pending messages, or
+                    # (b) silently drop an accepted goal the user was told would
+                    # apply after the turn. On failure the application stays
+                    # queued so the next turn-end retries it; it is cleared only
+                    # once the apply succeeds.
+                    try:
+                        queued_objective = application.objective
+                        queued_transition = await self._apply_goal_application(
+                            application,
+                            continue_work=False,
+                            at_boundary=True,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to apply queued goal update during agent cleanup"
+                        )
+                        queued_objective = None
+                        queued_transition = None
+                        with suppress(Exception):
+                            await self._mount_message(
+                                ErrorMessage(
+                                    "The accepted goal update could not be applied "
+                                    "after the turn. It remains queued and will be "
+                                    "retried on the next turn.",
+                                ),
+                            )
+                    else:
+                        self._queued_goal_application = None
+            finally:
+                self._agent_reconciling = False
+
+            # A user message already sitting in the queue takes precedence over
+            # the synthetic goal-continuation turn: draining it runs the user's
+            # own input first under the newly applied goal, instead of the agent
+            # racing ahead with an "amended"/"create" turn. The two
+            # `_process_next_from_queue()` calls are mutually exclusive on
+            # `had_queued_input`, so they never both run — and both are further
+            # gated on `not _startup_sequence_running`, which can suppress both.
+            had_queued_input = bool(self._pending_messages)
+            if not self._startup_sequence_running and had_queued_input:
+                await self._process_next_from_queue()
+            if not had_queued_input and not self._agent_running:
+                if queued_transition == "amended":
+                    await self._continue_goal_work("amended")
+                elif queued_transition == "create" and queued_objective is not None:
+                    await self._handle_user_message(queued_objective)
+
+            if not self._startup_sequence_running and not had_queued_input:
+                await self._process_next_from_queue()
+        finally:
+            # Release the quiescence gate last, and only when no new turn was
+            # started above (a continuation or queued message re-clears the
+            # event via `_send_to_agent`). This lives in `finally` so it runs
+            # even if reconciliation raised: otherwise a caller parked in
+            # `_wait_for_agent_quiescence` — e.g. `/goal pause` holding
+            # `_goal_state_lock` — would never be woken and would deadlock.
+            if not self._agent_running and not self._agent_reconciling:
+                self._agent_quiescent.set()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
@@ -12926,6 +13583,7 @@ class DeepAgentsApp(App):
             widget.id,
             tool_status=data.tool_status,
             tool_output=data.tool_output,
+            tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
         )
@@ -13121,6 +13779,7 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        self._warn_dropped_mcp_reconnect()
         self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
@@ -13169,12 +13828,41 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
 
-    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+    def _warn_dropped_mcp_reconnect(self) -> None:
+        """Warn when an interrupt discards a queued MCP reconnect.
+
+        `_start_mcp_login` -> `_prompt_mcp_reconnect` can queue the server
+        restart while a run is in flight, telling the user it will fire once
+        the task completes. An interrupt (`Ctrl+C`, `Esc`, `/clear`) drops that
+        queued action before it drains, so that promise no longer holds. The
+        token is already on disk and the pending banner / `/mcp reconnect`
+        state survive the discard, so recovery is one command away — surface
+        that rather than letting the reconnect lapse silently.
+        """
+        if not any(a.kind == "mcp_reconnect" for a in self._deferred_actions):
+            return
+        self.notify(
+            "Cancelled the queued MCP reconnect. Run `/mcp reconnect` to load "
+            "the new tools when ready.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def _cancel_worker(
+        self, worker: Worker[None] | None, *, abort_pending_reconnect: bool = True
+    ) -> None:
         """Discard the message queue and cancel an active worker.
 
         Args:
             worker: The worker to cancel.
+            abort_pending_reconnect: When `True` (the interrupt default), warn
+                if the discarded queue held a promised MCP reconnect. Pass
+                `False` from paths that fulfill the reconnect another way (a
+                full server restart) so the notice does not misfire.
         """
+        if abort_pending_reconnect:
+            self._warn_dropped_mcp_reconnect()
         self._discard_queue()
         if worker is not None:
             worker.cancel()
@@ -16053,8 +16741,11 @@ class DeepAgentsApp(App):
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
-        No-op (with an inline notice) when nothing is pending so the
-        command is safe to run idempotently. `force=True` bypasses the
+        Restarts immediately when a login is pending and the session is
+        idle; when an agent or shell task is running the restart is queued
+        via `DeferredAction(kind="mcp_reconnect")` and drained once the task
+        completes. No-op (with an inline notice) when nothing is pending so
+        the command is safe to run idempotently. `force=True` bypasses the
         no-op guard via a confirmation modal — the escape hatch for
         stale-cache or externally-edited-config cases where the server
         needs a fresh load even though no login is queued in this
@@ -16065,6 +16756,22 @@ class DeepAgentsApp(App):
                 if no MCP login is queued.
         """
         if self._pending_mcp_reconnect:
+            if self._agent_running or self._shell_running:
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(
+                            "pending login"
+                        ),
+                    ),
+                )
+                self.notify(
+                    "The server will reconnect once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             await self._restart_server_for_mcp_refresh("pending login")
             return
         if not force:
@@ -16449,10 +17156,13 @@ class DeepAgentsApp(App):
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
         to restart), or while an agent switch is in progress. When the local
-        server is still connecting or the session is mid-run, the login is
-        queued via `_defer_action` and runs once the server is ready and the
-        user is idle. Config resolution and server-name validation happen
-        later, in `_run_mcp_login_worker`.
+        server is still connecting, the login is queued via `_defer_action`
+        and runs once the server is ready. An active agent or shell run does
+        *not* defer login: the OAuth handshake and token write never touch the
+        running server, so they proceed concurrently; only the follow-up
+        server restart is queued (see `_prompt_mcp_reconnect`). Config
+        resolution and server-name validation happen later, in
+        `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -16504,20 +17214,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running or self._shell_running:
-            self.notify(
-                "MCP login will start once the current task completes.",
-                timeout=5,
-                markup=False,
-            )
-            self._defer_action(
-                DeferredAction(
-                    kind="mcp_login",
-                    execute=lambda: self._run_mcp_login_worker(server_name),
-                ),
-            )
-            return
-
+        # An active agent/shell run is intentionally not a defer gate: the
+        # OAuth handshake and on-disk token write are independent of the
+        # running server, so login proceeds immediately and only the restart
+        # is queued once the task finishes (`_prompt_mcp_reconnect`).
         self.run_worker(
             self._run_mcp_login_worker(server_name),
             exclusive=False,
@@ -16639,6 +17339,13 @@ class DeepAgentsApp(App):
         )
         await asyncio.wait_for(outcome_future, timeout=5.0)
 
+        # Persist a transcript record of the successful login. The modal and
+        # reconnect toasts are transient, so an inline message is the only
+        # lasting confirmation once they dismiss.
+        await self._mount_message(
+            AppMessage(f"Logged in to {server_name!r}."),
+        )
+
         # Ask the user whether to restart now or defer. Deferring lets them
         # authenticate against additional MCP servers before paying the
         # restart cost. `/mcp reconnect` (or another login confirmed with
@@ -16708,6 +17415,30 @@ class DeepAgentsApp(App):
                 choice = "later"
 
         if choice == "reconnect":
+            if self._agent_running or self._shell_running:
+                # The restart tears down the server the active run lives on,
+                # so honor the user's "reconnect now" intent without killing
+                # the in-flight generation: queue the restart to fire once the
+                # task finishes (drained via `_maybe_drain_deferred`). The
+                # token is already on disk, so mark the reconnect pending for
+                # `/mcp reconnect` and the splash banner in the meantime.
+                self._pending_mcp_login_reconnect = True
+                self._sync_pending_mcp_reconnect()
+                self._apply_optimistic_mcp_login_pending_state(server_name)
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(server_name),
+                    ),
+                )
+                self.notify(
+                    f"Logged in to {server_name!r}. The server will reconnect "
+                    "once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
@@ -16757,6 +17488,24 @@ class DeepAgentsApp(App):
                     timeout=8,
                     markup=False,
                 )
+
+    async def _run_deferred_mcp_reconnect(self, server_name: str) -> None:
+        """Restart for MCP token refresh once the busy state clears.
+
+        Queued by `_prompt_mcp_reconnect` when the user accepts the restart
+        while an agent or shell task is still running — restarting then would
+        tear down the server the active run depends on. Re-checks the pending
+        flag so a manual `/mcp reconnect` in the interim isn't followed by a
+        redundant restart. (The queue is in-memory only, so a relaunch never
+        reaches this path — the fresh process loads the token on startup.)
+
+        Args:
+            server_name: Server whose login triggered the reconnect.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        self._clear_mcp_login_reconnect_banner_counts(server_name)
+        await self._restart_server_for_mcp_refresh(server_name)
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -17086,10 +17835,11 @@ class DeepAgentsApp(App):
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently.
+        # fire against the freshly respawned agent silently. This restart *is*
+        # the reconnect, so suppress the dropped-reconnect warning: the respawn
+        # below reloads every on-disk MCP token regardless.
         if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
-            self._agent_running = False
+            self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
         else:
             self._discard_queue()
 

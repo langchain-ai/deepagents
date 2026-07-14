@@ -856,7 +856,7 @@ class TestBuildStreamConfig:
         from deepagents_code._version import __version__
 
         metadata = build_stream_config("t-id", assistant_id=None)["metadata"]
-        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_agent_purpose"] == "coding"
         assert metadata["ls_integration"] == "deepagents-code"
         assert metadata["ls_agent_runtime"] == "Deep Agents Code"
         assert metadata["ls_trace_schema_version"] == "coding-agent-v1"
@@ -1298,12 +1298,29 @@ class TestFormatRubricEvent:
         )
 
     def test_max_iterations_reached_event(self) -> None:
-        """Hitting the iteration cap should warn the user it is unsatisfied."""
+        """Hitting the iteration cap should show gaps and preserve the goal."""
         assert (
             _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "max_iterations_reached",
+                    "explanation": "coverage is still missing",
+                    "criteria": [
+                        {
+                            "name": "tests pass",
+                            "passed": False,
+                            "gap": "integration test failed",
+                        },
+                        {"name": "docs updated", "passed": True},
+                    ],
+                },
+                goal_active=True,
             )
-            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
+            == "⚠ Iteration limit reached with unmet acceptance criteria: "
+            "coverage is still missing\n"
+            "  ✗ tests pass — integration test failed\n"
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
         )
 
     def test_grader_failure_results_render_warning(self) -> None:
@@ -1322,7 +1339,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "grader_error"},
             )
-            == "⚠ Rubric grader error"
+            == "⚠ Grader/infrastructure failure"
         )
 
     def test_unknown_terminal_result_renders_fallback(self) -> None:

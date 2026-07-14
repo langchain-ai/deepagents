@@ -20,7 +20,6 @@ from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
     FilesystemMiddleware,
     MemoryMiddleware,
-    RubricMiddleware,
     SkillsMiddleware,
 )
 
@@ -90,6 +89,7 @@ from deepagents_code.local_context import (
 from deepagents_code.offload import _offload_fallback_root
 from deepagents_code.offload_middleware import _create_cli_compaction_middleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -1952,7 +1952,7 @@ def create_cli_agent(
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
-        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
+        agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

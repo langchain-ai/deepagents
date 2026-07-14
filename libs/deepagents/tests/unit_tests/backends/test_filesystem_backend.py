@@ -1,8 +1,11 @@
 import base64
+import io
 import json
 import logging
 import shutil
 import subprocess
+import sys
+import threading
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
@@ -275,6 +278,58 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert isinstance(result, ReadResult)
     assert result.error is not None
     assert "chinese.txt" in result.error
+
+
+def test_filesystem_backend_read_populates_pagination_metadata(tmp_path: Path) -> None:
+    """`FilesystemBackend.read` reports source-line range and next offset for text reads."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    partial = be.read(str(target), offset=1, limit=2)
+    assert partial.error is None
+    assert partial.total_lines == 5
+    assert partial.start_line == 2
+    assert partial.end_line == 3
+    assert partial.next_offset == 3
+
+    final = be.read(str(target), offset=3, limit=10)
+    assert final.error is None
+    assert final.total_lines == 5
+    assert final.start_line == 4
+    assert final.end_line == 5
+    assert final.next_offset is None
+
+
+def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: Path) -> None:
+    """An offset past EOF reports the file's line count and leaves metadata unset."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=99, limit=10)
+
+    assert result.error == "Line offset 99 exceeds file length (5 lines)"
+    assert result.file_data is None
+    assert result.total_lines is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Path) -> None:
+    """An empty file returns the empty-content warning with no pagination metadata."""
+    target = tmp_path / "empty.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=10)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
 
 
 def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
@@ -799,11 +854,65 @@ def _isolate_rg_cache() -> Iterator[None]:
     fs_module._resolve_ripgrep_path.cache_clear()
 
 
-class _FakeProc:
-    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.stderr = stderr
+class _BlockingStdout:
+    """Text stream that yields queued lines then blocks until the proc is killed.
+
+    Mirrors how ripgrep's stdout behaves under `subprocess.Popen(text=True)`:
+    iterating yields one JSON frame per line, and once ripgrep is terminated the
+    pipe closes so iteration ends. The `killed` event stands in for that close,
+    letting the timeout watchdog end the loop without real timing races.
+    """
+
+    def __init__(self, lines: list[str], killed: threading.Event) -> None:
+        self._lines = iter(lines)
+        self._killed = killed
+
+    def __iter__(self) -> "_BlockingStdout":
+        return self
+
+    def __next__(self) -> str:
+        if self._killed.is_set():
+            raise StopIteration
+        try:
+            return next(self._lines)
+        except StopIteration:
+            # No more queued frames: emulate a stream that stays open until the
+            # process is killed (e.g. by the timeout watchdog).
+            self._killed.wait()
+            raise
+
+    def close(self) -> None:
+        pass
+
+
+class _FakePopen:
+    """Minimal `subprocess.Popen` stand-in for the streaming ripgrep path."""
+
+    def __init__(self, stdout_lines: list[str] | None = None, stderr: str = "", returncode: int = 0, *, block: bool = False) -> None:
+        self._killed = threading.Event()
         self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+        lines = stdout_lines or []
+        if block:
+            self.stdout: object = _BlockingStdout(lines, self._killed)
+        else:
+            self.stdout = io.StringIO("".join(lines))
+            self._killed.set()  # non-blocking: nothing to wait on
+        self.stderr = io.StringIO(stderr)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._killed.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        # A real kill yields a negative (signal) return code.
+        self.returncode = -9
+        self._killed.set()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
 
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
@@ -834,11 +943,11 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
 
     captured: dict[str, list[str]] = {}
 
-    def fake_run(cmd: list[str], **_kwargs: object) -> _FakeProc:
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
         captured["cmd"] = cmd
-        return _FakeProc()
+        return _FakePopen()
 
-    monkeypatch.setattr(fs_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -853,13 +962,16 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    """A `TimeoutExpired` from `subprocess.run` should emit a `WARNING`."""
+    """When the streaming watchdog kills ripgrep with no output, we warn and fall back."""
     monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    # Tiny budget so the watchdog timer fires almost immediately; the fake
+    # stdout blocks until that kill closes the stream (no timing race).
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 0.05)
 
-    def timeout_run(cmd: list[str], **_kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd, timeout=30)
+    def timeout_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[], block=True)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", timeout_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -876,38 +988,18 @@ def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.Monkey
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ripgrep times out after emitting matches, those partial matches are returned flagged as truncated."""
+    """When ripgrep is killed after streaming matches, those partial matches are returned flagged as truncated."""
     monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 0.05)
     (tmp_path / "a.txt").write_text("hello\n")
     frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "hello\n"}, "line_number": 1}})
 
-    def timeout_run(cmd: list[str], **_kwargs: object) -> object:
-        # `subprocess.run` populates `TimeoutExpired.stdout` with output drained
-        # before the kill; ripgrep's newline-delimited JSON parses cleanly.
-        raise subprocess.TimeoutExpired(cmd, timeout=30, output=frame + "\n")
+    def timeout_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        # One frame streams through, then the stream blocks until the watchdog
+        # kills the process (mirroring a search that outran its time budget).
+        return _FakePopen(stdout_lines=[frame + "\n"], block=True)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
-    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-
-    result = be.grep("hello", path=str(tmp_path))
-
-    assert result.truncated is True
-    assert result.error is None
-    assert result.matches and any(m["path"].endswith("a.txt") and m["text"] == "hello" for m in result.matches)
-
-
-@pytest.mark.usefixtures("_isolate_rg_cache")
-def test_ripgrep_timeout_decodes_bytes_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`TimeoutExpired.stdout` is bytes even under `text=True`; partial output must still be parsed."""
-    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
-    (tmp_path / "a.txt").write_text("hello\n")
-    frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "hello\n"}, "line_number": 1}})
-
-    def timeout_run(cmd: list[str], **_kwargs: object) -> object:
-        # Bytes output mirrors what `subprocess.run` populates on `TimeoutExpired`.
-        raise subprocess.TimeoutExpired(cmd, timeout=30, output=(frame + "\n").encode())
-
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", timeout_popen)
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     result = be.grep("hello", path=str(tmp_path))
@@ -1009,10 +1101,10 @@ def test_ripgrep_exec_race_logs_warning_and_clears_cache(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(fs_module.shutil, "which", counting_which)
 
-    def missing_run(cmd: list[str], **_kwargs: object) -> object:
+    def missing_popen(cmd: list[str], **_kwargs: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", cmd[0])
 
-    monkeypatch.setattr(fs_module.subprocess, "run", missing_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", missing_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -1041,10 +1133,10 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     """
     monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
 
-    def erroring_run(_cmd: list[str], **_kwargs: object) -> _FakeProc:
-        return _FakeProc(stdout="", stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
+    def erroring_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[], stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", erroring_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", erroring_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -1057,6 +1149,213 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     assert "error parsing glob" in msgs[0]
     # Python fallback ran and still returned the real match.
     assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_nonzero_returncode_discards_partial_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hard ripgrep error after a match reruns the complete Python search."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+
+    def erroring_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[frame], stderr="rg: unreadable directory", returncode=2)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", erroring_popen)
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        result = be.grep("hello", path=str(tmp_path))
+
+    assert any("ripgrep exited 2" in record.getMessage() for record in caplog.records)
+    assert result.error is None
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_drains_stderr_while_streaming_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large stderr output cannot block ripgrep before it emits a match."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 1)
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+    child_code = f"import sys\nsys.stderr.write('x' * 1_000_000)\nsys.stderr.flush()\nsys.stdout.write({frame!r})\nsys.stdout.flush()\n"
+    real_popen = subprocess.Popen
+
+    def noisy_popen(
+        _cmd: list[str],
+        *,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        cwd: str | None,
+    ) -> subprocess.Popen[str]:
+        assert text
+        return real_popen(
+            [sys.executable, "-c", child_code],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+            cwd=cwd,
+        )
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", noisy_popen)
+    # The fallback cannot manufacture the synthetic ripgrep match.
+    (tmp_path / "a.txt").write_text("different text\n")
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = backend.grep("hello", path=str(tmp_path))
+
+    assert result.truncated is False
+    assert result.matches == [{"path": str(tmp_path / "a.txt"), "line": 1, "text": "hello"}]
+
+
+def _rg_match_frame(path: str, line_number: int, text: str) -> str:
+    """Build a ripgrep `--json` match frame line for the streaming fake."""
+    return json.dumps({"type": "match", "data": {"path": {"text": path}, "lines": {"text": text}, "line_number": line_number}}) + "\n"
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_caps_total_and_terminates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming ripgrep path stops at `max_count` total matches and kills the process early."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("hello\nhello\nhello\n")
+
+    # More frames than the cap, spread across files, so the cap must apply
+    # across files rather than per file.
+    frames = [
+        _rg_match_frame("a.txt", 1, "hello\n"),
+        _rg_match_frame("a.txt", 2, "hello\n"),
+        _rg_match_frame("b.txt", 1, "hello\n"),
+        _rg_match_frame("b.txt", 2, "hello\n"),
+    ]
+    created: dict[str, _FakePopen] = {}
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
+        # `-m <cap + 1>` is passed to ripgrep as a secondary per-file guard; the
+        # `+ 1` lets a single file emit one match past the cap so truncation is
+        # detectable.
+        assert "-m" in cmd
+        assert cmd[cmd.index("-m") + 1] == "3"
+        proc = _FakePopen(stdout_lines=frames)
+        created["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    # The process was terminated once the cap was reached instead of draining.
+    assert created["proc"].terminated is True
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_below_cap_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When fewer matches than `max_count` are emitted, the result completes untruncated."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("hello\n")
+    frames = [_rg_match_frame("a.txt", 1, "hello\n")]
+
+    def fake_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=frames)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=100)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 1
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_exact_cap_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    # Exactly `max_count` frames and no more: ripgrep (`-m cap + 1`) would have
+    # emitted a third if one existed, so the stream ending at the cap proves the
+    # result is complete.
+    frames = [_rg_match_frame("a.txt", 1, "hello\n"), _rg_match_frame("a.txt", 2, "hello\n")]
+
+    def fake_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=frames)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_python_fallback_caps_total_matches_across_files(tmp_path: Path) -> None:
+    """The Python fallback caps total matches across files and flags truncation.
+
+    ripgrep is absent in this environment, so `grep` uses `_python_search`.
+    """
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=3)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_python_fallback_no_cap_returns_all_matches(tmp_path: Path) -> None:
+    """With `max_count=None` the Python fallback returns every match, untruncated."""
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path))
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 6
+
+
+def test_python_fallback_below_cap_not_truncated(tmp_path: Path) -> None:
+    """A cap larger than the number of matches leaves the result untruncated."""
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=100)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_python_fallback_exact_cap_not_truncated(tmp_path: Path) -> None:
+    """The Python fallback reports exactly `max_count` matches as complete."""
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
 
 
 def _install_flaky_rglob(monkeypatch: pytest.MonkeyPatch, exc: Exception, after_yields: int = 1) -> None:

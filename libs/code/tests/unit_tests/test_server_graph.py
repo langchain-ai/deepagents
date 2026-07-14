@@ -385,7 +385,9 @@ class TestServerGraph:
             project_root=project_root,
             user_cwd=object(),
         )
-        plugin_configs = ({"mcpServers": {"plugin": {}}},)
+        plugin_configs: tuple[dict[str, object], ...] = (
+            {"mcpServers": {"plugin": {}}},
+        )
         resolve_mcp_tools = AsyncMock(return_value=([], None, []))
         loop_thread_id = threading.get_ident()
         discover_thread_ids: list[int] = []

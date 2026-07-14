@@ -1,13 +1,21 @@
 """Prep step for the unified multi-model Harbor evals orchestrator.
 
 Parses a free-form comma-separated model CSV, validates it via models.py,
-buckets specs by provider, clamps shard_parallel to satisfy the two
-concurrency invariants, maps each category to its Harbor dataset, and emits
-per-provider matrices to GITHUB_OUTPUT.
+maps each category to its Harbor dataset, and emits a per-model flat matrix
+(one entry per single-task shard, spanning every category) to GITHUB_OUTPUT.
 
-Concurrency invariants:
-  per model:  concurrency * shard_parallel <= 40
-  global:     num_providers * shard_parallel <= 80
+Pool sizing is derived by `derive_pool`, not clamped after the fact: given
+`concurrency` (trials in flight per task) and `rollouts` (trials per task),
+`per_shard = min(concurrency, rollouts)` is the peak concurrent trials a
+single 1-task shard ever runs. `max_parallel = MAX_TASKS_PER_MODEL //
+per_shard` saturates the per-model 40-trial budget, and `model_parallel =
+MAX_RUNNERS // max_parallel` bounds how many models run at once so total
+runners stay within MAX_RUNNERS. Both invariants hold by construction:
+  per model:  concurrency * max_parallel <= MAX_TASKS_PER_MODEL (40)
+  global:     model_parallel * max_parallel <= MAX_RUNNERS (80)
+`total_job_guard` separately caps the total job count (n_models * est_tasks)
+against a fixed budget so an oversized selection fails fast instead of
+launching a firehose.
 """
 
 from __future__ import annotations
@@ -54,8 +62,6 @@ CATEGORY_MAP: dict[str, dict] = {
         "agent_impl": "dcode",
     },
 }
-
-DEFAULT_N_SHARDS = {"autonomous": 10, "conversation": 3, "context": 3}
 
 # Harnesses selectable for the code categories (autonomous, context) via the
 # `agent_impl` input. Conversation is always tau3 and is never overridden.
@@ -124,15 +130,6 @@ def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     return prefix if prefix in known else "other"
 
 
-def clamp_shard_parallel(requested: int, num_providers: int, concurrency: int) -> int:
-    sp = min(
-        requested,
-        MAX_RUNNERS // max(num_providers, 1),
-        MAX_TASKS_PER_MODEL // max(concurrency, 1),
-    )
-    return max(sp, 1)
-
-
 def derive_pool(
     concurrency: int, rollouts: int, n_shards: int, n_models: int
 ) -> tuple[int, int]:
@@ -186,64 +183,6 @@ def build_flat_matrix(
     return entries
 
 
-def build_provider_matrices(
-    models_list: list[str],
-    categories: list[str],
-    shard_parallel: int,
-    n_shards_by_cat: dict[str, int],
-    dcode_impl: str = "dcode",
-    profile: str = "full",
-) -> dict[str, list[dict]]:
-    matrices: dict[str, list[dict]] = {}
-    for spec in models_list:
-        prov = provider_of(spec)
-        for cat in categories:
-            cm = CATEGORY_MAP[cat]
-            # `dcode_impl` swaps the harness for the code categories only; the
-            # conversation category's tau3 harness is left untouched.
-            agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
-            # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks).
-            # One task per shard: `shard_parallel` (the leaf's matrix max-parallel)
-            # is the number of concurrent runner slots, and GitHub pulls the next
-            # single-task shard in the instant one finishes. That gives dynamic
-            # load-balancing across runners -- the long pole is the slowest single
-            # task, not a static bucket -- and scatters each task's image onto its
-            # own runner so heavy images never concentrate and blow the disk.
-            # Bounded by shard_matrix.MAX_SHARDS (and its 256-job matrix guard).
-            include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
-            n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
-            if include:
-                n_tasks = len(include.split())
-                n_shards = min(n_tasks, shard_matrix.MAX_SHARDS)
-            entry = {
-                "model": spec,
-                "provider": prov,
-                "category": cat,
-                "dataset": cm["dataset"],
-                "dataset_path": cm["dataset_path"],
-                "agent_impl": agent_impl,
-                "include_tasks": include,
-                # Empty: the leaf derives the canonical shared dataset name per
-                # category (harbor-index/harbor-index-1.0, tau3-subset, local/...)
-                # and a stable per-run experiment name, so a model's shards attach
-                # to the one shared dataset. NOTE: consolidating those shards into a
-                # SINGLE experiment per model needs harbor > 0.1.1. Released
-                # harbor-langsmith==0.1.1 suffixes every shard's experiment with
-                # "-{job.id[:8]}" (one experiment per shard); harbor main honors the
-                # explicit experiment_name _harbor_run.yml sets and reuses the
-                # session across shards. Until a fixed release ships, set the
-                # `harbor_package_override` input to a harbor build with that fix,
-                # e.g. commit af2e8629e95c2e9f487f7a2ba87c1e25b531a55b (see that
-                # input's description for the full pip specs). The GH-aggregated
-                # unified_summary is the cross-model surface regardless.
-                "langsmith_dataset": "",
-                "n_shards": n_shards,
-                "shard_parallel": shard_parallel,
-            }
-            matrices.setdefault(prov, []).append(entry)
-    return matrices
-
-
 def _emit(github_output: str | None, outputs: dict[str, object]) -> None:
     if not github_output:
         for k, v in outputs.items():
@@ -275,20 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         minimum=1,
         maximum=MAX_TASKS_PER_MODEL,
     )
-    requested_sp = parse_int_input(
-        "UNIFIED_SHARD_PARALLEL",
-        os.environ.get("UNIFIED_SHARD_PARALLEL", "10"),
-        minimum=1,
+    rollouts = parse_int_input(
+        "UNIFIED_ROLLOUTS", os.environ.get("UNIFIED_ROLLOUTS", "3"), minimum=1
     )
-    n_shards_by_cat = {
-        category: parse_int_input(
-            f"UNIFIED_N_SHARDS_{category.upper()}",
-            os.environ.get(f"UNIFIED_N_SHARDS_{category.upper()}", str(default)),
-            minimum=1,
-            maximum=shard_matrix.MAX_SHARDS,
-        )
-        for category, default in DEFAULT_N_SHARDS.items()
-    }
 
     # Empty defaults to "dcode" (the historical per-category default).
     dcode_impl = os.environ.get("UNIFIED_AGENT_IMPL", "").strip() or "dcode"
@@ -317,40 +245,44 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         raise SystemExit(str(exc))
 
-    providers_present: list[str] = []
-    seen = set()
-    for spec in model_specs:
-        p = provider_of(spec)
-        if p not in seen:
-            seen.add(p)
-            providers_present.append(p)
+    # Resolve the per-category task lists.
+    if profile == "lite":
+        tasks_by_cat = {c: list(lite_tasks.LITE_TASKS.get(c, [])) for c in categories}
+    else:
+        tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
+        if not tasks_json:
+            raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
+        with open(tasks_json) as f:
+            tasks_by_cat = json.load(f)
 
-    shard_parallel = clamp_shard_parallel(
-        requested_sp, len(providers_present), concurrency
-    )
-    # clamp guarantees both invariants; assert as a safety net.
-    assert concurrency * shard_parallel <= MAX_TASKS_PER_MODEL
-    assert len(providers_present) * shard_parallel <= MAX_RUNNERS
+    n_models = len(model_specs)
+    est_tasks = max((sum(len(tasks_by_cat.get(c, [])) for c in categories), 1))
+    total_job_guard(n_models, est_tasks)
 
-    matrices = build_provider_matrices(
-        model_specs, categories, shard_parallel, n_shards_by_cat, dcode_impl, profile
-    )
+    # n_shards for the pool = number of single-task shards (pre-pack); derive pool.
+    n_shards = est_tasks
+    max_parallel, model_parallel = derive_pool(concurrency, rollouts, n_shards, n_models)
 
     outputs: dict[str, object] = {
-        "effective_shard_parallel": str(shard_parallel),
         # The expected grid, so the combiner can flag missing/incomplete leaves
         # instead of silently ranking a model on fewer categories.
         "models": model_specs,
         "categories": categories,
+        "max_parallel": str(max_parallel),
+        "model_parallel": str(model_parallel),
+        "model_slugs": [_slug(m) for m in model_specs],
     }
-    for prov in sorted(KNOWN_PROVIDERS | {"other"}):
-        include = matrices.get(prov, [])
-        outputs[f"{prov}_has_models"] = "true" if include else "false"
-        if include:
-            outputs[f"{prov}_matrix"] = {"include": include}
-
+    for idx, model in enumerate(model_specs):
+        entries = build_flat_matrix(model, categories, tasks_by_cat, dcode_impl)
+        outputs[f"model_{idx}_matrix"] = {"include": entries}
     _emit(os.environ.get("GITHUB_OUTPUT"), outputs)
     return 0
+
+
+def _slug(model: str) -> str:
+    import re
+
+    return re.sub(r"[^A-Za-z0-9._-]", "-", model.replace("/", "-").replace(":", "-"))
 
 
 if __name__ == "__main__":

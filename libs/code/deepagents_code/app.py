@@ -89,6 +89,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    RubricResultMessage,
     SkillMessage,
     ToolCallMessage,
     ToolGroupSummary,
@@ -9729,6 +9730,15 @@ class DeepAgentsApp(App):
             Proposed acceptance criteria text.
         """
         from deepagents_code.goal_rubric import generate_goal_rubric
+        from deepagents_code.project_utils import ProjectContext
+
+        try:
+            repository_root = ProjectContext.from_user_cwd(self._cwd).project_root
+        except (OSError, RuntimeError) as exc:  # repository context is optional
+            logger.warning(
+                "Could not resolve repository context for goal criteria: %s", exc
+            )
+            repository_root = None
 
         return generate_goal_rubric(
             objective,
@@ -9737,6 +9747,7 @@ class DeepAgentsApp(App):
             profile_override=self._profile_override,
             feedback=feedback,
             previous_criteria=previous_criteria,
+            repository_root=repository_root,
         )
 
     async def _start_pending_goal_rubric_review(self) -> None:
@@ -13118,6 +13129,18 @@ class DeepAgentsApp(App):
             # let a still-live row be virtualized mid-run.
             self._message_store.unprotect_message(widget.id)
 
+    def on_rubric_result_message_expansion_changed(
+        self,
+        event: RubricResultMessage.ExpansionChanged,
+    ) -> None:
+        """Keep grader-detail expansion state across transcript virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                rubric_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
+
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
         # Drop buffered `!` shell output so it never leaks across a thread
@@ -14056,7 +14079,7 @@ class DeepAgentsApp(App):
                     )
 
     def action_toggle_tool_output(self) -> None:
-        """Toggle the most recent collapsible unit (group, skill, or tool)."""
+        """Toggle the most recent collapsible transcript unit."""
         # Pending ask_user takes precedence so Ctrl+O toggles the question card.
         if self._pending_ask_user_widget is not None:
             try:
@@ -14068,15 +14091,17 @@ class DeepAgentsApp(App):
                     tool_msg.toggle_args()
                     return
 
-        # Toggle whichever collapsible unit is most recent in DOM order — a tool
-        # group, a skill body, or a standalone tool row — so content mounted
-        # after a group stays reachable instead of always hitting the last group.
+        # Toggle whichever collapsible unit is most recent in DOM order so
+        # content mounted after a tool group stays reachable.
         # Grouped tool rows are folded into their summary, so skip them here.
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
         for child in reversed(list(messages.children)):
+            if isinstance(child, RubricResultMessage) and child._details:
+                child.toggle_details()
+                return
             if isinstance(child, ToolGroupSummary):
                 child.toggle()
                 return

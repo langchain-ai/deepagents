@@ -38,6 +38,8 @@ from deepagents.middleware.rubric import (
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
+pytestmark = pytest.mark.filterwarnings(r"ignore:The middleware `RubricMiddleware` is in beta\..*")
+
 # Placeholder model identifier used wherever the grader is stubbed via
 # `monkeypatch` and the value would never reach a real provider client.
 _STUB_MODEL = "stub:test"

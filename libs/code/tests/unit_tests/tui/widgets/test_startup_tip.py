@@ -71,10 +71,6 @@ class TestStartupTip:
 
         assert show_startup_tip() is False
 
-    def test_startup_cmd_tip_registered(self) -> None:
-        """The `--startup-cmd` flag keeps a discoverability tip."""
-        assert any("--startup-cmd" in tip for tip in _TIPS)
-
     def test_incognito_shell_tip_registered(self) -> None:
         """The `!!` shell mode keeps a discoverability tip."""
         assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)

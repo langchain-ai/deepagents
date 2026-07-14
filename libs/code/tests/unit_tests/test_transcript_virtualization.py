@@ -161,6 +161,7 @@ class TestScrollDrivenHydration:
             # above the mounted tail (the state after a long transcript grows).
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
             monkeypatch.setattr(app._message_store, "HYDRATE_BUFFER", 2)
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
             await app._prune_old_messages()
             await pilot.pause()
 

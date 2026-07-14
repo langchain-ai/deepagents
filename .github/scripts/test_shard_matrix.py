@@ -441,3 +441,37 @@ def test_main_rejects_matrix_overflow_as_exit(
     with pytest.raises(SystemExit) as excinfo:
         shard.main()
     assert excinfo.value.code == 1
+
+
+# --------------------------------------------------------------------------- #
+# pack_tasks — split ordered task list into contiguous groups (comment #3)
+# --------------------------------------------------------------------------- #
+
+
+def test_pack_tasks_one_per_shard_under_cap(shard: ModuleType) -> None:
+    """When len(names) <= max_shards, one task per group (1-task shards)."""
+    names = [f"t{i}" for i in range(5)]
+    assert shard.pack_tasks(names, max_shards=200) == [["t0"], ["t1"], ["t2"], ["t3"], ["t4"]]
+
+
+def test_pack_tasks_packs_above_cap_contiguously(shard: ModuleType) -> None:
+    """Above the cap, pack ceil(n/max_shards) tasks per group contiguously.
+
+    cap 2 -> ceil(5/2)=3 per group -> [t0,t1,t2],[t3,t4]
+    """
+    names = [f"t{i}" for i in range(5)]
+    assert shard.pack_tasks(names, max_shards=2) == [["t0", "t1", "t2"], ["t3", "t4"]]
+
+
+def test_pack_tasks_covers_every_task_disjointly(shard: ModuleType) -> None:
+    """Order-preserving, no dupes, no drops (covers exactly the input set)."""
+    names = [f"t{i}" for i in range(203)]
+    groups = shard.pack_tasks(names, max_shards=200)
+    assert len(groups) <= 200
+    flat = [n for g in groups for n in g]
+    assert flat == names  # order-preserving, no dupes, no drops
+
+
+def test_pack_tasks_empty(shard: ModuleType) -> None:
+    """Empty input yields empty output."""
+    assert shard.pack_tasks([], max_shards=200) == []

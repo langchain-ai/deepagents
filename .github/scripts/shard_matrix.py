@@ -186,6 +186,21 @@ def select_shard_tasks(
     return [name for j, name in enumerate(selected) if j % n_shards == shard_index]
 
 
+def pack_tasks(names: list[str], max_shards: int = MAX_SHARDS) -> list[list[str]]:
+    """Split an ordered task list into at most ``max_shards`` contiguous groups.
+
+    One task per group when ``len(names) <= max_shards`` (the common 1-task-shard
+    case). Above the cap, each group holds ``ceil(n / max_shards)`` tasks so the
+    shard count stays legal; groups are contiguous slices of the input order, so
+    their union is exactly ``names`` with no reordering, duplication, or drops.
+    """
+    n = len(names)
+    if n == 0:
+        return []
+    per = -(-n // max_shards)  # ceil division
+    return [names[i : i + per] for i in range(0, n, per)]
+
+
 def main() -> None:
     """Entry point for the prep job: expand the model matrix by shard.
 

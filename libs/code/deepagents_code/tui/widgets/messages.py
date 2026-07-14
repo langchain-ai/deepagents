@@ -158,6 +158,19 @@ _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
 
+_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
+"""Match a `read_file` gutter row into (marker, source).
+
+The marker is a bare `N` or `N.M` (the latter a wrapped-line continuation) —
+both sides of the dot required, so a stray `.5` head is not a gutter. The
+separator is exactly two spaces (current format) or a single tab (legacy
+`cat -n`). Only the separator is consumed and leading padding is spaces-only, so
+source indentation — including leading tabs — after the gutter stays put. Kept in
+sync with the separator emitted by deepagents' `format_content_with_line_numbers`
+(the authoritative producer). See `ToolCallMessage._compact_line_gutter`.
+"""
+
+
 def _strip_success_exit_line(text: str) -> str:
     """Remove the `[Command succeeded with exit code 0]` trailer.
 
@@ -1994,28 +2007,23 @@ class ToolCallMessage(Vertical):
         grep/glob results sit flush left. Source indentation after the gutter is
         preserved untouched.
 
-        Lines that don't match a gutter shape (e.g. test fixtures or
-        non-numbered output) are passed through unchanged.
+        The gutter shape is `_READ_FILE_GUTTER_RE`, kept in sync with deepagents'
+        `format_content_with_line_numbers` (the authoritative producer). Lines
+        that don't match a gutter shape (e.g. test fixtures or non-numbered
+        output) are passed through unchanged.
 
         Returns:
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
         lines = output.split("\n")
-        # Strip a leading gutter into (marker, source). The marker is a bare `N`
-        # or `N.M` (the latter a wrapped-line continuation) — both sides of the
-        # dot required, so a stray `.5` head is not a gutter. The separator is
-        # exactly two spaces (current format) or a single tab (legacy cat -n).
-        # Only the separator is consumed, and padding is spaces-only, so source
-        # indentation — including leading tabs — after the gutter stays put.
-        gutter = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
         parsed: list[tuple[str, str] | None] = []
         width = 0
         for line in lines:
-            match = gutter.match(line)
+            match = _READ_FILE_GUTTER_RE.match(line)
             if match:
-                marker = match.group(1)
-                parsed.append((marker, match.group(2)))
+                marker, source = match.groups()
+                parsed.append((marker, source))
                 width = max(width, len(marker))
             else:
                 parsed.append(None)

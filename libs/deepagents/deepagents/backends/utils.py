@@ -226,25 +226,28 @@ def format_content_with_line_numbers(
     marker_width = 0
     for i, line in enumerate(lines):
         line_num = i + start_line
+        # One slice per MAX_LINE_LENGTH chunk; short lines yield a single chunk.
+        # `or [line]` keeps a row for a blank line, whose empty range would
+        # otherwise drop it, so it still gets a gutter.
+        chunks = [line[s : s + MAX_LINE_LENGTH] for s in range(0, len(line), MAX_LINE_LENGTH)] or [line]
 
-        if len(line) <= MAX_LINE_LENGTH:
-            marker = str(line_num)
-            rows.append((marker, line))
+        for chunk_idx, chunk in enumerate(chunks):
+            marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
+            rows.append((marker, chunk))
             marker_width = max(marker_width, len(marker))
-        else:
-            num_chunks = (len(line) + MAX_LINE_LENGTH - 1) // MAX_LINE_LENGTH
-            for chunk_idx in range(num_chunks):
-                start = chunk_idx * MAX_LINE_LENGTH
-                end = min(start + MAX_LINE_LENGTH, len(line))
-                chunk = line[start:end]
-                marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
-                rows.append((marker, chunk))
-                marker_width = max(marker_width, len(marker))
 
-    # The two-space marker/source separator is a load-bearing contract:
-    # `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row` counts
-    # source rows by matching it. Changing the separator here without updating
-    # that regex silently breaks the continuation notice.
+    # The two-space marker/source separator is a load-bearing contract shared by
+    # two downstream parsers that must stay in sync with the separator emitted
+    # here:
+    #   - `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row`
+    #     (profiles/harness/_nvidia_nemotron_3_ultra.py) counts source rows to
+    #     decide whether to append the continuation notice.
+    #   - `ToolCallMessage._compact_line_gutter` (the deepagents-code TUI, in a
+    #     separate package: libs/code/.../tui/widgets/messages.py) re-justifies
+    #     the gutter for display.
+    # Both also tolerate the legacy `cat -n` tab. Shrinking this separator below
+    # two spaces (or otherwise diverging) would silently break them; the
+    # producer->consumer round-trip tests in both packages guard against that.
     return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
 
 

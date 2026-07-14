@@ -1310,9 +1310,9 @@ class TestDeepAgentEndToEnd:
         combined = tool_messages[0].content + tool_messages[1].content
         assert "important instruction" in combined
         assert "line4" in combined
-        # All three continuation chunks of the wrapped line 2 must render in
-        # order, before `important instruction`, with nothing dropped at the
-        # page boundary.
+        # The primary row and both continuation chunks of the wrapped line 2
+        # must render in order, before `important instruction`, with nothing
+        # dropped at the page boundary.
         for marker in ("  2  ", "2.1  ", "2.2  "):
             assert marker in combined, f"missing continuation marker {marker!r}"
         idx_first = combined.index("  2  ")

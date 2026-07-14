@@ -436,7 +436,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content for the requested line range.
 
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
@@ -444,13 +444,14 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers,
-                starting at `offset + 1`.
+            `ReadResult` with raw (unformatted) content for the requested window,
+                or an error if the file doesn't exist or can't be read.
 
-                Lines longer than 5000 characters are split into multiple rows
-                with continuation markers (e.g., `5.1`, `5.2`).
-
-                Returns an error string if the file doesn't exist or can't be read.
+                Line-number formatting is applied downstream by the filesystem
+                middleware (`format_content_with_line_numbers`), not by backends:
+                it adds the gutter, starts numbering at `offset + 1`, and splits
+                lines longer than 5000 characters into continuation rows
+                (e.g., `5.1`, `5.2`).
         """
         raise NotImplementedError
 

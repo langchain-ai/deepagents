@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents.backends.utils import format_content_with_line_numbers
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content
@@ -2873,8 +2874,25 @@ class TestToolCallMessageFileOutput:
 
         assert compacted == "1  def foo():\n2  \treturn 1"
 
+    def test_compact_line_gutter_parses_real_producer_output(self) -> None:
+        r"""Round-trip guard against producer/consumer separator drift.
+
+        Feeds real `format_content_with_line_numbers` output (the authoritative
+        producer, in the deepagents package) through the TUI parser. If the
+        producer separator ever changes without this parser following, the exact
+        assertion fails in CI instead of the gutter silently failing to compact
+        (or, on a widened separator, leaking a phantom space into every source
+        line). Line 2 is tab-indented source — the ambiguity this format fixes.
+        """
+        output = format_content_with_line_numbers(
+            ["def f():", "\treturn 1"], start_line=1
+        )
+        compacted = ToolCallMessage._compact_line_gutter(output)
+
+        assert compacted == "1  def f():\n2  \treturn 1"
+
     def test_compact_line_gutter_passes_through_non_numbered(self) -> None:
-        """Output without a cat -n gutter is returned unchanged."""
+        """Output without a gutter is returned unchanged."""
         output = "plain text\nno line numbers here"
         assert ToolCallMessage._compact_line_gutter(output) == output
 

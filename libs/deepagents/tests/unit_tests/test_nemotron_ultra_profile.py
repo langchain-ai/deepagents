@@ -9,6 +9,7 @@ from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from deepagents.backends.utils import format_content_with_line_numbers
 from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     _DEFAULT_READ_LIMIT,
     _EMPTY_TOOL_PLACEHOLDER,
@@ -123,7 +124,7 @@ def test_read_file_continuation_notice_marks_exact_limit_results() -> None:
     middleware = ReadFileContinuationNoticeMiddleware()
 
     def handler(request: ToolCallRequest) -> ToolMessage:  # noqa: ARG001
-        return ToolMessage(content="1\talpha\n2\tbeta\n3\tgamma", tool_call_id="call_1")
+        return ToolMessage(content="1  alpha\n2  beta\n3  gamma", tool_call_id="call_1")
 
     result = middleware.wrap_tool_call(
         _request("read_file", {"file_path": "/x.txt", "limit": 3, "offset": 9}),
@@ -165,10 +166,35 @@ def test_is_numbered_read_file_row_contract() -> None:
     assert is_row("1  source")
     assert is_row(" 10  source")
     assert is_row("1\tsource")
-    # Continuation rows and non-gutter text are not source lines.
+    # A single space is not the separator: guards against the regex loosening
+    # back to `\s+`/`\s{2,}`, which would count malformed rows.
+    assert not is_row("1 source")
+    # Continuation rows (unpadded and padded) and non-gutter text are not source
+    # lines.
     assert not is_row("1.1  wrapped")
+    assert not is_row(" 5.1  wrapped")
     assert not is_row("plain text with no gutter")
     assert not is_row("")
+
+
+def test_is_numbered_read_file_row_matches_real_producer_output() -> None:
+    """Round-trip guard: the nemotron heuristic must count real producer output.
+
+    Feeds actual `format_content_with_line_numbers` output (short lines plus a
+    wrapped long line) through `_is_numbered_read_file_row`. If the producer
+    separator ever changes without this heuristic following, the count breaks
+    here in CI instead of silently disabling the continuation notice in
+    production. The two consumers hardcode fixtures elsewhere; only this test
+    connects producer to consumer.
+    """
+    is_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
+    # Source lines 1-3 are short; line 4 wraps into three chunks (4, 4.1, 4.2).
+    content = format_content_with_line_numbers(["a", "b", "c", "z" * (2 * 5000 + 1)], start_line=1)
+    rows = content.split("\n")
+
+    # Exactly the four primary source markers count; the two continuation rows
+    # (4.1, 4.2) do not.
+    assert sum(1 for row in rows if is_row(row)) == 4
 
 
 def test_read_file_continuation_notice_uses_shim_default_limit() -> None:

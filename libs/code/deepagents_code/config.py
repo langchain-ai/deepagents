@@ -1676,6 +1676,9 @@ def build_stream_config(
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
+    Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
+    is enabled, so experimental runs are filterable in trace metadata.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1699,7 +1702,7 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    from deepagents_code._env_vars import USER_ID
+    from deepagents_code._env_vars import EXPERIMENTAL, USER_ID
 
     metadata: dict[str, Any] = build_coding_agent_metadata(
         thread_id=thread_id,
@@ -1710,6 +1713,10 @@ def build_stream_config(
         sandbox_type=sandbox_type,
         user_id=os.environ.get(USER_ID) or None,
     )
+
+    # Mark experimental runs so they are filterable in trace metadata.
+    if is_env_truthy(EXPERIMENTAL):
+        metadata["dcode_experimental"] = True
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
@@ -3067,6 +3074,26 @@ def is_langsmith_redaction_enabled() -> bool:
     )
 
     option = get_option("tracing.langsmith_redact")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def is_memory_auto_save_enabled() -> bool:
+    """Return whether the agent should proactively save learnings to memory.
+
+    Resolves the `memory.auto_save` option from env/`config.toml`, defaulting to
+    enabled. When disabled, memory is still loaded into context but the agent is
+    told not to auto-save.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("memory.auto_save")
     if option is None:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())

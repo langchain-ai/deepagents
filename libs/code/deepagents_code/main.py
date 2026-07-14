@@ -2187,7 +2187,11 @@ async def _run_acp_cli_async(
         Exit code for ACP mode.
     """
     from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import create_model, settings
+    from deepagents_code.config import (
+        create_model,
+        is_memory_auto_save_enabled,
+        settings,
+    )
     from deepagents_code.model_config import (
         ModelConfigError,
         save_recent_model,
@@ -2254,6 +2258,7 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")

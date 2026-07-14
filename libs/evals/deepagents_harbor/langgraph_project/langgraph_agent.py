@@ -17,6 +17,7 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.tools import BaseTool, tool
@@ -301,13 +302,18 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
     manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     tools = [_make_execute_tool(backend), *_make_background_tools(manager)]
-    # Prompt caching is a billing/latency optimization only (no-ops for non-Anthropic
-    # models), so the agent stays affordable on Claude.
+    # Summarization compacts the growing conversation once it crosses the token
+    # trigger, so each turn stops re-sending an unbounded history (the main cost and
+    # latency driver for a multi-turn coding agent). Prompt caching is a
+    # billing/latency optimization that no-ops for non-Anthropic models.
     return create_agent(
         model=model,
         tools=tools,
         system_prompt=CODING_SYSTEM_PROMPT,
-        middleware=[AnthropicPromptCachingMiddleware()],
+        middleware=[
+            SummarizationMiddleware(model, trigger=("tokens", 80_000)),
+            AnthropicPromptCachingMiddleware(),
+        ],
     )
 
 
@@ -329,12 +335,21 @@ and re-run.
 Running commands:
 - Use `execute` for quick commands that finish within a few seconds.
 - For anything long-running or interactive (compiles, builds, test suites, servers, REPLs, a \
-program that renders or runs for a while), use `run_background` to start it and `poll` in short \
-increments to watch its output instead of blocking on a single command. Use `write_stdin` to feed \
-input to an interactive process and `kill` to stop one. This lets you observe partial progress and \
-never hang waiting for a command to finish.
+program that renders or runs for a while), use `run_background` to start it, then `poll` it in \
+reasonable increments (wait 20-60 seconds per poll, not many tiny polls) to watch its output \
+instead of blocking on a single command. Use `write_stdin` to feed input to an interactive \
+process and `kill` to stop one. This lets you observe partial progress and never hang waiting \
+for a command to finish.
 - Prefer non-interactive flags; never run a command that silently waits for human input without \
 driving it with `write_stdin`.
+
+When you cannot read the target output directly (for example, you are told to reproduce a file \
+without reading it), look for and reverse-engineer any provided reference program or binary: \
+disassemble it, read its constants, and reconstruct the algorithm from it.
+
+Be mindful of your time budget. Do not loop the same failing approach: if something is not \
+working after a couple of attempts, step back and try a genuinely different strategy rather than \
+burning the whole budget repeating a dead end.
 
 Keep going until the task is complete and verified. Do not stop early.
 """
@@ -432,7 +447,7 @@ def _make_background_tools(manager: _ProcessManager) -> list[BaseTool]:
         return manager.start(command)
 
     @tool
-    def poll(handle: str, wait_seconds: int = 10) -> str:
+    def poll(handle: str, wait_seconds: int = 30) -> str:
         """Wait up to `wait_seconds` (max 60) for a background process, then return new output and status."""
         return manager.poll(handle, wait_seconds)
 

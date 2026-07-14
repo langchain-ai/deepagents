@@ -376,6 +376,77 @@ def test_make_graph_preserves_top_level_glm_reasoning_effort(
     assert captured_kwargs[0] == {"reasoning_effort": "max"}
 
 
+@pytest.mark.parametrize(
+    ("model_kwargs", "expected"),
+    [
+        ({"reasoning": {"effort": "max"}}, {"reasoning": {"effort": "max"}}),
+        (
+            {"model_kwargs": {"reasoning": {"effort": "max"}}},
+            {"model_kwargs": {"reasoning": {"effort": "max"}}},
+        ),
+    ],
+)
+def test_make_graph_preserves_provider_native_glm_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    model_kwargs: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": "openrouter:z-ai/glm-5.2",
+                "cwd": str(tmp_path),
+                "model_kwargs": model_kwargs,
+            }
+        }
+    )
+
+    assert captured_kwargs[0] == expected
+
+
+@pytest.mark.parametrize(
+    "model_spec",
+    [
+        "openrouter:vendor/glm-5.20",
+        "openrouter:z-ai/glm-5.2-vision",
+    ],
+)
+def test_make_graph_leaves_other_glm_model_kwargs_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model_spec: str
+) -> None:
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": model_spec,
+                "cwd": str(tmp_path),
+            }
+        }
+    )
+
+    assert captured_kwargs[0] == {}
+
+
 def test_make_graph_leaves_non_glm_model_kwargs_untouched(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

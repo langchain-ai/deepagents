@@ -25,6 +25,13 @@ _DEFAULT_WORKDIR = Path("/app")
 _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
+_GLM_5_2_MODEL_SPECS = frozenset(
+    {
+        "baseten:zai-org/glm-5.2",
+        "fireworks:accounts/fireworks/models/glm-5p2",
+        "openrouter:z-ai/glm-5.2",
+    }
+)
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -105,6 +112,24 @@ def _model_name(configurable: dict[str, object]) -> str:
         msg = "`configurable.model` or `HARBOR_MODEL` must provide a model name"
         raise ValueError(msg)
     return value
+
+
+def _apply_glm_5_2_reasoning_default(model_spec: str, model_kwargs: dict[str, Any]) -> None:
+    """Default reasoning for the GLM-5.2 eval profiles when not configured."""
+    if model_spec.lower() not in _GLM_5_2_MODEL_SPECS:
+        return
+    if "reasoning_effort" in model_kwargs or "reasoning" in model_kwargs:
+        return
+
+    nested = model_kwargs.get("model_kwargs")
+    if nested is None and "model_kwargs" not in model_kwargs:
+        nested = {}
+        model_kwargs["model_kwargs"] = nested
+    if not isinstance(nested, dict):
+        return
+    if "reasoning_effort" in nested or "reasoning" in nested:
+        return
+    nested["reasoning_effort"] = "high"
 
 
 def _workdir(configurable: dict[str, object]) -> Path:
@@ -212,15 +237,9 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     # Experiment (for now): default GLM-5.2's reasoning effort to "high" for the eval.
     # Fireworks GLM takes this as a nested `model_kwargs={"reasoning_effort": ...}`
     # on the model constructor (see dcode `reasoning_effort._fireworks_model_params`).
-    # Gated to GLM-5.2 so the shared harness is unaffected for other models; an
-    # explicit `configurable.model_kwargs` reasoning_effort still wins.
-    normalized_model_spec = model_spec.lower()
-    if "reasoning_effort" not in model_kwargs and (
-        "glm-5p2" in normalized_model_spec or "glm-5.2" in normalized_model_spec
-    ):
-        nested = model_kwargs.setdefault("model_kwargs", {})
-        if isinstance(nested, dict):
-            nested.setdefault("reasoning_effort", "high")
+    # Gated to the three GLM-5.2 profile specs so the shared harness is
+    # unaffected for other models; explicit provider-native reasoning wins.
+    _apply_glm_5_2_reasoning_default(model_spec, model_kwargs)
     model = init_chat_model(model_spec, **model_kwargs)
     # Feed the selected model into dcode's system-prompt `### Model Identity`
     # section (create_cli_agent -> get_system_prompt reads it from `settings`).

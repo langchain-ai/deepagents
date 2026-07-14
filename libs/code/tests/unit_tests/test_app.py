@@ -6434,22 +6434,19 @@ class TestGoalCommand:
             fetch = AsyncMock(
                 return_value={
                     "_goal_objective": "add refresh tokens",
-                    "_goal_status": "complete",
+                    "_goal_status": "blocked",
                     "_goal_rubric": "- tests pass",
-                    "_goal_status_note": "tests pass",
+                    "_goal_status_note": "waiting for credentials",
                 }
             )
             with patch.object(app, "_get_thread_state_values", fetch):
                 await app._sync_goal_rubric_state_from_thread()
 
             fetch.assert_awaited_once_with("thread-1")
-            assert app._active_goal is None
-            assert app._goal_status is None
-            assert app._goal_status_note is None
-            assert app._active_rubric is None
-            assert app._completed_goal_objective == "add refresh tokens"
-            assert app._completed_goal_rubric == "- tests pass"
-            assert app._completed_goal_status_note == "tests pass"
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "blocked"
+            assert app._goal_status_note == "waiting for credentials"
+            assert app._active_rubric == "- tests pass"
 
     async def test_sync_goal_completion_auto_commits_after_rubric_satisfied(
         self,
@@ -6571,63 +6568,6 @@ class TestGoalCommand:
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "goal remains active" in errors
             assert "completion request is still pending" in errors
-
-    async def test_failed_completed_goal_migration_retries_before_next_turn(
-        self,
-    ) -> None:
-        """Unsafe legacy cleanup should block a turn until persistence succeeds."""
-        updater = SimpleNamespace(
-            aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
-        )
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = updater
-            app._lc_thread_id = "thread-1"
-            payload = _ThreadHistoryPayload(
-                [],
-                0,
-                "",
-                rubric="- tests pass",
-                goal_objective="add refresh tokens",
-                goal_status="complete",
-                goal_rubric="- tests pass",
-                goal_status_note="all acceptance tests pass",
-            )
-
-            await app._load_thread_history(
-                thread_id="thread-1",
-                preloaded_payload=payload,
-            )
-
-            assert app._completed_goal_migration_pending is True
-            assert app._active_goal is None
-            assert app._active_rubric is None
-            assert app._completed_goal_objective == "add refresh tokens"
-
-            with patch.object(app, "run_worker") as run_worker:
-                await app._send_to_agent("start another task")
-                await pilot.pause()
-
-            assert updater.aupdate_state.await_count == 2
-            run_worker.assert_not_called()
-            assert app._completed_goal_migration_pending is True
-            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "This message was not sent" in errors
-            assert "Please retry" in errors
-
-            updater.aupdate_state.side_effect = None
-            with patch.object(
-                app, "run_worker", return_value=MagicMock()
-            ) as run_worker:
-                await app._send_to_agent("start another task")
-
-            run_worker.assert_called_once()
-            task = run_worker.call_args.args[0]
-            task.close()
-            app._agent_running = False
-            assert updater.aupdate_state.await_count == 3
-            assert app._completed_goal_migration_pending is False
 
     async def test_grader_error_keeps_goal_and_completion_request_active(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)

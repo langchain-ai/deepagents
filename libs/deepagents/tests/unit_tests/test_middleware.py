@@ -2122,117 +2122,53 @@ class TestFilesystemMiddleware:
         with pytest.raises(ValueError, match="read_file must be included in tools"):
             FilesystemMiddleware(backend=StateBackend(), tools=["write_file"])
 
-    def test_enabled_tools_filters_unlisted_tool(self):
-        """A tool not in tools is filtered out of the model request."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls"],
-        )
-        write_tool = MagicMock()
-        write_tool.name = "write_file"
-        ls_tool = MagicMock()
-        ls_tool.name = "ls"
-        request = MagicMock()
-        request.tools = [ls_tool, write_tool]
-        request.override.return_value = request
-
-        middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "write_file" not in filtered_names
-        assert "ls" in filtered_names
-
     def test_enabled_tools_filters_multiple_unlisted(self):
-        """Only tools in the allowlist survive; the rest are filtered."""
+        """Only tools in the allowlist are registered; the rest are absent from `self.tools`."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
             tools=["read_file", "ls", "grep"],
         )
-        tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
-        for t in tools:
-            t.name = t._mock_name
-        request = MagicMock()
-        request.tools = tools
-        request.override.return_value = request
+        names = {tool.name for tool in middleware.tools}
+        assert "write_file" not in names
+        assert "delete" not in names
+        assert "ls" in names
+        assert "grep" in names
 
-        middleware._filter_unsupported_tools_and_apply_prompt(request)
+    def test_enabled_tools_does_not_double_filter_user_provided_tools(self):
+        """`wrap_model_call` doesn't re-filter or touch non-filesystem tools.
 
-        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "write_file" not in filtered_names
-        assert "delete" not in filtered_names
-        assert "ls" in filtered_names
-        assert "grep" in filtered_names
-
-    def test_enabled_tools_does_not_filter_user_provided_tools(self):
-        """User-provided (non-filesystem) tools are never removed by the allowlist."""
+        `request.tools` here mirrors what `create_agent` actually assembles:
+        the middleware's own (already-restricted) `self.tools`, plus a
+        separate user-provided tool it never owns.
+        """
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
             tools=["read_file", "ls"],
         )
-        ls_tool = MagicMock()
-        ls_tool.name = "ls"
-        write_tool = MagicMock()
-        write_tool.name = "write_file"
         custom_tool = MagicMock()
         custom_tool.name = "search"
         request = MagicMock()
-        request.tools = [ls_tool, write_tool, custom_tool]
+        request.tools = [*middleware.tools, custom_tool]
         request.override.return_value = request
 
         middleware._filter_unsupported_tools_and_apply_prompt(request)
 
-        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "ls" in filtered_names
-        assert "search" in filtered_names  # user tool untouched
-        assert "write_file" not in filtered_names  # FS tool not in allowlist
-
-    def test_enabled_tools_passes_listed_tools_through(self):
-        """Tools in the allowlist survive; an unlisted tool is dropped."""
-        middleware = FilesystemMiddleware(
-            backend=StateBackend(),
-            system_prompt="",
-            tools=["read_file", "ls", "grep"],
-        )
-        ls_tool = MagicMock()
-        ls_tool.name = "ls"
-        grep_tool = MagicMock()
-        grep_tool.name = "grep"
-        edit_tool = MagicMock()
-        edit_tool.name = "edit_file"
-        request = MagicMock()
-        request.tools = [ls_tool, grep_tool, edit_tool]
-        request.override.return_value = request
-
-        middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "ls" in filtered_names
-        assert "grep" in filtered_names
-        assert "edit_file" not in filtered_names
+        # Nothing left to filter as the allowlist was already applied at
+        # construction, so no `tools=...` override should occur.
+        tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
+        assert tools_overrides == []
 
     def test_enabled_tools_read_file_only_filters_everything_else(self):
-        """tools=["read_file"] hides all other tools."""
-        all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        """tools=["read_file"] leaves only read_file registered on `self.tools`."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
             tools=["read_file"],
         )
-        tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
-        for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
-            t.name = name
-        request = MagicMock()
-        request.tools = tools
-        request.override.return_value = request
-
-        middleware._filter_unsupported_tools_and_apply_prompt(request)
-
-        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
-        assert "read_file" in filtered_names
-        assert filtered_names == {"read_file"}
+        names = {tool.name for tool in middleware.tools}
+        assert names == {"read_file"}
 
     def test_enabled_tools_none_default_passes_all_tools(self):
         """tools=None (default) does not filter any tools."""
@@ -2402,17 +2338,13 @@ class TestFilesystemMiddleware:
         assert "LITERAL text pattern" in rewritten_grep["description"]
 
     def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
-        """Dynamic system prompt only mentions the tools that survived filtering."""
+        """Dynamic system prompt only mentions tools registered on `self.tools`."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             tools=["read_file", "ls"],
         )
-        ls_tool = MagicMock()
-        ls_tool.name = "ls"
-        write_tool = MagicMock()
-        write_tool.name = "write_file"
         request = MagicMock()
-        request.tools = [ls_tool, write_tool]
+        request.tools = middleware.tools
         request.system_message = None
         request.override.return_value = request
 

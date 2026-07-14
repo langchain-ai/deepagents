@@ -4661,3 +4661,43 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "`ls`" in prompt
         for disabled in ("write_file", "edit_file", "delete", "glob"):
             assert f"`{disabled}`" not in prompt, f"`{disabled}` should not appear in system prompt tool list"
+
+    def test_excluded_tool_call_fails_instead_of_executing(self) -> None:
+        """An excluded tool referenced in a `ToolCall` errors instead of executing.
+
+        Simulates an out-of-schema `write_file` call despite
+        `tools=["ls", "read_file"]`. Before the fix, `write_file` was still
+        registered on `ToolNode` and would execute. After the fix, it's no longer
+        registered, so `ToolNode` returns an error `ToolMessage` instead.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/pwned.txt", "content": "hi"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=model,
+            middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["ls", "read_file"])],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "write_file" in tool_messages[0].content
+        # The excluded tool must not have actually run.
+        assert "/pwned.txt" not in result.get("files", {})

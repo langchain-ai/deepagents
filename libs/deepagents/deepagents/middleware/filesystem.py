@@ -1342,8 +1342,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
         # Excluded tools are omitted here entirely, not just hidden from the
         # model's schema, so a tool name outside `tools=` never reaches the
-        # dispatchable tool node — filtering `request.tools` alone in
-        # `wrap_model_call` would still leave it registered and callable.
+        # dispatchable tool node
         self.tools = [
             factory()
             for name, factory in tool_factories
@@ -2298,14 +2297,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         runtime: Runtime[ContextT],
     ) -> tuple[set[str | None], bool, BackendProtocol | None]:
         """Return unsupported filesystem tools and whether execute remains active."""
-        # `tools=` exclusions are already absent from `self.tools`, so this
-        # branch is normally a no-op in real requests; kept as defense in
-        # depth in case `request.tools` ever carries a tool from elsewhere.
-        unsupported: set[str | None] = (
-            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
-            if self._enabled_tools is not None
-            else set()
-        )
+        # `tools=` exclusions are enforced at `__init__` (absent from
+        # `self.tools` entirely), so only backend-capability gating
+        # `execute`/`delete` on a backend that doesn't support them is
+        # computed here.
+        unsupported: set[str | None] = set()
         execution_active = False
         backend = None
         has_execute_tool = "execute" in tool_names

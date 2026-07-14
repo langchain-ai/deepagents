@@ -10,8 +10,11 @@ from textual.app import App, ComposeResult
 from textual.widgets import Markdown, Static
 
 import deepagents_code
-from deepagents_code.tui.widgets.ask_user import AskUserTextArea
-from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
+from deepagents_code.tui.widgets.goal_review import (
+    GoalReviewMenu,
+    GoalReviewResult,
+    GoalReviewTextArea,
+)
 
 
 class _GoalReviewTestApp(App[None]):
@@ -35,6 +38,16 @@ class _GoalAmendmentReviewTestApp(App[None]):
 
 class TestGoalReviewMenu:
     """Tests for goal criteria review interactions."""
+
+    async def test_menu_receives_focus_on_mount(self) -> None:
+        """The menu must receive focus so navigation and quick keys work."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+
+            assert menu.has_focus
 
     async def test_markdown_omits_goal_text(self) -> None:
         """The review widget should show criteria without restating the goal."""
@@ -78,6 +91,54 @@ class TestGoalReviewMenu:
 
             assert await future == {"type": "accepted"}
 
+    async def test_terminal_result_resolves_future_only_once(self) -> None:
+        """Later actions must not override the first goal-review result."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_accept()
+            menu.action_cancel()
+            menu.action_edit()
+
+            assert await future == {"type": "accepted"}
+            assert menu.display is False
+
+    async def test_option_highlight_syncs_with_selection(self) -> None:
+        """The selected-option class tracks the cursor and clears in edit mode."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            options = menu._option_widgets
+            selected_class = "goal-review-option-selected"
+
+            # Mount highlights the first option only.
+            assert options[0].has_class(selected_class)
+            assert not any(o.has_class(selected_class) for o in options[1:])
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            # Highlight follows the cursor to the next option.
+            assert options[1].has_class(selected_class)
+            assert not options[0].has_class(selected_class)
+
+            menu.action_edit()
+            await pilot.pause()
+
+            # With the editor open no option is highlighted, but the cursor
+            # glyph stays on the active option so position is not lost.
+            assert not any(o.has_class(selected_class) for o in options)
+            assert options[1].selected
+
     async def test_edit_prefills_and_submits_revised_criteria(self) -> None:
         """Edit should prefill generated criteria and submit revisions."""
         app = _GoalReviewTestApp()
@@ -91,12 +152,13 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_edit()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert text_input.display is True
             assert text_input.text == "- tests pass"
 
             text_input.text = "- tests pass\n- docs updated"
-            menu._submit_edit()
+            text_input.focus()
+            await pilot.press("enter")
 
             assert await future == {
                 "type": "edited",
@@ -116,12 +178,13 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_reject_with_message()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert text_input.display is True
             assert text_input.text == ""
 
             text_input.text = "include docs and migration notes"
-            menu._submit_rejection()
+            text_input.focus()
+            await pilot.press("enter")
 
             assert await future == {
                 "type": "rejected",
@@ -158,7 +221,7 @@ class TestGoalReviewMenu:
 
             await pilot.press("r")
 
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert text_input.display is True
             assert text_input.text == ""
             assert future.done() is False
@@ -209,7 +272,7 @@ class TestGoalReviewMenu:
 
             await pilot.press("down", "enter")
 
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             assert menu._selected == 1
             assert text_input.display is True
             assert future.done() is False
@@ -227,7 +290,7 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_edit()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             text_input.text = ""
             await pilot.press("y", "e", "n")
 
@@ -248,7 +311,7 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_edit()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             text_input.text = ""
             await pilot.press("a", "b", "left", "backspace", "c")
 
@@ -269,13 +332,18 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_edit()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
-            menu.action_cancel()
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
+            await pilot.pause()
+            assert text_input.has_focus
+
+            await pilot.press("escape")
+            await pilot.pause()
 
             assert future.done() is False
             assert text_input.display is False
+            assert menu.has_focus
 
-            menu.action_cancel()
+            await pilot.press("escape")
 
             assert await future == {"type": "cancelled"}
 
@@ -292,7 +360,7 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_edit()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             text_input.text = "   "
             menu._submit_edit()
 
@@ -314,7 +382,7 @@ class TestGoalReviewMenu:
             menu.set_future(future)
 
             menu.action_reject_with_message()
-            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input = menu.query_one(".goal-review-edit-input", GoalReviewTextArea)
             text_input.text = "  \n  "
             menu._submit_rejection()
 

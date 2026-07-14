@@ -131,6 +131,10 @@ def _should_collapse_chat_paste(text: str) -> bool:
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
 
 
+_PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand it inline."
+"""Toast shown when a paste is collapsed into a `[Pasted text #N]` placeholder."""
+
+
 class CompletionOption(Static):
     """A clickable completion option in the autocomplete popup."""
 
@@ -2374,6 +2378,7 @@ class ChatInput(Vertical):
         self._pasted_contents[paste_id] = PastedContent(content=text)
         placeholder = format_paste_ref(paste_id, count_lines(text))
         self._text_area.insert(placeholder)
+        self.app.notify(_PASTE_COLLAPSED_TOAST, timeout=5, markup=False)
 
     def _apply_inline_dropped_path_replacement(self, text: str) -> bool:
         """Replace full dropped-path payload text with image placeholders.

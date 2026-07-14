@@ -4963,6 +4963,60 @@ class TestPasteCollapseIntegration:
             assert big_text not in chat._text_area.text
             assert chat._pasted_contents[1].content == big_text
 
+    async def test_collapse_emits_expand_toast(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Collapsing a paste notifies the user they can paste again to expand."""
+        text = "T" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            messages: list[str] = []
+
+            def _capture_notify(
+                message: str, *_args: object, **_kwargs: object
+            ) -> None:
+                messages.append(str(message))
+
+            monkeypatch.setattr(app, "notify", _capture_notify)
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == "[Pasted text #1]"
+            assert messages == [chat_input_module._PASTE_COLLAPSED_TOAST]
+
+    async def test_repeat_paste_expansion_does_not_emit_toast(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Expanding an existing placeholder via repeat paste emits no toast."""
+        text = "T" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            messages: list[str] = []
+
+            def _capture_notify(
+                message: str, *_args: object, **_kwargs: object
+            ) -> None:
+                messages.append(str(message))
+
+            monkeypatch.setattr(app, "notify", _capture_notify)
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == text
+            assert messages == []
+
     async def test_paste_burst_flush_collapses_large_payload(self) -> None:
         """A large buffered paste burst collapses to a placeholder on flush."""
         big_text = "q" * 900

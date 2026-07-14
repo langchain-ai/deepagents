@@ -5327,16 +5327,18 @@ class TestClearCommand:
 
             app_msgs = list(app.query(AppMessage))
             assert any(
-                str(widget._content) == "Previous thread: old-thread"
+                str(widget._content)
+                == "Previous thread: old-thread (Resume with /threads -r)"
                 for widget in app_msgs
             )
-            assert any(
+            assert not any(
                 str(widget._content) == "Resume it with /threads -r"
                 for widget in app_msgs
             )
             assert schedule.call_args_list[1].kwargs == {
                 "prefix": "Previous thread",
                 "thread_id": "old-thread",
+                "suffix": " (Resume with /threads -r)",
             }
 
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:

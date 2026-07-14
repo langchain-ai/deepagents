@@ -8586,7 +8586,9 @@ class DeepAgentsApp(App):
         await self._mount_message(AppMessage(link))
 
     @staticmethod
-    async def _build_thread_message(prefix: str, thread_id: str) -> str | Content:
+    async def _build_thread_message(
+        prefix: str, thread_id: str, *, suffix: str = ""
+    ) -> str | Content:
         """Build a thread status message, hyperlinking the ID when possible.
 
         Attempts to resolve the LangSmith thread URL with a short timeout.
@@ -8596,6 +8598,8 @@ class DeepAgentsApp(App):
         Args:
             prefix: Label before the thread ID (e.g. `'Resumed thread'`).
             thread_id: The thread identifier.
+            suffix: Optional trailing text appended after the thread ID
+                (e.g. `' (Resume with /threads -r)'`).
 
         Returns:
             `Content` with a clickable thread ID, or a plain string.
@@ -8614,8 +8618,9 @@ class DeepAgentsApp(App):
             return Content.assemble(
                 f"{prefix}: ",
                 (thread_id, TStyle(link=url)),
+                suffix,
             )
-        return f"{prefix}: {thread_id}"
+        return f"{prefix}: {thread_id}{suffix}"
 
     async def _handle_trace_command(self, command: str) -> None:
         """Open the current thread in LangSmith.
@@ -10909,16 +10914,17 @@ class DeepAgentsApp(App):
                 else:
                     previous_thread_is_resumable = False
                 if previous_thread_id and previous_thread_is_resumable:
+                    resume_hint = " (Resume with /threads -r)"
                     previous_msg_widget = AppMessage(
-                        f"Previous thread: {previous_thread_id}"
+                        f"Previous thread: {previous_thread_id}{resume_hint}"
                     )
                     await self._mount_message(previous_msg_widget)
                     self._schedule_thread_message_link(
                         previous_msg_widget,
                         prefix="Previous thread",
                         thread_id=previous_thread_id,
+                        suffix=resume_hint,
                     )
-                    await self._mount_message(AppMessage("Resume it with /threads -r"))
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -13079,6 +13085,7 @@ class DeepAgentsApp(App):
         *,
         prefix: str,
         thread_id: str,
+        suffix: str = "",
     ) -> None:
         """Upgrade a plain thread message to a linked one when URL resolves.
 
@@ -13086,9 +13093,12 @@ class DeepAgentsApp(App):
             widget: The already-mounted app message.
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
+            suffix: Optional trailing text appended after the thread ID.
         """
         try:
-            thread_msg = await self._build_thread_message(prefix, thread_id)
+            thread_msg = await self._build_thread_message(
+                prefix, thread_id, suffix=suffix
+            )
             if not isinstance(thread_msg, Content):
                 logger.debug(
                     "Skipping thread link upgrade for %s: URL did not resolve",
@@ -13117,6 +13127,7 @@ class DeepAgentsApp(App):
         *,
         prefix: str,
         thread_id: str,
+        suffix: str = "",
     ) -> None:
         """Schedule thread URL link resolution and apply updates in the background.
 
@@ -13124,12 +13135,14 @@ class DeepAgentsApp(App):
             widget: The message widget to update.
             prefix: Text prefix before thread ID.
             thread_id: Thread ID to resolve.
+            suffix: Optional trailing text appended after the thread ID.
         """
         self.run_worker(
             self._upgrade_thread_message_link(
                 widget,
                 prefix=prefix,
                 thread_id=thread_id,
+                suffix=suffix,
             ),
             exclusive=False,
         )

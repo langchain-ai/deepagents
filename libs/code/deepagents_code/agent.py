@@ -38,6 +38,7 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from deepagents import SystemPromptConfig
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -1462,8 +1463,9 @@ def create_cli_agent(
                 Passing a value here replaces that auto-generated prompt
                 entirely — none of the dynamic context above is added, and
                 `sandbox_type` and `interactive` no longer influence the
-                prompt. Only pass an explicit prompt when you intend to take
-                full ownership of the system prompt's content.
+                prompt. The value is forwarded to the deepagents SDK as-is;
+                the SDK still layers its built-in base prompt beneath your
+                text.
         interactive: When `False`, the auto-generated system prompt is
             tailored for headless non-interactive execution. Ignored when
             `system_prompt` is provided explicitly.
@@ -1886,14 +1888,22 @@ def create_cli_agent(
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         shell_middleware_added = True
 
-    # Get or use custom system prompt
+    # For the auto-generated prompt, overwrite the SDK's built-in base prompt
+    # (via the `base` key) so its content isn't duplicated on top of ours. A
+    # caller-supplied prompt is forwarded as-is: the SDK treats a bare string
+    # as a `prefix`, layering it above its built-in base (see `system_prompt`).
+    resolved_system_prompt: str | SystemPromptConfig
     if system_prompt is None:
-        system_prompt = get_system_prompt(
-            assistant_id=assistant_id,
-            sandbox_type=sandbox_type,
-            interactive=interactive,
-            cwd=effective_cwd,
-        )
+        resolved_system_prompt = {
+            "base": get_system_prompt(
+                assistant_id=assistant_id,
+                sandbox_type=sandbox_type,
+                interactive=interactive,
+                cwd=effective_cwd,
+            )
+        }
+    else:
+        resolved_system_prompt = system_prompt
 
     # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
@@ -1961,7 +1971,7 @@ def create_cli_agent(
     ]
     agent = create_deep_agent(
         model=model,
-        system_prompt=system_prompt,
+        system_prompt=resolved_system_prompt,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

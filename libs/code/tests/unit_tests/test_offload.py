@@ -552,6 +552,52 @@ class TestReOffload:
             # Offloaded count is the new cutoff of seven minus a prior cutoff of five.
             assert any("Offloaded 2 older messages" in str(w._content) for w in msgs)
 
+    async def test_reoffload_noop_restores_prior_summary(self) -> None:
+        """A summary-only re-offload restores the prior summarization event."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            agent = _setup_server_offload_app(app)
+
+            prior_event = _summary_event(5, file_path=None)
+            replacement_event = _summary_event(5)
+            replacement_event["summary_message"]["content"] = "Replacement summary."
+            before_messages = _make_dict_messages(11)
+            after_messages = [*before_messages, *_make_dict_messages(2)]
+            after_messages[-2]["id"] = "offload-seed"
+            after_messages[-1]["id"] = "offload-result"
+            before = _state_values(before_messages, prior_event)
+            after = _state_values(after_messages, replacement_event)
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            agent.aupdate_state.assert_awaited_once()
+            update = agent.aupdate_state.call_args.args[1]
+            assert update["_summarization_event"] is prior_event
+            assert [message.id for message in update["messages"]] == [
+                "offload-seed",
+                "offload-result",
+            ]
+            assert any(
+                "Nothing to offload" in str(widget._content)
+                for widget in app.query(AppMessage)
+            )
+
 
 class TestAgentRunningGuard:
     """Test that _handle_offload sets _agent_running to prevent races."""

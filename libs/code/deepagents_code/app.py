@@ -11704,7 +11704,9 @@ class DeepAgentsApp(App):
                 # A no-op still commits the synthetic assistant seed and its
                 # tool result. Restore the exact pre-run conversation so an
                 # operation reported as doing nothing truly changes nothing.
-                await self._remove_offload_artifacts(config, current_messages)
+                await self._remove_offload_artifacts(
+                    config, current_messages, prior_event
+                )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
                 # to summarize (effective cutoff 0). It also absorbs the
@@ -12017,13 +12019,17 @@ class DeepAgentsApp(App):
         return tool_error
 
     async def _remove_offload_artifacts(
-        self, config: RunnableConfig, messages: list[Any]
+        self,
+        config: RunnableConfig,
+        messages: list[Any],
+        prior_event: object,
     ) -> None:
-        """Remove messages appended by a no-op `/offload` graph run.
+        """Restore state changed by a no-op `/offload` graph run.
 
         Args:
             config: Config with `configurable.thread_id`.
             messages: Messages appended after the pre-run state snapshot.
+            prior_event: Summarization event from the pre-run state snapshot.
         """
         from langchain_core.messages import RemoveMessage
 
@@ -12035,8 +12041,14 @@ class DeepAgentsApp(App):
             for message in messages
             if (message_id := _message_id(message)) is not None
         ]
-        if removals:
-            await agent.aupdate_state(config, {"messages": removals}, as_node="model")
+        await agent.aupdate_state(
+            config,
+            {
+                "messages": removals,
+                "_summarization_event": prior_event,
+            },
+            as_node="model",
+        )
 
     async def _remove_unanswered_offload_seed(
         self, config: RunnableConfig, seed_tool_call_id: str

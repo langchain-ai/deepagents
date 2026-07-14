@@ -34,6 +34,7 @@ from deepagents_code._debug_buffer import (
     DEFAULT_CAPACITY,
     InMemoryLogRecord,
     get_log_buffer,
+    retention_bucket_for_level,
 )
 from deepagents_code.clipboard import copy_text_to_clipboard
 from deepagents_code.unicode_security import sanitize_control_chars
@@ -791,17 +792,18 @@ class DebugConsoleScreen(ModalScreen[None]):
     def _prune_records(self) -> bool:
         """Trim retained records to the ring buffer capacity, per level.
 
-        Mirrors the buffer's level-partitioned retention: each level keeps at
-        most `_RECORD_LIMIT` records, so a `DEBUG` flood cannot evict the rarer
-        higher-severity records the level filter needs. Only the oldest entries
-        of an over-capacity level are dropped; chronological order is preserved.
+        Mirrors the buffer's level-partitioned retention: each standard level
+        keeps at most `_RECORD_LIMIT` records, while custom levels share the
+        buffer's fallback bucket. Only the oldest entries of an over-capacity
+        bucket are dropped; chronological order is preserved.
 
         Returns:
             `True` when records were pruned.
         """
         counts: dict[str, int] = {}
         for record in self._records:
-            counts[record.level] = counts.get(record.level, 0) + 1
+            bucket = retention_bucket_for_level(record.level)
+            counts[bucket] = counts.get(bucket, 0) + 1
         overflow = {
             level: count - _RECORD_LIMIT
             for level, count in counts.items()
@@ -811,9 +813,10 @@ class DebugConsoleScreen(ModalScreen[None]):
             return False
         kept: list[InMemoryLogRecord] = []
         for record in self._records:
-            remaining = overflow.get(record.level, 0)
+            bucket = retention_bucket_for_level(record.level)
+            remaining = overflow.get(bucket, 0)
             if remaining > 0:
-                overflow[record.level] = remaining - 1
+                overflow[bucket] = remaining - 1
                 continue
             kept.append(record)
         self._records = kept

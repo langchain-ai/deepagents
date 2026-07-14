@@ -29,11 +29,20 @@ DEFAULT_CAPACITY = 1000
 _FALLBACK_LEVEL_BUCKET = "_other"
 """Retention bucket for records whose level name is not in `LOG_LEVELS`.
 
-A single shared bucket keeps the number of per-level deques bounded even if
-non-standard level names are emitted, so nothing is silently dropped."""
+Non-standard level names are retained here rather than discarded at
+classification time, and sharing one bucket keeps the number of per-level deques
+bounded no matter how many distinct custom names appear. Like every bucket, this
+one is bounded to *capacity* and evicts oldest-first, so — unlike the standard
+levels, which each get isolated retention — distinct custom levels compete for a
+single budget and can evict one another."""
 
 _DATE_FORMAT = "%H:%M:%S"
 _FORMATTER = logging.Formatter(datefmt=_DATE_FORMAT)
+
+
+def retention_bucket_for_level(level: str) -> str:
+    """Return the bounded retention bucket key for a log level name."""
+    return level if level in LOG_LEVELS else _FALLBACK_LEVEL_BUCKET
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +64,14 @@ class InMemoryLogRecord:
 class InMemoryLogBuffer(logging.Handler):
     """Logging handler retaining the most recent structured records in memory.
 
-    Retention is partitioned by level: each level name keeps its own bounded
-    `deque` of *capacity* records. A burst of high-volume records at one level
-    (typically `DEBUG`) therefore cannot evict the rarer, higher-severity
-    records at other levels, so the Debug Console's level filter can still
-    surface them. Each retained record is tagged with its monotonic emission
-    sequence number so snapshots stay chronologically ordered across levels.
+    Retention is partitioned by level: each recognized level name (see
+    `LOG_LEVELS`) keeps its own bounded `deque` of *capacity* records, while
+    unrecognized names share the `_FALLBACK_LEVEL_BUCKET` deque. A burst of
+    high-volume records at one recognized level (typically `DEBUG`) therefore
+    cannot evict the rarer, higher-severity records at other recognized levels,
+    so the Debug Console's level filter can still surface them. Each retained
+    record is tagged with its monotonic emission sequence number so snapshots
+    stay chronologically ordered across levels.
     """
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
@@ -98,7 +109,7 @@ class InMemoryLogBuffer(logging.Handler):
 
     def _level_bucket(self, level: str) -> deque[tuple[int, InMemoryLogRecord]]:
         """Return the retention deque for *level*, creating it on first use."""
-        key = level if level in LOG_LEVELS else _FALLBACK_LEVEL_BUCKET
+        key = retention_bucket_for_level(level)
         bucket = self._levels.get(key)
         if bucket is None:
             bucket = deque(maxlen=self._capacity)

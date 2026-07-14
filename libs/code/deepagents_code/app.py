@@ -14633,6 +14633,7 @@ class DeepAgentsApp(App):
         web search, URL fetch) run without prompting. Updates the status
         bar indicator and session state.
         """
+        from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
         from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
         from deepagents_code.tui.widgets.mcp_viewer import MCPViewerScreen
@@ -14672,6 +14673,9 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_jump_up()
+            return
+        if isinstance(self.screen, PluginManagerScreen):
+            self.screen.action_previous_tab()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.

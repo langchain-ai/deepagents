@@ -15589,6 +15589,22 @@ class DeepAgentsApp(App):
                 if no MCP login is queued.
         """
         if self._pending_mcp_reconnect:
+            if self._agent_running or self._shell_running:
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(
+                            "pending login"
+                        ),
+                    ),
+                )
+                self.notify(
+                    "The server will reconnect once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             await self._restart_server_for_mcp_refresh("pending login")
             return
         if not force:

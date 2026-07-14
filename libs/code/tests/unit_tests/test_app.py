@@ -5086,8 +5086,7 @@ class TestClearCommand:
                 for widget in app_msgs
             )
             assert any(
-                str(widget._content)
-                == "Resume it with /threads -r (or /threads -r old-thread)"
+                str(widget._content) == "Resume it with /threads -r"
                 for widget in app_msgs
             )
             assert schedule.call_args_list[1].kwargs == {

@@ -76,6 +76,21 @@ class ConfigResolutionError:
     change instead of the servers just vanishing.
     """
 
+    policy_error: str | None = None
+    """Set when the user's trust policy (`config.toml`) could not be read.
+
+    When non-`None`, project servers were dropped because the policy failed to
+    load — not because they were unapproved — so callers should surface this
+    reason instead of the misleading `untrusted_project_paths` notice. On this
+    error type `message` already embeds it; callers use the field only to
+    suppress the misleading untrusted notice.
+    """
+
+    legacy_env_ignored: bool = False
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. Twin of `legacy_ignored` for the env surface; see
+    `format_legacy_env_ignored_notice`."""
+
 
 @dataclass(frozen=True)
 class ConfigResolution:
@@ -96,6 +111,20 @@ class ConfigResolution:
     See `ConfigResolutionError.legacy_ignored`; surfaced even on success because
     the requested server may load while other legacy-listed servers do not.
     """
+
+    policy_error: str | None = None
+    """Set when the user's trust policy could not be read (fail-closed).
+
+    Non-`None` even on a successful resolution — user-level configs and any
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env names still load, but scoped
+    project approvals were discarded. Surfaced so the read failure is never
+    silently swallowed just because some other config remained usable. See
+    `ConfigResolutionError.policy_error`.
+    """
+
+    legacy_env_ignored: bool = False
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. See `ConfigResolutionError.legacy_env_ignored`."""
 
     def __post_init__(self) -> None:
         """Enforce the non-empty `used_paths` invariant.
@@ -197,6 +226,7 @@ def resolve_mcp_config(
     load_errors: list[tuple[Path, str]] = []
     policy_error: str | None = None
     legacy_ignored: tuple[str, ...] = ()
+    legacy_env_ignored = False
 
     for path in user_paths:
         loaded, error = load_mcp_config_with_error(path)
@@ -211,6 +241,7 @@ def resolve_mcp_config(
 
         trust_lists = load_mcp_server_trust_lists()
         legacy_ignored = tuple(sorted(trust_lists.legacy_ignored))
+        legacy_env_ignored = trust_lists.legacy_env_ignored
         project_base = _resolve_project_config_base(None)
         untrusted_paths: list[Path] = []
         if trust_lists.load_failed:
@@ -266,11 +297,7 @@ def resolve_mcp_config(
 
     if not configs:
         if policy_error is not None:
-            message = (
-                f"Refusing to trust project MCP servers: {policy_error}. Fix "
-                "~/.deepagents/config.toml, or pass --mcp-config <path> to load "
-                "a file explicitly."
-            )
+            message = _policy_error_message(policy_error)
         elif load_errors:
             detail = "; ".join(f"{path}: {error}" for path, error in load_errors)
             message = f"No usable MCP config found (load errors: {detail})"
@@ -282,6 +309,8 @@ def resolve_mcp_config(
             message=message,
             untrusted_project_paths=untrusted,
             legacy_ignored=legacy_ignored,
+            policy_error=policy_error,
+            legacy_env_ignored=legacy_env_ignored,
         )
 
     return ConfigResolution(
@@ -289,6 +318,8 @@ def resolve_mcp_config(
         used_paths=tuple(used_paths),
         untrusted_project_paths=untrusted,
         legacy_ignored=legacy_ignored,
+        policy_error=policy_error,
+        legacy_env_ignored=legacy_env_ignored,
     )
 
 
@@ -331,6 +362,34 @@ def select_server(
         server_config=servers[server],
         search_label=resolution.search_label,
     )
+
+
+def _policy_error_message(policy_error: str) -> str:
+    """Return the user-facing message for an unreadable trust policy."""
+    return (
+        f"Refusing to trust project MCP servers: {policy_error}. Fix "
+        "~/.deepagents/config.toml, or pass --mcp-config <path> to load "
+        "a file explicitly."
+    )
+
+
+def format_policy_error_notice(policy_error: str | None) -> str:
+    """Build the CLI-style hint for an unreadable user trust policy.
+
+    Surfaced by `dcode mcp login` so a `config.toml` read failure is never
+    swallowed just because a user-level config or an env-enabled server still
+    loaded — and so the reason is not misattributed to an "untrusted project"
+    when the real fix is repairing `config.toml`.
+
+    Args:
+        policy_error: The read-failure reason, or `None` when the policy loaded.
+
+    Returns:
+        A single-line user-facing string. Empty when `policy_error` is `None`.
+    """
+    if policy_error is None:
+        return ""
+    return _policy_error_message(policy_error)
 
 
 def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
@@ -376,12 +435,35 @@ def format_legacy_ignored_notice(names: tuple[str, ...]) -> str:
     )
 
 
+def format_legacy_env_ignored_notice(legacy_env_ignored: bool) -> str:
+    """Build the CLI-style hint for the renamed, now-ignored env var.
+
+    Mirrors `format_legacy_ignored_notice` for the env surface so a user who
+    still exports `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` learns it was
+    renamed instead of its servers silently ceasing to pre-approve.
+
+    Args:
+        legacy_env_ignored: Whether the removed env var is set.
+
+    Returns:
+        A single-line user-facing string. Empty when the flag is `False`.
+    """
+    if not legacy_env_ignored:
+        return ""
+    return (
+        "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS is no longer used; it was "
+        "renamed to DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+    )
+
+
 __all__ = [
     "ConfigErrorKind",
     "ConfigResolution",
     "ConfigResolutionError",
     "ServerSelection",
+    "format_legacy_env_ignored_notice",
     "format_legacy_ignored_notice",
+    "format_policy_error_notice",
     "format_untrusted_project_notice",
     "resolve_mcp_config",
     "select_server",

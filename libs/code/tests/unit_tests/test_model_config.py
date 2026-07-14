@@ -5608,6 +5608,27 @@ class TestNormalizeMcpProjectRoot:
 
         assert normalize_mcp_project_root(link) == normalize_mcp_project_root(target)
 
+    def test_oserror_falls_back_to_expanded_unresolved_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When `resolve()` raises, the expanded-but-unresolved path is returned.
+
+        Documented as fail-closed: a transient failure on only one side yields a
+        different string and a spurious re-prompt, never a false match.
+        """
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "nope"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        result = normalize_mcp_project_root("~/proj")
+
+        assert result is not None
+        assert "~" not in result  # still expanded
+        assert result == str(Path("~/proj").expanduser())
+
 
 class TestMcpProjectServerApproval:
     """Tests for the approval value object and its normalizing factory."""
@@ -5642,6 +5663,53 @@ class TestMcpProjectServerApproval:
         assert (
             McpProjectServerApproval.create(
                 project_root=None, name="docs", server={"command": "echo"}
+            )
+            is None
+        )
+
+    def test_from_toml_matches_create(self, tmp_path: Path) -> None:
+        """`from_toml` normalizes identically to `create`.
+
+        So a saved approval re-matches a freshly built runtime one for the same
+        definition.
+        """
+        server = {"command": "echo", "args": ["x"]}
+        runtime = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+        assert runtime is not None
+
+        restored = McpProjectServerApproval.from_toml(runtime.as_toml())
+
+        assert restored == runtime
+
+    def test_from_toml_normalizes_unresolved_root(self, tmp_path: Path) -> None:
+        """A persisted, not-yet-resolved root is normalized on read.
+
+        So it lines up with the resolved root `create` produces at write time.
+        """
+        server = {"command": "echo"}
+        runtime = McpProjectServerApproval.create(
+            project_root=tmp_path / "proj", name="docs", server=server
+        )
+        assert runtime is not None
+
+        restored = McpProjectServerApproval.from_toml(
+            {
+                "project_root": str(tmp_path / "proj"),
+                "name": "docs",
+                "fingerprint": fingerprint_mcp_server_config(server),
+            }
+        )
+
+        assert restored == runtime
+
+    def test_from_toml_returns_none_for_malformed(self) -> None:
+        """A table missing or blanking any field yields `None` (fail-closed)."""
+        assert McpProjectServerApproval.from_toml({"name": "docs"}) is None
+        assert (
+            McpProjectServerApproval.from_toml(
+                {"project_root": "/p", "name": "  ", "fingerprint": "f"}
             )
             is None
         )
@@ -6079,6 +6147,32 @@ class TestLoadMcpServerTrustLists:
         # The dropped names are surfaced so non-interactive paths can explain
         # why those servers stopped loading.
         assert result.legacy_ignored == frozenset({"docs"})
+
+    def test_legacy_env_var_flagged_when_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed env var, still exported, is flagged (not honored)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\n")
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # The old name never pre-approves; it only sets the diagnostic flag.
+        assert result.legacy_env_ignored is True
+        assert result.enabled == frozenset()
+
+    def test_legacy_env_var_absent_leaves_flag_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the old env var unset, the diagnostic flag stays `False`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\n")
+        monkeypatch.delenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", raising=False)
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.legacy_env_ignored is False
 
     def test_bare_string_disabled_is_coerced_to_single_name(
         self, tmp_path: Path
@@ -6594,6 +6688,50 @@ class TestAddEnabledProjectMcpServers:
         approvals = self._approvals(config_path)
         assert [approval["name"] for approval in approvals] == ["docs", "reference"]
 
+    def test_removes_migrated_names_from_legacy_approvals(self, tmp_path: Path) -> None:
+        """Scoped approvals consume matching names from the legacy allowlist."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["docs", "github"]\n')
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["mcp"]["enabled_project_servers"] == ["github"]
+        assert load_mcp_server_trust_lists(config_path).legacy_ignored == frozenset(
+            {"github"}
+        )
+
+    def test_deletes_empty_legacy_approval_key(self, tmp_path: Path) -> None:
+        """Migrating the final legacy name removes its warning source."""
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert "enabled_project_servers" not in data["mcp"]
+        assert not load_mcp_server_trust_lists(config_path).legacy_ignored
+
     def test_preserves_other_sections_and_disabled(self, tmp_path: Path) -> None:
         """Writing approvals leaves other config and the deny list intact."""
         from deepagents_code.model_config import add_enabled_project_mcp_servers
@@ -6740,6 +6878,37 @@ class TestAddEnabledProjectMcpServers:
             )
             is False
         )
+
+    def test_failed_write_leaves_no_stray_tmp_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write that fails mid-flight cleans up its atomic temp file.
+
+        Covers the `except BaseException: unlink; raise` arm: a serialization
+        failure after `mkstemp` must not leave a `.tmp` turd in the config dir.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "serialize failed"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(model_config.tomli_w, "dump", _boom)
+
+        assert (
+            add_enabled_project_mcp_servers(
+                ["docs"],
+                config_path,
+                project_root=tmp_path / "project",
+                server_configs=self._server_configs(),
+            )
+            is False
+        )
+        assert not config_path.exists()
+        assert list(tmp_path.glob("*.tmp")) == []
 
 
 class TestLoadStartupMode:

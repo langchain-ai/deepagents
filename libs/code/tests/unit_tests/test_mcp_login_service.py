@@ -207,6 +207,73 @@ class TestResolveMcpConfigAutodiscover:
         assert result.untrusted_project_paths == (project_cfg,)
         assert "config.toml" in result.message
 
+    def test_unreadable_policy_surfaced_even_when_a_config_loads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A policy read error is surfaced on success, not only when no config loads.
+
+        Regression guard: `policy_error` was previously consulted only in the
+        no-usable-config branch, so an unreadable `config.toml` was silently
+        swallowed whenever a user-level config still loaded — and the dropped
+        project servers were then mislabeled as merely "untrusted".
+        """
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        fake_home = tmp_path / "home"
+        user_dir = fake_home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        user_cfg = user_dir / ".mcp.json"
+        user_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text('{"mcpServers":{"fs":{"command":"node"}}}')
+        # Wrong-typed deny list -> read_error / load_failed.
+        _isolate_project_mcp_trust_lists(
+            monkeypatch, tmp_path, "[mcp]\ndisabled_project_servers = 123\n"
+        )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[user_cfg, project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.policy_error is not None
+        assert "config.toml" in format_policy_error_notice(result.policy_error)
+        # The project server was dropped by the policy failure; recorded so the
+        # caller can prefer the policy notice over the misleading untrusted one.
+        assert project_cfg in result.untrusted_project_paths
+
+    def test_legacy_env_var_surfaced_through_resolution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The removed env var, still set, rides through resolution for surfacing."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text('{"mcpServers":{"fs":{"command":"node"}}}')
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "fs")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None)
+
+        # `fs` is unapproved (the old name is ignored), so nothing loads, but the
+        # legacy-env flag must ride along so the caller can explain the rename.
+        assert result.legacy_env_ignored is True
+        assert format_legacy_env_ignored_notice(result.legacy_env_ignored)
+
     def test_broken_project_config_surfaces_parse_error(
         self,
         tmp_path: Path,
@@ -560,3 +627,39 @@ class TestFormatLegacyIgnoredNotice:
         assert "slack" in notice
         assert "enabled_project_servers is no longer used" in notice
         assert "dcode" in notice
+
+
+class TestFormatPolicyErrorNotice:
+    """`format_policy_error_notice` rendering."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """A readable policy (None) produces no notice."""
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        assert format_policy_error_notice(None) == ""
+
+    def test_names_reason_and_fix(self) -> None:
+        """The notice embeds the read error and points at config.toml."""
+        from deepagents_code.mcp_login_service import format_policy_error_notice
+
+        notice = format_policy_error_notice("Could not read foo")
+        assert "Could not read foo" in notice
+        assert "config.toml" in notice
+
+
+class TestFormatLegacyEnvIgnoredNotice:
+    """`format_legacy_env_ignored_notice` rendering."""
+
+    def test_false_returns_empty_string(self) -> None:
+        """The old env var unset means no notice."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        assert format_legacy_env_ignored_notice(False) == ""
+
+    def test_names_old_and_new_env_var(self) -> None:
+        """The notice names both the removed and the replacement env var."""
+        from deepagents_code.mcp_login_service import format_legacy_env_ignored_notice
+
+        notice = format_legacy_env_ignored_notice(True)
+        assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in notice
+        assert "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in notice

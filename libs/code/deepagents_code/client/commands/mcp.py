@@ -112,7 +112,9 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigErrorKind,
         ConfigResolution,
         ConfigResolutionError,
+        format_legacy_env_ignored_notice,
         format_legacy_ignored_notice,
+        format_policy_error_notice,
         format_untrusted_project_notice,
         resolve_mcp_config,
         select_server,
@@ -132,12 +134,22 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         )
         return 1
 
-    notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
-    if notice:
-        print(notice, file=sys.stderr)  # noqa: T201
+    # A policy read failure and an "untrusted project" skip are mutually
+    # exclusive reasons for the same dropped servers; surface the policy error
+    # (the real, actionable cause) instead of nudging the user to re-approve.
+    policy_notice = format_policy_error_notice(resolution.policy_error)
+    if policy_notice:
+        print(policy_notice, file=sys.stderr)  # noqa: T201
+    else:
+        notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
     legacy_notice = format_legacy_ignored_notice(resolution.legacy_ignored)
     if legacy_notice:
         print(legacy_notice, file=sys.stderr)  # noqa: T201
+    legacy_env_notice = format_legacy_env_ignored_notice(resolution.legacy_env_ignored)
+    if legacy_env_notice:
+        print(legacy_env_notice, file=sys.stderr)  # noqa: T201
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -249,14 +261,22 @@ def _print_resolution_error(error: ConfigResolutionError) -> None:
     resolutions in `run_mcp_login`.
     """
     from deepagents_code.mcp_login_service import (
+        format_legacy_env_ignored_notice,
         format_legacy_ignored_notice,
         format_untrusted_project_notice,
     )
 
-    notice = format_untrusted_project_notice(error.untrusted_project_paths)
-    if notice:
-        print(notice, file=sys.stderr)  # noqa: T201
+    # On a policy read failure `error.message` already states the reason, so
+    # skip the untrusted-paths notice that would otherwise misattribute the
+    # dropped servers to "not yet approved."
+    if error.policy_error is None:
+        notice = format_untrusted_project_notice(error.untrusted_project_paths)
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
     legacy_notice = format_legacy_ignored_notice(error.legacy_ignored)
     if legacy_notice:
         print(legacy_notice, file=sys.stderr)  # noqa: T201
+    legacy_env_notice = format_legacy_env_ignored_notice(error.legacy_env_ignored)
+    if legacy_env_notice:
+        print(legacy_env_notice, file=sys.stderr)  # noqa: T201
     print(error.message, file=sys.stderr)  # noqa: T201

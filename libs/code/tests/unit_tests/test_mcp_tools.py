@@ -41,6 +41,7 @@ from deepagents_code.mcp_tools import (
     get_mcp_tools,
     load_mcp_config,
     load_mcp_config_lenient,
+    load_merged_mcp_configs_lenient,
     merge_mcp_configs,
     resolve_and_load_mcp_tools,
 )
@@ -711,6 +712,88 @@ class TestLoadMcpConfigLenient:
         """Legacy lenient API preserves the `None` return contract."""
         path = write_config({"mcpServers": {"fs": {"args": []}}})
         assert load_mcp_config_lenient(Path(path)) is None
+
+    def test_merged_loader_validates_after_precedence_resolution(
+        self, tmp_path: Path
+    ) -> None:
+        """A repaired override cannot hide a valid lower-precedence sibling."""
+        lower = tmp_path / "lower.json"
+        lower.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "hidden": {"command": "echo", "args": ["lower"]},
+                        "repaired": {"args": []},
+                    }
+                }
+            )
+        )
+        higher = tmp_path / "higher.json"
+        higher.write_text(
+            json.dumps(
+                {"mcpServers": {"repaired": {"command": "echo", "args": ["higher"]}}}
+            )
+        )
+
+        config = load_merged_mcp_configs_lenient([lower, higher])
+
+        assert config == {
+            "mcpServers": {
+                "hidden": {"command": "echo", "args": ["lower"]},
+                "repaired": {"command": "echo", "args": ["higher"]},
+            }
+        }
+
+    def test_saved_approval_rematches_through_runtime_merge_path(
+        self, tmp_path: Path
+    ) -> None:
+        """An approval saved from the prompt re-matches through the loader's merge.
+
+        The write side (prompt) fingerprints server_configs from
+        `load_merged_mcp_configs_lenient`; the runtime read side fingerprints from
+        `_merge_mcp_configs_with_sources`. They are different merge helpers, so
+        this pins that both pick the same winning definition — otherwise a saved
+        approval would silently re-prompt forever.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.mcp_tools import (
+            _load_mcp_config_top_level_with_error,
+            _merge_mcp_configs_with_sources,
+        )
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower = project_dir / ".mcp.json"
+        lower.write_text('{"mcpServers":{"fs":{"command":"node","args":["a.js"]}}}')
+        higher = project_root / ".mcp.json"
+        higher.write_text('{"mcpServers":{"fs":{"command":"node","args":["b.js"]}}}')
+        project_paths = [lower, higher]
+
+        # Write side: server_configs exactly as the prompt derives them.
+        write_merged = load_merged_mcp_configs_lenient(project_paths)
+        assert write_merged is not None
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["fs"],
+            user_config,
+            project_root=project_root,
+            server_configs=write_merged["mcpServers"],
+        )
+
+        # Read side: the runtime loader's own merge path.
+        loaded_projects = []
+        for path in project_paths:
+            cfg, _ = _load_mcp_config_top_level_with_error(path)
+            assert cfg is not None
+            loaded_projects.append((path, cfg))
+        read_config, _sources = _merge_mcp_configs_with_sources(loaded_projects)
+        read_server = read_config["mcpServers"]["fs"]
+
+        trust_lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert trust_lists.is_enabled(
+            "fs", project_root=project_root, server=read_server
+        )
 
 
 class TestMCPServerInfoInvariants:
@@ -4335,6 +4418,41 @@ class TestSelectiveProjectMcpTrust:
 
         errors = [info.error for info in infos if info.error]
         assert any("no longer used" in msg and "docs" in msg for msg in errors)
+
+    async def test_legacy_env_var_surfaces_rename_notice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The removed env var, still set, surfaces a visible rename notice.
+
+        Mirrors the legacy TOML-key migration so a user who exported
+        `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` learns it was renamed
+        instead of the server silently ceasing to pre-approve.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"docs": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n")
+
+        home = project.parent / "home"
+        (home / ".deepagents").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS", "docs")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", user_config
+        )
+        ctx = ProjectContext(user_cwd=project, project_root=project)
+
+        _tools, _prompt, infos = await resolve_and_load_mcp_tools(
+            project_context=ctx, trust_project_mcp=False
+        )
+
+        errors = [info.error for info in infos if info.error]
+        assert any(
+            "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in msg
+            and "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in msg
+            for msg in errors
+        )
 
     async def test_name_in_both_lists_is_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

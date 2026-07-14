@@ -23,7 +23,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -53,6 +53,11 @@ class _ProjectMcpTrustPromptOutcome(Enum):
     """Internal outcomes that are not project MCP trust decisions."""
 
     INTERRUPTED = "interrupted"
+    """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
+
+    CANCELLED = "cancelled"
+    """The user backed out of the "remember" picker (Esc); the caller denies
+    project trust for this run rather than silently allowing the session."""
 
 
 def _handle_termination_signal(signum: int, _frame: object) -> NoReturn:
@@ -2522,7 +2527,7 @@ def _parse_server_number_selection(raw: str, count: int) -> list[int]:
 
 
 def _format_project_mcp_checkbox_rows(
-    prompt_servers: list[tuple[str, str, str]],
+    prompt_servers: Sequence[tuple[str, str, str]],
     selected_names: set[str],
     selected_index: int,
     glyphs: "Glyphs",
@@ -2551,7 +2556,7 @@ def _format_project_mcp_checkbox_rows(
 
 
 def _run_project_mcp_server_checkbox_picker(
-    prompt_servers: list[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
     """Show an inline checkbox picker for project MCP servers to remember.
 
@@ -2560,9 +2565,11 @@ def _run_project_mcp_server_checkbox_picker(
         console: Console to print fallback notices to (stderr).
 
     Returns:
-        Selected server names. Empty means the user accepted no selections;
-        `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox
-        UI could not run and the caller should fall back to a simpler prompt.
+        Selected server names. Empty means the user confirmed no selections
+        (allow this session, remember nothing); `CANCELLED` means the user
+        pressed Esc to back out (deny); `INTERRUPTED` means the user pressed
+        Ctrl+C; `None` means the checkbox UI could not run and the caller should
+        fall back to a simpler prompt.
     """
     try:
         from prompt_toolkit import Application
@@ -2645,7 +2652,7 @@ def _run_project_mcp_server_checkbox_picker(
 
     @key_bindings.add("escape")
     def _cancel(event: KeyPressEvent) -> None:
-        event.app.exit(result=[])
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
@@ -2692,11 +2699,13 @@ def _run_project_mcp_server_checkbox_picker(
     except KeyboardInterrupt:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return []
+        # Ctrl+D backs out of the picker, same as Esc: cancel rather than
+        # silently confirm an empty selection.
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
 
 
 def _select_project_servers_with_numbers(
-    prompt_servers: list[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome:
     """Ask which prompted project MCP servers to remember with a text fallback.
 
@@ -2735,7 +2744,7 @@ def _select_project_servers_with_numbers(
 
 
 def _select_project_servers_to_persist(
-    prompt_servers: list[tuple[str, str, str]], console: "Console"
+    prompt_servers: Sequence[tuple[str, str, str]], console: "Console"
 ) -> list[str] | _ProjectMcpTrustPromptOutcome:
     """Ask which prompted project MCP servers to remember for this project.
 
@@ -2747,9 +2756,10 @@ def _select_project_servers_to_persist(
         console: Console to print the fallback selection UI to (stderr).
 
     Returns:
-        The chosen server names. Empty when the user selects no servers or makes
-        no valid fallback selection; the caller then allows only for this session.
-        `INTERRUPTED` means the user pressed Ctrl+C.
+        The chosen server names. Empty when the user confirms no servers or
+        makes no valid fallback selection; the caller then allows only for this
+        session. `CANCELLED` means the user backed out of the picker (Esc/Ctrl+D)
+        and the caller should deny. `INTERRUPTED` means the user pressed Ctrl+C.
     """
     names = [name for name, _kind, _summary in prompt_servers]
     if len(names) <= 1:
@@ -2763,7 +2773,7 @@ def _select_project_servers_to_persist(
 
 def _check_mcp_project_trust(
     *, trust_flag: bool = False
-) -> bool | _ProjectMcpTrustPromptOutcome | None:
+) -> bool | Literal[_ProjectMcpTrustPromptOutcome.INTERRUPTED] | None:
     """Check whether project-level MCP servers should be trusted.
 
     Both stdio and remote (http/sse) project entries require approval —
@@ -2775,10 +2785,11 @@ def _check_mcp_project_trust(
     `None` (no gate needed). When `--trust-project-mcp` was passed,
     returns `True`. Otherwise it shows an interactive approval prompt for any
     server not already resolved by the user's allow/deny lists. The prompt
-    accepts "y"/"yes" (allow for this session only, persisting nothing),
+    accepts "y"/"yes" (allow for this session only, persisting nothing) or
     "a"/"always" (remember a chosen subset of the prompted servers in the
     user-level config so they load only for this project and exact server
-    definition), or "N" (deny).
+    definition); anything else — including the "N"/"No" shown as the default —
+    denies. Backing out of the "always" picker (Esc/Ctrl+D) also denies.
 
     Servers already resolved by the user's scoped approvals, the
     `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
@@ -2799,11 +2810,11 @@ def _check_mcp_project_trust(
             when the user presses Ctrl+C at the approval prompt.
     """
     from deepagents_code.mcp_tools import (
+        ProjectServerSummary,
         classify_discovered_configs,
         discover_mcp_configs,
         extract_project_server_summaries,
-        load_mcp_config_lenient,
-        merge_mcp_configs,
+        load_merged_mcp_configs_lenient,
     )
     from deepagents_code.project_utils import ProjectContext
 
@@ -2831,19 +2842,13 @@ def _check_mcp_project_trust(
 
     trust_lists = load_mcp_server_trust_lists()
 
-    # Merge configs by server name (last wins, matching the loader) so that
-    # a server defined in multiple project configs (for example,
-    # `.deepagents/.mcp.json` and higher-precedence `.mcp.json`) only shows
-    # up once in the prompt.
-    loaded_configs = [
-        cfg
-        for cfg in (
-            load_mcp_config_lenient(path, disabled_servers=trust_lists.disabled)
-            for path in project_configs
-        )
-        if cfg is not None
-    ]
-    merged_config = merge_mcp_configs(loaded_configs)
+    # Resolve precedence before per-server validation, matching the runtime
+    # loader. Otherwise one malformed lower-precedence definition can hide its
+    # valid siblings from this prompt even when a higher-precedence config
+    # replaces the malformed entry and runtime would activate those siblings.
+    merged_config = load_merged_mcp_configs_lenient(
+        project_configs, disabled_servers=trust_lists.disabled
+    ) or {"mcpServers": {}}
     all_servers = extract_project_server_summaries(merged_config)
     raw_server_configs = merged_config.get("mcpServers", {})
     server_configs = raw_server_configs if isinstance(raw_server_configs, dict) else {}
@@ -2851,7 +2856,7 @@ def _check_mcp_project_trust(
 
     if not all_servers and debug_prompt:
         all_servers = [
-            (
+            ProjectServerSummary(
                 "debug-project-mcp",
                 "stdio",
                 "uvx deepagents-debug-mcp --sample-project-server",
@@ -2872,8 +2877,9 @@ def _check_mcp_project_trust(
     from rich.markup import escape
 
     prompt_console = _Console(stderr=True)
-    prompt_servers: list[tuple[str, str, str]] = []
-    for name, kind, summary in all_servers:
+    prompt_servers: list[ProjectServerSummary] = []
+    for summary_row in all_servers:
+        name, _kind, _summary = summary_row
         # Disabled first: reject precedence (a name in both lists is disabled).
         if name in trust_lists.disabled:
             continue
@@ -2883,7 +2889,7 @@ def _check_mcp_project_trust(
             server=server_configs.get(name, {}),
         ):
             continue
-        prompt_servers.append((name, kind, summary))
+        prompt_servers.append(summary_row)
 
     if trust_lists.read_error is not None:
         # The user's allow/deny policy could not be read. Fail closed here too
@@ -2942,6 +2948,14 @@ def _check_mcp_project_trust(
         names = _select_project_servers_to_persist(prompt_servers, prompt_console)
         if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
             return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
+            # Backing out of the picker cancels the approval entirely rather than
+            # silently granting session trust the user didn't confirm.
+            prompt_console.print(
+                "[dim]Cancelled; project MCP servers not allowed.[/dim]",
+                highlight=False,
+            )
+            return False
         if not names:
             prompt_console.print(
                 "[dim]Nothing remembered; allowed for this session only.[/dim]",

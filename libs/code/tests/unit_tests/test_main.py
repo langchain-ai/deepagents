@@ -2512,7 +2512,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={
                     "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
                 },
@@ -2562,7 +2562,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={
                     "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
                 },
@@ -2627,6 +2627,58 @@ class TestCheckMcpProjectTrustPrompt:
         assert '"visible"' in err
         assert '"broken"' not in err
 
+    def test_prompt_uses_merged_project_config_before_validation(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The prompt includes every server that merged runtime trust can load."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower = project_dir / ".mcp.json"
+        lower.write_text(
+            '{"mcpServers":{"hidden":{"command":"echo","args":["lower"]},'
+            '"repaired":{"args":[]}}}'
+        )
+        higher = project_root / ".mcp.json"
+        higher.write_text(
+            '{"mcpServers":{"repaired":{"command":"echo","args":["higher"]}}}'
+        )
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[lower, higher],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [lower, higher]),
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = capsys.readouterr().err
+        assert '"hidden"' in err
+        assert "echo lower" in err
+        assert '"repaired"' in err
+        assert "echo higher" in err
+
     def test_always_allow_persists_names_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2664,7 +2716,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -2723,7 +2775,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": {"fs": {"command": "node"}}},
             ),
             patch(
@@ -2778,7 +2830,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -2849,7 +2901,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -2870,6 +2922,76 @@ class TestCheckMcpProjectTrustPrompt:
         assert decision is True
         assert not user_config.exists()
         assert "Nothing remembered" in capsys.readouterr().err
+
+    def test_always_allow_picker_cancel_denies(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Backing out of the picker (Esc) denies rather than allowing the session.
+
+        Regression guard: a cancelled picker must not be read as "remember none,
+        allow this session" — that would silently grant trust the user backed
+        out of.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _ProjectMcpTrustPromptOutcome,
+        )
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch("builtins.input", return_value="a"),
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        assert not user_config.exists()
+        assert "Cancelled" in capsys.readouterr().err
 
     def test_always_allow_all_excludes_disabled_server(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2910,7 +3032,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -2990,7 +3112,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -3053,7 +3175,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": server_configs},
             ),
             patch(
@@ -3104,7 +3226,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": {"docs": {"command": "echo"}}},
             ),
             patch(
@@ -3148,7 +3270,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": {"docs": {"command": "echo"}}},
             ),
             patch(
@@ -3207,7 +3329,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": {"docs": {"command": "echo"}}},
             ),
             patch(
@@ -3421,17 +3543,23 @@ class TestSelectProjectServersToPersist:
 
         assert names == ["reference"]
 
-    def test_checkbox_picker_escape_returns_empty(
+    def test_checkbox_picker_escape_cancels(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Esc cancels persistence (empty selection), the opposite of Ctrl+C.
+        """Esc backs out of the picker (CANCELLED), distinct from confirming none.
 
-        Esc means "remember nothing, allow this session"; Ctrl+C means abort.
-        A regression swapping them would silently turn Esc into a launch abort.
+        Esc means "cancel the approval" (the caller then denies), not "remember
+        nothing, allow this session" — the latter is Enter with no boxes checked.
+        Ctrl+C is a separate abort. A regression collapsing Esc back into an
+        empty confirmation would silently grant session trust the user backed
+        out of.
         """
         from rich.console import Console
 
-        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _run_project_mcp_server_checkbox_picker,
+        )
 
         captured: dict[str, Any] = {}
 
@@ -3463,7 +3591,7 @@ class TestSelectProjectServersToPersist:
         servers = [("docs", "stdio", "a"), ("reference", "stdio", "b")]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
-        assert result == []
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
 
     def test_checkbox_picker_ctrl_c_returns_interrupted(
         self, monkeypatch: pytest.MonkeyPatch

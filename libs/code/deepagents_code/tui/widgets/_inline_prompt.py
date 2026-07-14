@@ -20,30 +20,46 @@ from deepagents_code.config import get_glyphs, is_ascii_mode
 
 ResultT = TypeVar("ResultT")
 
+_UNSET: Any = object()
+
 
 class InlinePromptCompletion(Generic[ResultT]):
-    """Resolve an inline prompt result at most once."""
+    """Resolve an inline prompt result at most once.
+
+    `set_future` and `resolve` may be called in either order: a result
+    recorded before the future is wired is delivered as soon as the future
+    arrives, so a late `set_future` never strands an awaiter.
+    """
 
     def __init__(self) -> None:
         """Initialize an unresolved completion."""
         self._future: asyncio.Future[ResultT] | None = None
         self._resolved = False
+        self._result: ResultT | Any = _UNSET
 
     @property
     def resolved(self) -> bool:
-        """Whether a terminal result has been accepted."""
+        """Whether a terminal result has been recorded."""
         return self._resolved
 
     def set_future(self, future: asyncio.Future[ResultT]) -> None:
         """Set the future to resolve with the terminal result.
 
+        Delivers an already-recorded result immediately, so callers may wire
+        the future either before or after `resolve`.
+
         Args:
             future: Future owned by the application request path.
         """
         self._future = future
+        if self._resolved and self._result is not _UNSET and not future.done():
+            future.set_result(self._result)
 
     def resolve(self, result: ResultT) -> bool:
-        """Resolve the configured future unless a result was already accepted.
+        """Record the first terminal result and resolve the future if set.
+
+        The result is retained, so a future wired later via `set_future` still
+        receives it.
 
         Args:
             result: Terminal prompt result.
@@ -54,6 +70,7 @@ class InlinePromptCompletion(Generic[ResultT]):
         if self._resolved:
             return False
         self._resolved = True
+        self._result = result
         if self._future is not None and not self._future.done():
             self._future.set_result(result)
         return True
@@ -79,7 +96,13 @@ class InlinePromptTextArea(TextArea):
     ]
 
     class Submitted(Message):
-        """Posted when the user presses Enter to submit text."""
+        """Posted when the user presses Enter to submit text.
+
+        Subclasses should re-declare a nested `Submitted` so Textual derives a
+        distinct handler name (e.g. `on_goal_review_text_area_submitted`).
+        Without it, a host mounting more than one inline prompt cannot tell
+        their submissions apart, and the base handler name goes unhandled.
+        """
 
         def __init__(self, text_area: InlinePromptTextArea, value: str) -> None:
             """Initialize a text submission message.
@@ -137,7 +160,6 @@ class InlinePromptOption(Static):
             **kwargs: Additional `Static` arguments.
         """
         self.option_index = index
-        self.selected = selected
         self._cursor_visible = selected
         self._highlighted = selected
         self._text = text
@@ -145,9 +167,10 @@ class InlinePromptOption(Static):
         super().__init__(self._render(), **kwargs)
         self._sync_selected_class()
 
-    def toggle(self) -> None:
-        """Toggle the selected state."""
-        self.set_state(cursor=not self.selected, highlighted=not self.selected)
+    @property
+    def selected(self) -> bool:
+        """Whether the selection cursor is currently shown on this option."""
+        return self._cursor_visible
 
     def select(self) -> None:
         """Mark this option as selected."""
@@ -164,7 +187,6 @@ class InlinePromptOption(Static):
             cursor: Whether to render the selection cursor.
             highlighted: Whether to apply the selected CSS class.
         """
-        self.selected = cursor
         self._cursor_visible = cursor
         self._highlighted = highlighted
         self.update(self._render())

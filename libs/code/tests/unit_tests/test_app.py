@@ -16487,6 +16487,35 @@ class TestRestartServerForAgentSwap:
         )
         return app, server_proc
 
+    async def test_swap_ignores_pending_ask_user_remove_error(self) -> None:
+        """A failing ask-user cleanup must not abort the agent swap.
+
+        The teardown cancels the stale prompt (rejecting its bound request)
+        and tolerates a remove race, so the swap still completes.
+        """
+        app, _server_proc = self._make_app()
+
+        widget = MagicMock()
+        widget.action_cancel = MagicMock()
+        widget.remove = AsyncMock(side_effect=RuntimeError("already removed"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_ask_user_widget = widget
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+            widget.action_cancel.assert_called_once()
+            widget.remove.assert_awaited_once()
+            assert app._pending_ask_user_widget is None
+            assert app._assistant_id == "researcher"
+
     async def test_happy_path_rebuilds_agent_and_updates_identity(
         self,
     ) -> None:

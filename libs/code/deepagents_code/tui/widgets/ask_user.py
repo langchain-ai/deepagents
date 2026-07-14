@@ -58,7 +58,12 @@ Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
 
 
 class AskUserTextArea(InlinePromptTextArea):
-    """Text input that can return arrow navigation to ask-user choices."""
+    """Free-form answer input for ask-user questions.
+
+    Adds one behavior over the shared base: when the cursor is on the first or
+    last line of a `multiple_choice` question, Up/Down are handed back to the
+    enclosing choice list instead of moving the text cursor.
+    """
 
     class Submitted(InlinePromptTextArea.Submitted):
         """Posted when the user presses Enter to submit an ask-user answer."""
@@ -294,7 +299,6 @@ class _ChoiceOption(InlinePromptOption):
         self, text: str, index: int, *, selected: bool = False, **kwargs: Any
     ) -> None:
         """Initialize an ask-user choice option."""
-        self.choice_index = index
         super().__init__(
             text,
             index,

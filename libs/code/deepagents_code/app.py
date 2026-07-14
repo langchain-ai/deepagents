@@ -6777,7 +6777,7 @@ class DeepAgentsApp(App):
                     "approval prompts may continue."
                 )
 
-    async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared cleanup guard for inline prompts
+    async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
         widget: Widget,
         *,
@@ -6786,6 +6786,11 @@ class DeepAgentsApp(App):
     ) -> None:
         """Remove an inline prompt without surfacing cleanup races.
 
+        Swallows only the `AttributeError`/`RuntimeError` a `remove()` raises
+        when the widget was already detached, matching the other teardown
+        paths in this app. A different exception is a real teardown bug and is
+        left to propagate rather than being hidden at debug level.
+
         Args:
             widget: Inline prompt widget instance to remove.
             prompt_name: Flow-specific name included in diagnostics.
@@ -6793,7 +6798,7 @@ class DeepAgentsApp(App):
         """
         try:
             await widget.remove()
-        except Exception:
+        except (AttributeError, RuntimeError):
             logger.debug(
                 "Failed to remove %s widget during %s",
                 prompt_name,
@@ -6819,7 +6824,11 @@ class DeepAgentsApp(App):
         self.call_after_refresh(focus)
 
     def _scroll_inline_prompt_into_view(self, widget: Widget) -> None:
-        """Scroll a mounted inline prompt into view from its top when oversized."""
+        """Scroll a mounted inline prompt into view.
+
+        A prompt taller than the viewport anchors to its top so the title and
+        top border stay visible, rather than exposing only its bottom edge.
+        """
         chat = self.query_one("#chat", VerticalScroll)
         if widget.outer_size.height > chat.size.height:
             widget.scroll_visible(animate=False, top=True)
@@ -15126,6 +15135,13 @@ class DeepAgentsApp(App):
                             exc_info=True,
                         )
                 if self._pending_ask_user_widget is not None:
+                    try:
+                        self._pending_ask_user_widget.action_cancel()
+                    except (AttributeError, RuntimeError):
+                        logger.debug(
+                            "Failed to cancel pending ask-user during agent swap",
+                            exc_info=True,
+                        )
                     await self._remove_inline_prompt_widget(
                         self._pending_ask_user_widget,
                         prompt_name="ask-user",

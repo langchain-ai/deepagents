@@ -110,6 +110,35 @@ class TestGoalReviewMenu:
             assert await future == {"type": "accepted"}
             assert menu.display is False
 
+    async def test_option_highlight_syncs_with_selection(self) -> None:
+        """The selected-option class tracks the cursor and clears in edit mode."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            options = menu._option_widgets
+            selected_class = "goal-review-option-selected"
+
+            # Mount highlights the first option only.
+            assert options[0].has_class(selected_class)
+            assert not any(o.has_class(selected_class) for o in options[1:])
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            # Highlight follows the cursor to the next option.
+            assert options[1].has_class(selected_class)
+            assert not options[0].has_class(selected_class)
+
+            menu.action_edit()
+            await pilot.pause()
+
+            # With the editor open no option is highlighted, but the cursor
+            # glyph stays on the active option so position is not lost.
+            assert not any(o.has_class(selected_class) for o in options)
+            assert options[1].selected
+
     async def test_edit_prefills_and_submits_revised_criteria(self) -> None:
         """Edit should prefill generated criteria and submit revisions."""
         app = _GoalReviewTestApp()
@@ -154,7 +183,8 @@ class TestGoalReviewMenu:
             assert text_input.text == ""
 
             text_input.text = "include docs and migration notes"
-            menu._submit_rejection()
+            text_input.focus()
+            await pilot.press("enter")
 
             assert await future == {
                 "type": "rejected",

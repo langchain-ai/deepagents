@@ -1907,11 +1907,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         mw = self
 
-        def sync_compact(runtime: ToolRuntime, force: bool = False) -> Command:  # noqa: FBT001, FBT002
-            return mw._run_compact(runtime, force=force)
+        def sync_compact(runtime: ToolRuntime) -> Command:
+            return mw._run_compact(runtime)
 
-        async def async_compact(runtime: ToolRuntime, force: bool = False) -> Command:  # noqa: FBT001, FBT002
-            return await mw._arun_compact(runtime, force=force)
+        async def async_compact(runtime: ToolRuntime) -> Command:
+            return await mw._arun_compact(runtime)
 
         return StructuredTool.from_function(
             name="compact_conversation",
@@ -1919,9 +1919,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 "Compact the conversation by summarizing older messages "
                 "into a concise summary. Use this proactively when the "
                 "conversation is getting long to free up context window "
-                "space. Leave `force` unset; it is reserved for explicit "
-                "user-initiated compaction (e.g. a `/compact` command) that "
-                "bypasses the usage-based eligibility gate."
+                "space. This tool takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,
@@ -2077,14 +2075,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
             return False
         return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)
 
-    def _run_compact(self, runtime: ToolRuntime, *, force: bool = False) -> Command:
+    def _run_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.
 
         Args:
             runtime: The `ToolRuntime` injected by the tool node.
-            force: When `True`, skip the usage-based eligibility gate so an
-                explicit user-initiated compaction always runs (the `cutoff`
-                check still makes it a no-op when there is nothing to summarize).
 
         Returns:
             A `Command` with `_summarization_event` state update, or a
@@ -2096,7 +2091,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         event = runtime.state.get("_summarization_event")
         effective = s._apply_event_to_messages(messages, event)
 
-        if not force and not self._is_eligible_for_compaction(effective):
+        if not self._is_eligible_for_compaction(effective):
             return self._nothing_to_compact(tool_call_id)
 
         cutoff = s._determine_cutoff_index(effective)
@@ -2114,14 +2109,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
-    async def _arun_compact(self, runtime: ToolRuntime, *, force: bool = False) -> Command:
+    async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
 
         Args:
             runtime: The `ToolRuntime` injected by the tool node.
-            force: When `True`, skip the usage-based eligibility gate so an
-                explicit user-initiated compaction always runs (the `cutoff`
-                check still makes it a no-op when there is nothing to summarize).
 
         Returns:
             A `Command` with `_summarization_event` state update, or a
@@ -2133,7 +2125,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         event = runtime.state.get("_summarization_event")
         effective = s._apply_event_to_messages(messages, event)
 
-        if not force and not self._is_eligible_for_compaction(effective):
+        if not self._is_eligible_for_compaction(effective):
             return self._nothing_to_compact(tool_call_id)
 
         cutoff = s._determine_cutoff_index(effective)

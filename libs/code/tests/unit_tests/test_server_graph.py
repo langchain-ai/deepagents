@@ -97,6 +97,7 @@ class TestServerGraph:
 
         model_result = SimpleNamespace(
             model=model_obj,
+            model_retries=5,
             apply_to_settings=MagicMock(),
         )
         configure_redaction = MagicMock()
@@ -202,6 +203,7 @@ class TestServerGraph:
             cwd=None,
             project_context=None,
             async_subagents=None,
+            model_retries=5,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
@@ -268,6 +270,7 @@ class TestServerGraph:
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
+                    model_retries=5,
                     apply_to_settings=MagicMock(),
                 ),
             ),

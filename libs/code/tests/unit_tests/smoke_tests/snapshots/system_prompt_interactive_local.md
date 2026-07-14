@@ -313,7 +313,7 @@ Some paths returned by the file tools are virtual mounts:
 Do not assume that a path returned by a file tool can be used directly in a shell command.
 
 Host path mappings:
-- `/conversation_history/` -> `<tmp_path>/deepagents_conversation_history/` (e.g. `/conversation_history/dir/x.py` -> `<tmp_path>/deepagents_conversation_history/dir/x.py`)
+- `/conversation_history/` -> `<tmp_path>/.deepagents/conversation_history/` (e.g. `/conversation_history/dir/x.py` -> `<tmp_path>/.deepagents/conversation_history/dir/x.py`)
 - `/large_tool_results/` -> `<tmp_path>/deepagents_large_results/` (e.g. `/large_tool_results/dir/x.py` -> `<tmp_path>/deepagents_large_results/dir/x.py`)
 
 ## `task` (subagent spawner)
@@ -357,6 +357,7 @@ Available subagent types:
 Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
 complete.
 When a goal is active, use `get_goal` to inspect the objective and current status.
+A paused goal is persisted for later but must not drive work until the user resumes it.
 Use `update_goal` only when you have evidence that the goal is complete or blocked.
 
 ## `ask_user`

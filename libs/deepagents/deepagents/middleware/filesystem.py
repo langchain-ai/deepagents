@@ -1343,11 +1343,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Excluded tools are omitted here entirely, not just hidden from the
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
-        self.tools = [
-            factory()
-            for name, factory in tool_factories
-            if self._enabled_tools is None or name in self._enabled_tools
-        ]
+        self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
 
     def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
         """Build (and memoize) the dynamic system prompt.

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -27,6 +28,7 @@ from deepagents_code.mcp_tools import (
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
+    _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
     _normalize_mcp_arguments,
@@ -1063,26 +1065,116 @@ class TestGetMCPTools:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_remote_headers_are_resolved_and_passed(
+    async def test_remote_url_and_headers_are_resolved_and_passed(
         self,
         monkeypatch: pytest.MonkeyPatch,
         fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
     ) -> None:
-        """Resolved static headers are attached to remote connections."""
+        """Resolved URLs and static headers reach remote connections."""
+        monkeypatch.setenv("DA_MCP_HOST", "mcp.linear.app")
         monkeypatch.setenv("DA_TOKEN", "tok-123")
         _session, recorded = fake_create_session
         config = {
             "mcpServers": {
                 "linear": {
                     "transport": "http",
-                    "url": "https://mcp.linear.app/mcp",
+                    "url": "https://${DA_MCP_HOST}/mcp",
                     "headers": {"Authorization": "Bearer ${DA_TOKEN}"},
                 }
             }
         }
 
         await _load_tools_from_config(config)
+        assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
+
+    async def test_stdio_fields_resolve_before_preflight_and_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Stdio preflight and connection creation use resolved values."""
+        monkeypatch.setenv("DA_MCP_HOME", "/opt/mcp")
+        monkeypatch.setenv("DA_MCP_TOKEN", "token")
+        _session, recorded = fake_create_session
+        checked: list[dict[str, Any]] = []
+        config = {
+            "mcpServers": {
+                "srv": {
+                    "command": "${DA_MCP_HOME}/server",
+                    "args": ["--root", "${DA_MCP_HOME}"],
+                    "env": {"TOKEN": "${DA_MCP_TOKEN}"},
+                }
+            }
+        }
+
+        with patch(
+            "deepagents_code.mcp_tools._check_stdio_server",
+            side_effect=lambda _name, server: checked.append(server),
+        ):
+            await _load_tools_from_config(config)
+
+        assert checked[0]["command"] == "/opt/mcp/server"
+        assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert recorded[0] == {
+            "command": "/opt/mcp/server",
+            "args": ["--root", "/opt/mcp"],
+            "env": {"TOKEN": "token"},
+            "transport": "stdio",
+        }
+
+    async def test_unset_variable_skips_only_affected_server(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """An unresolved field does not prevent sibling servers from loading."""
+        monkeypatch.delenv("MISSING_DA_MCP_PATH", raising=False)
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                "broken": {
+                    "command": "node",
+                    "args": ["${MISSING_DA_MCP_PATH}"],
+                },
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.args[0]" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_non_string_field_skips_only_affected_server(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """A `TypeError` from resolution skips its server, not its siblings."""
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                # `env` is a dict (passes shape validation) but its value is
+                # not a string, so resolution raises `TypeError`.
+                "broken": {"command": "node", "env": {"PORT": 1}},
+                "working": {"command": "node", "args": ["server.js"]},
+            }
+        }
+
+        _tools, manager, infos = await _load_tools_from_config(config)
+
+        assert [info.name for info in infos] == ["broken", "working"]
+        assert infos[0].status == "error"
+        assert "mcpServers.broken.env.PORT" in (infos[0].error or "")
+        assert infos[1].status == "ok"
+        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert manager is not None
+        await manager.cleanup()
 
     async def test_empty_env_is_coerced_to_none(
         self,
@@ -1628,6 +1720,28 @@ class TestResolveAndLoadMcpTools:
         assert manager is None
         assert infos == []
 
+    @patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports")
+    @patch("deepagents_code.mcp_tools.discover_mcp_configs")
+    async def test_no_adapter_warmup_when_no_active_servers(
+        self,
+        mock_discover: MagicMock,
+        mock_warm: MagicMock,
+    ) -> None:
+        """With no configured servers, MCP adapters are never imported.
+
+        `_warm_mcp_adapter_imports` (and the adapter imports that follow it)
+        live inside `_load_tools_from_config`, which the resolver never reaches
+        when discovery yields no servers — so the warmup must not run.
+        """
+        mock_discover.return_value = []
+
+        tools, manager, infos = await resolve_and_load_mcp_tools(no_mcp=False)
+
+        assert tools == []
+        assert manager is None
+        assert infos == []
+        mock_warm.assert_not_called()
+
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.discover_mcp_configs")
     async def test_explicit_path_merges_with_discovery(
@@ -2102,7 +2216,7 @@ class TestHealthChecks:
             assert server_infos[0].name == "srv"
             assert server_infos[0].status == "error"
             error = server_infos[0].error or ""
-            assert "command 'missing' not found on PATH" in error
+            assert "configured command not found on PATH" in error
             assert manager is not None
         finally:
             if manager is not None:
@@ -2122,6 +2236,171 @@ class TestHealthChecks:
             pytest.raises(RuntimeError, match="unreachable"),
         ):
             await _check_remote_server("srv", {"url": "http://down:9999"})
+
+    async def test_expanded_url_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded URL credentials never reach status or warning text."""
+        secret = "url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        client = AsyncMock()
+        client.head.side_effect = httpx.InvalidURL(f"invalid URL containing {secret}")
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("httpx.AsyncClient", return_value=client):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "not a url?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured URL is unreachable" in (infos[0].error or "")
+        # The failure *class* is surfaced for diagnosability; it never
+        # embeds the URL, so it is safe to include even when redacting.
+        assert "InvalidURL" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_url_is_redacted_from_discovery_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved URL credentials never reach discovery status or debug logs."""
+        secret = "discovery-url-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        request = httpx.Request(
+            "POST",
+            f"https://mcp.example.com/mcp?token={secret}",
+        )
+        response = httpx.Response(500, request=request)
+        discovery_error = httpx.HTTPStatusError(
+            f"server error for URL {request.url}",
+            request=request,
+            response=response,
+        )
+
+        @asynccontextmanager
+        async def _fail_discovery(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[None]:
+            raise discovery_error
+            yield
+
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "langchain_mcp_adapters.sessions.create_session",
+                _fail_discovery,
+            ),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": ("https://mcp.example.com/mcp?token=${MCP_TOKEN}"),
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "tool discovery failed" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_value_is_redacted_from_connection_build_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Resolved values never reach the connection-build error path either.
+
+        Covers the `_preflight_and_connect` setup catch (token-store / provider
+        construction), which runs after preflight succeeds and after `${...}`
+        refs are expanded.
+        """
+        secret = "build-token-must-not-leak"
+        monkeypatch.setenv("MCP_TOKEN", secret)
+        storage = MagicMock()
+        storage.get_tokens = AsyncMock(
+            side_effect=RuntimeError(f"token store failure for {secret}")
+        )
+        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._check_remote_server",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.mcp_auth.FileTokenStorage", return_value=storage),
+        ):
+            tools, manager, infos = await _load_tools_from_config(
+                {
+                    "mcpServers": {
+                        "remote": {
+                            "transport": "http",
+                            "url": "https://mcp.example.com/mcp?token=${MCP_TOKEN}",
+                        }
+                    }
+                }
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "setup failed after resolving environment variables" in (
+            infos[0].error or ""
+        )
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_expanded_command_is_redacted_from_preflight_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expanded commands never reach status or warning text."""
+        secret = "command-token-must-not-leak"
+        monkeypatch.setenv("MCP_COMMAND", secret)
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
+        with patch("deepagents_code.mcp_tools.shutil.which", return_value=None):
+            tools, manager, infos = await _load_tools_from_config(
+                {"mcpServers": {"stdio": {"command": "${MCP_COMMAND}"}}}
+            )
+
+        assert tools == []
+        assert infos[0].status == "error"
+        assert "configured command not found on PATH" in (infos[0].error or "")
+        assert secret not in (infos[0].error or "")
+        assert secret not in caplog.text
+        assert manager is not None
+        await manager.cleanup()
 
 
 class TestToolOrdering:
@@ -2175,6 +2454,528 @@ class TestToolOrdering:
         assert [tool.name for tool in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
         assert manager is not None
         await manager.cleanup()
+
+
+class TestLoadToolsConcurrency:
+    """`_load_tools_from_config` probes independent servers concurrently.
+
+    These tests pin the new behavior: bounded-concurrency preflight and
+    discovery, with per-server error isolation and cancellation semantics
+    matching the previous sequential loader. The load-bearing ordering
+    guarantee is that `server_infos` follows config order regardless of
+    completion order; the returned tool list is always sorted by tool name
+    (via the terminal sort in the loader), so tool-name assertions here are
+    content checks rather than ordering proofs.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_stdio_health_check(self) -> Generator[None]:
+        """Bypass stdio pre-flight so tests focus on discovery concurrency."""
+        with patch("deepagents_code.mcp_tools._check_stdio_server"):
+            yield
+
+    @staticmethod
+    def _config(*names: str) -> dict[str, Any]:
+        return {
+            "mcpServers": {
+                name: {"command": "node", "args": [f"{name}.js"]} for name in names
+            }
+        }
+
+    def _tracking_session_factory(
+        self,
+        *,
+        tool_by_server: dict[str, str],
+        hold: asyncio.Event | None = None,
+        sleep_s: float = 0.05,
+    ) -> tuple[Any, dict[str, int]]:
+        """Build a `create_session` fake that records concurrency.
+
+        Returns the async context-manager fake plus a mutable stats dict with
+        `max_inflight` (peak simultaneous open discovery sessions).
+        """
+        stats = {"inflight": 0, "max_inflight": 0}
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            stats["inflight"] += 1
+            stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
+            try:
+                # Derive the server name from the recorded command arg so each
+                # session yields that server's tool.
+                args = connection.get("args") or []
+                server = args[0].removesuffix(".js") if args else "srv"
+                session = AsyncMock()
+                session.initialize = AsyncMock()
+                session.list_tools = AsyncMock(
+                    return_value=_make_tool_page(
+                        [_make_mcp_tool(tool_by_server[server])]
+                    )
+                )
+                if hold is not None:
+                    await hold.wait()
+                else:
+                    await asyncio.sleep(sleep_s)
+                yield session
+            finally:
+                stats["inflight"] -= 1
+
+        return _fake, stats
+
+    async def test_discovery_runs_concurrently(self) -> None:
+        """All servers' discovery sessions are open at the same time."""
+        names = ["a", "b", "c", "d"]
+        tool_by_server = {n: f"tool_{n}" for n in names}
+        hold = asyncio.Event()
+        fake, stats = self._tracking_session_factory(
+            tool_by_server=tool_by_server, hold=hold
+        )
+
+        async def _release_when_all_open() -> None:
+            for _ in range(200):
+                if stats["inflight"] >= len(names):
+                    break
+                await asyncio.sleep(0.005)
+            hold.set()
+
+        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+            releaser = asyncio.create_task(_release_when_all_open())
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+            await releaser
+
+        assert stats["max_inflight"] == len(names)
+        assert [t.name for t in tools] == [
+            "a_tool_a",
+            "b_tool_b",
+            "c_tool_c",
+            "d_tool_d",
+        ]
+        assert [i.name for i in infos] == names
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_discovery_concurrency_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No more than `_MCP_LOAD_CONCURRENCY` sessions are open at once."""
+        monkeypatch.setattr(
+            "deepagents_code.mcp_tools._MCP_LOAD_CONCURRENCY", 2, raising=True
+        )
+        names = ["s1", "s2", "s3", "s4", "s5"]
+        tool_by_server = {n: f"t_{n}" for n in names}
+        fake, stats = self._tracking_session_factory(
+            tool_by_server=tool_by_server, sleep_s=0.03
+        )
+
+        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert stats["max_inflight"] == 2
+        assert [i.name for i in infos] == names
+        assert len(tools) == len(names)
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_order_preserved_when_later_servers_finish_first(self) -> None:
+        """`server_infos` follows config order regardless of completion order."""
+        names = ["first", "second", "third"]
+        # Later servers sleep less, so they finish discovery before earlier ones.
+        delays = {"first": 0.09, "second": 0.05, "third": 0.01}
+        finish_order: list[str] = []
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            await asyncio.sleep(delays[server])
+            finish_order.append(server)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert finish_order == ["third", "second", "first"]
+        assert [i.name for i in infos] == names
+        assert [t.name for t in tools] == [
+            "first_tool_first",
+            "second_tool_second",
+            "third_tool_third",
+        ]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_one_server_failure_isolated_from_others(self) -> None:
+        """A single discovery failure does not abort the other servers."""
+        names = ["ok1", "boom", "ok2"]
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            await asyncio.sleep(0.01)
+            if server == "boom":
+                msg = "discovery exploded"
+                raise RuntimeError(msg)
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        assert [i.name for i in infos] == names
+        assert by_name["ok1"].status == "ok"
+        assert by_name["ok2"].status == "ok"
+        assert by_name["boom"].status == "error"
+        assert "discovery exploded" in (by_name["boom"].error or "")
+        assert [t.name for t in tools] == ["ok1_tool_ok1", "ok2_tool_ok2"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_preflight_failure_isolated_and_order_preserved(self) -> None:
+        """A mid-config preflight failure is skipped; survivors keep order.
+
+        Exercises the preflight-error path and the fold-in loop that
+        interleaves a skipped server *between* discovered ones in config order,
+        with discovery finishing out of order so the ordering cannot be an
+        accident of completion timing.
+        """
+        names = ["ok_a", "pf_fail", "ok_b"]
+        # `ok_b` discovers faster than `ok_a`, so completion order is reversed.
+        delays = {"ok_a": 0.06, "ok_b": 0.01}
+
+        def _check(name: str, _cfg: dict[str, Any]) -> None:
+            if name == "pf_fail":
+                msg = "preflight boom"
+                raise RuntimeError(msg)
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+            )
+            await asyncio.sleep(delays[server])
+            yield session
+
+        with (
+            patch("deepagents_code.mcp_tools._check_stdio_server", _check),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+        ):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        # server_infos follows config order, with the skipped server in place.
+        assert [i.name for i in infos] == names
+        assert by_name["ok_a"].status == "ok"
+        assert by_name["ok_b"].status == "ok"
+        assert by_name["pf_fail"].status == "error"
+        assert "preflight boom" in (by_name["pf_fail"].error or "")
+        assert [t.name for t in tools] == ["ok_a_tool_ok_a", "ok_b_tool_ok_b"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_all_servers_fail_preflight_yields_empty(self) -> None:
+        """Every server failing preflight yields no tools, infos in order.
+
+        Drives the empty-discovery `_gather_bounded([], ...)` path and asserts a
+        non-`None` (empty) session manager is still returned.
+        """
+        names = ["x1", "x2", "x3"]
+
+        def _check(_name: str, _cfg: dict[str, Any]) -> None:
+            msg = "nope"
+            raise RuntimeError(msg)
+
+        with patch("deepagents_code.mcp_tools._check_stdio_server", _check):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        assert tools == []
+        assert [i.name for i in infos] == names
+        assert all(i.status == "error" for i in infos)
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_tool_construction_failure_isolated(self) -> None:
+        """A post-discovery construction failure degrades one server only.
+
+        Discovery succeeds for every server, but tool filtering raises for one.
+        That server must become an `error` info while its siblings load
+        normally — proving isolation now covers the post-discovery construction
+        block, not just the discovery session. Without that guard the failure
+        would abort the entire concurrent load.
+        """
+        names = ["good", "bad_build"]
+        fake, _ = self._tracking_session_factory(
+            tool_by_server={n: f"t_{n}" for n in names}, sleep_s=0.0
+        )
+
+        def _filter(
+            server_tools: list[Any], server_name: str, _server_config: dict[str, Any]
+        ) -> list[Any]:
+            if server_name == "bad_build":
+                msg = "build boom"
+                raise RuntimeError(msg)
+            return server_tools
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", fake),
+            patch("deepagents_code.mcp_tools._apply_tool_filter", _filter),
+        ):
+            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+
+        by_name = {i.name: i for i in infos}
+        assert [i.name for i in infos] == names
+        assert by_name["good"].status == "ok"
+        assert by_name["bad_build"].status == "error"
+        assert "build boom" in (by_name["bad_build"].error or "")
+        assert [t.name for t in tools] == ["good_t_good"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_cancellation_propagates_and_cancels_siblings(self) -> None:
+        """A cancelled worker propagates and tears down its siblings."""
+        names = ["cancel", "sibling"]
+        sibling_cancelled = asyncio.Event()
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            server = (connection.get("args") or ["x"])[0].removesuffix(".js")
+            if server == "cancel":
+                await asyncio.sleep(0.01)
+                raise asyncio.CancelledError
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+            yield AsyncMock()  # pragma: no cover - never reached
+
+        with (
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _load_tools_from_config(self._config(*names))
+
+        assert sibling_cancelled.is_set()
+
+    async def test_preflight_runs_concurrently(self) -> None:
+        """Stdio pre-flight checks run concurrently across servers."""
+        names = ["p1", "p2", "p3"]
+        tool_by_server = {n: f"pt_{n}" for n in names}
+        stats = {"inflight": 0, "max_inflight": 0}
+        # `_slow_check` runs in `asyncio.to_thread` worker threads, so the shared
+        # counters must be guarded with a real lock (`+=` is not atomic across
+        # threads) and the barrier must be a thread-safe primitive.
+        stats_lock = threading.Lock()
+        barrier = threading.Event()
+
+        def _slow_check(_name: str, _cfg: dict[str, Any]) -> None:
+            # `_check_stdio_server` is sync and invoked via asyncio.to_thread,
+            # so bump the counter and block until every worker is in-flight.
+            with stats_lock:
+                stats["inflight"] += 1
+                stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
+            barrier.wait()
+            with stats_lock:
+                stats["inflight"] -= 1
+
+        async def _release() -> None:
+            for _ in range(200):
+                with stats_lock:
+                    peak = stats["max_inflight"]
+                if peak >= len(names):
+                    break
+                await asyncio.sleep(0.005)
+            barrier.set()
+
+        fake, _ = self._tracking_session_factory(
+            tool_by_server=tool_by_server, sleep_s=0.0
+        )
+        with (
+            patch("deepagents_code.mcp_tools._check_stdio_server", _slow_check),
+            patch("langchain_mcp_adapters.sessions.create_session", fake),
+        ):
+            releaser = asyncio.create_task(_release())
+            _tools, manager, infos = await _load_tools_from_config(self._config(*names))
+            await releaser
+
+        assert stats["max_inflight"] == len(names)
+        assert [i.name for i in infos] == names
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_warmup_runs_off_loop_before_discovery(self) -> None:
+        """Adapter warmup runs, off the event loop, before any discovery."""
+        loop_thread_id = threading.get_ident()
+        events: list[tuple[str, int]] = []
+
+        def _warm() -> None:
+            events.append(("warm", threading.get_ident()))
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            events.append(("discover", threading.get_ident()))
+            session = AsyncMock()
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+            yield session
+
+        with (
+            patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm),
+            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+        ):
+            _tools, manager, _infos = await _load_tools_from_config(
+                self._config("only")
+            )
+
+        assert events[0][0] == "warm"
+        assert events[0][1] != loop_thread_id
+        assert any(kind == "discover" for kind, _ in events)
+        assert manager is not None
+        await manager.cleanup()
+
+
+class TestGatherBounded:
+    """Direct tests for the `_gather_bounded` concurrency helper.
+
+    These pin the helper's contract independently of MCP loading: submission
+    (not completion) ordering, the empty and clamped-limit edge cases, and the
+    failure path that cancels + awaits siblings and never silently drops a
+    concurrent failure.
+    """
+
+    async def test_results_follow_submission_order(self) -> None:
+        """Results zip back to submission order even when completion differs."""
+        completed: list[int] = []
+
+        def _factory(idx: int, delay: float) -> Callable[[], Any]:
+            async def _run() -> int:
+                await asyncio.sleep(delay)
+                completed.append(idx)
+                return idx
+
+            return _run
+
+        # Index 0 finishes last, index 2 finishes first.
+        factories = [_factory(0, 0.03), _factory(1, 0.02), _factory(2, 0.001)]
+        results = await _gather_bounded(factories, limit=8)
+
+        assert results == [0, 1, 2]
+        assert completed == [2, 1, 0]
+
+    async def test_empty_returns_empty(self) -> None:
+        """Zero factories return an empty list without touching the loop."""
+        assert await _gather_bounded([], limit=8) == []
+
+    async def test_limit_below_one_is_clamped_to_serial(self) -> None:
+        """A limit < 1 is clamped to 1, so factories run strictly serially."""
+        active = {"n": 0, "max": 0}
+
+        def _factory() -> Callable[[], Any]:
+            async def _run() -> None:
+                active["n"] += 1
+                active["max"] = max(active["max"], active["n"])
+                await asyncio.sleep(0.01)
+                active["n"] -= 1
+
+            return _run
+
+        await _gather_bounded([_factory(), _factory(), _factory()], limit=0)
+        assert active["max"] == 1
+
+    async def test_failure_cancels_and_awaits_siblings(self) -> None:
+        """A raising factory cancels the rest and awaits them before raising."""
+        sibling = {"cancelled": False, "completed": False}
+        started = asyncio.Event()
+
+        def _failing() -> Callable[[], Any]:
+            async def _run() -> None:
+                await started.wait()
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            return _run
+
+        def _sibling() -> Callable[[], Any]:
+            async def _run() -> None:
+                started.set()
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    sibling["cancelled"] = True
+                    raise
+                sibling["completed"] = True  # pragma: no cover - never reached
+
+            return _run
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await _gather_bounded([_failing(), _sibling()], limit=8)
+
+        assert sibling["cancelled"] is True
+        assert sibling["completed"] is False
+
+    async def test_concurrent_failures_are_logged_not_lost(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When several factories fail, no failure vanishes silently.
+
+        `asyncio.gather` propagates only the first exception; the others are
+        logged at debug so a concurrent failure is never dropped without trace.
+        """
+
+        def _failing(message: str) -> Callable[[], Any]:
+            async def _run() -> None:
+                raise RuntimeError(message)
+
+            return _run
+
+        with (
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"),
+            pytest.raises(RuntimeError),
+        ):
+            await _gather_bounded(
+                [_failing("first_failure"), _failing("second_failure")], limit=8
+            )
+
+        assert "sibling task failed" in caplog.text
+        # Both failures are represented in the captured logs (the propagated one
+        # plus the logged sibling), so neither is lost.
+        assert "first_failure" in caplog.text
+        assert "second_failure" in caplog.text
 
 
 class TestCachedSessionProxy:

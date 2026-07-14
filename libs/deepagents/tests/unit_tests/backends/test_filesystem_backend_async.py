@@ -1,13 +1,16 @@
 """Async tests for FilesystemBackend."""
 
+import time
 from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
+from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -509,6 +512,37 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     assert any("test.py" in p for p in py_files)
     assert any("main.py" in p for p in py_files)
     assert not any("test.txt" in p for p in py_files)
+
+
+async def test_filesystem_agrep_with_context(tmp_path: Path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nneedle\nafter\n")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+    result = await backend.agrep("needle", path="/", context_lines=1)
+
+    assert result.matches is not None
+    assert format_grep_matches(result.matches, "content") == "/sample.txt:\n  1- before\n  2: needle\n  3- after"
+    with pytest.raises(ValueError, match="context_lines must be non-negative"):
+        await backend.agrep("needle", path="/", context_lines=-1)
+
+
+async def test_filesystem_agrep_with_context_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nneedle\nafter\n")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+    def slow_grep(*_args: object, **_kwargs: object) -> None:
+        time.sleep(0.5)
+
+    monkeypatch.setattr(fs_module, "ASYNC_GREP_TIMEOUT", 0.01)
+    monkeypatch.setattr(backend, "grep", slow_grep)
+
+    result = await backend.agrep("needle", path="/", context_lines=1)
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "timed out" in result.error
 
 
 async def test_filesystem_aglob_recursive(tmp_path: Path):

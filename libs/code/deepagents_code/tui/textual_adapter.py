@@ -298,6 +298,7 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
+        on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
         sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
         request_ask_user: (
@@ -333,6 +334,13 @@ class TextualUIAdapter:
 
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
+
+        self._on_user_visible_output_started = on_user_visible_output_started
+        """Callback fired after the first model text or tool-call widget renders.
+
+        Hidden model and subagent output does not trigger it. A turn interrupted
+        before any user-visible model output produces zero firings.
+        """
 
         self._sync_message_content = sync_message_content
         """Callback to sync final message content back to the store after streaming."""
@@ -654,6 +662,33 @@ async def execute_task_textual(
         adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
+    # Fires at most once per turn, after the first main-agent text or tool-call
+    # widget becomes visible, so hidden model activity cannot block prompt restore.
+    user_visible_output_started = False
+
+    def _notify_user_visible_output_started() -> None:
+        """Fire the output-started callback once, on the first visible output.
+
+        Call only from main-agent, post-filter paths: the "hidden output does
+        not count" guarantee lives in the placement of the call sites (all sit
+        after the subagent and summarization `continue`s), not in any check
+        here — this helper only dedupes.
+        """
+        nonlocal user_visible_output_started
+        if user_visible_output_started:
+            return
+        user_visible_output_started = True
+        if adapter._on_user_visible_output_started:
+            try:
+                adapter._on_user_visible_output_started()
+            except Exception:
+                # A prompt-restore gate update must never abort agent
+                # streaming — log and keep going (mirrors `_on_tool_complete`).
+                logger.warning(
+                    "on_user_visible_output_started callback failed",
+                    exc_info=True,
+                )
+
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
     # Tool-call ids that already received terminal hooks before a resumed
@@ -853,6 +888,7 @@ async def execute_task_textual(
                                                     tool_id,
                                                 )
                                             else:
+                                                _notify_user_visible_output_started()
                                                 # Fire tool.use and latch the id
                                                 # together, only once the widget
                                                 # is mounted, so the "every
@@ -1078,7 +1114,11 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 await adapter._mount_message(
-                                    DiffMessage(record.diff, record.display_path)
+                                    DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                    )
                                 )
 
                         # Reshow spinner only when all in-flight tools have
@@ -1192,6 +1232,7 @@ async def execute_task_textual(
                                 # streaming (uses MarkdownStream internally for
                                 # better performance)
                                 await current_msg.append_content(text)
+                                _notify_user_visible_output_started()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
@@ -1298,6 +1339,7 @@ async def execute_task_textual(
                                         buffer_id,
                                     )
                                 else:
+                                    _notify_user_visible_output_started()
                                     # Mark running so the group row reflects live
                                     # progress; the row itself is hidden inside
                                     # the group, so this drives state, not a

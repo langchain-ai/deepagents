@@ -1261,24 +1261,49 @@ def _coerce_prompt_text(content: object) -> str | None:
     return str(content)
 
 
-async def get_most_recent(agent_name: str | None = None) -> str | None:
-    """Get most recent thread_id, optionally filtered by agent.
+async def get_most_recent(
+    agent_name: str | None = None,
+    *,
+    exclude_thread_id: str | None = None,
+) -> str | None:
+    """Get the most recent thread, optionally agent-filtered and/or excluding a thread.
+
+    Args:
+        agent_name: Return only threads created by this agent.
+        exclude_thread_id: Ignore this thread when selecting the most recent one.
 
     Returns:
-        Most recent thread_id or None if no threads exist.
+        Most recent thread ID, or `None` if no matching threads exist.
     """
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
-        if agent_name:
+        if agent_name and exclude_thread_id:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE json_extract(metadata, '$.agent_name') = ?
+                  AND thread_id != ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params: tuple[str, ...] = (agent_name, exclude_thread_id)
+        elif agent_name:
             query = """
                 SELECT thread_id FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 ORDER BY checkpoint_id DESC
                 LIMIT 1
             """
-            params: tuple = (agent_name,)
+            params = (agent_name,)
+        elif exclude_thread_id:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE thread_id != ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params = (exclude_thread_id,)
         else:
             query = (
                 "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"

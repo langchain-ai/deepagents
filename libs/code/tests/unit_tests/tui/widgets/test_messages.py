@@ -18,6 +18,7 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
 )
+from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -769,6 +770,31 @@ class TestToolCallMessageDuration:
             await pilot.pause()
 
             status = app.msg._status_widget
+            assert status is not None
+            assert status.display is True
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 5s"
+
+    async def test_task_took_duration_survives_rehydration(self) -> None:
+        """A virtualized task row restores its completed duration."""
+        app = _tool_msg_app("task", {"description": "investigate the bug"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 5  # ty: ignore
+            app.msg.set_success("done")
+            data = MessageData.from_widget(app.msg)
+            assert data.tool_duration == pytest.approx(5, abs=0.1)
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        rehydrated_app = _tool_msg_app("task")
+        rehydrated_app.msg = restored
+        async with rehydrated_app.run_test() as pilot:
+            await pilot.pause()
+
+            status = restored._status_widget
             assert status is not None
             assert status.display is True
             content = status._Static__content  # ty: ignore

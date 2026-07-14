@@ -179,10 +179,14 @@ class TestScrollDrivenHydration:
             chat.scroll_end(animate=False)
             await pilot.pause()
             chat.scroll_to(y=0, animate=False)
-            for _ in range(30):
-                await pilot.pause()
-                if not app._message_store.has_messages_above:
-                    break
+
+            async def wait_for_head_hydration() -> None:
+                while app._message_store.has_messages_above:
+                    await pilot.pause()
+                    chat.scroll_to(y=0, animate=False)
+
+            await asyncio.wait_for(wait_for_head_hydration(), timeout=5)
+            await pilot.pause()
 
             start_after, _end_after = app._message_store.get_visible_range()
             assert start_after == 0

@@ -3451,9 +3451,11 @@ class McpProjectServerApproval:
             and fingerprint.strip()
         ):
             return None
+        normalized_root = normalize_mcp_project_root(project_root)
+        if normalized_root is None:
+            return None
         return cls(
-            project_root=normalize_mcp_project_root(project_root)
-            or project_root.strip(),
+            project_root=normalized_root,
             name=name.strip(),
             fingerprint=fingerprint.strip(),
         )
@@ -3475,22 +3477,40 @@ def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
 
     Returns:
         Resolved absolute project root string, or `None` when `project_root`
-            is `None`. On an `OSError` from `resolve()`, returns the expanded
-            but *unresolved* path as a fallback; a transient failure on only one
-            of the write/read sides then yields different strings and a spurious
+            is `None`, cannot be expanded, or resolution detects a path loop.
+            On an `OSError` from `resolve()`, returns the expanded but
+            *unresolved* path as a fallback; a transient failure on only one of
+            the write/read sides then yields different strings and a spurious
             re-prompt (fail-closed), never a false match.
     """
     if project_root is None:
         return None
     try:
-        return str(Path(project_root).expanduser().resolve())
+        expanded_root = Path(project_root).expanduser()
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not expand MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+    try:
+        return str(expanded_root.resolve())
     except OSError:
         logger.warning(
             "Could not resolve MCP project root %s",
             project_root,
             exc_info=True,
         )
-        return str(Path(project_root).expanduser())
+        return str(expanded_root)
+    except RuntimeError:
+        logger.warning(
+            "Could not resolve MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
 
 
 def fingerprint_mcp_server_config(server: JSONValue) -> str:
@@ -3635,6 +3655,13 @@ class McpServerTrustLists:
             # here rather than let `McpProjectServerApproval.create` raise
             # `ValueError` from its non-empty invariant out of the trust filter.
             return False
+        # These membership tests use the raw (unstripped) `name`, while the
+        # approval path below strips it via `create`. Reject precedence for a
+        # whitespace-padded name (e.g. `" docs "` vs `disabled={"docs"}`) does
+        # NOT rest on this check — it survives only because `__post_init__`
+        # already stripped every disabled name out of `enabled` and `approvals`
+        # (it compares the always-stripped `approval.name`). Keep that stripping
+        # in sync with this check: a padded name sails past both lines here.
         if name in self.disabled:
             return False
         if name in self.enabled:
@@ -3955,8 +3982,12 @@ def add_enabled_project_mcp_servers(
     Defaults to the user-level config (`DEFAULT_CONFIG_PATH`), the sole source
     `load_mcp_server_trust_lists` reads the allowlist from — so writing to the
     user's home config is what preserves the read-side trust boundary (a
-    committed `.mcp.json` can never self-approve). The write is atomic
-    (`tempfile.mkstemp` + `Path.replace`), matching `suppress_warning`.
+    committed `.mcp.json` can never self-approve). Any name being persisted is
+    also pruned from the deprecated flat `[mcp].enabled_project_servers` key
+    (the key is removed once empty), migrating callers off the ignored legacy
+    list. The write is atomic (`tempfile.mkstemp` + `Path.replace`) and holds
+    `_config_write_lock` across the whole read-modify-write, matching
+    `suppress_warning`.
 
     Args:
         names: Server names to add to the allowlist. Blank/whitespace-only
@@ -4004,48 +4035,54 @@ def add_enabled_project_mcp_servers(
         approvals_to_add.append(approval)
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        # Hold the shared lock across read-through-replace: the atomic rename
+        # alone only prevents torn writes, not the lost update where a
+        # concurrent config.toml writer reads the same snapshot and its
+        # `replace()` lands last, silently dropping this approval. See the
+        # `_config_write_lock` contract; `suppress_warning` guards the same way.
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-
-        mcp_section = data.get("mcp")
-        if not isinstance(mcp_section, dict):
-            mcp_section = {}
-        existing, _ = _toml_project_server_approvals(
-            mcp_section.get("enabled_project_server_approvals"),
-            config_path=config_path,
-        )
-        merged = set(existing) | set(approvals_to_add)
-        mcp_section["enabled_project_server_approvals"] = [
-            approval.as_toml() for approval in sorted(merged)
-        ]
-        legacy, legacy_malformed = _toml_str_list(
-            mcp_section.get("enabled_project_servers"),
-            key="enabled_project_servers",
-            config_path=config_path,
-        )
-        if legacy and not legacy_malformed:
-            migrated = set(clean_names)
-            remaining = [name for name in legacy if name not in migrated]
-            if remaining:
-                mcp_section["enabled_project_servers"] = remaining
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
             else:
-                mcp_section.pop("enabled_project_servers", None)
-        data["mcp"] = mcp_section
+                data = {}
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            mcp_section = data.get("mcp")
+            if not isinstance(mcp_section, dict):
+                mcp_section = {}
+            existing, _ = _toml_project_server_approvals(
+                mcp_section.get("enabled_project_server_approvals"),
+                config_path=config_path,
+            )
+            merged = set(existing) | set(approvals_to_add)
+            mcp_section["enabled_project_server_approvals"] = [
+                approval.as_toml() for approval in sorted(merged)
+            ]
+            legacy, legacy_malformed = _toml_str_list(
+                mcp_section.get("enabled_project_servers"),
+                key="enabled_project_servers",
+                config_path=config_path,
+            )
+            if legacy and not legacy_malformed:
+                migrated = set(clean_names)
+                remaining = [name for name in legacy if name not in migrated]
+                if remaining:
+                    mcp_section["enabled_project_servers"] = remaining
+                else:
+                    mcp_section.pop("enabled_project_servers", None)
+            data["mcp"] = mcp_section
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # Matches `suppress_warning`: `TypeError` covers `tomli_w.dump`
         # rejecting a non-serializable payload; `ValueError` covers things like

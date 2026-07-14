@@ -5711,6 +5711,16 @@ class TestFingerprintMcpServerConfig:
         """Mutating `args`, `env`, `headers`, or `url` re-prompts (new digest)."""
         assert fingerprint_mcp_server_config(a) != fingerprint_mcp_server_config(b)
 
+    def test_non_serializable_input_raises_type_error(self) -> None:
+        """A non-JSON-serializable definition raises, per the documented contract.
+
+        Callers (`McpProjectServerApproval.create`, `add_enabled_project_mcp_servers`)
+        rely on this surfacing rather than silently hashing a partial value; the
+        writer catches it to keep its `bool` contract.
+        """
+        with pytest.raises(TypeError):
+            fingerprint_mcp_server_config({"command": object()})
+
 
 class TestNormalizeMcpProjectRoot:
     """Tests for normalize_mcp_project_root()."""
@@ -5767,6 +5777,36 @@ class TestNormalizeMcpProjectRoot:
         assert result is not None
         assert "~" not in result  # still expanded
         assert result == str(Path("~/proj").expanduser())
+
+    def test_expanduser_runtime_error_returns_none_without_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An invalid `~user` fails closed without repeating the expansion."""
+        calls = 0
+
+        def _boom(_path: Path) -> Path:
+            nonlocal calls
+            calls += 1
+            msg = "unknown user"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "expanduser", _boom)
+
+        assert normalize_mcp_project_root("~missing/project") is None
+        assert calls == 1
+
+    def test_resolve_runtime_error_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A symlink-loop error cannot leave an unresolved trusted path."""
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "symlink loop"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        assert normalize_mcp_project_root("/project/loop") is None
 
 
 class TestMcpProjectServerApproval:
@@ -5952,6 +5992,41 @@ class TestMcpServerTrustListsIsEnabled:
 
         assert not lists.is_enabled("docs", project_root=None, server=self._server())
 
+    def test_padded_name_matches_stripped_approval(self, tmp_path: Path) -> None:
+        """A whitespace-padded config name still matches its stripped approval.
+
+        `create`/`from_toml` persist a stripped name, so `is_enabled` must
+        normalize the same way or a padded `.mcp.json` key would never match its
+        own saved approval. Pins that intended normalization.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset(),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert lists.is_enabled(" docs ", project_root=tmp_path, server=self._server())
+
+    def test_padded_name_cannot_bypass_deny(self, tmp_path: Path) -> None:
+        """A padded name cannot slip a denied server past reject precedence.
+
+        `is_enabled`'s `name in self.disabled` check uses the raw name, so a
+        padded `" docs "` sails past it; the deny holds only because
+        `__post_init__` stripped the matching approval out of `approvals`. This
+        pins that fail-closed guarantee so a refactor that changed either side
+        (dropped the post-init stripping, or naively "fixed" the raw check)
+        cannot reopen the bypass with the suite still green.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset(),
+            disabled=frozenset({"docs"}),
+            approvals=frozenset({self._approval_for(tmp_path, "docs")}),
+        )
+
+        assert not lists.is_enabled(
+            " docs ", project_root=tmp_path, server=self._server()
+        )
+
 
 class TestLoadMcpServerApprovalsParsing:
     """Fail-closed parsing of `[mcp].enabled_project_server_approvals`.
@@ -6036,6 +6111,31 @@ class TestLoadMcpServerTrustLists:
             ),
         )
 
+    def test_unresolvable_approval_root_is_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale approval whose root becomes a symlink loop fails closed."""
+        config_path = tmp_path / "config.toml"
+        loop = tmp_path / "loop"
+        fingerprint = fingerprint_mcp_server_config({"command": "echo", "args": []})
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{loop}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> Path:
+            msg = "symlink loop"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "resolve", _boom)
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.approvals == frozenset()
+        assert result.malformed_approvals == 1
+
     def test_reject_precedence_removes_from_approvals(self, tmp_path: Path) -> None:
         """A name in approvals and disabled is reported only as disabled."""
         config_path = tmp_path / "config.toml"
@@ -6118,6 +6218,36 @@ class TestLoadMcpServerTrustLists:
         assert result == McpServerTrustLists(frozenset(), frozenset())
         assert result.read_error is not None
         assert str(config_path) in result.read_error
+
+    def test_dangerous_env_survives_toml_deny_when_config_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Characterize the documented reject-wins corner (accepted footgun).
+
+        When `config.toml` is unreadable, `toml_disabled` is lost, so a name that
+        is both TOML-`disabled` and exported in the `DANGEROUSLY_` enable env var
+        survives — "reject wins" does NOT hold in this one corner. This pins that
+        intentional behavior (and its `read_error` surfacing) so a future change
+        that closes it is a deliberate decision, not an accidental regression.
+        Contrast `test_env_deny_beats_toml_allow_same_name`, where a readable
+        config keeps the deny.
+        """
+        config_path = tmp_path / "config.toml"
+        # The deny lives here but is lost because the file cannot be parsed.
+        config_path.write_text('[[invalid toml\ndisabled_project_servers = ["srv"]')
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, "srv"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.read_error is not None
+        # The footgun: the name survives despite the (unreadable) TOML deny.
+        assert result.enabled == frozenset({"srv"})
+        assert "srv" not in result.disabled
+        assert result.is_enabled(
+            "srv", project_root=tmp_path, server={"command": "echo", "args": []}
+        )
 
     def test_legacy_enabled_ignored_and_mixed_disabled_dropped(
         self, tmp_path: Path
@@ -6901,6 +7031,33 @@ class TestAddEnabledProjectMcpServers:
         assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
         assert data["mcp"]["enabled_project_server_approvals"][0]["name"] == "docs"
         assert data["mcp"]["disabled_project_servers"] == ["evil"]
+
+    def test_heals_non_table_mcp_value(self, tmp_path: Path) -> None:
+        """An existing scalar `mcp` value is overwritten with a proper table.
+
+        The write-side analog of the read-side `test_non_table_mcp_sets_read_error`:
+        a corrupt `[mcp]` must not abort the save, and unrelated config survives.
+        """
+        from deepagents_code.model_config import add_enabled_project_mcp_servers
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            'mcp = "oops"\n[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+        )
+
+        assert add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path / "project",
+            server_configs=self._server_configs(),
+        )
+
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-4-5"
+        assert data["mcp"]["enabled_project_server_approvals"][0]["name"] == "docs"
 
     def test_ignores_blank_names_and_empty_is_noop(self, tmp_path: Path) -> None:
         """Blank names are skipped and an all-blank call writes nothing."""

@@ -1130,12 +1130,13 @@ def _merge_mcp_configs_with_sources(
 def load_mcp_config_lenient(
     config_path: Path, *, disabled_servers: Collection[str] = ()
 ) -> dict[str, Any] | None:
-    """Load an MCP config file, returning `None` on any error.
+    """Load a single MCP config file, returning `None` on any error.
 
-    Disabled servers are removed before per-server validation. This lets trust
-    prompts inspect exactly the servers that whole-config session approval can
-    activate: explicitly denied entries can neither block nor appear in that
-    prompt.
+    Disabled servers are removed before per-server validation, so explicitly
+    denied entries can neither block loading nor surface to a caller inspecting
+    the config. The single-file counterpart to `load_merged_mcp_configs_lenient`
+    (which the trust prompt uses); this one has no production caller today and is
+    retained as the standalone lenient loader.
 
     Args:
         config_path: Config path to load.

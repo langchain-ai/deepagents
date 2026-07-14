@@ -58,7 +58,9 @@ DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS = (
 
 This is an explicit process-wide escape hatch. Servers named here load from an
 otherwise-untrusted project `.mcp.json` without prompting (they are omitted from
-the interactive approval prompt), while non-listed servers stay dropped. Like
+the interactive approval prompt), while non-listed servers still require
+approval (they go through the prompt, and stay dropped only on the
+non-interactive or denied paths). Like
 `DISABLED_PROJECT_MCP_SERVERS`, this is user-controlled process env, not a repo
 file, so it does not weaken the user-level-only trust boundary (a committed
 *project* `.env` cannot set it; see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).

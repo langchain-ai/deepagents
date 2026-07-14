@@ -222,14 +222,15 @@ class TestScrollDrivenHydration:
             await pilot.pause()
             chat.scroll_end(animate=False)
 
-            async def wait_for_tail_hydration() -> None:
-                while app._message_store.has_messages_below:
-                    await pilot.pause()
-                    chat.scroll_end(animate=False)
+            for _ in range(app._message_store.total_count):
+                if not app._message_store.has_messages_below:
+                    break
+                chat.scroll_to(y=0, animate=False)
+                await pilot.pause()
+                chat.scroll_end(animate=False)
+                await pilot.pause()
 
-            await asyncio.wait_for(wait_for_tail_hydration(), timeout=5)
-            await pilot.pause()
-
+            assert not app._message_store.has_messages_below
             _start_after, end_after = app._message_store.get_visible_range()
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.

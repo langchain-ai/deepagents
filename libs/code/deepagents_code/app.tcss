@@ -252,6 +252,17 @@ ToolCallMessage.-ascii:hover {
     background: $surface;
 }
 
+/* Persistent goal status */
+.goal-status-panel {
+    height: auto;
+    max-height: 5;
+    margin: 0 1;
+    padding: 0 1;
+    color: $text;
+    background: $surface-darken-1;
+    border-left: thick $primary;
+}
+
 /* Goal review widget */
 .goal-review-menu {
     height: auto;

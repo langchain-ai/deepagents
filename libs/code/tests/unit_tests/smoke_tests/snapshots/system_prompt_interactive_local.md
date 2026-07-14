@@ -387,7 +387,8 @@ active, and you should judge for yourself when the work is done.
 
 When a rubric is active, use `get_rubric` to inspect the acceptance criteria
 before deciding whether the work is complete.
-When a goal is active, use `get_goal` to inspect its objective and status.
+When a goal is active, use `get_goal` to inspect its objective and current status.
+A paused goal is persisted for later but must not drive work until the user resumes it.
 Use `update_goal` only when a goal is active and you have evidence it is complete
 or blocked.
 

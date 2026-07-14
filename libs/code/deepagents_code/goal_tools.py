@@ -49,7 +49,8 @@ active, and you should judge for yourself when the work is done.
 
 When a rubric is active, use `get_rubric` to inspect the acceptance criteria
 before deciding whether the work is complete.
-When a goal is active, use `get_goal` to inspect its objective and status.
+When a goal is active, use `get_goal` to inspect its objective and current status.
+A paused goal is persisted for later but must not drive work until the user resumes it.
 Use `update_goal` only when a goal is active and you have evidence it is complete
 or blocked."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
@@ -96,11 +97,12 @@ class GoalSnapshot(TypedDict):
     """
 
     active: bool
-    """Whether the goal is unfinished.
+    """Whether the goal is actionable (should drive work).
 
-    Derived from `status`: a set goal is active until it is `complete`. `False`
-    when no goal is set (the `objective is None` branch), where `status` is also
-    `None`.
+    Derived from `status`: `active` and `blocked` goals are actionable, while
+    `paused` and `complete` goals are not. Note a `paused` goal is unfinished
+    yet reports `active=False`. `False` when no goal is set (the
+    `objective is None` branch), where `status` is also `None`.
     """
 
     objective: str | None
@@ -115,7 +117,7 @@ class GoalSnapshot(TypedDict):
     """
 
     criteria: str | None
-    """Accepted criteria (from the shared rubric snapshot)."""
+    """Persisted goal criteria, or shared rubric criteria when no goal rubric exists."""
 
     note: str | None
     """Latest evidence or blocker note recorded by `update_goal`."""
@@ -160,22 +162,25 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     goal_rubric = _clean_state_text(state, "_goal_rubric")
     sticky_rubric = _clean_state_text(state, "_sticky_rubric")
     objective = _clean_state_text(state, "_goal_objective")
+    status = coerce_goal_status(state.get("_goal_status")) or "active"
+    goal_is_actionable = objective is not None and status in {"active", "blocked"}
+    sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
     source: RubricSource | None = None
     if criteria is not None:
-        if objective is not None and goal_rubric == criteria:
+        if goal_is_actionable and goal_rubric == criteria:
             source = "goal"
-        elif sticky_rubric == criteria:
+        elif sticky_rubric == criteria and not sticky_is_goal_rubric:
             source = "sticky"
         else:
             source = "invocation"
     # Fallback branches below run only when there is no public `rubric` input,
     # so `invocation` is unreachable here by construction — the criteria can
-    # only be attributed to a `goal` or a `sticky` rubric.
-    elif objective is not None and goal_rubric is not None:
+    # only be attributed to an actionable `goal` or a standalone `sticky` rubric.
+    elif goal_is_actionable and goal_rubric is not None:
         criteria = goal_rubric
         source = "goal"
-    elif sticky_rubric is not None:
+    elif sticky_rubric is not None and not sticky_is_goal_rubric:
         criteria = sticky_rubric
         source = "sticky"
 
@@ -212,14 +217,15 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     # A set-but-unlabeled or unrecognized status defaults to "active"; an
     # unknown persisted value never leaks to the model as a bogus status.
     status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
+    criteria = _clean_state_text(state, "_goal_rubric") or rubric["criteria"]
     note = _clean_state_text(state, "_goal_status_note")
     return {
-        # A goal is active until it is complete; `blocked` is still unfinished.
-        # Derive `active` from `status` so the two never disagree.
-        "active": status != "complete",
+        # Blocked goals remain actionable, while paused and complete goals do not
+        # drive work until the user changes their state.
+        "active": status in {"active", "blocked"},
         "objective": objective,
         "status": status,
-        "criteria": rubric["criteria"],
+        "criteria": criteria,
         "note": note,
     }
 
@@ -263,6 +269,20 @@ def _update_goal_command(
                         tool_call_id=tool_call_id,
                     )
                 ]
+            }
+        )
+    goal_status = coerce_goal_status(state.get("_goal_status")) or "active"
+    if goal_status in {"paused", "complete"}:
+        if goal_status == "paused":
+            message = (
+                "The goal is paused. The user must run `/goal resume` before its "
+                "status can be updated."
+            )
+        else:
+            message = "The goal is already complete and cannot be updated."
+        return Command(
+            update={
+                "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)]
             }
         )
     clean_note = note.strip()

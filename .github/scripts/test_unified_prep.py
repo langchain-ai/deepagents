@@ -16,13 +16,6 @@ def test_parse_int_input_enforces_inclusive_range():
             up.parse_int_input("UNIFIED_CONCURRENCY", raw, minimum=1, maximum=40)
 
 
-def test_slugify_replaces_colons_and_slashes():
-    assert up.slugify("anthropic:claude-opus-4-7") == "anthropic-claude-opus-4-7"
-    assert up.slugify("fireworks:accounts/fireworks/models/glm-5p2") == (
-        "fireworks-accounts-fireworks-models-glm-5p2"
-    )
-
-
 def test_provider_of_uses_prefix_and_falls_back_to_other():
     known = {"anthropic", "openai"}
     assert up.provider_of("anthropic:claude-opus-4-7", known) == "anthropic"
@@ -65,10 +58,8 @@ def test_build_provider_matrices_cross_products_models_and_categories():
     )
     assert entry["dataset_path"] == "datasets/context-retrieval-evals"
     assert entry["agent_impl"] == "dcode"
-    # readable slug + short hash suffix for collision resistance
-    assert entry["langsmith_dataset"].startswith(
-        "context-retrieval-evals__anthropic-opus-"
-    )
+    # Shared dataset: empty so the leaf derives the canonical per-category name.
+    assert entry["langsmith_dataset"] == ""
     assert entry["n_shards"] == 3
 
 
@@ -111,16 +102,16 @@ def test_main_rejects_invalid_agent_impl(tmp_path, monkeypatch):
         up.main()
 
 
-def test_langsmith_dataset_is_collision_resistant():
-    # slugify is lossy: these two distinct specs slugify to the same string, so
-    # the hash suffix must keep their langsmith_dataset names distinct.
-    a, b = "openrouter:foo/bar", "openrouter:foo-bar"
-    assert up.slugify(a) == up.slugify(b)
+def test_langsmith_dataset_is_empty_for_shared_dataset():
+    # No per-model dataset name: the leaf derives the canonical shared dataset,
+    # so every entry's langsmith_dataset is empty regardless of the model spec.
     mats = up.build_provider_matrices(
-        [a, b], ["context"], shard_parallel=10, n_shards_by_cat={"context": 3}
+        ["openrouter:foo/bar", "openrouter:foo-bar"],
+        ["context"],
+        shard_parallel=10,
+        n_shards_by_cat={"context": 3},
     )
-    names = {e["langsmith_dataset"] for e in mats["openrouter"]}
-    assert len(names) == 2  # distinct despite identical slugs
+    assert all(e["langsmith_dataset"] == "" for e in mats["openrouter"])
 
 
 def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):

@@ -12,10 +12,8 @@ Concurrency invariants:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,19 +41,16 @@ CATEGORY_MAP: dict[str, dict] = {
         "dataset": "harbor-index/harbor-index-1.0",
         "dataset_path": "",
         "agent_impl": "dcode",
-        "ls_dataset": "harbor-index",
     },
     "conversation": {
         "dataset": "tau3-subset",
         "dataset_path": "",
         "agent_impl": "tau3",
-        "ls_dataset": "tau3-subset",
     },
     "context": {
         "dataset": "",
         "dataset_path": "datasets/context-retrieval-evals",
         "agent_impl": "dcode",
-        "ls_dataset": "context-retrieval-evals",
     },
 }
 
@@ -99,17 +94,6 @@ def parse_int_input(
     return value
 
 
-def slugify(spec: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "-", spec).strip("-").lower()
-
-
-def _short_hash(value: str) -> str:
-    # slugify is lossy (e.g. "foo/bar" and "foo-bar" collapse to the same slug),
-    # so distinct specs can produce identical names. Append a short hash of the
-    # raw value to keep dataset/artifact names unique.
-    return hashlib.sha256(value.encode()).hexdigest()[:8]
-
-
 def provider_of(spec: str, known: set[str] = KNOWN_PROVIDERS) -> str:
     prefix = spec.split(":", 1)[0]
     return prefix if prefix in known else "other"
@@ -146,9 +130,11 @@ def build_provider_matrices(
                 "dataset": cm["dataset"],
                 "dataset_path": cm["dataset_path"],
                 "agent_impl": agent_impl,
-                # Per-model datasets isolate runs; unified_summary is the
-                # cross-model comparison surface.
-                "langsmith_dataset": f"{cm['ls_dataset']}__{slugify(spec)}-{_short_hash(spec)}",
+                # Empty: the leaf derives the canonical shared dataset name per
+                # category (harbor-index/harbor-index-1.0, tau3-subset,
+                # local/...), so every model attaches as an experiment on the one
+                # shared dataset. unified_summary remains the cross-model surface.
+                "langsmith_dataset": "",
                 "n_shards": n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat]),
                 "shard_parallel": shard_parallel,
             }

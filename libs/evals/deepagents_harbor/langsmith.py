@@ -106,10 +106,7 @@ def _headers() -> dict[str, str]:
     """
     result = resolve_langsmith_api_key()
     if not result:
-        msg = (
-            "No LangSmith API key found. Set one of: "
-            "LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
-        )
+        msg = "No LangSmith API key found. Set one of: LANGSMITH_API_KEY, LANGCHAIN_API_KEY."
         raise ValueError(msg)
     return {"x-api-key": result[0]}
 

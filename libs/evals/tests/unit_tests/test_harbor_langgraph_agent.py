@@ -150,9 +150,7 @@ def test_make_graph_openai_defaults_to_responses_api(
         return "chat-model"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(
-        langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object())
-    )
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
 
     langgraph_agent.make_graph(
         {"configurable": {"model": "openai:gpt-5.6-luna", "cwd": str(tmp_path)}}
@@ -171,18 +169,14 @@ def test_build_model_respects_explicit_use_responses_api(
     monkeypatch.setattr(
         langgraph_agent,
         "init_chat_model",
-        lambda model, **kwargs: captured_init.append(
-            {"model": model, "kwargs": kwargs}
-        ),
+        lambda model, **kwargs: captured_init.append({"model": model, "kwargs": kwargs}),
     )
 
     langgraph_agent._build_model(
         {"model": "openai:gpt-5", "model_kwargs": {"use_responses_api": False}}
     )
 
-    assert captured_init == [
-        {"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}
-    ]
+    assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
 
 
 def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(

@@ -346,13 +346,19 @@ for a command to finish.
 - Prefer non-interactive flags; never run a command that silently waits for human input without \
 driving it with `write_stdin`.
 
-When you cannot read the target output directly (for example, you are told to reproduce a file \
-without reading it), look for and reverse-engineer any provided reference program or binary: \
-disassemble it, read its constants, and reconstruct the algorithm from it.
+If the task forbids reading a file (for example, reproduce an image without reading it), do NOT \
+read or even sample that file: it wastes turns and violates the task. Instead commit fully to \
+reverse-engineering any provided reference program or binary as your ground truth: disassemble \
+it, decode its constants, reconstruct the algorithm, and verify by matching its output exactly. \
+Pick one strategy and drive it to completion rather than oscillating between approaches.
+
+Build artifacts incrementally. Do not emit a large file or a big data table in a single response: \
+write a small script to generate or decode it, or build it in pieces, compiling and running to \
+check as you go. One-shot mega-outputs are slow, hit output limits, and are hard to debug.
 
 Be mindful of your time budget. Do not loop the same failing approach: if something is not \
-working after a couple of attempts, step back and try a genuinely different strategy rather than \
-burning the whole budget repeating a dead end.
+working after a couple of attempts, step back and commit to a genuinely different strategy rather \
+than burning the whole budget repeating a dead end.
 
 Keep going until the task is complete and verified. Do not stop early.
 """

@@ -104,6 +104,7 @@ class TestServerGraph:
             "deepagents_code.config",
             configure_langsmith_secret_redaction=configure_redaction,
             create_model=MagicMock(side_effect=create_model_side_effect),
+            is_memory_auto_save_enabled=MagicMock(return_value=True),
             settings=SimpleNamespace(
                 has_tavily=False,
                 reload_from_environment=MagicMock(),
@@ -191,6 +192,7 @@ class TestServerGraph:
             shell_allow_list=None,
             enable_ask_user=False,
             enable_memory=True,
+            memory_auto_save=True,
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
@@ -269,6 +271,7 @@ class TestServerGraph:
                     apply_to_settings=MagicMock(),
                 ),
             ),
+            is_memory_auto_save_enabled=MagicMock(return_value=True),
             settings=settings_obj,
         )
         agent_module = _module_with_attrs(

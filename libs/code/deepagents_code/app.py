@@ -15,7 +15,7 @@ import time
 import uuid
 import webbrowser
 from collections import deque
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
@@ -29,13 +29,14 @@ from textual.css.query import NoMatches
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Header, Static
 from textual.widgets._toast import (  # noqa: PLC2701
     Toast as _Toast,  # for Toast click routing
 )
+from typing_extensions import override
 
 # Applied as an import-time side effect; must come before any App is created.
 from deepagents_code import (
@@ -45,6 +46,7 @@ from deepagents_code import (
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    MCP_REENABLED_PENDING_ERROR,
     SYSTEM_MESSAGE_PREFIX,
 )
 from deepagents_code._git import (
@@ -73,6 +75,7 @@ from deepagents_code.notifications import (
 )
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.goal_status import GoalStatusPanel
 from deepagents_code.tui.widgets.loading import LoadingWidget
 from deepagents_code.tui.widgets.message_store import (
     MessageData,
@@ -86,11 +89,13 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    RubricResultMessage,
     SkillMessage,
     ToolCallMessage,
     ToolGroupSummary,
     UserMessage,
 )
+from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
 from deepagents_code.tui.widgets.welcome import WelcomeBanner
@@ -157,6 +162,16 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
+_TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
+"""Tools that stay expanded instead of collapsing into step summaries.
+
+Each surfaces user-facing content worth keeping visible on its own — an
+interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
+(`write_todos`) — so it renders standalone and acts as a boundary between
+adjacent tool groups. Add a tool here only when its collapsed one-line
+summary would hide something the user needs to see.
+"""
+
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
 
@@ -168,6 +183,15 @@ change on the container would force Textual to re-cascade styles across every
 message subtree (O(mounted widgets)), whereas flipping the leaf footers
 restyles only the footers.
 """
+
+_MESSAGE_SPACER_CLASS = "message-virtual-spacer"
+"""CSS class for transcript virtualization spacer rows."""
+
+_MESSAGE_TOP_SPACER_ID = "message-top-spacer"
+"""DOM id for the spacer representing source messages above the mounted window."""
+
+_MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
+"""DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
     {MessageType.APP, MessageType.SUMMARIZATION}
@@ -221,7 +245,10 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     Returns:
         Names of channels whose persisted value was discarded as malformed.
     """
-    from deepagents_code.resume_state import coerce_goal_status
+    from deepagents_code.resume_state import (
+        coerce_goal_proposal_kind,
+        coerce_goal_status,
+    )
 
     discarded: list[str] = []
     for channel in (
@@ -234,6 +261,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
         "_pending_goal_completion_note",
         "_pending_goal_objective",
         "_pending_goal_rubric",
+        "_pending_goal_kind",
     ):
         value = state_values.get(channel)
         if value is not None and not isinstance(value, str):
@@ -249,6 +277,13 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
             and coerce_goal_status(value) is None
         ):
             logger.warning("Discarding unknown persisted goal status %r", value)
+            discarded.append(channel)
+        elif (
+            channel == "_pending_goal_kind"
+            and isinstance(value, str)
+            and coerce_goal_proposal_kind(value) is None
+        ):
+            logger.warning("Discarding unknown persisted goal proposal kind %r", value)
             discarded.append(channel)
     return discarded
 
@@ -327,17 +362,16 @@ class _ConfigWriteResult:
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
     from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import MouseUp, Paste
+    from textual.events import MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
-    from textual.scrollbar import ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
@@ -346,17 +380,23 @@ if TYPE_CHECKING:
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.config import ModelResult
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
-    from deepagents_code.resume_state import GoalStatus
+    from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu
+    from deepagents_code.tui.widgets.auth import AuthManagerScreen
+    from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
+    from deepagents_code.tui.widgets.debug_console import SnapshotField
     from deepagents_code.tui.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
+        NotificationActionRequested,
         NotificationSuppressRequested,
     )
     from deepagents_code.tui.widgets.restart_prompt import RestartChoice
@@ -846,6 +886,33 @@ def _load_cursor_blink_preference() -> bool:
     return _load_bool_ui_preference("cursor_blink", log_label="cursor blink")
 
 
+def _load_cursor_style_preference() -> CursorStyle:
+    """Resolve the chat input cursor style.
+
+    Precedence follows `resolve_scalar`: the `DEEPAGENTS_CODE_CURSOR_STYLE` env
+    var wins, then `[ui].cursor_style` in `~/.deepagents/config.toml`, falling
+    back to `"block"` when unset or invalid.
+
+    Returns:
+        The resolved cursor style.
+    """
+    from deepagents_code.config_manifest import (
+        CURSOR_STYLE_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.cursor_style")
+    if option is None:
+        logger.warning(
+            "Unknown config option %r; using block cursor", "display.cursor_style"
+        )
+        return CURSOR_STYLE_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return cast("CursorStyle", value)
+
+
 def _load_terminal_progress_preference() -> bool:
     """Load the `OSC 9;4` progress preference from `~/.deepagents/config.toml`.
 
@@ -1294,6 +1361,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "mcp_reconnect",
     "rubric_model_switch",
     "rubric_max_iterations_switch",
 ]
@@ -1401,6 +1469,32 @@ class _ThreadHistoryPayload:
 
     pending_goal_rubric: str | None = None
     """Persisted pending goal criteria, if any."""
+
+    pending_goal_kind: GoalProposalKind | None = None
+    """Whether the pending review creates or amends a goal."""
+
+
+@dataclass(frozen=True, slots=True)
+class _GoalApplication:
+    """Accepted goal proposal waiting for a safe checkpoint boundary."""
+
+    objective: str
+    rubric: str
+    kind: GoalProposalKind
+
+    def __post_init__(self) -> None:
+        """Reject empty objective or rubric at construction.
+
+        Callers already screen these (`_accept_goal_rubric`), so this only
+        guards against a future construction site skipping that check and
+        queuing a goal that would clear the active one to nothing.
+
+        Raises:
+            ValueError: If `objective` or `rubric` is empty.
+        """
+        if not self.objective or not self.rubric:
+            msg = "goal application requires a non-empty objective and rubric"
+            raise ValueError(msg)
 
 
 def _new_thread_id() -> str:
@@ -1675,6 +1769,13 @@ class TextualSessionState:
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+        self.previous_thread_id: str | None = None
+        """Thread id abandoned by the most recent `reset_thread`.
+
+        Set by every `reset_thread` caller — `/clear`, `/force-clear`, and the
+        agent-switch teardown — not just `/clear`. Lets the TUI point users
+        back to the thread they just left; `None` until the first reset.
+        """
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
@@ -1711,9 +1812,13 @@ class TextualSessionState:
     def reset_thread(self) -> str:
         """Reset to a new thread.
 
+        Records the outgoing thread as `previous_thread_id` first, so the UI
+        can offer a one-step path back to it.
+
         Returns:
             The new thread_id.
         """
+        self.previous_thread_id = self._thread_id
         self.thread_id = _new_thread_id()  # setter resets the turn markers
         self.approval_mode_key = None
         return self.thread_id
@@ -1807,6 +1912,20 @@ class _ChatScroll(VerticalScroll):
 
     FOCUS_ON_CLICK = False
 
+    class Scrolled(Message, namespace="chat"):
+        """Posted whenever the chat's vertical scroll offset changes.
+
+        Transcript hydration keys off the actual scroll offset instead of the
+        scrollbar `ScrollUp`/`ScrollDown` messages, because those never reach
+        the app for the common scroll paths: wheel/trackpad scrolling arrives as
+        `MouseScroll*` events, keyboard scrolling runs through key-binding scroll
+        actions, and both move `scroll_y` directly without posting a scrollbar
+        message. Scrollbar-track clicks do post `ScrollUp`/`ScrollDown`, but this
+        container's own `_on_scroll_up`/`_on_scroll_down` handlers consume them
+        via `event.stop()` before they can bubble to the app. Watching `scroll_y`
+        covers every input device uniformly. Validated against Textual 8.2.7.
+        """
+
     # The deferred-anchor logic below drives the base class through its private
     # anchor state (`_anchored`, `_anchor_released`) and mirrors the compositor's
     # arrange-then-check ordering. Validated against Textual 8.2.7; a base-class
@@ -1879,9 +1998,45 @@ class _ChatScroll(VerticalScroll):
             self.set_reactive(VerticalScroll.scroll_target_y, 0.0)
         return result
 
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Announce vertical scroll changes so the app can hydrate history.
+
+        Args:
+            old_value: Previous vertical scroll offset.
+            new_value: New vertical scroll offset.
+        """
+        super().watch_scroll_y(old_value, new_value)
+        # Guard on `is_attached` (mirrors `ThreadControlsScroll.watch_scroll_y`)
+        # so mount/teardown offset changes don't post to a detached widget.
+        if old_value != new_value and self.is_attached:
+            self.post_message(self.Scrolled())
+
     def _is_scrollable(self) -> bool:
         """Return whether current chat content overflows the viewport."""
         return self.max_scroll_y > 0
+
+
+class _MainScreen(Screen[None]):
+    """Default screen containing the main chat interface.
+
+    Exists so `AUTO_FOCUS` can be scoped to this screen rather than the `App`.
+    An App-level `AUTO_FOCUS` is the fallback for *every* screen, so a
+    `"#chat-input"` selector there resolves to nothing on modals (whose DOM has
+    no such widget) and leaves them opening with no focused control. Keeping it
+    on the main screen lets modals retain Textual's default first-focusable
+    behavior.
+    """
+
+    AUTO_FOCUS = "#chat-input"
+    """Focus the chat text area whenever this screen needs a focus target.
+
+    Overrides Textual's default `"*"`, which would focus the earlier-composed,
+    still-focusable `_ChatScroll` (`#chat`) instead. The first automatic focus
+    pass runs before the nested chat text area is mounted, so
+    `DeepAgentsApp.on_mount` applies the startup focus synchronously once the
+    input exists. This selector remains the focus target when the screen later
+    resumes without a focused widget.
+    """
 
 
 class DeepAgentsApp(App):
@@ -1900,6 +2055,12 @@ class DeepAgentsApp(App):
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""
 
+    _hydration_failure_notified: bool = False
+    """Set once a hydration failure has been surfaced, to avoid toast spam.
+
+    Hydration now runs on every scroll-offset delta, so a persistent failure
+    would otherwise notify on every scroll tick."""
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", show=False, priority=True),
         Binding(
@@ -1912,6 +2073,11 @@ class DeepAgentsApp(App):
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `DebugConsoleScreen` is active so the console's own `shift+tab`
+        # reverse-focus traversal runs instead; keep the action name in sync
+        # there. That branch keys on the `toggle_auto_approve` action, so it also
+        # steps aside the `ctrl+t` binding above while the console is open.
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -1933,10 +2099,23 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        # `check_action` steps this binding aside (returns `False`) while a
+        # `ModelSelectorScreen` is active so the selector's own priority
+        # `ctrl+n` (toggle_names) wins; keep the action name in sync there.
         Binding(
             "ctrl+n",
             "open_notifications",
             "Notifications",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            # Mirrors DEBUG_TOGGLE_KEY in tui.widgets.debug_console; the literal
+            # is repeated here to avoid an eager import at class-body scope (see
+            # the startup-performance rules in AGENTS.md).
+            "ctrl+backslash",
+            "toggle_debug_console",
+            "Debug Console",
             show=False,
             priority=True,
         ),
@@ -1955,6 +2134,11 @@ class DeepAgentsApp(App):
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
+
+    @override
+    def get_default_screen(self) -> Screen[None]:
+        """Return the main screen with chat-specific startup focus."""
+        return _MainScreen(id="_default")
 
     class ServerReady(Message):
         """Posted by the background server-startup worker on success."""
@@ -2098,6 +2282,9 @@ class DeepAgentsApp(App):
         boots with consistent colors before `/theme` runs.
         """
 
+        self._cursor_style = _load_cursor_style_preference()
+        """Visual style used for the chat input cursor."""
+
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
 
@@ -2238,6 +2425,22 @@ class DeepAgentsApp(App):
 
         self._pending_mcp_login_reconnect = False
         """Whether a successful MCP login is waiting for reconnect."""
+
+        self._pending_web_search_restart = False
+        """Whether a Tavily key saved via `/auth` is awaiting an offered restart.
+
+        `web_search` is bound only when Tavily is configured at server spawn
+        time (see `server_graph._build_tools`), so a key added to a running
+        server takes effect only after a respawn. Set when the saved key gates
+        a tool the running server lacks; consumed when the `/auth` manager
+        closes so the restart prompt never stacks over the still-open manager.
+        """
+
+        self._auth_exported_tavily_original: str | None = None
+        """Original shell `TAVILY_API_KEY` value before `/auth` exported Tavily."""
+
+        self._auth_exported_tavily = False
+        """Whether this app process exported `TAVILY_API_KEY` from `/auth`."""
 
         self._pending_mcp_disable_reconnect_servers: set[str] = set()
         """MCP servers with disable-state changes waiting for reconnect."""
@@ -2418,7 +2621,8 @@ class DeepAgentsApp(App):
         """Goal objective accepted by the user and backed by the active rubric."""
 
         self._goal_status: GoalStatus | None = None
-        """Status for the active goal (`active`, `blocked`, or `complete`)."""
+        """Status for the active goal (`active`, `paused`, `blocked`, or
+        `complete`)."""
 
         self._goal_status_note: str | None = None
         """Evidence or blocker note recorded by the model's goal tool."""
@@ -2431,6 +2635,12 @@ class DeepAgentsApp(App):
 
         self._pending_goal_rubric: str | None = None
         """Model-proposed acceptance criteria awaiting user acceptance."""
+
+        self._pending_goal_kind: GoalProposalKind | None = None
+        """Whether the pending review creates or amends a goal."""
+
+        self._queued_goal_application: _GoalApplication | None = None
+        """Accepted proposal deferred until the active graph run is quiescent."""
 
         self._message_timestamps_visible = _load_message_timestamps_visible()
         """Whether message timestamp footers are shown in the chat surface.
@@ -2448,6 +2658,9 @@ class DeepAgentsApp(App):
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
         """Status bar widget; populated in `on_mount`."""
+
+        self._goal_status_panel: GoalStatusPanel | None = None
+        """Persistent inline goal display; populated in `on_mount`."""
 
         self._chat_input: ChatInput | None = None
         """Chat input widget; populated in `on_mount`."""
@@ -2488,9 +2701,28 @@ class DeepAgentsApp(App):
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
+        self._agent_reconciling = False
+        """True while turn-end checkpoint state is being synchronized."""
+
+        self._goal_state_mutating = False
+        """True while an out-of-run goal checkpoint update is in progress."""
+
+        self._goal_state_lock = asyncio.Lock()
+        """Serializes process-local goal checkpoint mutations."""
+
+        self._agent_quiescent = asyncio.Event()
+        """Set only when graph execution and turn-end reconciliation are idle."""
+        self._agent_quiescent.set()
+
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
+
+        self._active_turn_visible_output_started = False
+        """True once the current turn has displayed model text or a tool call.
+
+        Gates Esc prompt restore without counting hidden agent activity.
+        """
 
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
@@ -2668,6 +2900,9 @@ class DeepAgentsApp(App):
 
         self._message_store = MessageStore()
         """Message virtualization store."""
+
+        self._message_measure_width: int | None = None
+        """Chat width used for cached message height hints."""
 
         self._deferred_actions: list[DeferredAction] = []
         """Deferred actions executed after the current busy state resolves."""
@@ -2911,8 +3146,12 @@ class DeepAgentsApp(App):
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
             # Live fan-out panel for subagents spawned from js_eval. Hidden
-            # until the first spawn event; sits just above the input.
+            # until the first spawn event; sits at the top of the bottom
+            # container, above the startup tip and input.
             yield SubagentPanel(id="subagent-panel")
+            if show_startup_tip():
+                yield StartupTip(id="startup-tip")
+            yield GoalStatusPanel(id="goal-status-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -2938,6 +3177,7 @@ class DeepAgentsApp(App):
         gc.freeze()
 
         chat = self.query_one("#chat", VerticalScroll)
+        self._message_measure_width = chat.size.width
         # Don't establish bottom-follow intent at startup. `_ChatScroll.anchor()`
         # defers the real anchor until content overflows, but not calling it at
         # all keeps the welcome banner pinned to the top of an empty chat (like
@@ -2948,10 +3188,13 @@ class DeepAgentsApp(App):
         self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
+        self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
+        self._sync_status_rubric()
+        self._chat_input.set_cursor_style(style=self._cursor_style)
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
@@ -2969,8 +3212,12 @@ class DeepAgentsApp(App):
         if self._auto_approve:
             self._status_bar.set_auto_approve(enabled=True)
 
-        # Focus the input immediately so the cursor is visible on first paint
-        self._chat_input.focus_input()
+        # `Widget.focus()` defers the actual focus change by posting a callback.
+        # Terminal keys may already be ahead of that callback in the app queue,
+        # so set focus synchronously while startup is still handling Mount.
+        input_widget = self._chat_input.input_widget
+        if input_widget is not None:
+            self.screen.set_focus(input_widget)
 
         if self._launch_init_requested:
             dependency_screen, dependency_result = (
@@ -3266,7 +3513,9 @@ class DeepAgentsApp(App):
             on_auto_approve_enabled=self._on_auto_approve_enabled,
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
+            on_user_visible_output_started=self._on_user_visible_output_started,
             sync_message_content=self._sync_message_content,
+            sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
@@ -3409,6 +3658,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.main import _should_ensure_managed_ripgrep
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
+                    ManagedToolUnavailableError,
                     ensure_ripgrep,
                     managed_rg_path,
                     prepend_managed_bin_to_path,
@@ -3442,6 +3692,14 @@ class DeepAgentsApp(App):
                 self.notify(
                     "ripgrep auto-install aborted: checksum verification failed.",
                     severity="error",
+                    timeout=15,
+                    markup=False,
+                )
+            except ManagedToolUnavailableError as exc:
+                logger.info("ripgrep auto-install unavailable: %s", exc.reason)
+                self.notify(
+                    exc.message,
+                    severity="warning",
                     timeout=15,
                     markup=False,
                 )
@@ -3729,7 +3987,7 @@ class DeepAgentsApp(App):
                 cwd_choice = await self._offer_thread_cwd_switch(
                     candidate,
                     restart_server=False,
-                    allow_abort=True,
+                    abort="resume",
                 )
             except Exception:
                 logger.exception(
@@ -5564,9 +5822,31 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
-    def on_scroll_up(self, _event: ScrollUp) -> None:
-        """Handle scroll up to check if we need to hydrate older messages."""
+    def on_chat_scrolled(self, _event: _ChatScroll.Scrolled) -> None:
+        """Hydrate history in both directions whenever the chat scrolls.
+
+        Driven by `_ChatScroll.Scrolled` (see that message for why hydration
+        keys off the scroll offset rather than the scrollbar messages).
+        """
         self._check_hydration_needed()
+        self._check_hydration_below_needed()
+
+    def on_resize(self, _event: Resize) -> None:
+        """Scale cached message heights when terminal width changes."""
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            return
+        width = chat.size.width
+        previous = self._message_measure_width
+        if previous is None or previous <= 0:
+            self._message_measure_width = width
+            return
+        if width <= 0 or width == previous:
+            return
+        self._message_store.invalidate_height_hints(scale=previous / width)
+        self._message_measure_width = width
+        self._sync_transcript_spacers()
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -5688,6 +5968,23 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _notify_hydration_failure(self) -> None:
+        """Surface transcript hydration failures to the user, once per session.
+
+        The `logger.warning` in the hydrate loops records every failure, but the
+        user only sees a gap where history should be. Show a single toast so the
+        missing history is explainable, without spamming on repeated scrolls.
+        """
+        if self._hydration_failure_notified:
+            return
+        self._hydration_failure_notified = True
+        self.notify(
+            "Some earlier messages couldn't be loaded. See the debug log for details.",
+            severity="warning",
+            timeout=6,
+            markup=False,
+        )
+
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
 
@@ -5707,6 +6004,24 @@ class DeepAgentsApp(App):
 
         if self._message_store.should_hydrate_above(scroll_y, viewport_height):
             self.call_later(self._hydrate_messages_above)
+
+    def _check_hydration_below_needed(self) -> None:
+        """Check if newer messages should be mounted below the current window."""
+        if not self._message_store.has_messages_below:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
+            logger.debug("Skipping hydrate-below check: #chat container not found")
+            return
+        _start, end = self._message_store.get_visible_range()
+        bottom_spacer_top = self._message_store.range_height(0, end)
+        if self._message_store.should_hydrate_below(
+            chat.scroll_y,
+            chat.size.height,
+            bottom_spacer_top,
+        ):
+            self.call_later(self._hydrate_messages_below)
 
     async def _hydrate_messages_above(self) -> None:
         """Hydrate older messages when user scrolls near the top.
@@ -5728,74 +6043,127 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.debug("Skipping hydration: #messages not found")
             return
+        await self._ensure_transcript_spacers(messages_container)
 
         to_hydrate = self._message_store.get_messages_to_hydrate()
         if not to_hydrate:
             return
 
         old_scroll_y = chat.scroll_y
-        first_child = (
-            messages_container.children[0] if messages_container.children else None
-        )
+        first_child = self._first_transcript_child(messages_container)
 
-        # Build widgets in chronological order, then mount in reverse so
-        # each is inserted before the previous first_child, resulting in
-        # correct chronological order in the DOM.
+        # Mount from the window edge outward (newest archived first), each
+        # inserted before the running `first_child` so the DOM stays
+        # chronological. Stop at the first failure: `mark_hydrated` advances
+        # `_visible_start` by a plain count, so the mounted rows must remain a
+        # contiguous block adjacent to the window or the store desyncs from the
+        # DOM.
         hydrated_count = 0
-        hydrated_widgets: list[tuple] = []  # (widget, msg_data)
-        for msg_data in to_hydrate:
+        for msg_data in reversed(to_hydrate):
             try:
                 widget = msg_data.to_widget()
-                hydrated_widgets.append((widget, msg_data))
-            except Exception:
-                logger.warning(
-                    "Failed to create widget for message %s",
-                    msg_data.id,
-                    exc_info=True,
-                )
-
-        for widget, msg_data in reversed(hydrated_widgets):
-            try:
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
-                if first_child:
-                    if footer is not None:
-                        await messages_container.mount(footer, before=first_child)
-                        await messages_container.mount(widget, before=footer)
-                    else:
-                        await messages_container.mount(widget, before=first_child)
-                else:
-                    await messages_container.mount(widget)
-                    if footer is not None:
-                        await messages_container.mount(footer)
+                nodes: list[Widget] = [widget]
+                if footer is not None:
+                    nodes.append(footer)
+                await self._mount_transcript_nodes(
+                    messages_container,
+                    nodes,
+                    before=first_child,
+                )
                 first_child = widget
                 hydrated_count += 1
+                self._schedule_message_height_measurement(msg_data.id)
                 # Render Markdown content for hydrated assistant messages
                 if isinstance(widget, AssistantMessage) and msg_data.content:
                     await widget.set_content(msg_data.content)
             except Exception:
                 logger.warning(
-                    "Failed to mount hydrated widget %s",
-                    widget.id,
+                    "Failed to hydrate message %s above window; stopping to "
+                    "keep the mounted window contiguous",
+                    msg_data.id,
                     exc_info=True,
                 )
+                self._notify_hydration_failure()
+                break
 
-        # Only update store for the number we actually mounted
         if hydrated_count > 0:
             self._message_store.mark_hydrated(hydrated_count)
+            await self._prune_messages_below_window(messages_container)
+            self._sync_transcript_spacers(messages_container)
 
-        # Adjust scroll position to maintain the user's view.
-        # Widget heights aren't known until after layout, so we use a
-        # heuristic. A more accurate approach would measure actual heights
-        # via call_after_refresh.
-        estimated_height_per_message = 5  # terminal rows, rough estimate
-        added_height = hydrated_count * estimated_height_per_message
-        chat.scroll_y = old_scroll_y + added_height
+        # The top spacer already shrank by the hydrated rows' estimated height
+        # (via `_sync_transcript_spacers` above) while real widgets filled the
+        # freed space, so total content above the viewport is unchanged and the
+        # anchor holds without adjusting scroll_y. (Mirrors _hydrate_below.)
+        chat.scroll_y = old_scroll_y
 
         # Collapse any completed tool runs brought in above the window so
         # hydrated history matches the live transcript.
         await self._regroup_completed_tools()
+        if hydrated_count > 0:
+            # Re-check after layout because a boundary scroll cannot emit
+            # another `Scrolled` message while its offset remains unchanged.
+            self.call_after_refresh(self._check_hydration_needed)
+
+    async def _hydrate_messages_below(self) -> None:
+        """Hydrate newer messages when scrolling down toward the tail."""
+        if not self._message_store.has_messages_below:
+            return
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+            messages_container = self.query_one("#messages", Container)
+        except NoMatches:
+            logger.debug("Skipping hydrate below: chat/messages container not found")
+            return
+        await self._ensure_transcript_spacers(messages_container)
+
+        to_hydrate = self._message_store.get_messages_to_hydrate_below()
+        if not to_hydrate:
+            return
+
+        old_scroll_y = chat.scroll_y
+        hydrated_count = 0
+        # Mount in order from the window edge downward, stopping at the first
+        # failure so `mark_hydrated_below`'s count stays contiguous with the
+        # mounted rows (a mid-batch gap would desync `_visible_end`).
+        for msg_data in to_hydrate:
+            try:
+                widget = msg_data.to_widget()
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                nodes = [widget]
+                if footer is not None:
+                    nodes.append(footer)
+                await self._mount_transcript_nodes(messages_container, nodes)
+                hydrated_count += 1
+                self._schedule_message_height_measurement(msg_data.id)
+                if isinstance(widget, AssistantMessage) and msg_data.content:
+                    await widget.set_content(msg_data.content)
+            except Exception:
+                logger.warning(
+                    "Failed to hydrate message %s below window; stopping to "
+                    "keep the mounted window contiguous",
+                    msg_data.id,
+                    exc_info=True,
+                )
+                self._notify_hydration_failure()
+                break
+
+        if hydrated_count == 0:
+            return
+
+        self._message_store.mark_hydrated_below(hydrated_count)
+        await self._prune_old_messages()
+        self._sync_transcript_spacers(messages_container)
+        chat.scroll_y = old_scroll_y
+        await self._regroup_completed_tools()
+        # Re-check after layout because a boundary scroll cannot emit another
+        # `Scrolled` message while its offset remains unchanged.
+        self.call_after_refresh(self._check_hydration_below_needed)
 
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, kept above the bottom anchors.
@@ -5814,14 +6182,23 @@ class DeepAgentsApp(App):
         if not container.is_attached:
             return
         anchor: Widget | None = None
+        is_transcript_widget = not (
+            isinstance(widget, LoadingWidget | QueuedUserMessage)
+            or widget.has_class(_MESSAGE_SPACER_CLASS)
+        )
+        if is_transcript_widget and widget.id != _MESSAGE_BOTTOM_SPACER_ID:
+            with suppress(NoMatches):
+                anchor = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}")
+
         spinner = self._loading_widget
         if (
-            widget is not spinner
+            anchor is None
+            and widget is not spinner
             and spinner is not None
             and spinner.parent is container
         ):
             anchor = spinner
-        else:
+        if anchor is None:
             first_queued = self._queued_widgets[0] if self._queued_widgets else None
             if first_queued is not None and first_queued.parent is container:
                 anchor = first_queued
@@ -5836,6 +6213,126 @@ class DeepAgentsApp(App):
             else:
                 return
         await container.mount(widget)
+
+    @staticmethod
+    def _is_virtual_spacer(widget: Widget) -> bool:
+        """Return whether `widget` is a transcript spacer."""
+        return widget.has_class(_MESSAGE_SPACER_CLASS)
+
+    def _first_transcript_child(self, container: Container) -> Widget | None:
+        """Return the first mounted transcript child after spacer rows."""
+        for child in container.children:
+            if self._is_virtual_spacer(child):
+                continue
+            if isinstance(child, LoadingWidget | QueuedUserMessage):
+                continue
+            return child
+        return None
+
+    @staticmethod
+    def _bottom_spacer(container: Container) -> Static | None:
+        """Return the bottom transcript spacer if it is mounted."""
+        with suppress(NoMatches):
+            return container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+        return None
+
+    async def _mount_transcript_nodes(
+        self,
+        container: Container,
+        nodes: list[Widget],
+        *,
+        before: Widget | None = None,
+    ) -> None:
+        """Mount transcript nodes before an anchor or the bottom spacer."""
+        if not nodes:
+            return
+        anchor = before or self._bottom_spacer(container)
+        if anchor is None:
+            await container.mount(*nodes)
+        else:
+            await container.mount(*nodes, before=anchor)
+
+    async def _ensure_transcript_spacers(self, container: Container) -> None:
+        """Mount spacer rows that preserve full transcript scroll geometry."""
+        if not container.is_attached:
+            return
+
+        if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
+            top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
+            first = container.children[0] if container.children else None
+            if first is None:
+                await container.mount(top)
+            else:
+                await container.mount(top, before=first)
+
+        if not container.query(f"#{_MESSAGE_BOTTOM_SPACER_ID}"):
+            bottom = Static(
+                "",
+                id=_MESSAGE_BOTTOM_SPACER_ID,
+                classes=_MESSAGE_SPACER_CLASS,
+            )
+            anchor = self._loading_widget
+            if anchor is None or anchor.parent is not container:
+                anchor = next(
+                    (
+                        queued
+                        for queued in self._queued_widgets
+                        if queued.parent is container
+                    ),
+                    None,
+                )
+            if anchor is None:
+                await container.mount(bottom)
+            else:
+                await container.mount(bottom, before=anchor)
+
+        self._sync_transcript_spacers(container)
+
+    @staticmethod
+    def _set_spacer_height(widget: Static, height: int) -> None:
+        """Set spacer height in terminal rows."""
+        rows = max(0, height)
+        widget.styles.height = rows
+        widget.display = rows > 0
+
+    def _sync_transcript_spacers(self, container: Container | None = None) -> None:
+        """Update spacer rows from the current `MessageStore` visible range."""
+        if container is None:
+            try:
+                container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+        try:
+            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
+            bottom = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+        except NoMatches:
+            return
+        start, end = self._message_store.get_visible_range()
+        self._set_spacer_height(top, self._message_store.range_height(0, start))
+        self._set_spacer_height(
+            bottom,
+            self._message_store.range_height(end, self._message_store.total_count),
+        )
+
+    def _schedule_message_height_measurement(self, message_id: str) -> None:
+        """Measure a message after Textual lays it out."""
+        self.call_after_refresh(self._measure_message_height, message_id)
+
+    def _measure_message_height(self, message_id: str) -> None:
+        """Cache the mounted row height for spacer estimates."""
+        try:
+            messages = self.query_one("#messages", Container)
+            widget = messages.query_one(f"#{message_id}")
+        except NoMatches:
+            return
+        height = max(1, widget.region.height)
+        footer_id = _message_timestamp_footer_id(message_id)
+        with suppress(NoMatches):
+            footer = messages.query_one(f"#{footer_id}")
+            if footer.display:
+                height += max(1, footer.region.height)
+        if self._message_store.set_height_hint(message_id, height):
+            self._sync_transcript_spacers(messages)
 
     async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
         """Mount an `AppMessage` that is not tracked by the message store.
@@ -6465,15 +6962,20 @@ class DeepAgentsApp(App):
 
     async def _mount_goal_proposal_cancelled(self) -> None:
         """Clear pending goal proposal state and show a cancellation message."""
-        self._clear_pending_goal_rubric()
         await self._set_spinner(None)
-        await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            await self._persist_goal_rubric_state()
         await self._mount_message(AppMessage("Goal proposal cancelled."))
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
 
     async def _request_goal_review(
         self,
         objective: str,
         criteria: str,
+        *,
+        amendment: bool = False,
     ) -> asyncio.Future[GoalReviewResult]:
         """Display the goal review widget and return a Future with the decision.
 
@@ -6490,7 +6992,12 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.goal_review import GoalReviewMenu
 
         unique_id = f"goal-review-menu-{uuid.uuid4().hex[:8]}"
-        menu = GoalReviewMenu(objective, criteria, id=unique_id)
+        menu = GoalReviewMenu(
+            objective,
+            criteria,
+            amendment=amendment,
+            id=unique_id,
+        )
         menu.set_future(result_future)
         self._pending_goal_review_widget = menu
 
@@ -6663,6 +7170,7 @@ class DeepAgentsApp(App):
 
         self._initial_session_started = True
         self._startup_sequence_running = True
+        initial_submitted = False
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
                 self._resume_thread_intent is not None
@@ -6697,14 +7205,26 @@ class DeepAgentsApp(App):
 
             if self._has_initial_submission():
                 await self._submit_initial_submission()
-                return
+                initial_submitted = True
         finally:
             self._startup_sequence_running = False
 
-        await self._drain_startup_backlog()
+        # Drain after the sequence completes. When an initial submission was
+        # dispatched it owns the session, so skip queued-input processing — but
+        # still drain deferred actions so an `/mcp login` queued during connect
+        # runs once the server is ready instead of being stranded.
+        await self._drain_startup_backlog(process_queue=not initial_submitted)
 
-    async def _drain_startup_backlog(self) -> None:
-        """Drain deferred actions and queued input after server readiness."""
+    async def _drain_startup_backlog(self, *, process_queue: bool = True) -> None:
+        """Drain deferred actions and queued input after server readiness.
+
+        Args:
+            process_queue: Whether to also process queued user input. Pass
+                `False` when an initial submission was just dispatched: it owns
+                the session, so queued input must wait, but deferred actions
+                (e.g. an `/mcp login` queued during connect) still need to run
+                rather than be stranded until the next agent turn.
+        """
         if self._agent_running or self._shell_running:
             return
 
@@ -6722,7 +7242,7 @@ class DeepAgentsApp(App):
                     ),
                 )
 
-        if self._pending_messages:
+        if process_queue and self._pending_messages:
             await self._process_next_from_queue()
 
     def _schedule_session_start_after_launch_init(
@@ -7119,7 +7639,7 @@ class DeepAgentsApp(App):
         if not os.environ.get("TAVILY_API_KEY"):
             self.notify(
                 "Saved your Tavily key, but couldn't activate it this "
-                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                "session. Restart dcode, or re-add it with /auth.",
                 severity="warning",
                 markup=False,
             )
@@ -7296,6 +7816,16 @@ class DeepAgentsApp(App):
         self.push_screen(dependency_screen)
         return await result_future
 
+    @staticmethod
+    def _is_exit_keyword(value: str, mode: InputMode) -> bool:
+        """Return whether `value` is the bare `exit` keyword in normal mode.
+
+        Matches case-insensitively and ignores surrounding whitespace. Only
+        `normal` mode qualifies, so `exit` typed in shell or command mode is
+        routed normally rather than quitting the app.
+        """
+        return mode == "normal" and value.lower().strip() == "exit"
+
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
 
@@ -7327,8 +7857,10 @@ class DeepAgentsApp(App):
         if cmd in BYPASS_WHEN_CONNECTING:
             return self._connecting and not (self._agent_running or self._shell_running)
         if cmd in IMMEDIATE_UI:
-            # Only bare form (no args) bypasses — /model opens selector,
-            # /model <name> does a direct switch that shouldn't race with agent.
+            # Only bare form (no args) bypasses — the selector-opening form is
+            # safe, but an argument form does a direct action that shouldn't
+            # race the agent (e.g. `/model <name>` switches models, `/threads
+            # -r <id>` resumes a thread).
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
@@ -7353,6 +7885,11 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
+        # Any submitted prompt (interactive or external) ends the startup
+        # tip's lifetime, so dismiss it here at the shared entry point rather
+        # than in a single handler.
+        await self._dismiss_startup_tip()
+
         from deepagents_code.command_registry import (
             ALWAYS_IMMEDIATE,
             HIDDEN_COMMANDS,
@@ -7364,10 +7901,9 @@ class DeepAgentsApp(App):
         # COMMANDS and so carry no bypass tier. Both must run even when the
         # app is busy or wedged, so neither sits behind the queue.
         always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+        normalized = value.lower().strip()
 
-        if force_bypass or (
-            mode == "command" and value.lower().strip() in always_bypass
-        ):
+        if force_bypass or (mode == "command" and normalized in always_bypass):
             await self._process_message(value, mode)
             return
 
@@ -7387,6 +7923,8 @@ class DeepAgentsApp(App):
         # its first stable idle/running state.
         if (
             self._agent_running
+            or self._agent_reconciling
+            or self._goal_state_mutating
             or self._shell_running
             or self._connecting
             or self._startup_sequence_running
@@ -7418,7 +7956,24 @@ class DeepAgentsApp(App):
 
         await dispatch_hook("user.prompt", {})
 
+        # A bare `exit` quits the app (REPL convention), mirroring `/quit`.
+        # Gated to this interactive path only, so external/scripted callers
+        # (on_external_input) can still send the literal "exit" to the agent.
+        if self._is_exit_keyword(value, mode):
+            self.exit()
+            return
+
         await self._submit_input(value, mode)
+
+    async def _dismiss_startup_tip(self) -> None:
+        """Remove the startup tip once the first prompt is submitted.
+
+        Called from `_submit_input`, so every submission path (interactive
+        and external) dismisses the tip. Subsequent calls are no-ops: the
+        widget is already gone and `query_one` raises `NoMatches`.
+        """
+        with suppress(NoMatches):
+            await self.query_one("#startup-tip", StartupTip).remove()
 
     async def on_external_input(self, event: ExternalInput) -> None:
         """Route external prompt and command events through the app queue.
@@ -8042,6 +8597,191 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    async def _handle_tools_command(self, command: str) -> None:
+        """List the tools available to the agent as a chat message.
+
+        Managed sessions enumerate built-ins off the UI thread with a
+        credential-free agent compile; preconfigured local agents are inspected
+        directly so their custom tool set stays authoritative. MCP tools reuse
+        the metadata loaded for the running agent rather than re-discovering,
+        because discovery uses `asyncio.run`, which cannot run inside Textual's
+        live event loop.
+
+        Args:
+            command: The raw command text (displayed as a user message).
+        """
+        from deepagents_code._constants import DEFAULT_AGENT_NAME
+        from deepagents_code.tool_catalog import (
+            build_catalog_from_server_info,
+            collect_built_in_tools,
+            collect_tools_from_agent,
+        )
+
+        await self._mount_message(UserMessage(command))
+
+        server_info = self._mcp_server_info_for_tools()
+
+        built_in = []
+        # Set to a human-readable reason when built-in tools cannot be listed:
+        # a remote/custom agent we cannot introspect, or a compile that raised.
+        # The agent still binds those tools; only enumeration failed. Left empty
+        # on success. Drives the notice logic below.
+        enumeration_failed_reason = ""
+        if self._server_kwargs is None:
+            try:
+                active_tools = (
+                    collect_tools_from_agent(self._agent)
+                    if self._agent is not None
+                    else None
+                )
+            except Exception:
+                # `collect_tools_from_agent` is defensively written, but a remote
+                # graph proxy can do real work on attribute access and raise.
+                # Mirror the managed branch: log and degrade to the notice below
+                # rather than letting it escape as an unhandled handler error.
+                logger.exception("Failed to inspect agent tools for /tools")
+                active_tools = None
+            if active_tools is None:
+                enumeration_failed_reason = (
+                    "Built-in tools cannot be enumerated for this custom or "
+                    "remote agent"
+                )
+            else:
+                # The local graph's tool node holds built-in *and* MCP tools;
+                # MCP tools are rendered separately from `server_info`, so drop
+                # them here to avoid listing each MCP tool twice.
+                mcp_names = {
+                    tool.name for server in server_info for tool in server.tools
+                }
+                built_in = [tool for tool in active_tools if tool.name not in mcp_names]
+        else:
+            enable_interpreter = bool(self._server_kwargs.get("enable_interpreter"))
+            try:
+                built_in = await asyncio.to_thread(
+                    collect_built_in_tools,
+                    assistant_id=self._assistant_id or DEFAULT_AGENT_NAME,
+                    enable_interpreter=enable_interpreter,
+                )
+            except Exception:
+                logger.exception("Failed to enumerate built-in tools for /tools")
+                enumeration_failed_reason = "Could not enumerate built-in tools"
+
+        catalog = build_catalog_from_server_info(built_in, server_info)
+        has_mcp_info = any(group.source == "mcp" for group in catalog.groups) or bool(
+            catalog.unavailable
+        )
+        if enumeration_failed_reason and not has_mcp_info:
+            # No MCP tools or unavailable-server statuses to show: rendering "0
+            # tools available" would wrongly imply the agent has no tools at all,
+            # when in fact only the listing failed. Surface the reason on its own.
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}. The agent still has its "
+                    "built-in tools; they just cannot be listed here.",
+                ),
+            )
+            return
+        if enumeration_failed_reason:
+            await self._mount_message(
+                AppMessage(
+                    f"{enumeration_failed_reason}; showing MCP information only."
+                ),
+            )
+
+        await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+
+    def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
+        """Return MCP metadata matching the tools bound to the running agent.
+
+        The `/mcp` viewer optimistically replaces a newly disabled server with
+        a tool-less cosmetic entry before reconnect. Until reconnect actually
+        rebuilds the agent, its original tools remain callable, so `/tools`
+        must use the saved pre-toggle entry instead.
+
+        Returns:
+            MCP server metadata for the active agent tool set.
+        """
+        return [
+            self._mcp_optimistic_original_server_info.get(server.name, server)
+            for server in self._mcp_server_info or []
+        ]
+
+    @staticmethod
+    def _render_tool_catalog(catalog: ToolCatalog) -> Content:
+        """Render a tool catalog as chat `Content`.
+
+        Shows a count header, then each group's heading with its rows:
+        built-in groups render aligned `name  description` rows, while MCP
+        groups render names only — their descriptions are surfaced via `/mcp`,
+        noted by a pointer line whenever any MCP tools are present. Then any MCP
+        servers that loaded with no tools and a non-`ok` status, and finally a
+        discovery-error notice if the catalog carries one. Every display
+        string — tool names/descriptions and MCP server names/statuses, some of
+        which are external — is added as a plain-text span (via `Content.styled`
+        or a `(text, style)` tuple) that is never parsed as markup.
+
+        Args:
+            catalog: Collected tool groups, unavailable MCP servers, and any
+                discovery-error notice.
+
+        Returns:
+            Assembled `Content` ready to mount in an `AppMessage`.
+        """
+        from deepagents_code.tool_catalog import unavailable_server_display
+
+        total = sum(len(group.tools) for group in catalog.groups)
+        noun = "tool" if total == 1 else "tools"
+
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            Content.styled(f"{total} {noun} available", "bold"),
+        ]
+
+        def _section(heading: str, rows: list[tuple[str, str]]) -> None:
+            """Append a bold heading and left-aligned `label  detail` rows."""
+            if not rows:
+                return
+            width = max(len(label) for label, _ in rows)
+            parts.extend(("\n\n", Content.styled(heading, "bold")))
+            for label, detail in rows:
+                row = f"  {label.ljust(width)}  {detail}".rstrip()
+                parts.extend(("\n", (row, "dim")))
+
+        has_mcp_tools = False
+        for group in catalog.groups:
+            if group.source == "mcp":
+                has_mcp_tools = has_mcp_tools or bool(group.tools)
+                rows = [(entry.name, "") for entry in group.tools]
+            else:
+                rows = [(entry.name, entry.description) for entry in group.tools]
+            _section(group.label, rows)
+
+        if has_mcp_tools:
+            parts.extend(
+                ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
+            )
+
+        def _unavailable_row(server: UnavailableServer) -> tuple[str, str]:
+            """Map an unavailable server to a `(name, detail)` row for `_section`.
+
+            Args:
+                server: An MCP server discovered with no usable tools.
+
+            Returns:
+                A `(name, detail)` pair for `_section` to align and render.
+            """
+            label, detail = unavailable_server_display(server)
+            return (server.name, f"{label}: {detail}" if detail else label)
+
+        _section(
+            "Unavailable MCP servers",
+            [_unavailable_row(server) for server in catalog.unavailable],
+        )
+
+        if catalog.mcp_error:
+            parts.extend(("\n\n", (catalog.mcp_error, "dim")))
+
+        return Content.assemble(*parts)
+
     def _goal_state_update(self) -> dict[str, Any]:
         """Build checkpoint state for TUI-owned goal/rubric metadata.
 
@@ -8051,8 +8791,18 @@ class DeepAgentsApp(App):
         # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
         # are gated on an active objective so the persisted dict can never
         # express a status or note without the goal they describe.
+        #
+        # The public `rubric` (the grader's middleware input) is withheld for a
+        # paused or completed goal so the grader does not run against a goal that
+        # must not drive work. `_sticky_rubric` still carries it so it is
+        # restored when the goal resumes. The same suppression is mirrored on the
+        # per-turn rubric in `_send_to_agent`.
         return {
-            "rubric": self._active_rubric,
+            "rubric": (
+                None
+                if self._active_goal and self._goal_status in {"paused", "complete"}
+                else self._active_rubric
+            ),
             "_sticky_rubric": self._active_rubric,
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status if self._active_goal else None,
@@ -8063,7 +8813,38 @@ class DeepAgentsApp(App):
             ),
             "_pending_goal_objective": self._pending_goal_objective,
             "_pending_goal_rubric": self._pending_goal_rubric,
+            # Gate the pending kind on its objective so a checkpoint can never
+            # carry an orphaned kind without the proposal it labels, mirroring
+            # `_goal_status`'s coupling to `_active_goal` above. The restore path
+            # already backfills the inverse (objective set, kind missing).
+            "_pending_goal_kind": (
+                self._pending_goal_kind if self._pending_goal_objective else None
+            ),
         }
+
+    async def _wait_for_agent_quiescence(self) -> None:
+        """Wait until graph execution and checkpoint reconciliation are idle."""
+        while self._agent_running or self._agent_reconciling:
+            await self._agent_quiescent.wait()
+
+    def _set_agent_running(self, running: bool) -> None:
+        """Keep the agent-running flag and quiescence event synchronized."""
+        if running:
+            self._agent_quiescent.clear()
+        self._agent_running = running
+        if not running and not self._agent_reconciling:
+            self._agent_quiescent.set()
+
+    @asynccontextmanager
+    async def _goal_state_mutation_boundary(self) -> AsyncIterator[None]:
+        """Serialize an out-of-run goal mutation with graph checkpoints."""
+        async with self._goal_state_lock:
+            self._goal_state_mutating = True
+            try:
+                await self._wait_for_agent_quiescence()
+                yield
+            finally:
+                self._goal_state_mutating = False
 
     async def _persist_goal_rubric_state(self) -> bool:
         """Persist TUI-owned goal/rubric metadata to the current thread.
@@ -8100,15 +8881,22 @@ class DeepAgentsApp(App):
             return False
         return True
 
-    async def _mount_goal_rubric_result(self, message: str, *, persisted: bool) -> None:
+    async def _mount_goal_rubric_result(
+        self, message: str, *, persisted: bool, suppress_success: bool = False
+    ) -> None:
         """Mount a goal/rubric command result, flagging unsaved state.
 
         Args:
             message: Success text describing the applied change.
             persisted: Whether `_persist_goal_rubric_state` confirmed the write.
+            suppress_success: When `True`, skip the success message on a
+                persisted write but still surface the unsaved-state warning.
+                Used by revision cycles that would otherwise duplicate a
+                message already shown for the first proposal.
         """
         if persisted:
-            await self._mount_message(AppMessage(message))
+            if not suppress_success:
+                await self._mount_message(AppMessage(message))
             return
         await self._mount_message(
             ErrorMessage(
@@ -8134,12 +8922,13 @@ class DeepAgentsApp(App):
         """Clear a draft goal proposal without touching the active goal."""
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
+        self._pending_goal_kind = None
 
     def _clear_all_goal_rubric_state(self) -> None:
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
-        Single reset point so the clear paths cannot drift out of sync over the
-        ten correlated fields. Grader settings (`_rubric_model` and
+        Single reset point so the clear paths cannot drift across the correlated
+        fields. Grader settings (`_rubric_model` and
         `_rubric_max_iterations`) are intentionally left untouched — they are
         configured separately via `/rubric model` and `/rubric max-iterations`
         and survive `/rubric clear` and `/clear`.
@@ -8148,6 +8937,7 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
+        self._queued_goal_application = None
         self._reset_goal_tracking()
 
     @staticmethod
@@ -8175,7 +8965,10 @@ class DeepAgentsApp(App):
         Returns:
             Payload with goal/rubric channels coerced to known types.
         """
-        from deepagents_code.resume_state import coerce_goal_status
+        from deepagents_code.resume_state import (
+            coerce_goal_proposal_kind,
+            coerce_goal_status,
+        )
 
         def _as_str(value: object) -> str | None:
             return value if isinstance(value, str) else None
@@ -8198,10 +8991,24 @@ class DeepAgentsApp(App):
             rubric_status=_as_str(state_values.get("_rubric_status")),
             pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
+            pending_goal_kind=coerce_goal_proposal_kind(
+                state_values.get("_pending_goal_kind")
+            ),
         )
 
-    def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
-        """Restore TUI-owned goal/rubric metadata from a thread payload."""
+    def _restore_goal_rubric_state(
+        self,
+        payload: _ThreadHistoryPayload,
+        *,
+        preserve_queued_application: bool = False,
+    ) -> None:
+        """Restore TUI-owned goal/rubric metadata from a thread payload.
+
+        Args:
+            payload: Goal and rubric metadata read from a thread checkpoint.
+            preserve_queued_application: Keep an accepted in-flight goal update
+                that must be applied after turn-end reconciliation.
+        """
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
@@ -8214,6 +9021,11 @@ class DeepAgentsApp(App):
             self._active_rubric = payload.rubric
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
+        self._pending_goal_kind = payload.pending_goal_kind
+        if not preserve_queued_application:
+            self._queued_goal_application = None
+        if self._pending_goal_objective and self._pending_goal_kind is None:
+            self._pending_goal_kind = "create"
         self._next_rubric = None
         self._sync_status_rubric()
 
@@ -8250,21 +9062,58 @@ class DeepAgentsApp(App):
         note: str,
         *,
         previous_status: str | None,
-    ) -> None:
-        """Mark a rubric-approved completion request complete."""
-        self._goal_status = "complete"
-        self._goal_status_note = note
-        self._pending_goal_completion_note = None
+    ) -> bool:
+        """Clear a rubric-approved goal after its completion is saved.
+
+        Returns:
+            `True` when the cleared state was persisted, or `False` when the active
+                goal was restored for retry.
+        """
+        active_goal = self._active_goal
+        goal_status = self._goal_status
+        goal_status_note = self._goal_status_note
+        active_rubric = self._active_rubric
+        pending_goal_completion_note = self._pending_goal_completion_note
+        pending_goal_objective = self._pending_goal_objective
+        pending_goal_rubric = self._pending_goal_rubric
+        pending_goal_kind = self._pending_goal_kind
+        next_rubric = self._next_rubric
+        last_consumed_next_rubric = self._last_consumed_next_rubric
+        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
+
+        self._clear_all_goal_rubric_state()
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._announce_goal_status_transition(previous_status)
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
+        if persisted:
+            if previous_status != "complete":
+                text = "Goal marked complete by the agent."
+                if note:
+                    text = f"{text}\n\n{note}"
+                await self._mount_message(AppMessage(text))
+            return True
+
+        # The checkpoint still contains the active goal and pending completion
+        # request. Restore that exact local state so the UI and next grading
+        # turn cannot diverge from it, and so a later sync can safely retry.
+        self._active_goal = active_goal
+        self._goal_status = goal_status
+        self._goal_status_note = goal_status_note
+        self._active_rubric = active_rubric
+        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_objective = pending_goal_objective
+        self._pending_goal_rubric = pending_goal_rubric
+        self._pending_goal_kind = pending_goal_kind
+        self._next_rubric = next_rubric
+        self._last_consumed_next_rubric = last_consumed_next_rubric
+        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
+        self._sync_status_rubric()
+        await self._mount_message(
+            ErrorMessage(
+                "Goal completion could not be saved, so the goal remains active "
+                "and its completion request is still pending for retry."
             )
+        )
+        return False
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
@@ -8287,6 +9136,28 @@ class DeepAgentsApp(App):
         if not self._active_goal or not note or self._goal_status == "complete":
             return False
 
+        if rubric_status == "grader_error":
+            await self._mount_message(
+                ErrorMessage(
+                    "Acceptance-criteria grading failed because of a grader or "
+                    "infrastructure error. The goal remains active, and its completion "
+                    "request is still pending; it will be re-graded on your next turn."
+                )
+            )
+            return False
+        if rubric_status == "max_iterations_reached":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded: the iteration limit was reached "
+                "with unmet criteria. The goal remains active for resume, amendment, "
+                "retry, or clearing."
+            )
+            return False
+        if rubric_status == "failed":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded because the grader could not "
+                "evaluate the rubric. The goal remains active."
+            )
+            return False
         if rubric_status != "satisfied":
             await self._clear_pending_goal_completion(
                 "Goal completion was not recorded because the rubric was not satisfied."
@@ -8294,11 +9165,10 @@ class DeepAgentsApp(App):
             return False
 
         if self._session_state is not None and self._session_state.auto_approve:
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         action_requests = [
             {
@@ -8325,17 +9195,15 @@ class DeepAgentsApp(App):
         decision_type = decision.get("type") if isinstance(decision, dict) else None
         if decision_type == "auto_approve_all":
             await self._on_auto_approve_enabled()
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
         if decision_type == "approve":
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         reject_message = decision.get("message") if isinstance(decision, dict) else None
         if isinstance(reject_message, str) and reject_message.strip():
@@ -8411,6 +9279,7 @@ class DeepAgentsApp(App):
                 payload.pending_goal_completion_note,
                 payload.pending_goal_objective,
                 payload.pending_goal_rubric,
+                payload.pending_goal_kind,
             )
         ):
             self._last_consumed_next_rubric = None
@@ -8426,7 +9295,10 @@ class DeepAgentsApp(App):
             # instead of re-listing all of them.
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
-        self._restore_goal_rubric_state(payload)
+        self._restore_goal_rubric_state(
+            payload,
+            preserve_queued_application=True,
+        )
         completion_committed = await self._resolve_pending_goal_completion(
             rubric_status=payload.rubric_status,
             previous_status=previous_status,
@@ -8536,6 +9408,47 @@ class DeepAgentsApp(App):
             await self._show_goal_state()
             return
 
+        # `amend` matches on the first token (like `model`/`max-iterations`),
+        # not the full remainder, because it always carries feedback text. This
+        # reserves the `amend ` prefix: `/goal amend <text>` is never treated as
+        # a new objective. That is intentional but asymmetric with the exact-word
+        # subcommands (`show`/`status` handled above; `pause`/`resume`/`clear`
+        # below), which match the whole remainder only, so `/goal show me the
+        # money` still creates a goal.
+        if grader_sub == "amend":
+            await self._mount_message(UserMessage(command))
+            if not grader_arg:
+                await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
+                return
+            if not self._active_goal or self._goal_status == "complete":
+                await self._mount_message(
+                    AppMessage(
+                        "No active goal to amend. Use `/goal <objective>` to "
+                        "create one."
+                    )
+                )
+                return
+            self._cancel_goal_proposal_worker()
+            await self._cancel_pending_goal_review(context="goal-amend cleanup")
+            async with self._goal_state_mutation_boundary():
+                self._clear_pending_goal_rubric()
+                await self._persist_goal_rubric_state()
+            self._goal_proposal_worker = self.run_worker(
+                self._propose_goal_amendment(grader_arg),
+                exclusive=False,
+            )
+            return
+
+        if subcommand == "pause":
+            await self._mount_message(UserMessage(command))
+            await self._pause_goal()
+            return
+
+        if subcommand == "resume":
+            await self._mount_message(UserMessage(command))
+            await self._resume_goal()
+            return
+
         if subcommand in {"accept", "edit"}:
             await self._mount_message(UserMessage(command))
             await self._mount_message(
@@ -8550,18 +9463,22 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             self._cancel_goal_proposal_worker()
             await self._cancel_pending_goal_review(context="goal-clear cleanup")
-            self._clear_all_goal_rubric_state()
-            self._sync_status_rubric()
-            persisted = await self._persist_goal_rubric_state()
+            async with self._goal_state_mutation_boundary():
+                self._clear_all_goal_rubric_state()
+                self._sync_status_rubric()
+                persisted = await self._persist_goal_rubric_state()
             await self._mount_goal_rubric_result("Goal cleared.", persisted=persisted)
+            if self._pending_messages and not self._agent_running:
+                await self._process_next_from_queue()
             return
 
         objective = remainder
         await self._mount_message(UserMessage(command))
         self._cancel_goal_proposal_worker()
         await self._cancel_pending_goal_review(context="goal replacement cleanup")
-        self._clear_pending_goal_rubric()
-        await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._clear_pending_goal_rubric()
+            await self._persist_goal_rubric_state()
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_rubric(objective),
             exclusive=False,
@@ -8573,14 +9490,17 @@ class DeepAgentsApp(App):
         return (
             "Usage:\n"
             "  /goal <objective>\n"
+            "  /goal amend <feedback>\n"
+            "  /goal pause\n"
+            "  /goal resume\n"
             "  /goal show\n"
             "  /goal clear\n"
             "  /goal model [provider:model|clear]\n"
             "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist and ask before applying it. Once accepted, the "
-            "goal stays active for this thread until completed, blocked, or "
-            "cleared. Follow-up prompts continue working toward that goal."
+            "goal stays active for this thread until paused, completed, blocked, "
+            "or cleared. Follow-up prompts continue working toward that goal."
         )
 
     async def _show_goal_state(self) -> None:
@@ -8597,7 +9517,11 @@ class DeepAgentsApp(App):
             lines.extend(
                 [
                     f"Goal:\n{self._pending_goal_objective}",
-                    "Status:\npending review",
+                    (
+                        "Status:\npending amendment review"
+                        if self._pending_goal_kind == "amend"
+                        else "Status:\npending review"
+                    ),
                     f"Criteria:\n{self._pending_goal_rubric}",
                     (
                         "Review the proposal in the review prompt, or run "
@@ -8612,12 +9536,18 @@ class DeepAgentsApp(App):
             )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
-                    "Goal is active for this thread until completed, blocked, or "
-                    "cleared.\nFollow-up prompts will continue working toward this "
+                    "Goal is active for this thread until paused, completed, blocked, "
+                    "or cleared.\nFollow-up prompts will continue working toward this "
                     "goal."
                 )
+            elif self._active_goal and self._goal_status == "paused":
+                lines.append(
+                    "Goal is paused. It remains saved, but it will not drive work or "
+                    "grading until resumed."
+                )
             lines.append(
-                "Commands:\n/goal clear\n/goal show\n"
+                "Commands:\n/goal amend <feedback>\n/goal pause\n/goal resume\n"
+                "/goal clear\n/goal show\n"
                 "/goal model [provider:model|clear]\n"
                 "/goal max-iterations <N|clear>"
             )
@@ -8626,6 +9556,98 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage("No goal set.\n\n" + self._goal_usage_text())
         )
+
+    async def _propose_goal_amendment(
+        self,
+        feedback: str,
+        *,
+        objective: str | None = None,
+        criteria: str | None = None,
+    ) -> None:
+        """Draft an amendment that preserves unaffected goal constraints.
+
+        Args:
+            feedback: User-requested changes to the goal.
+            objective: Base objective for a rejection retry.
+            criteria: Base criteria for a rejection retry.
+
+        Raises:
+            CancelledError: If amendment drafting is interrupted.
+        """
+        base_objective = objective or self._active_goal
+        base_criteria = criteria or self._active_rubric
+        if not base_objective or not base_criteria:
+            await self._mount_message(
+                AppMessage(
+                    "No active goal to amend. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        await self._set_spinner("Drafting acceptance criteria")
+        try:
+            amended_objective, amended_criteria = await asyncio.to_thread(
+                self._generate_goal_amendment,
+                base_objective,
+                base_criteria,
+                feedback,
+            )
+        except asyncio.CancelledError:
+            self._clear_pending_goal_rubric()
+            raise
+        except Exception as exc:
+            logger.exception("Failed to propose goal amendment")
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            await self._remount_pending_goal_rubric_review()
+            return
+        finally:
+            await self._set_spinner(None)
+        if not amended_objective or not amended_criteria:
+            await self._mount_message(
+                ErrorMessage("The model returned an incomplete goal amendment.")
+            )
+            await self._remount_pending_goal_rubric_review()
+            return
+        async with self._goal_state_mutation_boundary():
+            self._pending_goal_objective = amended_objective
+            self._pending_goal_rubric = amended_criteria
+            self._pending_goal_kind = "amend"
+            persisted = await self._persist_goal_rubric_state()
+        await self._mount_goal_rubric_result(
+            "Proposed goal amendment is ready.",
+            persisted=persisted,
+            suppress_success=True,
+        )
+        await self._start_pending_goal_rubric_review()
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
+
+    def _generate_goal_amendment(
+        self,
+        objective: str,
+        criteria: str,
+        feedback: str,
+    ) -> tuple[str, str]:
+        """Generate an amended objective and criteria with the current model.
+
+        Args:
+            objective: Current or previously proposed objective.
+            criteria: Current or previously proposed criteria.
+            feedback: User-requested changes.
+
+        Returns:
+            Proposed objective and criteria.
+        """
+        from deepagents_code.goal_rubric import generate_goal_amendment
+
+        amendment = generate_goal_amendment(
+            objective,
+            criteria,
+            feedback,
+            model_spec=self._effective_model_spec(),
+            model_params=self._model_params_override,
+            profile_override=self._profile_override,
+        )
+        return amendment["objective"], amendment["criteria"]
 
     async def _propose_goal_rubric(
         self,
@@ -8672,14 +9694,23 @@ class DeepAgentsApp(App):
             )
             await self._remount_pending_goal_rubric_review()
             return
-        self._pending_goal_objective = objective
-        self._pending_goal_rubric = rubric
-        persisted = await self._persist_goal_rubric_state()
+        async with self._goal_state_mutation_boundary():
+            self._pending_goal_objective = objective
+            self._pending_goal_rubric = rubric
+            self._pending_goal_kind = "create"
+            persisted = await self._persist_goal_rubric_state()
+        # On a revision the remounted review widget already shows the updated
+        # criteria, so re-announcing readiness is redundant and would duplicate
+        # the message from the first proposal. The unsaved-state warning still
+        # surfaces regardless (see `_mount_goal_rubric_result`).
         await self._mount_goal_rubric_result(
             "Proposed acceptance criteria are ready.",
             persisted=persisted,
+            suppress_success=feedback is not None,
         )
         await self._start_pending_goal_rubric_review()
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
 
     def _generate_goal_rubric(
         self,
@@ -8699,6 +9730,15 @@ class DeepAgentsApp(App):
             Proposed acceptance criteria text.
         """
         from deepagents_code.goal_rubric import generate_goal_rubric
+        from deepagents_code.project_utils import ProjectContext
+
+        try:
+            repository_root = ProjectContext.from_user_cwd(self._cwd).project_root
+        except (OSError, RuntimeError) as exc:  # repository context is optional
+            logger.warning(
+                "Could not resolve repository context for goal criteria: %s", exc
+            )
+            repository_root = None
 
         return generate_goal_rubric(
             objective,
@@ -8707,6 +9747,7 @@ class DeepAgentsApp(App):
             profile_override=self._profile_override,
             feedback=feedback,
             previous_criteria=previous_criteria,
+            repository_root=repository_root,
         )
 
     async def _start_pending_goal_rubric_review(self) -> None:
@@ -8717,7 +9758,14 @@ class DeepAgentsApp(App):
             return
 
         self._cancel_goal_review_task()
-        result_future = await self._request_goal_review(objective, rubric)
+        if self._pending_goal_kind == "amend":
+            result_future = await self._request_goal_review(
+                objective,
+                rubric,
+                amendment=True,
+            )
+        else:
+            result_future = await self._request_goal_review(objective, rubric)
         self.call_after_refresh(self._schedule_goal_review_task, result_future)
 
     async def _remount_pending_goal_rubric_review(self) -> None:
@@ -8762,12 +9810,24 @@ class DeepAgentsApp(App):
                 await self._accept_goal_rubric(result["criteria"])
                 return
             if result["type"] == "rejected":
-                self._regenerate_goal_rubric_from_feedback(result["message"])
+                if self._pending_goal_kind == "amend":
+                    self._regenerate_goal_amendment_from_feedback(result["message"])
+                else:
+                    self._regenerate_goal_rubric_from_feedback(result["message"])
                 return
             if result["type"] == "cancelled":
-                self._clear_pending_goal_rubric()
-                await self._persist_goal_rubric_state()
-                await self._mount_message(AppMessage("Goal proposal cancelled."))
+                was_amendment = self._pending_goal_kind == "amend"
+                async with self._goal_state_mutation_boundary():
+                    self._clear_pending_goal_rubric()
+                    await self._persist_goal_rubric_state()
+                message = (
+                    "Goal amendment cancelled."
+                    if was_amendment
+                    else "Goal proposal cancelled."
+                )
+                await self._mount_message(AppMessage(message))
+                if self._pending_messages and not self._agent_running:
+                    await self._process_next_from_queue()
                 return
             # Static exhaustiveness guard: a new `GoalReviewResult` variant trips
             # the type checker here instead of silently taking the cancel path.
@@ -8809,8 +9869,25 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
+    def _regenerate_goal_amendment_from_feedback(self, feedback: str) -> None:
+        """Revise a pending amendment from review feedback."""
+        objective = self._pending_goal_objective
+        criteria = self._pending_goal_rubric
+        feedback = feedback.strip()
+        if not objective or not criteria or not feedback:
+            return
+        self._cancel_goal_proposal_worker()
+        self._goal_proposal_worker = self.run_worker(
+            self._propose_goal_amendment(
+                feedback,
+                objective=objective,
+                criteria=criteria,
+            ),
+            exclusive=False,
+        )
+
     async def _accept_goal_rubric(self, rubric: str) -> None:
-        """Set the active goal and sticky rubric from accepted criteria."""
+        """Apply accepted criteria immediately or at the next safe boundary."""
         objective = self._pending_goal_objective
         if not objective:
             await self._mount_message(AppMessage("No pending goal to accept."))
@@ -8819,35 +9896,231 @@ class DeepAgentsApp(App):
         if not rubric:
             await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return
-        self._active_goal = objective
-        self._goal_status = "active"
-        self._goal_status_note = None
-        self._active_rubric = rubric
-        self._next_rubric = None
-        self._pending_goal_objective = None
-        self._pending_goal_rubric = None
-        self._sync_status_rubric()
-        persisted = await self._persist_goal_rubric_state()
-        await self._mount_message(
-            AppMessage(
-                "Goal accepted. It will stay active for this thread until completed, "
-                "blocked, or cleared.\nUse /goal show to inspect it or /goal clear "
-                "to remove it."
+        kind = self._pending_goal_kind or "create"
+        if kind == "amend" and (
+            not self._active_goal or self._goal_status == "complete"
+        ):
+            await self._mount_message(
+                AppMessage(
+                    "The goal is no longer active. Start a new goal with "
+                    "`/goal <objective>`."
+                )
             )
+            return
+        application = _GoalApplication(objective, rubric, kind)
+        if self._agent_running or self._agent_reconciling:
+            self._queued_goal_application = application
+            await self._mount_message(
+                AppMessage(
+                    "Goal update accepted; it will apply after the current turn."
+                )
+            )
+            return
+        await self._apply_goal_application(application)
+
+    async def _write_goal_application(
+        self,
+        application: _GoalApplication,
+        *,
+        is_amendment: bool,
+    ) -> bool:
+        """Write accepted goal fields while the graph is quiescent.
+
+        Returns:
+            Whether the checkpoint update succeeded.
+        """
+        self._active_goal = application.objective
+        self._active_rubric = application.rubric
+        self._next_rubric = None
+        self._pending_goal_completion_note = None
+        if not is_amendment:
+            self._goal_status = "active"
+            self._goal_status_note = None
+        self._clear_pending_goal_rubric()
+        self._sync_status_rubric()
+        return await self._persist_goal_rubric_state()
+
+    async def _apply_goal_application(
+        self,
+        application: _GoalApplication,
+        *,
+        continue_work: bool = True,
+        at_boundary: bool = False,
+    ) -> Literal["create", "amended"] | None:
+        """Persist an accepted goal change and continue work when appropriate.
+
+        The returned literals are ephemeral transition verbs, distinct from the
+        persisted `GoalProposalKind` (`create`/`amend`); the tense difference
+        (`amend` -> `amended`) marks the boundary, and only `create` overlaps
+        the two sets by coincidence. Do not compare a return value against a
+        `GoalProposalKind`.
+
+        Returns:
+            Continuation kind when the accepted goal should keep running,
+            otherwise `None`.
+        """
+        is_amendment = application.kind == "amend"
+        if is_amendment and (not self._active_goal or self._goal_status == "complete"):
+            self._clear_pending_goal_rubric()
+            await self._mount_message(
+                AppMessage("The goal ended before the amendment could be applied.")
+            )
+            return None
+        if at_boundary:
+            persisted = await self._write_goal_application(
+                application,
+                is_amendment=is_amendment,
+            )
+        else:
+            async with self._goal_state_mutation_boundary():
+                persisted = await self._write_goal_application(
+                    application,
+                    is_amendment=is_amendment,
+                )
+        if is_amendment:
+            await self._mount_goal_rubric_result(
+                "Goal amended.",
+                persisted=persisted,
+                suppress_success=True,
+            )
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "Goal accepted. It will stay active for this thread until paused, "
+                    "completed, blocked, or cleared.\nUse /goal show to inspect it or "
+                    "/goal clear to remove it."
+                )
+            )
+            if not persisted:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Goal accepted for this session, but it could not be saved "
+                        "to the thread."
+                    )
+                )
+        if (
+            self._initial_goal is not None
+            and application.objective == self._initial_goal
+        ):
+            self._initial_goal = None
+        if is_amendment and not persisted:
+            return None
+        if self._goal_status == "paused":
+            return None
+        transition: Literal["create", "amended"] = (
+            "amended" if is_amendment else "create"
         )
+        if continue_work:
+            if is_amendment and self._pending_messages:
+                await self._process_next_from_queue()
+            elif is_amendment and not self._agent_running:
+                await self._continue_goal_work("amended")
+            elif not is_amendment and not self._agent_running:
+                await self._handle_user_message(application.objective)
+        return transition
+
+    async def _continue_goal_work(
+        self,
+        transition: Literal["amended", "resumed"],
+    ) -> None:
+        """Continue from persisted state without replaying the original objective."""
+        message = (
+            f"{SYSTEM_MESSAGE_PREFIX} Goal {transition} by the user. Read the "
+            "current objective and acceptance criteria with get_goal, then continue "
+            "from the existing conversation and work. Do not repeat completed work."
+        )
+        await self._send_to_agent(
+            message,
+            message_kwargs={"additional_kwargs": {"lc_source": "goal_control"}},
+        )
+
+    async def _pause_goal(self) -> None:
+        """Persist a paused goal without clearing its objective or criteria."""
+        if not self._active_goal or self._goal_status == "complete":
+            await self._mount_message(
+                AppMessage(
+                    "No active goal to pause. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        if self._goal_status == "paused":
+            await self._mount_message(AppMessage("Goal is already paused."))
+            return
+        if self._goal_status == "blocked":
+            await self._mount_message(
+                AppMessage(
+                    "Goal is blocked and already waiting for user input. Reply to "
+                    "continue, or clear it with `/goal clear`."
+                )
+            )
+            return
+        previous_status = self._goal_status
+        async with self._goal_state_mutation_boundary():
+            self._goal_status = "paused"
+            self._sync_status_rubric()
+            persisted = await self._persist_goal_rubric_state()
+            if not persisted:
+                self._goal_status = previous_status
+                self._sync_status_rubric()
         if not persisted:
             await self._mount_message(
                 ErrorMessage(
-                    "Goal accepted for this session, but it could not be saved "
-                    "to the thread."
+                    "Goal pause could not be saved to the thread and was reverted; "
+                    "the goal is still active."
                 )
             )
-        if self._initial_goal is not None and objective == self._initial_goal:
-            self._initial_goal = None
-        await self._handle_user_message(objective)
+            return
+        await self._mount_message(
+            AppMessage("Goal paused. Use `/goal resume` to continue it.")
+        )
+        if self._pending_messages and not self._agent_running:
+            await self._process_next_from_queue()
+
+    async def _resume_goal(self) -> None:
+        """Resume a paused goal from its persisted conversation state."""
+        if not self._active_goal or self._goal_status == "complete":
+            await self._mount_message(
+                AppMessage(
+                    "No paused goal to resume. Use `/goal <objective>` to create one."
+                )
+            )
+            return
+        if self._goal_status != "paused":
+            await self._mount_message(
+                AppMessage(
+                    "Goal is not paused. Use `/goal show` to inspect its current state."
+                )
+            )
+            return
+        async with self._goal_state_mutation_boundary():
+            self._goal_status = "active"
+            self._sync_status_rubric()
+            persisted = await self._persist_goal_rubric_state()
+            if not persisted:
+                self._goal_status = "paused"
+                self._sync_status_rubric()
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "Goal resume could not be saved to the thread and was reverted; "
+                    "the goal is still paused."
+                )
+            )
+            return
+        await self._mount_message(AppMessage("Goal resumed."))
+        if self._pending_messages:
+            await self._process_next_from_queue()
+        elif not self._agent_running:
+            await self._continue_goal_work("resumed")
 
     def _sync_status_rubric(self) -> None:
-        """Reflect active rubric and goal state in the status bar."""
+        """Reflect active rubric and goal state in persistent UI."""
+        if self._goal_status_panel is not None:
+            self._goal_status_panel.set_goal(
+                self._active_goal,
+                self._goal_status,
+                self._goal_status_note,
+            )
         if self._status_bar is None:
             return
         from deepagents_code.config import get_glyphs
@@ -8857,6 +10130,8 @@ class DeepAgentsApp(App):
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal complete")
         elif self._active_goal and self._goal_status == "blocked":
             self._status_bar.set_rubric_label(f"{glyphs.warning} Goal blocked")
+        elif self._active_goal and self._goal_status == "paused":
+            self._status_bar.set_rubric_label(f"{glyphs.pause} Goal paused")
         elif self._next_rubric:
             self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric: next turn")
         elif self._active_rubric:
@@ -9336,7 +10611,7 @@ class DeepAgentsApp(App):
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
-                "/threads, /trace, "
+                "/tools, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -9344,6 +10619,7 @@ class DeepAgentsApp(App):
                 f"  {newline_shortcut():<15} Insert newline\n"
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -9411,6 +10687,46 @@ class DeepAgentsApp(App):
                     prefix="Started new thread",
                     thread_id=new_thread_id,
                 )
+                previous_thread_id = self._session_state.previous_thread_id
+                if previous_thread_id:
+                    import sqlite3
+
+                    from deepagents_code.sessions import thread_exists
+
+                    # Best-effort: on any failure just suppress the hint (never
+                    # crash `/clear`), but log unexpected errors loudly so a
+                    # real bug isn't silently read as "not resumable".
+                    try:
+                        previous_thread_is_resumable = await thread_exists(
+                            previous_thread_id
+                        )
+                    except (sqlite3.Error, OSError):
+                        logger.debug(
+                            "Could not check whether previous thread %s is resumable",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                    except Exception:
+                        logger.warning(
+                            "Unexpected error checking previous thread %s resumability",
+                            previous_thread_id,
+                            exc_info=True,
+                        )
+                        previous_thread_is_resumable = False
+                else:
+                    previous_thread_is_resumable = False
+                if previous_thread_id and previous_thread_is_resumable:
+                    previous_msg_widget = AppMessage(
+                        f"Previous thread: {previous_thread_id}"
+                    )
+                    await self._mount_message(previous_msg_widget)
+                    self._schedule_thread_message_link(
+                        previous_msg_widget,
+                        prefix="Previous thread",
+                        thread_id=previous_thread_id,
+                    )
+                    await self._mount_message(AppMessage("Resume it with /threads -r"))
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -9459,8 +10775,8 @@ class DeepAgentsApp(App):
         elif cmd in {"/offload", "/compact"}:
             await self._mount_message(UserMessage(command))
             await self._handle_offload()
-        elif cmd == "/threads":
-            await self._show_thread_selector()
+        elif cmd == "/threads" or cmd.startswith("/threads "):
+            await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
         elif cmd == "/update" or cmd.startswith("/update "):
@@ -9532,6 +10848,8 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
+        elif cmd == "/tools":
+            await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -9720,6 +11038,8 @@ class DeepAgentsApp(App):
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
+        elif cmd == "/debug":
+            self._open_debug_console()
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -10133,7 +11453,7 @@ class DeepAgentsApp(App):
             return
 
         # Prevent concurrent user input while offload modifies state
-        self._agent_running = True
+        self._set_agent_running(True)
         try:
             from deepagents_code.hooks import dispatch_hook
 
@@ -10223,7 +11543,7 @@ class DeepAgentsApp(App):
             logger.exception("Offload failed")
             await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
         finally:
-            self._agent_running = False
+            self._set_agent_running(False)
             try:
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
@@ -10236,7 +11556,8 @@ class DeepAgentsApp(App):
             message: The user's message
         """
         # Mount the user message, tracking it so it can be dimmed on interrupt.
-        user_message = UserMessage(message)
+        media_snapshot = self._image_tracker.snapshot()
+        user_message = UserMessage(message, media_snapshot=media_snapshot)
         await self._mount_message(user_message)
         self._active_user_message = user_message
         await self._send_to_agent(message)
@@ -10264,7 +11585,10 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
-            self._agent_running = True
+            self._set_agent_running(True)
+            # Fresh turn: no model text or tool call is visible yet, so an Esc
+            # interrupt may still return this prompt to the input.
+            self._active_turn_visible_output_started = False
 
             # Flush any buffered non-incognito `!` shell output into thread
             # state so this turn's model sees commands run since the last turn.
@@ -10280,29 +11604,10 @@ class DeepAgentsApp(App):
                 else None
             )
 
-            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
-            # just above, so the status alone can't distinguish an already-active
-            # goal from one resumed this turn. Branch the wording on the reset
-            # signal instead. The status guard still holds: a failed reset rolls
-            # the status back to blocked, so no notice fires in that case.
-            #
-            # The `message != _active_goal` check suppresses the notice on the
-            # goal-setting turn, and works only because acceptance sends the
-            # objective verbatim as the message. If a future change wraps or
-            # annotates the objective before sending (as the skill path already
-            # does with its envelope prompt), the equality would no longer match
-            # and the notice would wrongly fire on the initial turn.
-            if (
-                self._active_goal
-                and self._goal_status == "active"
-                and message.strip() != self._active_goal.strip()
-            ):
-                notice = (
-                    f"Resuming previously blocked goal: {self._active_goal}"
-                    if resuming_blocked
-                    else f"Continuing active goal: {self._active_goal}"
+            if resuming_blocked and self._active_goal:
+                await self._mount_message(
+                    AppMessage(f"Resuming previously blocked goal: {self._active_goal}")
                 )
-                await self._mount_message(AppMessage(notice))
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
@@ -10591,7 +11896,14 @@ class DeepAgentsApp(App):
             spec = self._effective_model_spec()
             panel.prepare_turn(model_label=_display_model_label(spec))
 
-        rubric = self._next_rubric or self._active_rubric
+        # A paused or completed goal withholds its rubric so the grader does not
+        # run this turn (mirrors the persisted-state suppression in
+        # `_goal_state_update`). A one-shot `_next_rubric` still applies.
+        rubric = self._next_rubric
+        if rubric is None and not (
+            self._active_goal and self._goal_status in {"paused", "complete"}
+        ):
+            rubric = self._active_rubric
         if self._next_rubric is not None:
             self._last_consumed_next_rubric = self._next_rubric
             self._last_consumed_next_previous_rubric = self._active_rubric
@@ -10611,6 +11923,7 @@ class DeepAgentsApp(App):
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
                 rubric=rubric,
+                goal_active=bool(self._active_goal),
                 blocked_goal_retry_context=blocked_goal_retry_context,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
@@ -10690,8 +12003,17 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
+        Leaves the queue untouched while the server is connecting so the
+        `ServerReady` path can resume draining against the fully initialized
+        session.
         """
-        if self._processing_pending or not self._pending_messages or self._exit:
+        if (
+            self._processing_pending
+            or self._goal_state_mutating
+            or not self._pending_messages
+            or self._exit
+            or self._connecting
+        ):
             return
 
         self._processing_pending = True
@@ -10716,46 +12038,119 @@ class DeepAgentsApp(App):
         # Command mode messages complete synchronously without spawning
         # a worker, so cleanup won't fire again. Continue draining the
         # queue if no worker was started.
-        busy = self._agent_running or self._shell_running
+        busy = (
+            self._agent_running
+            or self._agent_reconciling
+            or self._goal_state_mutating
+            or self._shell_running
+        )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
     async def _cleanup_agent_task(self) -> None:
-        """Clean up after agent task completes or is cancelled."""
-        self._agent_running = False
+        """Tear down after a turn completes or is cancelled.
+
+        Resets spinner/cursor/token display, refreshes the git branch, drains
+        deferred actions, applies any goal update queued during the turn, and
+        drains the message queue — then releases the quiescence gate so
+        out-of-run checkpoint mutations may proceed. Invoked from the `finally`
+        block of `_run_agent_task`, so it must run on interrupt as well as on
+        normal completion.
+        """
+        self._agent_quiescent.clear()
+        self._agent_reconciling = True
+        self._set_agent_running(False)
         self._agent_worker = None
         self._active_user_message = None
-
-        # Remove spinner if present
-        await self._set_spinner(None)
-
-        if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
-
-        # Ensure token display is restored (in case of early cancellation).
-        # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
-        self._show_tokens(approximate=self._tokens_approximate)
-
-        # Agent-executed commands and tools can mutate repo state (e.g. git
-        # checkout inside an execute call), so refresh the footer on turn end.
-        self._schedule_git_branch_refresh()
-        await self._sync_goal_rubric_state_from_thread()
-
+        self._active_turn_visible_output_started = False
+        queued_transition: Literal["create", "amended"] | None = None
+        queued_objective: str | None = None
         try:
-            await self._maybe_drain_deferred()
-        except Exception:
-            logger.exception("Failed to drain deferred actions during agent cleanup")
-            with suppress(Exception):
-                await self._mount_message(
-                    ErrorMessage(
-                        "A deferred action failed after task completion. "
-                        "You may need to retry the operation.",
-                    ),
-                )
+            try:
+                await self._set_spinner(None)
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=True)
+                self._show_tokens(approximate=self._tokens_approximate)
+                self._schedule_git_branch_refresh()
+                await self._sync_goal_rubric_state_from_thread()
 
-        # Process next message from queue if any
-        if not self._startup_sequence_running:
-            await self._process_next_from_queue()
+                try:
+                    await self._maybe_drain_deferred()
+                except Exception:
+                    logger.exception(
+                        "Failed to drain deferred actions during agent cleanup"
+                    )
+                    with suppress(Exception):
+                        await self._mount_message(
+                            ErrorMessage(
+                                "A deferred action failed after task completion. "
+                                "You may need to retry the operation.",
+                            ),
+                        )
+
+                application = self._queued_goal_application
+                if application is not None:
+                    # `_apply_goal_application` touches the DOM (spinner, status
+                    # panel, mounted messages), which can raise during teardown.
+                    # Guard it so a failure can't (a) escape and skip the
+                    # queue-drain block below, stranding pending messages, or
+                    # (b) silently drop an accepted goal the user was told would
+                    # apply after the turn. On failure the application stays
+                    # queued so the next turn-end retries it; it is cleared only
+                    # once the apply succeeds.
+                    try:
+                        queued_objective = application.objective
+                        queued_transition = await self._apply_goal_application(
+                            application,
+                            continue_work=False,
+                            at_boundary=True,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to apply queued goal update during agent cleanup"
+                        )
+                        queued_objective = None
+                        queued_transition = None
+                        with suppress(Exception):
+                            await self._mount_message(
+                                ErrorMessage(
+                                    "The accepted goal update could not be applied "
+                                    "after the turn. It remains queued and will be "
+                                    "retried on the next turn.",
+                                ),
+                            )
+                    else:
+                        self._queued_goal_application = None
+            finally:
+                self._agent_reconciling = False
+
+            # A user message already sitting in the queue takes precedence over
+            # the synthetic goal-continuation turn: draining it runs the user's
+            # own input first under the newly applied goal, instead of the agent
+            # racing ahead with an "amended"/"create" turn. The two
+            # `_process_next_from_queue()` calls are mutually exclusive on
+            # `had_queued_input`, so they never both run — and both are further
+            # gated on `not _startup_sequence_running`, which can suppress both.
+            had_queued_input = bool(self._pending_messages)
+            if not self._startup_sequence_running and had_queued_input:
+                await self._process_next_from_queue()
+            if not had_queued_input and not self._agent_running:
+                if queued_transition == "amended":
+                    await self._continue_goal_work("amended")
+                elif queued_transition == "create" and queued_objective is not None:
+                    await self._handle_user_message(queued_objective)
+
+            if not self._startup_sequence_running and not had_queued_input:
+                await self._process_next_from_queue()
+        finally:
+            # Release the quiescence gate last, and only when no new turn was
+            # started above (a continuation or queued message re-clears the
+            # event via `_send_to_agent`). This lives in `finally` so it runs
+            # even if reconciliation raised: otherwise a caller parked in
+            # `_wait_for_agent_quiescence` — e.g. `/goal pause` holding
+            # `_goal_state_lock` — would never be woken and would deadlock.
+            if not self._agent_running and not self._agent_reconciling:
+                self._agent_quiescent.set()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
@@ -11118,6 +12513,7 @@ class DeepAgentsApp(App):
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
+            await self._ensure_transcript_spacers(messages_container)
 
             # 3. Reconcile against existing state before loading the store.
             # Mounting a widget whose ID already exists raises `DuplicateIds`,
@@ -11185,7 +12581,7 @@ class DeepAgentsApp(App):
                 if footer is not None:
                     nodes.append(footer)
             if nodes:
-                await messages_container.mount(*nodes)
+                await self._mount_transcript_nodes(messages_container, nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
@@ -11205,6 +12601,9 @@ class DeepAgentsApp(App):
                             history_thread_id,
                             error,
                         )
+            for _widget, msg_data in mounted:
+                self._schedule_message_height_measurement(msg_data.id)
+            self._sync_transcript_spacers(messages_container)
 
             # 9. Add footer immediately and resolve link asynchronously
             thread_msg_widget = AppMessage(f"Resumed thread: {history_thread_id}")
@@ -11396,15 +12795,22 @@ class DeepAgentsApp(App):
                 pass
             return
 
+        await self._ensure_transcript_spacers(messages)
+        await self._hydrate_all_messages_below()
+
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
         # then snapping shut. A groupable tool joins (or opens) the current
-        # step's group; a diff folds into it; anything else is a step boundary
-        # that closes the group.
+        # step's group; a diff from a groupable tool folds into it; anything
+        # else is a step boundary that closes the group.
         is_groupable_tool = (
-            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+            isinstance(widget, ToolCallMessage)
+            and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
         )
-        is_diff = isinstance(widget, DiffMessage)
+        is_groupable_diff = (
+            isinstance(widget, DiffMessage)
+            and widget._tool_name not in _TOOL_GROUP_EXCLUSIONS
+        )
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
@@ -11421,7 +12827,7 @@ class DeepAgentsApp(App):
         # folding it into the group hides it on the next frame — bouncing the
         # bottom-anchored transcript on every tool call.
         with self.batch_update():
-            if not (is_groupable_tool or is_diff):
+            if not (is_groupable_tool or is_groupable_diff):
                 self._close_active_tool_group()
                 # Re-derive groups for any tools mounted outside this path
                 # (resumed history), which carry no live group.
@@ -11447,8 +12853,11 @@ class DeepAgentsApp(App):
             ):
                 if is_groupable_tool:
                     self._active_tool_group.add_member(widget)
-                elif is_diff:
+                elif is_groupable_diff:
                     self._active_tool_group.add_collapsible(widget)
+
+        self._schedule_message_height_measurement(message_data.id)
+        self._sync_transcript_spacers(messages)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -11459,6 +12868,15 @@ class DeepAgentsApp(App):
             input_container.scroll_visible()
         except NoMatches:
             pass
+
+    async def _hydrate_all_messages_below(self) -> None:
+        """Mount any hidden tail before appending fresh transcript output."""
+        while self._message_store.has_messages_below:
+            before = self._message_store.get_visible_range()[1]
+            await self._hydrate_messages_below()
+            after = self._message_store.get_visible_range()[1]
+            if after == before:
+                break
 
     async def _prune_old_messages(self) -> None:
         """Prune oldest message widgets if we exceed the window size.
@@ -11499,6 +12917,7 @@ class DeepAgentsApp(App):
 
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
             # Drop any group summaries whose members were all pruned away so a
             # stray collapsed line never lingers above the window. Only reachable
             # when something was actually pruned this pass.
@@ -11511,6 +12930,39 @@ class DeepAgentsApp(App):
                             "Failed to remove orphaned tool group summary",
                             exc_info=True,
                         )
+
+    async def _prune_messages_below_window(
+        self, messages_container: Container | None = None
+    ) -> None:
+        """Prune newest mounted widgets when scrolling into older history."""
+        to_prune = self._message_store.get_messages_to_prune_below()
+        if not to_prune:
+            return
+        if messages_container is None:
+            try:
+                messages_container = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+
+        pruned_ids: list[str] = []
+        for msg_data in to_prune:
+            try:
+                widget = messages_container.query_one(f"#{msg_data.id}")
+                footer_id = _message_timestamp_footer_id(msg_data.id)
+                with suppress(NoMatches):
+                    footer = messages_container.query_one(f"#{footer_id}")
+                    await footer.remove()
+                await widget.remove()
+                pruned_ids.append(msg_data.id)
+            except NoMatches:
+                logger.debug(
+                    "Widget %s not found during bottom pruning, skipping",
+                    msg_data.id,
+                )
+
+        if pruned_ids:
+            self._message_store.mark_pruned_below(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
 
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""
@@ -11566,7 +13018,7 @@ class DeepAgentsApp(App):
                     continue  # footers are transparent to grouping
                 if isinstance(child, ToolCallMessage):
                     groupable = (
-                        child.tool_name != "ask_user"
+                        child.tool_name not in _TOOL_GROUP_EXCLUSIONS
                         and child.is_success
                         and not child.has_class("-grouped")
                     )
@@ -11579,8 +13031,13 @@ class DeepAgentsApp(App):
                     run_collapsible.append(child)
                     continue
                 if isinstance(child, DiffMessage):
-                    # A diff belongs to the tool above it; never starts a run.
-                    if run_anchor is not None:
+                    # A diff belongs to the tool above it and never starts a
+                    # run: normally it folds into the open run, but a diff from
+                    # an excluded tool (e.g. edit_file) stays standalone and
+                    # ends the run so the edit and its diff remain visible.
+                    if child._tool_name in _TOOL_GROUP_EXCLUSIONS:
+                        await flush()
+                    elif run_anchor is not None:
                         run_collapsible.append(child)
                     continue
                 # Assistant text, notices, an existing summary, etc. end the run.
@@ -11607,6 +13064,15 @@ class DeepAgentsApp(App):
             for widget in collapsible:
                 widget.remove_class("-grouped")
 
+    def _on_user_visible_output_started(self) -> None:
+        """Record that the current turn has rendered model text or a tool call.
+
+        Hidden model and subagent activity does not call this. Once set, an Esc
+        interrupt no longer returns the prompt to the input because the user has
+        seen work produced from it.
+        """
+        self._active_turn_visible_output_started = True
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -11630,6 +13096,50 @@ class DeepAgentsApp(App):
             content=content,
             is_streaming=False,
         )
+
+    def _sync_tool_message_state(self, widget: ToolCallMessage) -> None:
+        """Sync mutable tool widget state back to `MessageStore`."""
+        if not widget.id:
+            return
+        try:
+            data = MessageData.from_widget(widget)
+        except Exception:
+            # Fail safe: we can't prove the tool is terminal, so keep the row
+            # mounted rather than leaving a possibly-live tool pruneable.
+            logger.warning(
+                "Failed to serialize tool widget %s; keeping it protected",
+                widget.id,
+                exc_info=True,
+            )
+            self._message_store.protect_message(widget.id)
+            return
+        self._message_store.update_message(
+            widget.id,
+            tool_status=data.tool_status,
+            tool_output=data.tool_output,
+            tool_duration=data.tool_duration,
+            tool_expanded=data.tool_expanded,
+            tool_reject_reason=data.tool_reject_reason,
+        )
+        if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
+            self._message_store.protect_message(widget.id)
+        elif data.tool_status is not None:
+            # Only release protection for a known terminal status. An
+            # unrecognized status serializes to None; unprotecting then could
+            # let a still-live row be virtualized mid-run.
+            self._message_store.unprotect_message(widget.id)
+
+    def on_rubric_result_message_expansion_changed(
+        self,
+        event: RubricResultMessage.ExpansionChanged,
+    ) -> None:
+        """Keep grader-detail expansion state across transcript virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                rubric_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
 
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
@@ -11688,11 +13198,57 @@ class DeepAgentsApp(App):
             self.notify("Queued message discarded", timeout=2)
             return
 
-        if not self._chat_input.value.strip():
-            self._chat_input.set_value_at_end(msg.text)
+        if self._chat_input.value.strip():
+            self.notify("Queued message discarded (input not empty)", timeout=3)
+        elif self._chat_input.set_value_at_end(msg.text):
             self.notify("Queued message moved to input", timeout=2)
         else:
-            self.notify("Queued message discarded (input not empty)", timeout=3)
+            logger.warning(
+                "Text area unavailable during queue pop; "
+                "message text could not be restored: %s",
+                msg.text[:60],
+            )
+            self.notify("Queued message discarded", timeout=2)
+
+    def _restore_interrupted_message_to_input(self, message: UserMessage) -> None:
+        """Return an interrupted prompt to the chat input when it is empty.
+
+        Shares the empty-input guard with `_pop_last_queued_message`: the
+        prompt is moved back into the input (along with any media captured at
+        submission) only when the input holds no draft, so typed text is never
+        clobbered. Unlike the queued-message pop, this path does not consume
+        the message — the interrupted `UserMessage` stays visible in the
+        transcript, dimmed via `set_cancelled()` — so when it does not restore
+        it stays silent rather than reporting a "discarded" outcome.
+
+        Restore is also skipped once model text or a tool call is visible for
+        the turn (`_active_turn_visible_output_started`). Returning the prompt
+        then would invite a confusing re-submission of a request that has already
+        produced user-visible work.
+        """
+        if self._active_turn_visible_output_started:
+            return
+        chat_input = self._chat_input
+        if chat_input is None:
+            logger.debug(
+                "Chat input unavailable during interrupt; "
+                "prompt not restored (message remains visible): %s",
+                message.raw_text[:60],
+            )
+            return
+        if chat_input.value.strip():
+            return
+        if not chat_input.set_value_at_end(message.raw_text):
+            logger.warning(
+                "Text area unavailable during interrupt; "
+                "prompt not restored to input: %s",
+                message.raw_text[:60],
+            )
+            return
+        snapshot = message.media_snapshot
+        if snapshot is not None:
+            self._image_tracker.restore(snapshot)
+        self.notify("Message restored to input", timeout=2)
 
     def _cleanup_external_event_source_sync(self) -> None:
         """Synchronously close the external event listener and unlink its socket.
@@ -11769,6 +13325,7 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        self._warn_dropped_mcp_reconnect()
         self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
@@ -11817,12 +13374,41 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
 
-    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+    def _warn_dropped_mcp_reconnect(self) -> None:
+        """Warn when an interrupt discards a queued MCP reconnect.
+
+        `_start_mcp_login` -> `_prompt_mcp_reconnect` can queue the server
+        restart while a run is in flight, telling the user it will fire once
+        the task completes. An interrupt (`Ctrl+C`, `Esc`, `/clear`) drops that
+        queued action before it drains, so that promise no longer holds. The
+        token is already on disk and the pending banner / `/mcp reconnect`
+        state survive the discard, so recovery is one command away — surface
+        that rather than letting the reconnect lapse silently.
+        """
+        if not any(a.kind == "mcp_reconnect" for a in self._deferred_actions):
+            return
+        self.notify(
+            "Cancelled the queued MCP reconnect. Run `/mcp reconnect` to load "
+            "the new tools when ready.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def _cancel_worker(
+        self, worker: Worker[None] | None, *, abort_pending_reconnect: bool = True
+    ) -> None:
         """Discard the message queue and cancel an active worker.
 
         Args:
             worker: The worker to cancel.
+            abort_pending_reconnect: When `True` (the interrupt default), warn
+                if the discarded queue held a promised MCP reconnect. Pass
+                `False` from paths that fulfill the reconnect another way (a
+                full server restart) so the notice does not misfire.
         """
+        if abort_pending_reconnect:
+            self._warn_dropped_mcp_reconnect()
         self._discard_queue()
         if worker is not None:
             worker.cancel()
@@ -11838,7 +13424,8 @@ class DeepAgentsApp(App):
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
         6. If double press (quit_pending), quit
-        7. If a focused input has text, copy the whole draft (no selection)
+        7. If a focused input has non-whitespace text, copy the whole draft
+            (no selection)
         8. Otherwise show quit hint
 
         Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
@@ -11892,7 +13479,12 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
-        # If agent is running, interrupt it and discard queued messages
+        # If agent is running, interrupt it and discard queued messages.
+        # Unlike the Esc path (`action_interrupt`), Ctrl+C deliberately does
+        # NOT restore the interrupted prompt to the input: Ctrl+C is the
+        # quit/copy flow (double-press quits; branch 7 copies the draft),
+        # whereas prompt-restore belongs to Esc's edit/retract flow. Do not
+        # add a restore call here without reconciling both interrupt paths.
         if self._agent_running and self._agent_worker:
             if self._active_user_message is not None:
                 self._active_user_message.set_cancelled()
@@ -11944,13 +13536,14 @@ class DeepAgentsApp(App):
         return copy_text_with_feedback(self, selected_text, failure_noun="selection")
 
     def _copy_focused_input_text(self) -> bool:
-        """Copy the focused input's full text to the clipboard, if non-empty.
+        """Copy the focused input's full text to the clipboard, if meaningful.
 
         Ctrl+C fallback used when there is no active selection, so the whole
-        draft is copied instead of arming quit.
+        draft is copied instead of arming quit. A whitespace-only draft is
+        treated as empty and left to fall through to quit handling.
 
         Returns:
-            `True` when non-empty text was handled by a clipboard attempt.
+            `True` when non-whitespace text was handled by a clipboard attempt.
         """
         from textual.widgets import Input, TextArea
 
@@ -11961,7 +13554,10 @@ class DeepAgentsApp(App):
             return False
 
         text = widget.text if isinstance(widget, TextArea) else widget.value
-        if not text:
+        # Strip before deciding whether there is anything to copy: a
+        # whitespace-only draft carries no meaningful content, so Ctrl+C should
+        # fall through to arming quit rather than copying blank space.
+        if not text.strip():
             return False
 
         from deepagents_code.clipboard import copy_text_with_feedback
@@ -12003,7 +13599,9 @@ class DeepAgentsApp(App):
         5. If approval menu is active, reject it
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
-        8. If agent is running, interrupt it
+        8. If agent is running, interrupt it (restoring the interrupted prompt
+           to the chat input when it is empty and no user-visible model output
+           — text or a tool call — has appeared yet for the turn)
         9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
@@ -12079,6 +13677,7 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             if self._active_user_message is not None:
                 self._active_user_message.set_cancelled()
+                self._restore_interrupted_message_to_input(self._active_user_message)
             self._cancel_worker(self._agent_worker)
             return
 
@@ -12129,7 +13728,14 @@ class DeepAgentsApp(App):
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
-        """Handle quit action (Ctrl+D)."""
+        """Handle the Ctrl+D binding.
+
+        Delete-confirm screens and the auth/thread selectors keep their own
+        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
+        deletes a non-empty selection or the character right of the cursor.
+        Only at the end of the prompt with no active selection does it exit
+        the app.
+        """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
             DeleteCredentialConfirmScreen,
@@ -12154,6 +13760,26 @@ class DeepAgentsApp(App):
                 return
             self._arm_quit_pending("Ctrl+D")
             return
+
+        # Delegate Ctrl+D when delete-right can remove selected text or content
+        # after the cursor. Check `self.focused` (the active screen's focused
+        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
+        # focus but must not be edited from under it, so Ctrl+D quits in that case.
+        chat_input = self._chat_input
+        if chat_input is not None:
+            text_area = chat_input.input_widget
+            if (
+                text_area is not None
+                and self.focused is text_area
+                and chat_input.value
+                and (
+                    not text_area.selection.is_empty
+                    or text_area.cursor_location != text_area.document.end
+                )
+            ):
+                text_area.action_delete_right()
+                return
+
         self.exit()
 
     def exit(
@@ -12416,7 +14042,7 @@ class DeepAgentsApp(App):
             self.screen.action_move_up()
             return
         if isinstance(self.screen, MCPViewerScreen):
-            self.screen.action_move_up()
+            self.screen.action_jump_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -12453,7 +14079,7 @@ class DeepAgentsApp(App):
                     )
 
     def action_toggle_tool_output(self) -> None:
-        """Toggle the most recent collapsible unit (group, skill, or tool)."""
+        """Toggle the most recent collapsible transcript unit."""
         # Pending ask_user takes precedence so Ctrl+O toggles the question card.
         if self._pending_ask_user_widget is not None:
             try:
@@ -12465,15 +14091,17 @@ class DeepAgentsApp(App):
                     tool_msg.toggle_args()
                     return
 
-        # Toggle whichever collapsible unit is most recent in DOM order — a tool
-        # group, a skill body, or a standalone tool row — so content mounted
-        # after a group stays reachable instead of always hitting the last group.
+        # Toggle whichever collapsible unit is most recent in DOM order so
+        # content mounted after a tool group stays reachable.
         # Grouped tool rows are folded into their summary, so skip them here.
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
         for child in reversed(list(messages.children)):
+            if isinstance(child, RubricResultMessage) and child._details:
+                child.toggle_details()
+                return
             if isinstance(child, ToolGroupSummary):
                 child.toggle()
                 return
@@ -13068,7 +14696,12 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
             # When the user selected a greyed-out (uninstalled) provider and
             # confirmed installing it, install the extra and reopen the manager
-            # so they can add a key against the now-installed provider.
+            # so they can add a key against the now-installed provider. A
+            # pending web-search restart rides along rather than being consumed
+            # here: `_install_provider_then_reopen_auth` consumes it on every
+            # one of its exits (reopen defers to the new manager's close; its
+            # non-reopen paths call the offer directly), so the flag is never
+            # stranded past this early return.
             extra = screen.pending_install_extra
             if extra is not None:
                 from functools import partial
@@ -13083,14 +14716,120 @@ class DeepAgentsApp(App):
                 return
             task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
+            # A saved Tavily key only enables `web_search` after a respawn.
+            # Offer the restart now that the manager has closed, so the prompt
+            # never stacks over the still-open manager.
+            self._maybe_offer_deferred_web_search_restart()
 
         screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
 
-    def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
-        """Retry credentials-blocked startup immediately after `/auth` saves a key."""
+    def on_auth_manager_screen_credential_saved(
+        self, event: AuthManagerScreen.CredentialSaved
+    ) -> None:
+        """Retry credentials-blocked startup immediately after `/auth` saves a key.
+
+        A saved Tavily key additionally gates the spawn-time `web_search` tool,
+        so flag that a restart should be offered once the manager closes.
+        """
         event.stop()
+        # Kick off the credentials-blocked-startup retry first — it is the
+        # response the user is actually waiting for. Web-search bookkeeping is
+        # secondary and runs synchronously after, so a failure there can never
+        # preempt scheduling the resume.
         task = asyncio.create_task(self._resume_server_after_auth_change())
+        task.add_done_callback(_log_task_exception)
+        self._note_web_search_restart_if_needed(event.provider)
+
+    def on_auth_manager_screen_credential_deleted(
+        self, event: AuthManagerScreen.CredentialDeleted
+    ) -> None:
+        """Clear auth-derived in-memory state after `/auth` deletes a key."""
+        event.stop()
+        self._clear_web_search_restart_if_needed(event.provider)
+
+    def _note_web_search_restart_if_needed(self, provider: str) -> None:
+        """Flag an offered restart when a saved key enables `web_search`.
+
+        `web_search` is bound only when Tavily is configured at server spawn
+        time. A server that already spawned with Tavily has the tool bound, so
+        only a running server that lacks it needs a respawn. The stored key is
+        exported to the environment eagerly (as onboarding does) so a later
+        `/restart` — or the offered one — picks it up on reload. Ownership of
+        that export is tracked separately from the offer flag so a later delete
+        can reliably undo it (see `_clear_web_search_restart_if_needed`).
+
+        Args:
+            provider: The `/auth` config key that was just saved.
+        """
+        from deepagents_code.model_config import TAVILY_SERVICE
+
+        if provider != TAVILY_SERVICE:
+            return
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            return
+        if self._server_proc is None or self._server_kwargs is None:
+            return
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        previous = os.environ.get("TAVILY_API_KEY")
+        apply_stored_service_credentials()
+        exported = os.environ.get("TAVILY_API_KEY")
+        if not exported:
+            return
+        if not self._auth_exported_tavily and previous != exported:
+            self._auth_exported_tavily_original = previous
+            self._auth_exported_tavily = True
+        self._pending_web_search_restart = True
+
+    def _clear_web_search_restart_if_needed(self, provider: str) -> None:
+        """Disarm a Tavily restart offer and undo its env export after a delete.
+
+        Only touches `TAVILY_API_KEY` when *this* app exported it (tracked by
+        `_auth_exported_tavily`, set in `_note_web_search_restart_if_needed`) —
+        not the offer flag, which is consumed on manager close before a delete
+        can happen. That distinction is why a shell-provided key survives a
+        delete (the export flag was never set) while our own export is reverted
+        to whatever value it shadowed.
+
+        Args:
+            provider: The `/auth` config key that was just deleted.
+        """
+        from deepagents_code.model_config import TAVILY_SERVICE
+
+        if provider != TAVILY_SERVICE:
+            return
+        if self._auth_exported_tavily:
+            if self._auth_exported_tavily_original is None:
+                os.environ.pop("TAVILY_API_KEY", None)
+            else:
+                os.environ["TAVILY_API_KEY"] = self._auth_exported_tavily_original
+            self._auth_exported_tavily = False
+            self._auth_exported_tavily_original = None
+        self._pending_web_search_restart = False
+
+    def _maybe_offer_deferred_web_search_restart(self) -> None:
+        """Offer the deferred Tavily restart once the `/auth` manager has closed.
+
+        Consumes `_pending_web_search_restart` so the offer fires exactly once
+        and never leaks into a later, unrelated manager close. Scheduled via
+        `call_after_refresh` so the prompt mounts after the dismissing manager
+        fully unwinds rather than stacking over it.
+        """
+        if not self._pending_web_search_restart:
+            return
+        self._pending_web_search_restart = False
+        self.call_after_refresh(self._launch_web_search_restart_prompt)
+
+    def _launch_web_search_restart_prompt(self) -> None:
+        """Schedule the deferred web-search restart offer as a background task.
+
+        The close-ordering guarantee lives on the caller
+        (`_maybe_offer_deferred_web_search_restart`, via `call_after_refresh`).
+        """
+        task = asyncio.create_task(self._offer_restart_for_web_search())
         task.add_done_callback(_log_task_exception)
 
     async def _resume_server_after_auth_change(self) -> None:
@@ -13188,12 +14927,18 @@ class DeepAgentsApp(App):
                     "Reopen `/auth` to add a key once it has.",
                 ),
             )
+            # We are not reopening the manager, so surface a Tavily restart the
+            # user armed earlier in this session rather than stranding the flag.
+            self._maybe_offer_deferred_web_search_restart()
             return
         # `ready is False`: the extra genuinely didn't install. `_install_extra`
         # has already surfaced the reason to the user, so stay in chat rather
         # than reopen — but log it so an "install button did nothing" report is
         # debuggable without relying on that sibling method's invariant.
         logger.debug("Provider extra %r not importable after install attempt", extra)
+        # No manager reopen on this path either, so consume any armed Tavily
+        # restart here.
+        self._maybe_offer_deferred_web_search_restart()
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -13709,9 +15454,141 @@ class DeepAgentsApp(App):
         self._update_modal_pending.set()
         self.call_after_refresh(self._open_update_available_modal, update_notification)
 
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # Textual override signature
+    ) -> bool | None:
+        """Step aside priority app bindings that the active screen needs.
+
+        Textual resolves `priority=True` bindings App-first, so these app actions
+        would otherwise consume the key before the active screen sees it.
+        Returning `False` disables the app binding for this dispatch so the key
+        reverts to the active screen's own handling. Depending on the screen that
+        is either a competing screen binding or default key handling:
+
+        - `open_notifications` (`ctrl+n`): `ModelSelectorScreen` has its own
+            priority `ctrl+n -> toggle_names` binding that then wins.
+        - `toggle_auto_approve` (`shift+tab`): `DebugConsoleScreen` has no
+            binding for the key; stepping aside lets it fall through to the
+            console's `key_shift_tab` reverse-focus traversal. Without this the
+            binding fires `action_toggle_auto_approve`, which no-ops under a
+            `ModalScreen` that lacks dedicated `shift+tab` handling (as
+            `DebugConsoleScreen` does), so the key would be silently swallowed.
+            Note this keys on the action, and `toggle_auto_approve` is
+            also bound to `ctrl+t`, so that (harmless, already a no-op
+            under modals) binding is stepped aside too while the console is open.
+
+        Branches on action names, not keys, so this stays correct if a binding is
+        ever rebound.
+
+        Returns:
+            `False` to disable the app binding for this dispatch (letting the
+                active screen or default key handling take the key); `True` to
+                leave it enabled.
+        """
+        if action == "open_notifications":
+            from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+            if isinstance(self.screen, ModelSelectorScreen):
+                return False
+        if action == "toggle_auto_approve":
+            from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+            if isinstance(self.screen, DebugConsoleScreen):
+                return False
+        return True
+
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()
+
+    def action_toggle_debug_console(self) -> None:
+        """Toggle the Debug Console overlay via keybind or the `/debug` command."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        if isinstance(self.screen, DebugConsoleScreen):
+            self.pop_screen()
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+        self._open_debug_console()
+
+    def _open_debug_console(self) -> None:
+        """Push the read-only Debug Console modal."""
+        from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
+
+        def handle_result(_: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(
+            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+        )
+
+    def _build_debug_snapshot(self) -> list[SnapshotField]:
+        """Capture a point-in-time session/runtime snapshot for the console.
+
+        Each field is captured defensively: a subsystem that raises degrades to
+        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        because a diagnostic tool must still open when the app is misbehaving.
+
+        Returns:
+            Ordered ``(label, value)`` fields for the console header.
+        """
+        from deepagents_code._debug import installed_debug_log_path
+        from deepagents_code._env_vars import DEBUG, is_env_truthy
+        from deepagents_code._version import __version__
+        from deepagents_code.tui.widgets.debug_console import SnapshotField
+
+        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+            try:
+                return SnapshotField(label=label, value=fn())
+            except Exception as exc:  # a diagnostic must still open on a bad field
+                # WARNING (not DEBUG) so the traceback lands in the always-on
+                # in-memory buffer and is visible in the console itself; the
+                # package logger sits at INFO by default, which drops DEBUG.
+                logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                return SnapshotField(
+                    label=label, value=f"(unavailable: {type(exc).__name__})"
+                )
+
+        def _mcp() -> str:
+            servers = self._mcp_server_info or []
+            if not servers:
+                return "none"
+            return ", ".join(f"{s.name} ({s.status})" for s in servers)
+
+        def _tokens() -> str:
+            stats = self._session_stats
+            return (
+                f"{stats.input_tokens} in / {stats.output_tokens} out "
+                f"/ {stats.request_count} req"
+            )
+
+        def _log_path() -> str:
+            path = installed_debug_log_path()
+            if path:
+                return str(path)
+            # DEEPAGENTS_CODE_DEBUG can read truthy with no handler installed —
+            # e.g. a bad path, or the var set after import via .env. Distinguish
+            # that from the plain no-file-logging case so the console does not
+            # imply a file exists (and hint that a request went unfulfilled).
+            if is_env_truthy(DEBUG):
+                return "in-memory only (file logging requested but unavailable)"
+            return "in-memory only"
+
+        return [
+            _safe("Version", lambda: __version__),
+            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Thread", lambda: self._lc_thread_id or "(none)"),
+            _safe("CWD", lambda: self._cwd),
+            _safe("Auto-approve", lambda: "on" if self._auto_approve else "off"),
+            _safe("Sandbox", lambda: self._sandbox_type or "local"),
+            _safe("MCP servers", _mcp),
+            _safe("Tokens", _tokens),
+            _safe("Debug log", _log_path),
+        ]
 
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""
@@ -13782,24 +15659,78 @@ class DeepAgentsApp(App):
         message: NotificationSuppressRequested,
     ) -> None:
         """Suppress the notice in place and refresh the open center."""
+        message.stop()
+        await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
+        await self._refresh_open_center()
+
+    def on_notification_action_requested(
+        self,
+        message: NotificationActionRequested,
+    ) -> None:
+        """Dispatch an in-place notification action, keeping the center open.
+
+        The action (e.g. `ENTER_API_KEY`) pushes a follow-up modal on top
+        of the still-mounted center, so it must run in a worker rather than
+        block the message pump while that modal awaits input.
+        """
+        message.stop()
+        # `group` is for observability only; with `exclusive=False` it does
+        # not single-flight. `exclusive=True` would be wrong here — a
+        # re-trigger for the same key would cancel an in-progress API-key
+        # prompt mid-entry.
+        self.run_worker(
+            self._dispatch_in_place_notification_action(
+                message.key,
+                message.action_id,
+            ),
+            exclusive=False,
+            group=f"notification-action-{message.key}",
+        )
+
+    async def _dispatch_in_place_notification_action(
+        self,
+        key: str,
+        action_id: ActionId,
+    ) -> None:
+        """Run an in-place action, then refresh the still-open center.
+
+        The action's follow-up modal (e.g. the API-key prompt) stacks on
+        top of the center so Esc returns to it. Once the action resolves,
+        the center is reloaded so any handled entry drops out; reloading an
+        empty list dismisses the center.
+        """
+        await self._dispatch_notification_action(key, action_id)
+        await self._refresh_open_center()
+
+    async def _refresh_open_center(self) -> None:
+        """Reload the notification center if it is still the active screen.
+
+        Shared tail of the in-place action handlers (SUPPRESS and the
+        `IN_PLACE_ACTIONS` worker). No-ops when the center is no longer on
+        top — e.g. concurrently dismissed — because the registry is already
+        authoritative and the next open re-renders from it.
+
+        A `NoMatches` from a dismiss/mount race — a concurrent dismissal can
+        detach the `VerticalScroll` before `reload` queries it — is
+        downgraded to a warning toast; the worst case is a stale or
+        partially-rebuilt row list, which the next open heals. Any other
+        exception is a genuine `reload` bug and propagates so it surfaces
+        instead of being mischaracterized as a transient race.
+        """
+        from textual.css.query import NoMatches
+
         from deepagents_code.tui.widgets.notification_center import (
             NotificationCenterScreen,
         )
 
-        message.stop()
-        await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
         screen = self.screen
         if not isinstance(screen, NotificationCenterScreen):
             return
         try:
             await screen.reload(self._notice_registry.list_all())
-        except Exception as exc:  # defend against dismiss/mount races
-            # A concurrent dismissal can detach the VerticalScroll before
-            # `reload` queries it. The worst case is a stale row list,
-            # which the next open of the center will heal. Log + toast
-            # so the failure surfaces instead of vanishing into a worker.
+        except NoMatches as exc:  # dismiss/mount race detached the scroll
             logger.warning(
-                "Failed to refresh notification center after suppress: %s",
+                "Failed to refresh notification center after in-place action: %s",
                 exc,
                 exc_info=True,
             )
@@ -14034,7 +15965,17 @@ class DeepAgentsApp(App):
         # exactly membership in `SERVICE_API_KEY_ENV`.
         env_var = SERVICE_API_KEY_ENV.get(service)
         if env_var is None:
+            # Misconfiguration: an ENTER_API_KEY action on a tool with no
+            # known env var. Log for devs, and tell the user why nothing
+            # opened — via the in-place path the center would otherwise just
+            # reload unchanged with no explanation.
             self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            self.notify(
+                f"No API-key entry is available for {service}.",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
             return
 
         from deepagents_code.tui.widgets.auth import AuthPromptScreen, AuthResult
@@ -14044,8 +15985,13 @@ class DeepAgentsApp(App):
         )
         if result == AuthResult.SAVED:
             self._notice_registry.remove(entry.key)
+            # The modal's own success toast already confirms the save and names
+            # the provider. This path can't activate the key in-session (unlike
+            # the Tavily flow, which calls `apply_stored_service_credentials`),
+            # so surface only the restart hint the modal can't — repeating the
+            # "saved" confirmation here would just stack a duplicate toast.
             self.notify(
-                f"Saved {service} API key. Restart to apply.",
+                "Restart to apply your new key.",
                 severity="information",
                 timeout=6,
                 markup=False,
@@ -14343,8 +16289,11 @@ class DeepAgentsApp(App):
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
-        No-op (with an inline notice) when nothing is pending so the
-        command is safe to run idempotently. `force=True` bypasses the
+        Restarts immediately when a login is pending and the session is
+        idle; when an agent or shell task is running the restart is queued
+        via `DeferredAction(kind="mcp_reconnect")` and drained once the task
+        completes. No-op (with an inline notice) when nothing is pending so
+        the command is safe to run idempotently. `force=True` bypasses the
         no-op guard via a confirmation modal — the escape hatch for
         stale-cache or externally-edited-config cases where the server
         needs a fresh load even though no login is queued in this
@@ -14355,6 +16304,22 @@ class DeepAgentsApp(App):
                 if no MCP login is queued.
         """
         if self._pending_mcp_reconnect:
+            if self._agent_running or self._shell_running:
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(
+                            "pending login"
+                        ),
+                    ),
+                )
+                self.notify(
+                    "The server will reconnect once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             await self._restart_server_for_mcp_refresh("pending login")
             return
         if not force:
@@ -14619,7 +16584,8 @@ class DeepAgentsApp(App):
                             name=entry.name,
                             transport=entry.transport,
                             status="disabled",
-                            error="Re-enabled — press Ctrl+R to load.",
+                            error=MCP_REENABLED_PENDING_ERROR,
+                            pending_reconnect=True,
                         ),
                     )
         self._mcp_server_info = updated
@@ -14736,11 +16702,15 @@ class DeepAgentsApp(App):
     def _start_mcp_login(self, server_name: str) -> None:
         """Begin in-TUI OAuth login for `server_name`.
 
-        Guards against remote-server mode (no owned server to restart),
-        an absent local server, missing MCP config, an unknown server
-        name, and busy states. When the session is mid-run, the login
-        attempt is queued via `_defer_action` and runs once the user is
-        idle.
+        Rejects when MCP is disabled, in remote-server mode (no owned server
+        to restart), or while an agent switch is in progress. When the local
+        server is still connecting, the login is queued via `_defer_action`
+        and runs once the server is ready. An active agent or shell run does
+        *not* defer login: the OAuth handshake and token write never touch the
+        running server, so they proceed concurrently; only the follow-up
+        server restart is queued (see `_prompt_mcp_reconnect`). Config
+        resolution and server-name validation happen later, in
+        `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -14764,14 +16734,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._connecting or self._server_proc is None:
-            self.notify(
-                "MCP login is unavailable until the local server is ready.",
-                severity="warning",
-                markup=False,
-            )
-            return
-
         if self._agent_switching:
             self.notify(
                 "An agent switch is in progress; try again once it completes.",
@@ -14780,9 +16742,15 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running or self._shell_running:
+        if self._connecting or self._server_proc is None:
+            # The server is still coming up (initial connect, a reconnect,
+            # or waiting on a model/credentials before startup). Queue the
+            # login instead of dropping the command so it runs once the
+            # server is ready; the queued action drains via
+            # `_maybe_drain_deferred` after connecting (and any startup
+            # submission) finishes.
             self.notify(
-                "MCP login will start once the current task completes.",
+                "MCP login will start once the local server is ready.",
                 timeout=5,
                 markup=False,
             )
@@ -14794,6 +16762,10 @@ class DeepAgentsApp(App):
             )
             return
 
+        # An active agent/shell run is intentionally not a defer gate: the
+        # OAuth handshake and on-disk token write are independent of the
+        # running server, so login proceeds immediately and only the restart
+        # is queued once the task finishes (`_prompt_mcp_reconnect`).
         self.run_worker(
             self._run_mcp_login_worker(server_name),
             exclusive=False,
@@ -14915,6 +16887,13 @@ class DeepAgentsApp(App):
         )
         await asyncio.wait_for(outcome_future, timeout=5.0)
 
+        # Persist a transcript record of the successful login. The modal and
+        # reconnect toasts are transient, so an inline message is the only
+        # lasting confirmation once they dismiss.
+        await self._mount_message(
+            AppMessage(f"Logged in to {server_name!r}."),
+        )
+
         # Ask the user whether to restart now or defer. Deferring lets them
         # authenticate against additional MCP servers before paying the
         # restart cost. `/mcp reconnect` (or another login confirmed with
@@ -14984,6 +16963,30 @@ class DeepAgentsApp(App):
                 choice = "later"
 
         if choice == "reconnect":
+            if self._agent_running or self._shell_running:
+                # The restart tears down the server the active run lives on,
+                # so honor the user's "reconnect now" intent without killing
+                # the in-flight generation: queue the restart to fire once the
+                # task finishes (drained via `_maybe_drain_deferred`). The
+                # token is already on disk, so mark the reconnect pending for
+                # `/mcp reconnect` and the splash banner in the meantime.
+                self._pending_mcp_login_reconnect = True
+                self._sync_pending_mcp_reconnect()
+                self._apply_optimistic_mcp_login_pending_state(server_name)
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(server_name),
+                    ),
+                )
+                self.notify(
+                    f"Logged in to {server_name!r}. The server will reconnect "
+                    "once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
@@ -15033,6 +17036,24 @@ class DeepAgentsApp(App):
                     timeout=8,
                     markup=False,
                 )
+
+    async def _run_deferred_mcp_reconnect(self, server_name: str) -> None:
+        """Restart for MCP token refresh once the busy state clears.
+
+        Queued by `_prompt_mcp_reconnect` when the user accepts the restart
+        while an agent or shell task is still running — restarting then would
+        tear down the server the active run depends on. Re-checks the pending
+        flag so a manual `/mcp reconnect` in the interim isn't followed by a
+        redundant restart. (The queue is in-memory only, so a relaunch never
+        reaches this path — the fresh process loads the token on startup.)
+
+        Args:
+            server_name: Server whose login triggered the reconnect.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        self._clear_mcp_login_reconnect_banner_counts(server_name)
+        await self._restart_server_for_mcp_refresh(server_name)
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -15109,8 +17130,9 @@ class DeepAgentsApp(App):
         prompt to run the restart immediately instead of making the user type
         `/restart`.
 
-        Owns all of its own follow-up messaging so the caller never appends a
-        redundant hint:
+        Surfaces its own follow-up messaging so a caller need not append one
+        (the `/install` extra path relies on this; `/install --package`
+        deliberately keeps a short hint of its own):
 
         - Owned + idle: show the prompt (its button is the call to action). If
             the prompt can't be shown, fall back to a `/restart` hint.
@@ -15122,23 +17144,99 @@ class DeepAgentsApp(App):
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
         """
+        await self._offer_server_restart(
+            label=label,
+            verb="Installed",
+            relaunch_hint=f"Relaunch dcode to load '{label}'.",
+            busy_hint=(
+                f"Run `/restart` to load '{label}' once the current task finishes."
+            ),
+            manual_hint=f"Run `/restart` to load '{label}' now.",
+            fail_hint=(
+                f"Couldn't restart the server automatically to load "
+                f"'{label}'. Run `/restart` to load it."
+            ),
+        )
+
+    async def _offer_restart_for_web_search(self) -> None:
+        """Offer a restart so a Tavily key saved via `/auth` enables `web_search`.
+
+        The app-owned server binds `web_search` only when Tavily is configured
+        at spawn time (see `server_graph._build_tools`), so a key added
+        mid-session takes effect only after the server respawns. Mirrors the
+        post-install offer: same guards, watchdog, and fallback messaging, with
+        web-search-specific copy.
+        """
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            # A respawn happened between arming the offer and now — e.g. an
+            # install-on-select in the same `/auth` session auto-restarted the
+            # server, which reloaded config and rebound `web_search`. The
+            # restart is no longer needed, so don't offer a redundant one.
+            return
+        await self._offer_server_restart(
+            label="Tavily API key",
+            verb="Saved",
+            prompt_body=(
+                "Restart the server to enable web search, or defer with `/restart`."
+            ),
+            relaunch_hint="Relaunch dcode to enable web search with your Tavily key.",
+            busy_hint=(
+                "Run `/restart` to enable web search once the current task finishes."
+            ),
+            manual_hint="Run `/restart` to enable web search now.",
+            fail_hint=(
+                "Couldn't restart the server automatically to enable web "
+                "search. Run `/restart` to enable it."
+            ),
+        )
+
+    async def _offer_server_restart(
+        self,
+        *,
+        label: str,
+        verb: str,
+        relaunch_hint: str,
+        busy_hint: str,
+        manual_hint: str,
+        fail_hint: str,
+        prompt_body: str | None = None,
+    ) -> None:
+        """Offer a one-keypress owned-server restart with caller-supplied copy.
+
+        Shared by the post-install offer and the post-`/auth` web-search offer:
+        both prompt to respawn the app-owned LangGraph subprocess so a change
+        that only takes effect at spawn time (a newly installed package, a
+        newly configured Tavily key) applies without exiting the TUI.
+
+        Surfaces its own follow-up messaging so a caller need not append one
+        (both the post-install and web-search offers rely on this; a caller
+        that still prints its own hint, like `/install --package`, does so
+        deliberately):
+
+        - Owned + idle: show the prompt (its button is the call to action). If
+            the prompt can't be shown, fall back to `manual_hint`.
+        - Owned + busy/connecting: a restart cancels in-flight work, so surface
+            `busy_hint`.
+        - No owned subprocess (remote server): surface `relaunch_hint`.
+
+        Args:
+            label: Subject surfaced in the prompt title (e.g. an extra name or
+                `"Tavily API key"`).
+            verb: Past-tense action shown before `label` in the prompt title.
+            relaunch_hint: Message shown when there is no owned subprocess.
+            busy_hint: Message shown when the server is busy/connecting.
+            manual_hint: Fallback shown when the prompt can't be displayed.
+            fail_hint: Message shown when a chosen restart could not run.
+            prompt_body: Optional override for the prompt's explanatory line.
+        """
         if self._server_proc is None or self._server_kwargs is None:
-            await self._mount_message(
-                AppMessage(f"Relaunch dcode to load '{label}'."),
-            )
+            await self._mount_message(AppMessage(relaunch_hint))
             return
         if self._agent_running or self._connecting:
-            await self._mount_message(
-                AppMessage(
-                    f"Run `/restart` to load '{label}' once the current task finishes.",
-                ),
-            )
+            await self._mount_message(AppMessage(busy_hint))
             return
-
-        # Owned + idle. A `/restart` respawns the subprocess (same effect as a
-        # relaunch, without exiting), so every couldn't-show-the-prompt path
-        # below degrades to this hint rather than mentioning a relaunch.
-        manual_hint = f"Run `/restart` to load '{label}' now."
 
         try:
             from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
@@ -15152,7 +17250,7 @@ class DeepAgentsApp(App):
             # deliberately narrow — a genuine `ImportError` from a broken modal
             # still propagates rather than being mistaken for an upgrade race.
             logger.warning(
-                "restart_prompt unavailable after installing %r; falling back "
+                "restart_prompt unavailable for %r restart; falling back "
                 "to the manual /restart hint",
                 label,
                 exc_info=True,
@@ -15166,12 +17264,14 @@ class DeepAgentsApp(App):
             # (compose crash, programmatic teardown that skips the dismiss
             # callback).
             choice = await asyncio.wait_for(
-                self._push_screen_wait(RestartPromptScreen(label)),
+                self._push_screen_wait(
+                    RestartPromptScreen(label, verb=verb, body=prompt_body)
+                ),
                 timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:
             logger.warning(
-                "Restart prompt after installing %r timed out; falling back to "
+                "Restart prompt for %r timed out; falling back to "
                 "the manual /restart hint",
                 label,
             )
@@ -15180,9 +17280,7 @@ class DeepAgentsApp(App):
         except Exception:
             # Modal could not be mounted (e.g. another modal hijacked the
             # stack). Fall back to the manual `/restart` hint.
-            logger.exception(
-                "Failed to mount restart prompt after installing %r", label
-            )
+            logger.exception("Failed to mount restart prompt for %r", label)
             await self._mount_message(AppMessage(manual_hint))
             return
 
@@ -15192,12 +17290,7 @@ class DeepAgentsApp(App):
         # log. Surface a message so an explicit "restart" choice never looks
         # like a silent no-op. Mirrors the `auto_restart` path.
         if choice == "restart" and not await self._restart_after_install(label):
-            await self._mount_message(
-                AppMessage(
-                    f"Couldn't restart the server automatically to load "
-                    f"'{label}'. Run `/restart` to load it.",
-                ),
-            )
+            await self._mount_message(AppMessage(fail_hint))
         # Otherwise the prompt was shown and the user made an informed choice;
         # no further hint is needed.
 
@@ -15222,13 +17315,11 @@ class DeepAgentsApp(App):
                 not currently available or fails.
         """
         if self._server_proc is None or self._server_kwargs is None:
-            logger.info(
-                "Cannot auto-restart after installing %s: no app-owned server", label
-            )
+            logger.info("Cannot auto-restart to load %s: no app-owned server", label)
             return False
         if self._agent_running or self._connecting:
             logger.info(
-                "Cannot auto-restart after installing %s: server is busy",
+                "Cannot auto-restart to load %s: server is busy",
                 label,
             )
             return False
@@ -15292,10 +17383,11 @@ class DeepAgentsApp(App):
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently.
+        # fire against the freshly respawned agent silently. This restart *is*
+        # the reconnect, so suppress the dropped-reconnect warning: the respawn
+        # below reloads every on-disk MCP token regardless.
         if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
-            self._agent_running = False
+            self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
         else:
             self._discard_queue()
 
@@ -15473,6 +17565,144 @@ class DeepAgentsApp(App):
         finally:
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
+
+    async def _handle_threads_command(self, command: str) -> None:
+        """Dispatch `/threads`, optionally resuming a thread without the modal.
+
+        Bare `/threads` opens the interactive selector. `/threads -r [ID]`
+        resumes in place: `-r` alone returns to the thread left by the most
+        recent reset (e.g. `/clear`), falling back to the most recent thread
+        for the active agent; `-r <ID>` resumes a specific thread. Both forms
+        only resume threads owned by the active agent, mirroring the
+        launch-time `-r` flag.
+
+        Args:
+            command: The raw command text, e.g. `"/threads -r abc123"`.
+        """
+        args = command.split()[1:]  # drop the leading "/threads"
+
+        if not args:
+            await self._show_thread_selector()
+            return
+
+        if args[0].lower() not in {"-r", "--resume"}:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /threads (open selector) or /threads -r [ID] "
+                    "(resume the previous or a specific thread)."
+                )
+            )
+            return
+
+        max_resume_args = 2  # flag plus at most one thread id
+        if len(args) > max_resume_args:
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage("Usage: /threads -r [ID] accepts at most one thread ID."),
+            )
+            return
+
+        await self._mount_message(UserMessage(command))
+        requested_id = args[1] if len(args) == max_resume_args else None
+        target = await self._resolve_threads_resume_target(requested_id)
+        if target is not None:
+            await self._resume_thread(target)
+
+    async def _resolve_threads_resume_target(
+        self, requested_id: str | None
+    ) -> str | None:
+        """Resolve a `/threads -r` argument to a concrete, resumable thread id.
+
+        Only threads owned by the active agent resolve: an explicit id owned by
+        another agent is refused, and the bare-`-r` fallback is filtered to the
+        active agent's most recent thread.
+
+        Args:
+            requested_id: Explicit thread id from `-r <ID>`, or `None` for a
+                bare `-r` (resume the previous or most-recent thread).
+
+        Returns:
+            The thread id to resume, or `None` when nothing suitable exists;
+            in that case a user-facing message has already been mounted.
+        """
+        import sqlite3
+
+        from deepagents_code.sessions import (
+            find_similar_threads,
+            get_most_recent,
+            get_thread_agent,
+            thread_exists,
+        )
+
+        try:
+            active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+            if requested_id is not None:
+                if await thread_exists(requested_id):
+                    owner = await get_thread_agent(requested_id)
+                    if owner == active_agent:
+                        return requested_id
+                    if owner:
+                        msg = (
+                            f"Thread '{requested_id}' belongs to agent '{owner}', not "
+                            f"the active agent '{active_agent}'. Switch agents first."
+                        )
+                    else:
+                        msg = (
+                            f"Could not verify which agent owns thread "
+                            f"'{requested_id}', so it was not resumed."
+                        )
+                    await self._mount_message(AppMessage(msg))
+                    return None
+                hint = f"Thread '{requested_id}' not found."
+                similar = await find_similar_threads(requested_id)
+                if similar:
+                    hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
+                await self._mount_message(AppMessage(hint))
+                return None
+
+            # Bare `-r`: prefer the thread the session just left (e.g. via
+            # `/clear`), then fall back to the most recent inactive thread on disk.
+            previous = (
+                self._session_state.previous_thread_id if self._session_state else None
+            )
+            if previous and await thread_exists(previous):
+                owner = await get_thread_agent(previous)
+                if owner == active_agent:
+                    return previous
+
+            current = self._session_state.thread_id if self._session_state else None
+            candidate = await get_most_recent(
+                active_agent,
+                exclude_thread_id=current,
+            )
+            if candidate:
+                return candidate
+
+            msg = f"No previous threads for '{active_agent}' to resume."
+            await self._mount_message(AppMessage(msg))
+        except (sqlite3.Error, OSError):
+            # Expected thread-store failures: log for a debug session and tell
+            # the user to retry. Mirrors the launch-time resolver's handling.
+            logger.warning(
+                "Thread-history lookup failed resolving resume target %r",
+                requested_id,
+                exc_info=True,
+            )
+            await self._mount_message(
+                AppMessage("Could not look up thread history. Please try again.")
+            )
+        except Exception:
+            # Anything else (e.g. a programming error, or a widget-mount fault)
+            # is a real bug, not "database unavailable" — surface it loudly
+            # instead of masking it behind the retry message above.
+            logger.exception(
+                "Unexpected error resolving resume target %r", requested_id
+            )
+            await self._mount_message(
+                AppMessage("Something went wrong resolving that thread.")
+            )
+        return None
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
@@ -15940,7 +18170,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
-        allow_abort: bool = False,
+        abort: CwdSwitchAbortMode | None = None,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -15950,16 +18180,16 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
-            allow_abort: When True (launch-time `-r` resume), the prompt offers a
-                third "abort" option that declines the resume entirely.
+            abort: When set, the prompt offers a third "abort" option that
+                declines the resume/switch entirely; the mode selects its
+                wording (see `CwdSwitchAbortMode`). `None` hides the option.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
-                declined the resume or a requested switch was accepted but
-                failed (the caller should stop the resume). The two abort
-                sources are mode-exclusive: the user-declined abort fires only
-                when `allow_abort` is True, and the switch-failed abort only
-                when `restart_server` is True.
+                declined the resume/switch or a requested switch was accepted but
+                failed (the caller should stop the resume). The user-declined
+                abort fires only when `abort` is set, and the switch-failed
+                abort only when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -15975,14 +18205,28 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
-                allow_abort=allow_abort,
+                abort=abort,
             )
         )
         if choice == "abort":
             return "abort"
         if choice == "switch":
             if restart_server:
-                return await self._replace_server_after_cwd_switch(target)
+                outcome = await self._replace_server_after_cwd_switch(target)
+                if outcome == "abort":
+                    # A failed restart returns "abort" just like a user-declined
+                    # abort, so the caller cannot tell them apart.
+                    # `_replace_server_after_cwd_switch` already rolled back and
+                    # notified, but that toast is transient -- leave a persistent
+                    # in-chat record so a failed switch is not mistaken for a
+                    # deliberate cancel.
+                    await self._mount_message(
+                        AppMessage(
+                            "Could not switch to the thread's directory; staying "
+                            "on the current thread.",
+                        )
+                    )
+                return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
             return "continue"
@@ -16079,6 +18323,7 @@ class DeepAgentsApp(App):
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
                 restart_server=True,
+                abort="thread_switch",
             )
             if cwd_choice == "abort":
                 return
@@ -16099,7 +18344,11 @@ class DeepAgentsApp(App):
         prev_session_thread = self._session_state.thread_id
         prev_cwd = Path(self._cwd)
 
-        cwd_choice = await self._offer_thread_cwd_switch(thread_id, restart_server=True)
+        cwd_choice = await self._offer_thread_cwd_switch(
+            thread_id,
+            restart_server=True,
+            abort="thread_switch",
+        )
         if cwd_choice == "abort":
             return
 
@@ -16145,6 +18394,13 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
             )
+
+            # The switch succeeded: record the thread we just left so a
+            # subsequent bare `/threads -r` steps back to it rather than
+            # resolving `previous == current` and reporting "Already on
+            # thread". Set only after the last statement that can raise, so a
+            # failed switch (handled below) never leaves a stale pointer.
+            self._session_state.previous_thread_id = prev_session_thread
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

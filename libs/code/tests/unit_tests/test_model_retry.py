@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
-from unittest.mock import patch
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -18,6 +21,7 @@ from deepagents_code import model_config
 from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     _resolve_config_retry_count,
+    reset_glyphs_cache,
     resolve_model_retries,
 )
 from deepagents_code.model_retry import (
@@ -60,9 +64,19 @@ def _write_config(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def _req(events: list[dict] | None = None) -> SimpleNamespace:
-    writer = (lambda e: events.append(e)) if events is not None else None
-    return SimpleNamespace(runtime=SimpleNamespace(stream_writer=writer))
+def _req(events: list[dict] | None = None) -> ModelRequest:
+    writer = (lambda event: events.append(event)) if events is not None else None
+    runtime = SimpleNamespace(stream_writer=writer)
+    return ModelRequest(
+        model=MagicMock(spec=BaseChatModel),
+        messages=[HumanMessage(content="test")],
+        tools=[],
+        runtime=cast("Any", runtime),
+    )
+
+
+def _response() -> ModelResponse[Any]:
+    return ModelResponse(result=[AIMessage(content="OK")])
 
 
 # --- resolve_model_retries / config resolution ---
@@ -187,15 +201,16 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     events: list[dict] = []
     calls = {"n": 0}
+    response = _response()
 
-    def handler(_req_arg: object) -> str:
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] < 3:
             raise _READ_ERROR
-        return "OK"
+        return response
 
     mw = CodeModelRetryMiddleware(max_retries=5)
-    assert mw.wrap_model_call(_req(events), handler) == "OK"
+    assert mw.wrap_model_call(_req(events), handler) is response
     assert calls["n"] == 3
     assert [e["type"] for e in events] == ["model_retry", "model_retry"]
     assert "retrying 1/5" in events[0]["message"]
@@ -205,7 +220,7 @@ def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     calls = {"n": 0}
 
-    def handler(_req_arg: object) -> str:
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         raise _READ_ERROR
 
@@ -218,7 +233,7 @@ def test_exhaustion_reraises_original(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_non_retryable_raises_immediately() -> None:
     calls = {"n": 0}
 
-    def handler(_req_arg: object) -> str:
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         raise _VALUE_ERROR
 
@@ -233,7 +248,7 @@ def test_zero_retries_calls_handler_once() -> None:
     assert mw.max_retries == 0
     calls = {"n": 0}
 
-    def handler(_req_arg: object) -> str:
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
         calls["n"] += 1
         raise _READ_ERROR
 
@@ -248,15 +263,16 @@ def test_retry_scoped_to_model_node(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
     tool_calls: list[str] = []
     model_calls = {"n": 0}
+    response = _response()
 
-    def handler(_req_arg: object) -> str:
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
         model_calls["n"] += 1
         if model_calls["n"] < 2:
             raise _CONNECT_ERROR
-        return "OK"
+        return response
 
     mw = CodeModelRetryMiddleware(max_retries=3)
-    assert mw.wrap_model_call(_req(), handler) == "OK"
+    assert mw.wrap_model_call(_req(), handler) is response
     assert model_calls["n"] == 2
     assert tool_calls == []
 
@@ -267,22 +283,39 @@ async def test_async_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     calls = {"n": 0}
+    response = _response()
 
-    async def handler(_req_arg: object) -> str:  # noqa: RUF029  # awaited by middleware; no internal await needed
+    async def handler(  # noqa: RUF029  # awaited by middleware; no internal await needed
+        _request: ModelRequest,
+    ) -> ModelResponse[Any]:
         calls["n"] += 1
         if calls["n"] < 2:
             raise _READ_ERROR
-        return "OK"
+        return response
 
     mw = CodeModelRetryMiddleware(max_retries=3)
-    assert await mw.awrap_model_call(_req(), handler) == "OK"
+    assert await mw.awrap_model_call(_req(), handler) is response
     assert calls["n"] == 2
 
 
-def test_status_helpers() -> None:
-    assert format_retry_status(1, 5) == "model connection dropped, retrying 1/5\u2026"
-    event = build_retry_event(2, 5)
-    assert event["type"] == "model_retry"
-    assert event["attempt"] == 2
-    assert event["max_retries"] == 5
-    assert "retrying 2/5" in event["message"]
+@pytest.mark.parametrize(
+    ("mode", "suffix"),
+    [("unicode", "\u2026"), ("ascii", "...")],
+)
+def test_status_helpers_respect_charset(
+    monkeypatch: pytest.MonkeyPatch, mode: str, suffix: str
+) -> None:
+    monkeypatch.setenv("UI_CHARSET_MODE", mode)
+    monkeypatch.setenv("DEEPAGENTS_CODE_UI_CHARSET_MODE", mode)
+    reset_glyphs_cache()
+    try:
+        assert format_retry_status(1, 5) == (
+            f"model connection dropped, retrying 1/5{suffix}"
+        )
+        event = build_retry_event(2, 5)
+        assert event["type"] == "model_retry"
+        assert event["attempt"] == 2
+        assert event["max_retries"] == 5
+        assert event["message"] == f"model connection dropped, retrying 2/5{suffix}"
+    finally:
+        reset_glyphs_cache()

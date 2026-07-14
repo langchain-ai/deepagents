@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (32)
+## Public (33)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -23,7 +23,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
-| `/goal` |  | Set a persistent objective by drafting acceptance criteria |
+| `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |
@@ -41,12 +41,14 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/threads` |  | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |
 | `/tokens` |  | Show token usage |
+| `/tools` |  | List the tools available to the agent |
 | `/trace` |  | Open this thread in LangSmith |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
 
-## Hidden (1)
+## Hidden (2)
 
 These commands are intentionally omitted from autocomplete and help. See the `HIDDEN_COMMANDS` docstring in the registry for context.
 
+- `/debug`
 - `/debug-error`

@@ -11,6 +11,7 @@ server X") rather than the token itself.
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
@@ -24,11 +25,12 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from filelock import FileLock, Timeout
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
@@ -45,6 +47,8 @@ from mcp.shared.auth import (
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import override
+
+from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -129,6 +133,9 @@ token itself is expired/revoked — i.e. the expected re-auth cases our hint
 replaces. Transient failures (`429`, `5xx`, gateway timeouts) must stay
 visible so a provider outage isn't silently relabeled as "go re-login".
 """
+_EXPECTED_REAUTH_REFRESH_STATUS_CODES = frozenset(
+    int(status) for status in _EXPECTED_REAUTH_REFRESH_STATUSES
+)
 
 
 class _ExpectedReauthLogFilter(logging.Filter):
@@ -152,9 +159,6 @@ class _ExpectedReauthLogFilter(logging.Filter):
 
 
 logging.getLogger("mcp.client.auth.oauth2").addFilter(_ExpectedReauthLogFilter())
-
-_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-"""Matches `${VAR}` placeholders inside config strings for env-var substitution."""
 
 _SAFE_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Matches server names that are safe to embed in token-file basenames.
@@ -181,59 +185,38 @@ def resolve_headers(
     *,
     server_name: str | None = None,
 ) -> dict[str, str]:
-    """Resolve `${VAR}` env-var references in header values.
+    """Resolve environment-variable references in MCP header values.
+
+    This compatibility wrapper preserves the original public helper while
+    delegating interpolation and validation to the shared MCP config resolver.
 
     Args:
         headers: Raw header mapping from MCP config.
-        server_name: Optional server name for error messages.
+        server_name: Optional server name for field-specific error messages.
 
     Returns:
-        A new dict with env-var references resolved to current values.
+        A new dictionary with environment-variable references resolved.
 
     Raises:
         TypeError: If a header value is not a string.
-        RuntimeError: If a `${VAR}` reference points to an unset env var.
-    """  # noqa: DOC502 - RuntimeError is raised via `_interpolate`
-    resolved: dict[str, str] = {}
-    for name, value in headers.items():
-        if not isinstance(value, str):
-            where = f"mcpServers.{server_name}.headers.{name}" if server_name else name
-            msg = f"{where} must be a string, got {type(value).__name__}"
-            raise TypeError(msg)
-        resolved[name] = _interpolate(value, header=name, server_name=server_name)
-    return resolved
+        RuntimeError: If interpolation fails.
+    """  # noqa: DOC502 - `RuntimeError` is raised by the shared config resolver
+    resolved = resolve_mcp_server_env(
+        server_name or "<unknown>",
+        {"headers": headers},
+    )
+    return resolved["headers"]
 
 
-def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
-    """Expand `${VAR}` references in `s` against the current environment.
+_REFRESH_LOCK_TIMEOUT_SECONDS = 60.0
+"""Longest a provider waits for the cross-process token-refresh lock.
 
-    Args:
-        s: Raw header value.
-        header: Header name, used in error messages.
-        server_name: Owning server name for error messages.
-
-    Returns:
-        Interpolated string.
-
-    Raises:
-        RuntimeError: If a referenced env var is unset.
-    """  # noqa: DOC502 - raised inside the inner `replace` substitution callback
-
-    def replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        val = os.environ.get(var_name)
-        if val is None:
-            where = (
-                f"mcpServers.{server_name}.headers.{header}" if server_name else header
-            )
-            msg = (
-                f"{where} references unset env var {var_name}. "
-                f"Set {var_name} in the environment or remove the reference."
-            )
-            raise RuntimeError(msg)
-        return val
-
-    return _REF_RE.sub(replace, s)
+Bounds the wait so a live-but-stuck peer (e.g. one whose refresh network call
+hangs) can't block tool calls indefinitely. A peer that outright crashes is not
+the concern: the OS releases an `fcntl` lock when the holding process exits. On
+timeout the provider reloads tokens from disk and avoids using any still-stale
+refresh token (see `_acquire_refresh_lock`).
+"""
 
 
 def _tokens_dir() -> Path:
@@ -286,6 +269,18 @@ class FileTokenStorage(TokenStorage):
         """On-disk token file path for this server."""
         stem = _token_file_stem(self._server_name, self._server_url)
         return _tokens_dir() / f"{stem}.json"
+
+    @property
+    def refresh_lock_path(self) -> Path:
+        """Sibling lock file that serializes token refreshes across processes.
+
+        A dedicated `.lock` file (never the token file itself) lets `filelock`
+        coordinate refreshes between dcode processes and provider instances
+        without ever holding an exclusive lock on the credential file. It holds
+        no token material.
+        """
+        path = self.path
+        return path.with_name(f"{path.name}.lock")
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return the stored `OAuthToken`, or `None` if none is persisted."""
@@ -1154,6 +1149,19 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         # fail loudly rather than silently regress to the 401-on-restart
         # bug this class exists to prevent.
         await super()._initialize()
+        await self._apply_stored_expiry()
+
+    async def _apply_stored_expiry(self) -> None:
+        """Seed `context.token_expiry_time` from the persisted sidecar.
+
+        Upstream `_initialize` loads stored tokens but leaves the expiry unset,
+        so a token whose access portion expired long ago still reports as valid
+        and is sent stale. Restoring the absolute expiry recorded beside the
+        token lets `is_token_valid` return `False` in time for the cheaper
+        refresh grant to fire. Also caches persisted OAuth metadata so the
+        refresh uses the advertised token endpoint. Safe to call repeatedly, so
+        it doubles as the post-reload expiry refresh.
+        """
         if self.context.oauth_metadata is None:
             get_oauth_metadata = getattr(
                 self.context.storage,
@@ -1197,6 +1205,94 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             )
         self.context.token_expiry_time = expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
 
+    async def _reload_tokens_from_storage(self) -> None:
+        """Re-read persisted tokens so a peer's refresh is observed.
+
+        Another dcode process (or a separate provider instance in this process)
+        may have rotated the refresh token on disk while this provider held a
+        now-stale copy in memory. Re-reading before deciding to refresh keeps
+        this provider from replaying an already-rotated refresh token, which
+        the LangSmith OAuth server treats as reuse and punishes by revoking the
+        whole identity+client token family.
+        """
+        self.context.current_tokens = await self.context.storage.get_tokens()
+        client_info = await self.context.storage.get_client_info()
+        if client_info is not None:
+            self.context.client_info = client_info
+        await self._apply_stored_expiry()
+
+    async def _acquire_refresh_lock(self, lock: FileLock) -> bool:
+        """Wait for the cross-process refresh lock off the event loop.
+
+        `lock.acquire` blocks for up to `_REFRESH_LOCK_TIMEOUT_SECONDS` while a
+        peer finishes its refresh, so it runs in a worker thread to avoid
+        stalling the event loop for that long.
+
+        Args:
+            lock: The `filelock.FileLock` serializing refreshes for this server
+                (backed by the sidecar `.lock` file, not the token file).
+
+        Returns:
+            `True` when the lock was acquired; `False` when the wait timed out
+            or the lock could not be created, signalling the caller to avoid
+            using the possibly in-flight refresh token after reloading.
+        """
+        try:
+            await asyncio.to_thread(
+                lock.acquire,
+                timeout=_REFRESH_LOCK_TIMEOUT_SECONDS,
+            )
+        except Timeout:
+            # A timeout means a peer may still be mid-refresh with this same
+            # token. Do not refresh unlocked: rotating-token servers can treat
+            # the second grant as reuse and revoke the whole token family.
+            logger.warning(
+                "Timed out after %.0fs waiting for the MCP token refresh lock "
+                "for %s; skipping refresh to avoid refresh-token reuse.",
+                _REFRESH_LOCK_TIMEOUT_SECONDS,
+                self.context.server_url,
+            )
+            return False
+        except OSError as exc:
+            # Creating/locking the sidecar can fail (read-only or missing
+            # tokens dir, permission denial on a hardened host). Avoid an
+            # unlocked refresh so we do not replay a rotating refresh token if a
+            # peer did manage to take the lock.
+            logger.warning(
+                "Could not acquire the MCP token refresh lock for %s (%s); "
+                "skipping refresh to avoid refresh-token reuse.",
+                self.context.server_url,
+                type(exc).__name__,
+            )
+            return False
+        return True
+
+    @contextlib.asynccontextmanager
+    async def _refresh_lock_guard(self, lock_path: Path) -> AsyncIterator[bool]:
+        """Hold the cross-process refresh lock across the serialized refresh.
+
+        Acquires the lock (waiting up to `_REFRESH_LOCK_TIMEOUT_SECONDS`; on
+        timeout it yields `False` so the caller can avoid the refresh grant) and
+        always releases it on exit. Release is gated on `lock.is_locked` rather
+        than the acquire result, so a cancellation that lands *after* the worker
+        thread took the lock still frees it instead of orphaning it until GC.
+
+        Args:
+            lock_path: Sibling `.lock` path from `FileTokenStorage`.
+
+        Yields:
+            Whether the refresh lock was acquired.
+        """
+        # `thread_local=False` because acquire and release run in different
+        # `asyncio.to_thread` worker threads; the default would refuse the
+        # cross-thread release and leak the OS lock until process exit.
+        lock = FileLock(str(lock_path), thread_local=False)
+        try:
+            yield await self._acquire_refresh_lock(lock)
+        finally:
+            if lock.is_locked:
+                await asyncio.to_thread(lock.release)
+
     async def _persist_oauth_metadata(self) -> None:
         """Persist discovered public OAuth metadata when storage supports it."""
         if self.context.oauth_metadata is None:
@@ -1209,6 +1305,31 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         """Persist tokens and any metadata discovered during full OAuth login."""
         await super()._handle_token_response(response)
         await self._persist_oauth_metadata()
+
+    async def _handle_locked_refresh_response(self, response: httpx.Response) -> bool:
+        """Handle a serialized refresh without bypassing SDK re-auth fallback.
+
+        Args:
+            response: Refresh endpoint response returned through the auth generator.
+
+        Returns:
+            `True` when refresh succeeded, otherwise `False` so the caller can
+            continue into the delegated SDK flow.
+        """
+        try:
+            return bool(await self._handle_refresh_response(response))
+        except Exception:
+            if response.status_code not in _EXPECTED_REAUTH_REFRESH_STATUS_CODES:
+                raise
+            logger.debug(
+                "Locked MCP token refresh for %s failed with %s; "
+                "deferring to the SDK re-auth flow.",
+                self.context.server_url,
+                response.status_code,
+            )
+            self.context.clear_tokens()
+            self._initialized = False
+            return False
 
     async def async_auth_flow(
         self,
@@ -1280,6 +1401,45 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         self.context.server_url,
                         type(exc).__name__,
                     )
+
+            if (
+                not self.context.is_token_valid()
+                and self.context.can_refresh_token()
+                and isinstance(self.context.storage, FileTokenStorage)
+            ):
+                # Serialize the refresh across processes and provider instances.
+                # Without this, two holders of the same token file can both
+                # replay the same refresh token; the LangSmith OAuth server
+                # rotates refresh tokens and revokes the entire token family on
+                # reuse, which surfaces as requests hanging until a full
+                # re-auth. `self.context.lock` only guards this one provider,
+                # so a file lock is required for the cross-process case.
+                async with self._refresh_lock_guard(
+                    self.context.storage.refresh_lock_path
+                ) as refresh_lock_acquired:
+                    # A peer may have rotated the token while we waited for the
+                    # lock; reload so a now-valid token skips the refresh.
+                    await self._reload_tokens_from_storage()
+                    if (
+                        not self.context.is_token_valid()
+                        and self.context.can_refresh_token()
+                    ):
+                        if refresh_lock_acquired:
+                            # ASYNC119: the refresh lock must stay held across this
+                            # yield — the request/response round-trip is the
+                            # critical section being serialized. Release is safe
+                            # because httpx deterministically drives and
+                            # `aclose()`s this generator (see the delegation note
+                            # below), so the guard's `finally` runs rather than
+                            # deferring cleanup to GC.
+                            refresh_response = yield await self._refresh_token()  # noqa: ASYNC119
+                            await self._handle_locked_refresh_response(refresh_response)
+                        else:
+                            # The delegated SDK flow has its own refresh branch;
+                            # clear only in-memory tokens so this request falls
+                            # through to re-auth instead of replaying the refresh
+                            # token while another process may still be using it.
+                            self.context.clear_tokens()
 
         # Delegate to the SDK flow by manually pumping the inner generator so
         # the HTTP responses httpx feeds back via `auth_flow.asend(response)`
@@ -1547,6 +1707,14 @@ def format_login_failure(exc: BaseException) -> str:
     if reauth is not None:
         return str(reauth)
 
+    from deepagents_code.mcp_tools import MCPConfigError
+
+    if isinstance(exc, MCPConfigError):
+        # Config-interpolation errors are our own and are raised before the
+        # OAuth handshake, so they carry no token material and their
+        # field-scoped messages are safe (and useful) to render verbatim.
+        return str(exc)
+
     safe_types = (
         _LoopbackCallbackTimeoutError,
         _LoopbackCallbackUnavailableError,
@@ -1702,15 +1870,18 @@ async def login(
 
     Raises:
         ValueError: If `server_config` isn't an http/sse server.
-        RuntimeError: If header env-var interpolation fails, the device
-            flow fails or times out, or the OAuth handshake aborts.
-    """  # noqa: DOC502 - `RuntimeError` surfaces via `resolve_headers` / `_run_device_flow`
+        MCPConfigError: If config env-var interpolation fails or a
+            supported field has the wrong type (a non-string value, or
+            args/env/headers with the wrong container type).
+        RuntimeError: If the device flow fails or times out, or the
+            OAuth handshake aborts.
+    """  # noqa: DOC502 - `RuntimeError` surfaces via the device flow / handshake
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StreamableHttpConnection,
     )
 
-    from deepagents_code.mcp_tools import _resolve_server_type
+    from deepagents_code.mcp_tools import MCPConfigError, _resolve_server_type
 
     # OAuth login is discovery-based (RFC 9728), so it works for any remote
     # http/sse server — whether the config opted in with `auth: oauth` or the
@@ -1723,14 +1894,22 @@ async def login(
             "OAuth login is only valid for http/sse."
         )
         raise ValueError(msg)
+    try:
+        resolved_config = resolve_mcp_server_env(server_name, server_config)
+    except (RuntimeError, TypeError) as exc:
+        # Re-raise as MCPConfigError (a ValueError) so callers' existing
+        # config-error handling catches it, and `format_login_failure`
+        # preserves the actionable, field-scoped message instead of
+        # collapsing it to a bare "RuntimeError"/"TypeError".
+        raise MCPConfigError(str(exc)) from exc
 
     from deepagents_code.mcp_providers import resolve_provider
 
-    storage = FileTokenStorage(server_name, server_url=server_config["url"])
-    policy = resolve_provider(server_config["url"])
+    storage = FileTokenStorage(server_name, server_url=resolved_config["url"])
+    policy = resolve_provider(resolved_config["url"])
     result = await policy.run_login(
         server_name=server_name,
-        server_url=server_config["url"],
+        server_url=resolved_config["url"],
         storage=storage,
         ui=ui,
     )
@@ -1745,7 +1924,7 @@ async def login(
 
     provider = build_oauth_provider(
         server_name=server_name,
-        server_url=server_config["url"],
+        server_url=resolved_config["url"],
         storage=storage,
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
@@ -1754,21 +1933,18 @@ async def login(
     if transport == "http":
         conn = StreamableHttpConnection(
             transport="streamable_http",
-            url=server_config["url"],
+            url=resolved_config["url"],
             auth=provider,
         )
     else:
         conn = SSEConnection(
             transport="sse",
-            url=server_config["url"],
+            url=resolved_config["url"],
             auth=provider,
         )
 
-    if "headers" in server_config:
-        conn["headers"] = resolve_headers(
-            server_config["headers"],
-            server_name=server_name,
-        )
+    if "headers" in resolved_config:
+        conn["headers"] = resolved_config["headers"]
 
     await _drive_handshake({server_name: conn})
     await ui.show_success(success_message)

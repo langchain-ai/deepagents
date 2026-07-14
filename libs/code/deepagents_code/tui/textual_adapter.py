@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -79,6 +79,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
 )
@@ -224,10 +225,13 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 
 
 def _format_rubric_event(data: dict[str, Any]) -> str | None:
-    """Format a rubric custom-stream event for the chat transcript.
+    """Format a concise rubric custom-stream event for the transcript.
+
+    Args:
+        data: Custom-stream rubric event payload.
 
     Returns:
-        A user-visible message for rubric events, or `None` for custom-stream
+        A user-visible summary for rubric events, or `None` for custom-stream
         events that are not rubric events.
     """
     glyphs = get_glyphs()
@@ -247,40 +251,75 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
         return None
 
     result = data.get("result")
-    explanation = str(data.get("explanation") or "").strip()
     if result is None:
         return None
     if result == "satisfied":
         return f"{glyphs.checkmark} Acceptance criteria satisfied"
     if result == "needs_revision":
-        lines = [
-            f"{glyphs.retry} Changes need revision"
-            + (f": {explanation}" if explanation else ""),
-        ]
-        for criterion in data.get("criteria", []):
-            if isinstance(criterion, dict) and criterion.get("passed") is False:
-                name = str(criterion.get("name", "criterion"))
-                gap = str(criterion.get("gap", "")).strip()
-                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
-        return "\n".join(lines)
+        return f"{glyphs.retry} Acceptance criteria not yet satisfied"
     if result == "max_iterations_reached":
         return (
-            f"{glyphs.warning} Acceptance criteria not satisfied "
+            f"{glyphs.warning} Acceptance criteria not yet satisfied "
             "(iteration limit reached)"
         )
-    if result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
-        return (
-            f"{glyphs.warning} Rubric "
-            + label
-            + (f": {explanation}" if explanation else "")
-        )
+    if result == "failed":
+        return f"{glyphs.warning} Rubric is invalid or cannot be evaluated"
+    if result == "grader_error":
+        return f"{glyphs.warning} Acceptance criteria check failed"
     # A `rubric_evaluation_end` with an unrecognized result is still a terminal
     # grading event; surface it rather than silently dropping it (e.g. if the
     # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
-    return f"{glyphs.warning} Rubric grading ended" + (
-        f": {explanation}" if explanation else ""
-    )
+    return f"{glyphs.warning} Acceptance criteria check ended"
+
+
+def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -> str:
+    """Format complete grader details without serializing or truncating payloads.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
+
+    Returns:
+        Plain text containing the full explanation, unmet criteria, and next step.
+    """
+    result = data.get("result")
+    if result in {None, "satisfied"}:
+        return ""
+
+    sections: list[str] = []
+    explanation = str(data.get("explanation") or "").strip()
+    if explanation:
+        sections.append(f"Explanation\n{explanation}")
+
+    criteria = data.get("criteria")
+    failing: list[tuple[str, str]] = []
+    if isinstance(criteria, list):
+        for criterion in criteria:
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name") or "Unnamed criterion").strip()
+                gap = str(criterion.get("gap") or "").strip()
+                failing.append((name, gap))
+    if failing:
+        lines = ["Unmet criteria"]
+        for name, gap in failing:
+            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
+        sections.append("\n".join(lines))
+
+    if result == "max_iterations_reached" and goal_active:
+        next_step = (
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"}:
+        next_step = "Address every unmet criterion, then retry the check."
+    elif result == "failed":
+        next_step = "Review or replace the rubric before grading again."
+    elif result == "grader_error":
+        next_step = "Retry the check, or choose a different grader model."
+    else:
+        next_step = "Review the grader details before continuing."
+    sections.append(f"Next step\n{next_step}")
+    return "\n\n".join(sections)
 
 
 class TextualUIAdapter:
@@ -298,7 +337,9 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
+        on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
+        sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
         request_ask_user: (
             Callable[
                 [list[Question]],
@@ -333,8 +374,18 @@ class TextualUIAdapter:
         self._set_active_message = set_active_message
         """Callback to set the active streaming message ID (pass `None` to clear)."""
 
+        self._on_user_visible_output_started = on_user_visible_output_started
+        """Callback fired after the first model text or tool-call widget renders.
+
+        Hidden model and subagent output does not trigger it. A turn interrupted
+        before any user-visible model output produces zero firings.
+        """
+
         self._sync_message_content = sync_message_content
         """Callback to sync final message content back to the store after streaming."""
+
+        self._sync_tool_message = sync_tool_message
+        """Callback to sync a tool widget's mutable state back to the store."""
 
         self._request_ask_user = request_ask_user
         """Async callback for `ask_user` interrupts.
@@ -372,6 +423,20 @@ class TextualUIAdapter:
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
 
+    def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
+        """Sync a tool widget when the app provided a store callback.
+
+        Total by contract: never raises. Call sites are scattered across the
+        turn loop, some outside try/except, so a sync failure must not abort
+        the turn — it is logged and swallowed here.
+        """
+        if self._sync_tool_message is None:
+            return
+        try:
+            self._sync_tool_message(tool_msg)
+        except Exception:
+            logger.exception("Failed to sync tool widget state to store")
+
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
 
@@ -388,6 +453,7 @@ class TextualUIAdapter:
         _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
         for tool_msg in list(self._current_tool_messages.values()):
             tool_msg.set_error(error)
+            self._sync_tool_widget(tool_msg)
         self._current_tool_messages.clear()
 
         # Clear active streaming message to avoid stale "active" state in the store.
@@ -486,6 +552,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     rubric: str | None = None,
+    goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -514,6 +581,7 @@ async def execute_task_textual(
             in the checkpoint).
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
@@ -635,6 +703,33 @@ async def execute_task_textual(
         adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
+    # Fires at most once per turn, after the first main-agent text or tool-call
+    # widget becomes visible, so hidden model activity cannot block prompt restore.
+    user_visible_output_started = False
+
+    def _notify_user_visible_output_started() -> None:
+        """Fire the output-started callback once, on the first visible output.
+
+        Call only from main-agent, post-filter paths: the "hidden output does
+        not count" guarantee lives in the placement of the call sites (all sit
+        after the subagent and summarization `continue`s), not in any check
+        here — this helper only dedupes.
+        """
+        nonlocal user_visible_output_started
+        if user_visible_output_started:
+            return
+        user_visible_output_started = True
+        if adapter._on_user_visible_output_started:
+            try:
+                adapter._on_user_visible_output_started()
+            except Exception:
+                # A prompt-restore gate update must never abort agent
+                # streaming — log and keep going (mirrors `_on_tool_complete`).
+                logger.warning(
+                    "on_user_visible_output_started callback failed",
+                    exc_info=True,
+                )
+
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
     # Tool-call ids that already received terminal hooks before a resumed
@@ -748,16 +843,35 @@ async def execute_task_textual(
                 if current_stream_mode == "custom":
                     if isinstance(data, dict) and data.get("type") == "model_retry":
                         if is_main_agent and adapter._set_spinner is not None:
+                            retry_status = str(data.get("message", "Reconnecting"))
+                            # LoadingWidget accepts text beyond the built-in statuses.
                             await adapter._set_spinner(
-                                str(data.get("message", "Reconnecting"))
+                                cast("SpinnerStatus", retry_status)
                             )
                         continue
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
                     )
-                    if formatted_rubric_event is not None and is_main_agent:
-                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                    if (
+                        formatted_rubric_event is not None
+                        and rubric_message is not None
+                        and is_main_agent
+                    ):
+                        details = (
+                            _format_rubric_details(
+                                rubric_message,
+                                goal_active=goal_active,
+                            )
+                            if rubric_message.get("type") == "rubric_evaluation_end"
+                            else ""
+                        )
+                        message = (
+                            RubricResultMessage(formatted_rubric_event, details)
+                            if details
+                            else AppMessage(formatted_rubric_event)
+                        )
+                        await adapter._mount_message(message)
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a
@@ -840,6 +954,7 @@ async def execute_task_textual(
                                                     tool_id,
                                                 )
                                             else:
+                                                _notify_user_visible_output_started()
                                                 # Fire tool.use and latch the id
                                                 # together, only once the widget
                                                 # is mounted, so the "every
@@ -1007,6 +1122,7 @@ async def execute_task_textual(
                                     tool_msg.set_success(output_str)
                                 else:
                                     tool_msg.set_error(output_str or "Error")
+                                adapter._sync_tool_widget(tool_msg)
                             except Exception:
                                 logger.exception(
                                     "Failed to update tool row for %s", tool_id
@@ -1064,7 +1180,11 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 await adapter._mount_message(
-                                    DiffMessage(record.diff, record.display_path)
+                                    DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                    )
                                 )
 
                         # Reshow spinner only when all in-flight tools have
@@ -1178,6 +1298,7 @@ async def execute_task_textual(
                                 # streaming (uses MarkdownStream internally for
                                 # better performance)
                                 await current_msg.append_content(text)
+                                _notify_user_visible_output_started()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
                             chunk_name = block.get("name")
@@ -1284,11 +1405,13 @@ async def execute_task_textual(
                                         buffer_id,
                                     )
                                 else:
+                                    _notify_user_visible_output_started()
                                     # Mark running so the group row reflects live
                                     # progress; the row itself is hidden inside
                                     # the group, so this drives state, not a
                                     # visible per-tool spinner.
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
 
                             if buffer_id is not None:
@@ -1345,6 +1468,7 @@ async def execute_task_textual(
                 for tool_msg in adapter._current_tool_messages.values():
                     try:
                         tool_msg.pause_running()
+                        adapter._sync_tool_widget(tool_msg)
                     except Exception:
                         logger.exception(
                             "Failed to pause running state on tool widget %s",
@@ -1418,6 +1542,7 @@ async def execute_task_textual(
                                 if tool_msg is not None:
                                     try:
                                         tool_msg.set_success(output)
+                                        adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(
                                             "Failed to update ask_user row for %s",
@@ -1453,6 +1578,7 @@ async def execute_task_textual(
                                 if tool_msg is not None:
                                     try:
                                         tool_msg.set_error(output)
+                                        adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(
                                             "Failed to update ask_user row for %s",
@@ -1477,6 +1603,7 @@ async def execute_task_textual(
                             if tool_msg is not None:
                                 try:
                                     tool_msg.set_rejected()
+                                    adapter._sync_tool_widget(tool_msg)
                                 except Exception:
                                     logger.exception(
                                         "Failed to update ask_user row for %s",
@@ -1507,6 +1634,7 @@ async def execute_task_textual(
                             if tool_msg is not None:
                                 try:
                                     tool_msg.set_error(error_text)
+                                    adapter._sync_tool_widget(tool_msg)
                                 except Exception:
                                     logger.exception(
                                         "Failed to update ask_user row for %s",
@@ -1536,6 +1664,7 @@ async def execute_task_textual(
                         if tool_msg is not None:
                             try:
                                 tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                                adapter._sync_tool_widget(tool_msg)
                             except Exception:
                                 logger.exception(
                                     "Failed to update ask_user row for %s", tool_id
@@ -1551,6 +1680,7 @@ async def execute_task_textual(
                         resume_payload[interrupt_id] = {"decisions": decisions}
                         for tool_msg in list(adapter._current_tool_messages.values()):
                             tool_msg.set_running()
+                            adapter._sync_tool_widget(tool_msg)
                     else:
                         # Batch approval - one dialog for all parallel tool calls
                         await dispatch_hook(
@@ -1619,6 +1749,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
                                     if tool_name in {
@@ -1642,6 +1773,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
                                     if tool_name in {
@@ -1676,6 +1808,7 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
+                                    adapter._sync_tool_widget(tool_msg)
                                 # Bare reject aborts the turn and shows the
                                 # canned "Command rejected" banner so the user
                                 # can redirect. When a reason is supplied, the
@@ -1704,6 +1837,7 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
+                                    adapter._sync_tool_widget(tool_msg)
                                 completed_tool_result_ids.update(
                                     _dispatch_terminal_tool_result_hooks(
                                         adapter._current_tool_messages,
@@ -1724,6 +1858,7 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
+                                adapter._sync_tool_widget(tool_msg)
                             completed_tool_result_ids.update(
                                 _dispatch_terminal_tool_result_hooks(
                                     adapter._current_tool_messages,
@@ -2069,6 +2204,7 @@ async def _handle_interrupt_cleanup(
     for tool_msg in list(adapter._current_tool_messages.values()):
         try:
             tool_msg.set_rejected()
+            adapter._sync_tool_widget(tool_msg)
         except Exception:
             logger.exception(
                 "Failed to mark tool row rejected during interrupt cleanup"

@@ -106,12 +106,16 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/goal",
-        description="Set a persistent objective by drafting acceptance criteria",
+        description="Set and manage a persistent objective with acceptance criteria",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords=(
-            "objective criteria acceptance rubric grader grading model iterations"
+            "objective criteria acceptance amend pause resume rubric grader grading "
+            "model iterations"
         ),
-        argument_hint="[<objective>|show|clear|model|max-iterations]",
+        argument_hint=(
+            "[<objective>|amend <feedback>|pause|resume|show|clear|model|"
+            "max-iterations]"
+        ),
     ),
     SlashCommand(
         name="/editor",
@@ -166,7 +170,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/threads",
         description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="continue history sessions",
+        hidden_keywords="continue history sessions resume back previous",
+        argument_hint="[-r [ID]]",
     ),
     SlashCommand(
         name="/trace",
@@ -178,6 +183,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Show token usage",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="cost",
+    ),
+    SlashCommand(
+        name="/tools",
+        description="List the tools available to the agent",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="mcp functions capabilities builtin built-in",
     ),
     SlashCommand(
         name="/reload",
@@ -310,7 +321,7 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug-error"})
+HIDDEN_COMMANDS: frozenset[str] = frozenset({"/debug", "/debug-error"})
 """Power-user commands kept out of autocomplete and help."""
 
 STARTUP_RECOVERY_COMMANDS: frozenset[str] = frozenset(

@@ -262,12 +262,29 @@ def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any
     return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
 
 
+def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
+    """Create Fireworks prompt caching middleware when `langchain-fireworks` is installed."""
+    module_name = "langchain_fireworks.middleware.prompt_caching"
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        if exc.name not in {"langchain_fireworks", "langchain_fireworks.middleware", module_name}:
+            raise
+        logger.debug("Fireworks prompt caching middleware is unavailable.", exc_info=exc)
+        return None
+    middleware_cls = module.FireworksPromptCachingMiddleware
+    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
+
+
 def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
     """Append provider-specific prompt caching middleware."""
     middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)
+    fireworks_middleware = _create_fireworks_prompt_caching_middleware()
+    if fireworks_middleware is not None:
+        middleware.append(fireworks_middleware)
 
 
 def _merge_fs_interrupt_on(
@@ -475,6 +492,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 non-Anthropic models)
             - [`BedrockPromptCachingMiddleware`](https://reference.langchain.com/python/langchain-aws/middleware/prompt_caching/BedrockPromptCachingMiddleware)
                 when `langchain-aws` is installed (no-ops for non-Bedrock models)
+            - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
+                when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 
@@ -972,7 +991,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
+    state_schemas = [state_schema] if state_schema is not None else []
+    state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
+    private_state_keys = private_state_field_names(*state_schemas)
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in

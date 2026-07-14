@@ -57,19 +57,27 @@ path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
 try:
+    real_root = os.path.realpath(path)
     os.chdir(path)
-    matches = sorted(glob.glob(pattern, recursive=True))
-    for m in matches:
-        try:
-            st = os.stat(m)
-        except OSError:
-            continue
-        print(json.dumps({{
-            'path': m,
-            'size': st.st_size,
-            'mtime': st.st_mtime,
-            'is_dir': os.path.isdir(m),
-        }}))
+    rel_pattern = pattern.lstrip('/')
+    if any(seg == '..' for seg in rel_pattern.replace(chr(92), '/').split('/')):
+        print(json.dumps({{'error': 'invalid_pattern'}}))
+    else:
+        matches = sorted(glob.glob(rel_pattern, recursive=True))
+        for m in matches:
+            candidate = os.path.realpath(m)
+            if candidate != real_root and not candidate.startswith(real_root + os.sep):
+                continue
+            try:
+                st = os.stat(candidate)
+            except OSError:
+                continue
+            print(json.dumps({{
+                'path': m,
+                'size': st.st_size,
+                'mtime': st.st_mtime,
+                'is_dir': os.path.isdir(candidate),
+            }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
@@ -89,24 +97,36 @@ import glob, os, base64, sys
 search_path = base64.b64decode('{path_b64}').decode('utf-8')
 glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+max_count = {max_count}
+match_count = 0
 
 # When the search path is a directory, chdir to it so glob patterns
 # resolve relative to it. When it is a single file, search it directly
 # (glob filtering is irrelevant for a single-file search).
 if os.path.isdir(search_path):
     os.chdir(search_path)
-    # A leading `/` would make `glob.glob` treat the pattern as an
+    # A leading slash would make glob.glob treat the pattern as an
     # absolute filesystem path, searching outside the search root (e.g.
-    # `/*.py` after `chdir('/workspace')` would match `/top.py` on
-    # the host, not `/workspace/top.py`). Strip it so anchored globs
-    # stay relative to the search root, matching the `FilesystemBackend`
-    # semantics where `/` anchors to the root, not the filesystem.
+    # /*.py after chdir('/workspace') would match /top.py on
+    # the host, not /workspace/top.py). Strip it so anchored globs
+    # stay relative to the search root, matching the FilesystemBackend
+    # semantics where slash anchors to the root, not the filesystem.
     rel_glob = glob_pat.lstrip('/')
+    if any(seg == '..' for seg in rel_glob.replace(chr(92), '/').split('/')):
+        sys.stderr.write('glob contains path traversal\\n')
+        sys.exit(2)
+    real_root = os.path.realpath(search_path)
     rel_files = sorted(glob.glob(rel_glob, recursive=True))
     # Open the glob-relative path (cwd is the search root) but report the
     # path prefixed with the search root, so GrepResult.path matches the
-    # `<root>/<match>` form that `grep -r` emits on the --include route.
-    targets = [(rel, os.path.join(search_path, rel)) for rel in rel_files]
+    # root/match form that grep -r emits on the --include route.
+    targets = []
+    for rel in rel_files:
+        real_open = os.path.realpath(rel)
+        if real_open != real_root and not real_open.startswith(real_root + os.sep):
+            continue
+        display_path = os.path.join(search_path, os.path.relpath(real_open, real_root))
+        targets.append((real_open, display_path))
 else:
     targets = [(search_path, search_path)]
 
@@ -121,6 +141,13 @@ for open_path, display_path in targets:
                     # one so records never concatenate when a file's last
                     # line lacks a final newline.
                     sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
+                    match_count += 1
+                    # Emit one record past the cap (match_count > max_count, not
+                    # >=) so the parser can tell "exactly at the cap" (complete)
+                    # from "capped early" (truncated). Mirrors the `head -n
+                    # max_count+1` route in `_build_grep_cmd`.
+                    if max_count is not None and match_count > max_count:
+                        sys.exit(0)
     except OSError:
         pass
 " 2>/dev/null"""
@@ -337,7 +364,7 @@ script reads them, performs the replacement on the source file (which never
 leaves the sandbox), and cleans up the temp files.
 
 Output: single-line JSON with `{{"count": N}}` on success or
-`{{"error": ...}}` on failure.  Same success contract as
+`{{"error": ...}}` on failure. Same success contract as
 `_EDIT_COMMAND_TEMPLATE`; additionally produces
 `{{"error": "temp_read_failed", "detail": ...}}` when the uploaded temp
 files cannot be read.
@@ -348,6 +375,7 @@ import codecs, os, stat as _stat, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
+MAX_LINE_COUNT_BYTES = 1024 * 1024
 TRUNCATION_MSG = '\\n\\n' + (
     '[Output was truncated due to size limits. '
     'This paginated read result exceeded the sandbox stdout limit. '
@@ -404,14 +432,21 @@ try:
     msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
     effective_limit = MAX_OUTPUT_BYTES - msg_bytes
 
+    at_eof = False
     with open(path, 'r', encoding='utf-8', newline=None) as f:
-        for raw_line in f:
-            line_count += 1
-            if line_count <= offset:
-                continue
-            if returned_lines >= limit:
+        while line_count < offset:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
                 break
+            line_count += 1
 
+        while not at_eof and returned_lines < limit and not truncated:
+            raw_line = f.readline()
+            if raw_line == '':
+                at_eof = True
+                break
+            line_count += 1
             line = raw_line.rstrip('\\n').rstrip('\\r')
             piece = line if returned_lines == 0 else '\\n' + line
             piece_bytes = len(piece.encode('utf-8'))
@@ -429,15 +464,63 @@ try:
             current_bytes += piece_bytes
             returned_lines += 1
 
+        # The page can fill (returned_lines == limit) exactly at EOF without the
+        # loop readline ever returning an empty string. Detect that via position:
+        # after reading whole lines from a UTF-8 handle the decoder state is clean
+        # at a line boundary, so tell() is the raw byte offset and equals st_size
+        # at EOF. Worst case if this ever misjudges is a surfaced offset-exceeds-
+        # length error on the next re-read (large files only, where total_lines
+        # stays None) -- never a silent skip, since a false at_eof of True cannot
+        # arise (a clean or packed tell() past EOF cannot equal st_size).
+        if not at_eof:
+            at_eof = f.tell() == st.st_size
+
     if returned_lines == 0 and not truncated:
         print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
         sys.exit(0)
+
+    # When the page already reached EOF, reuse its scan's count for free.
+    # Otherwise re-scan for the total only when the file is small enough that
+    # the extra pass stays bounded; surrogateescape keeps an invalid byte after
+    # the requested page from invalidating content that was decoded successfully.
+    if at_eof:
+        total_lines = line_count
+    elif st.st_size <= MAX_LINE_COUNT_BYTES:
+        with open(path, 'r', encoding='utf-8', errors='surrogateescape', newline=None) as f:
+            total_lines = sum(1 for _ in f)
+    else:
+        total_lines = None
 
     text = ''.join(parts)
     if truncated:
         text += TRUNCATION_MSG
 
-    print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+    # A byte cap can cut the final rendered line mid-way; that partial line is
+    # deliberately not counted toward returned_lines (see the truncation
+    # branch), so next_offset resumes at its start and the whole boundary line
+    # is re-read. If even the first requested line overflows the cap no full
+    # line was returned: advance by one so the read still makes progress instead
+    # of looping on the same page (that line's tail is unreadable via line
+    # offsets).
+    if truncated and returned_lines == 0:
+        returned_lines = 1
+
+    end_line = offset + returned_lines
+    if total_lines is not None:
+        next_offset = end_line if end_line < total_lines else None
+    else:
+        # total_lines is None only via the large-file branch above, which is
+        # reached only when the page stopped short of EOF, so lines always
+        # remain here.
+        next_offset = end_line
+    print(json.dumps({{
+        'encoding': 'utf-8',
+        'content': text,
+        'total_lines': total_lines,
+        'start_line': offset + 1,
+        'end_line': end_line,
+        'next_offset': next_offset,
+    }}))
 except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
 except PermissionError:
@@ -450,8 +533,15 @@ avoiding full-file transfer for paginated text reads. The path is
 base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
 (safe because they come from internal code, not user input).
 
-Output: single-line JSON with either `{{"encoding": ..., "content": ...}}` on
-success or `{{"error": ...}}` on failure.
+Output: single-line JSON. On success (text): `{{"encoding", "content",
+"total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
+and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
+next unread line (`null` once the file is fully read). `total_lines` is `null`
+when the file is large enough that a full re-scan to count its lines would be
+unbounded. On success
+(binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
+An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
+reminder>}}`, also without pagination keys. On failure: `{{"error": ...}}`.
 """
 
 
@@ -524,12 +614,22 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
     if "error" in data:
         return ReadResult(error=f"File '{file_path}': {data['error']}")
-    return ReadResult(
-        file_data=FileData(
-            content=data["content"],
-            encoding=data.get("encoding", "utf-8"),
+    # A parseable-but-malformed payload (missing `content`, or a pagination-key
+    # combination `ReadResult.__post_init__` rejects) must degrade to the same
+    # clean error result as a decode failure, not escape as a raw traceback.
+    try:
+        return ReadResult(
+            file_data=FileData(
+                content=data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            ),
+            total_lines=data.get("total_lines"),
+            start_line=data.get("start_line"),
+            end_line=data.get("end_line"),
+            next_offset=data.get("next_offset"),
         )
-    )
+    except (KeyError, TypeError, ValueError) as exc:
+        return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")
 
 
 def _build_write_preflight_cmd(file_path: str) -> str:
@@ -544,7 +644,7 @@ def _check_preflight_result(result: ExecuteResponse, file_path: str) -> WriteRes
     return None
 
 
-def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
+def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count: int | None = None) -> str:
     search_path = shlex.quote(path or ".")
     # `-Z` separates the filename from line data with NUL, so filenames may
     # contain `:` without making the output ambiguous.
@@ -564,13 +664,30 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
             path_b64=path_b64,
             glob_b64=glob_b64,
             pattern_b64=pattern_b64,
+            max_count=None if max_count is None else int(max_count),
         )
 
     glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
-    return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
+    # Known limitation (pre-existing): `2>/dev/null` + `|| true` means a genuine
+    # grep failure (exit 2 — unreadable root, bad option) is swallowed and parses
+    # as an empty "no matches" result, indistinguishable from a real zero-match.
+    # Surfacing exit 2 while still tolerating no-match (exit 1) AND the SIGPIPE
+    # (exit 141) that `head` sends grep on the cap path requires `set -o pipefail`
+    # (bash/zsh only, not POSIX sh/dash/busybox); buffering to a temp file instead
+    # would defeat the `head` early-stop below. A portable fix belongs in its own
+    # sandbox-tested change. The in-process `_GREP_PATH_GLOB_TEMPLATE` route does
+    # surface its errors (see its docstring); only this GNU-grep route swallows.
+    base = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null"
+    if max_count is not None:
+        # Read one record beyond the cap so the parser can distinguish "exactly
+        # at the cap" (complete) from "capped early" (truncated). `head` closing
+        # the pipe delivers SIGPIPE to grep, stopping it early rather than
+        # letting it keep scanning a huge tree after the cap is met.
+        return f"{base} | head -n {int(max_count) + 1} || true"
+    return f"{base} || true"
 
 
-def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
+def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int | None = None) -> GrepResult:
     output = result.output.rstrip("\n")
     if result.exit_code is not None and result.exit_code != 0:
         detail = output.strip() if output else f"exit code {result.exit_code}"
@@ -589,6 +706,10 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None) -> GrepResult:
             parse_error = line
     if parse_error is not None and not matches:
         return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
+    if max_count is not None and len(matches) > max_count:
+        # More matches existed than the caller asked for; return the cap and
+        # flag the result as incomplete.
+        return GrepResult(matches=matches[:max_count], truncated=True)
     return GrepResult(matches=matches)
 
 
@@ -1263,6 +1384,8 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search file contents for a literal string using `grep -F`.
 
@@ -1276,23 +1399,28 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
                 `grep --include`; patterns containing a `/` (e.g.
                 `'src/**/*.py'`) match the search-root-relative path via an
                 in-process Python glob.
+            max_count: Optional total cap on returned matches across all files.
+                `None` returns every match; an int stops the search once the cap
+                is reached and flags the result with `truncated=True`.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
-        result = self.execute(_build_grep_cmd(pattern, path, glob))
-        return _parse_grep_output(result, path)
+        result = self.execute(_build_grep_cmd(pattern, path, glob, max_count))
+        return _parse_grep_output(result, path, max_count)
 
     async def agrep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Async version of `grep`, delegating to `aexecute` with timeout guard."""
         try:
             result = await asyncio.wait_for(
-                self.aexecute(_build_grep_cmd(pattern, path, glob)),
+                self.aexecute(_build_grep_cmd(pattern, path, glob, max_count)),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:
@@ -1306,7 +1434,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return GrepResult(
                 error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
             )
-        return _parse_grep_output(result, path)
+        return _parse_grep_output(result, path, max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Structured glob matching returning `GlobResult`."""

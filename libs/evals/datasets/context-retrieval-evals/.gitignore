@@ -1,0 +1,3 @@
+# Per-task corpus is single-sourced from harbor_adapters/contextbench/vendor/files/
+# and regenerated via `python -m harbor_adapters.contextbench.main --populate <dir>`.
+*/environment/files/

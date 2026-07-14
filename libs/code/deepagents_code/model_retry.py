@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ModelRetryMiddleware
 
-from deepagents_code.config import DEFAULT_MODEL_RETRIES
+from deepagents_code.config import DEFAULT_MODEL_RETRIES, get_glyphs
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -167,7 +167,8 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
     Returns:
         A short status line, e.g. ``"model connection dropped, retrying 1/5..."``.
     """
-    return f"model connection dropped, retrying {attempt}/{max_retries}\u2026"
+    prefix = f"model connection dropped, retrying {attempt}/{max_retries}"
+    return f"{prefix}{get_glyphs().ellipsis}"
 
 
 def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:

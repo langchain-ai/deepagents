@@ -13,10 +13,11 @@ from time import time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual import on
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.events import Click
 from textual.geometry import Offset
+from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
@@ -29,6 +30,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -63,6 +65,8 @@ if TYPE_CHECKING:
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
+
+    from deepagents_code.input import MediaTracker
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +155,31 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
+# Long-running tools whose completed status row reports how long they ran
+# ("Took <duration>") when a run was timed, instead of being hidden. `execute`
+# shells and `task` subagent dispatches can both run for a while, so the elapsed
+# time is useful.
+_TIMED_SUCCESS_TOOLS: set[str] = {
+    "execute",
+    "task",
+}
+
+
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
+
+
+_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
+"""Match a `read_file` gutter row into (marker, source).
+
+The marker is a bare `N` or `N.M` (the latter a wrapped-line continuation) —
+both sides of the dot required, so a stray `.5` head is not a gutter. The
+separator is exactly two spaces (current format) or a single tab (legacy
+`cat -n`). Only the separator is consumed and leading padding is spaces-only, so
+source indentation — including leading tabs — after the gutter stays put. Kept in
+sync with the separator emitted by deepagents' `format_content_with_line_numbers`
+(the authoritative producer). See `ToolCallMessage._compact_line_gutter`.
+"""
 
 
 def _strip_success_exit_line(text: str) -> str:
@@ -256,15 +283,38 @@ class UserMessage(Static):
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
-    def __init__(self, content: str, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        content: str,
+        *,
+        media_snapshot: MediaTracker | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a user message.
 
         Args:
             content: The message content
+            media_snapshot: Optional media tracker state captured at submission.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._content = content
+        self._media_snapshot = media_snapshot
+
+    @property
+    def raw_text(self) -> str:
+        """The original, untruncated message text as the user submitted it.
+
+        Named `raw_text` rather than `content` to avoid shadowing Textual's
+        read/write `Static.content` property (backed by a mangled attribute);
+        overriding it getter-only would make `self.content = ...` raise.
+        """
+        return self._content
+
+    @property
+    def media_snapshot(self) -> MediaTracker | None:
+        """Media tracker state captured when the message was submitted."""
+        return self._media_snapshot
 
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
@@ -1121,10 +1171,12 @@ class ToolCallMessage(Vertical):
         # Animation state
         self._spinner_position = 0
         self._start_time: float | None = None
+        self._duration: float | None = None
         self._animation_timer: Timer | None = None
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
+        self._deferred_duration: float | None = None
         self._deferred_expanded: bool = False
         self._deferred_reject_reason: str | None = None
         # Whether the widget is currently hidden because an approval prompt
@@ -1224,6 +1276,7 @@ class ToolCallMessage(Vertical):
 
         status = self._deferred_status
         output = self._deferred_output or ""
+        duration = self._deferred_duration
         self._expanded = self._deferred_expanded
         if self._deferred_reject_reason:
             self._reject_reason = self._deferred_reject_reason
@@ -1231,6 +1284,7 @@ class ToolCallMessage(Vertical):
         # Clear deferred values
         self._deferred_status = None
         self._deferred_output = None
+        self._deferred_duration = None
         self._deferred_expanded = False
         self._deferred_reject_reason = None
 
@@ -1240,7 +1294,11 @@ class ToolCallMessage(Vertical):
             case "success":
                 self._status = "success"
                 self._output = output
-                self._show_success_status()
+                self._duration = duration
+                if self._tool_name in _TIMED_SUCCESS_TOOLS and duration is not None:
+                    self._show_timed_success_status(duration)
+                else:
+                    self._show_success_status()
                 self._update_output_display()
             case "error":
                 self._status = "error"
@@ -1293,6 +1351,7 @@ class ToolCallMessage(Vertical):
             return  # Already running
 
         self._status = "running"
+        self._duration = None
         self._start_time = time()
         if self._status_widget:
             self._status_widget.add_class("pending")
@@ -1346,9 +1405,10 @@ class ToolCallMessage(Vertical):
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
-        For `execute` calls that actually ran (a start time was recorded via
-        `set_running`), the elapsed run time is shown in place of the usual
-        success marker; every other tool routes through `_show_success_status`.
+        For long-running tools (`execute`, `task`) that actually ran (a start
+        time was recorded via `set_running`), the elapsed run time is shown via
+        `_show_timed_success_status`; every other case routes through
+        `_show_success_status`.
 
         Args:
             result: Tool output/result to display
@@ -1363,19 +1423,32 @@ class ToolCallMessage(Vertical):
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
+        self._duration = (
+            elapsed
+            if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
+            else None
+        )
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._tool_name == "execute" and elapsed is not None and self._status_widget:
-            self._status_widget.remove_class("pending")
-            # `execute` calls can run for a while, so keep the row and report
-            # how long the command took once the spinner stops.
-            self._status_widget.update(
-                Content.styled(f"Took {format_duration(elapsed)}", "dim")
-            )
-            self._status_widget.display = True
+        if self._duration is not None:
+            self._show_timed_success_status(self._duration)
         else:
             self._show_success_status()
         self._update_output_display()
+
+    def _show_timed_success_status(self, duration: float) -> None:
+        """Render the preserved duration for a completed timed tool call.
+
+        Args:
+            duration: Elapsed tool run time in seconds.
+        """
+        if self._status_widget is None:
+            return
+        self._status_widget.remove_class("pending")
+        self._status_widget.update(
+            Content.styled(f"Took {format_duration(duration)}", "dim")
+        )
+        self._status_widget.display = True
 
     def _show_success_status(self) -> None:
         """Render the status marker for a completed successful call.
@@ -1957,48 +2030,49 @@ class ToolCallMessage(Vertical):
 
     @staticmethod
     def _compact_line_gutter(output: str) -> str:
-        r"""Tighten `read_file`'s cat -n line-number gutter for display.
+        r"""Tighten `read_file`'s line-number gutter for display.
 
-        The tool emits `f"{line_num:6d}\t{line}"` — a 6-wide right-justified
-        number plus a tab — so even single-digit line numbers carry five
-        leading spaces and the tab pushes content to a distant tab stop. The
-        model needs that raw format for edits, but the TUI renders a compact
-        gutter instead: numbers right-justified to the widest number actually
-        present, then two spaces, mirroring how grep/glob results sit flush
-        left. Source indentation after the gutter is preserved untouched.
+        `read_file` prefixes each row with a right-justified line marker — `N`,
+        or `N.M` for a wrapped-line continuation — then two spaces, then the
+        original source content. (Output from deepagents versions predating the
+        gutter disambiguation in #4561 used the older `cat -n` gutter — a wide
+        right-justified number and a tab — which may still surface from cached or
+        persisted transcripts.) The model needs the raw gutter for edits, but the
+        TUI re-justifies markers to the widest marker actually present, then two
+        spaces, mirroring how grep/glob results sit flush left. Source
+        indentation after the gutter is preserved untouched.
 
-        Lines that don't match the cat -n shape (e.g. test fixtures or
-        non-numbered output) are passed through unchanged.
+        The gutter shape is `_READ_FILE_GUTTER_RE`. Lines that don't match a
+        gutter shape (e.g. test fixtures or non-numbered output) are passed
+        through unchanged.
 
         Returns:
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
         lines = output.split("\n")
-        # Split each line on its gutter tab into (number, source). The gutter
-        # tab is always the first one; any tabs in `text` are real source
-        # indentation and stay put. The head must be a bare `N` or `N.M` (the
-        # latter is a wrapped-line continuation marker) — both sides of the dot
-        # are required, so a stray `.5` head marks a non-gutter line.
         parsed: list[tuple[str, str] | None] = []
         width = 0
         for line in lines:
-            head, tab, text = line.partition("\t")
-            num = head.strip()
-            whole, dot, frac = num.partition(".")
-            if tab and whole.isdigit() and (not dot or frac.isdigit()):
-                parsed.append((num, text))
-                width = max(width, len(num))
+            match = _READ_FILE_GUTTER_RE.match(line)
+            if match:
+                marker, source = match.groups()
+                parsed.append((marker, source))
+                width = max(width, len(marker))
             else:
                 parsed.append(None)
 
         if width == 0:
             return output
 
-        return "\n".join(
-            f"{row[0]:>{width}}  {row[1]}" if row else line
-            for line, row in zip(lines, parsed, strict=True)
-        )
+        compacted: list[str] = []
+        for line, row in zip(lines, parsed, strict=True):
+            if row is None:
+                compacted.append(line)
+            else:
+                marker, source = row
+                compacted.append(f"{marker:>{width}}  {source}")
+        return "\n".join(compacted)
 
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False
@@ -3206,17 +3280,26 @@ class DiffMessage(Static):
     """
     """Diff syntax coloring per theme: additions, removals, muted context."""
 
-    def __init__(self, diff_content: str, file_path: str = "", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        diff_content: str,
+        file_path: str = "",
+        *,
+        tool_name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a diff message.
 
         Args:
             diff_content: The unified diff content
             file_path: Path to the file being modified
+            tool_name: Name of the file tool that produced the diff
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
+        self._tool_name = tool_name
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -3230,8 +3313,15 @@ class DiffMessage(Static):
                 classes="diff-header",
             )
 
-        # Render the diff with per-line Statics (CSS-driven backgrounds)
-        yield from compose_diff_lines(self._diff_content, max_lines=100)
+        # Never render the contents of credential files (e.g. `.env`) — the diff
+        # would leak secrets into the terminal UI and scrollback.
+        if is_sensitive_file_path(self._file_path):
+            yield Static(
+                Content.styled("Diff hidden — file may contain credentials", "dim")
+            )
+        else:
+            # Render the diff with per-line Statics (CSS-driven backgrounds)
+            yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
@@ -3289,6 +3379,159 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+
+class _RubricResultToggle(Static):
+    """Clickable summary or hint for a rubric result."""
+
+
+class RubricResultMessage(Vertical):
+    """Compact grader result with complete, scrollable details on demand."""
+
+    class ExpansionChanged(Message):
+        """Posted when the grader-details expansion state changes."""
+
+        def __init__(self, widget: RubricResultMessage, expanded: bool) -> None:
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The rubric result whose expansion state changed.
+                expanded: Whether the grader details are now expanded.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    RubricResultMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+        border-left: wide $warning;
+    }
+
+    RubricResultMessage .rubric-result-summary {
+        height: auto;
+    }
+
+    RubricResultMessage .rubric-result-details-scroll {
+        display: none;
+        height: auto;
+        max-height: 16;
+        margin: 1 0 0 2;
+        overflow-y: auto;
+        scrollbar-size-vertical: 1;
+    }
+
+    RubricResultMessage .rubric-result-details {
+        height: auto;
+        padding: 0;
+    }
+
+    RubricResultMessage .rubric-result-hint {
+        height: auto;
+        margin-left: 2;
+        color: $text-muted;
+    }
+
+    RubricResultMessage.-expanded .rubric-result-details-scroll {
+        display: block;
+    }
+    """
+
+    _expanded: var[bool] = var(False, toggle_class="-expanded")
+
+    def __init__(
+        self,
+        summary: str,
+        details: str,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a grader result.
+
+        Args:
+            summary: Concise default transcript line.
+            details: Complete user-facing grader explanation and criteria gaps.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._summary = summary
+        self._details = details
+        self._hint_widget: _RubricResultToggle | None = None
+        self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against it
+        # keeps the reactive's initialization watcher and the deferred restore from
+        # re-emitting a value the store already holds.
+        self._published_expanded = False
+
+    def compose(self) -> ComposeResult:
+        """Compose the compact summary, details viewport, and expansion hint.
+
+        Yields:
+            Summary, scrollable details, and toggle hint widgets.
+        """
+        yield _RubricResultToggle(
+            Content.styled(self._summary, "dim italic"),
+            classes="rubric-result-summary",
+        )
+        with VerticalScroll(classes="rubric-result-details-scroll"):
+            yield Static(
+                Content(self._details),
+                classes="rubric-result-details",
+            )
+        yield _RubricResultToggle("", classes="rubric-result-hint")
+
+    def on_mount(self) -> None:
+        """Initialize the expansion hint and restore deferred state."""
+        self._hint_widget = self.query_one(
+            ".rubric-result-hint",
+            _RubricResultToggle,
+        )
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border_left = ("ascii", colors.warning)
+        if not self._details:
+            self._hint_widget.display = False
+            return
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
+        self._update_hint()
+
+    def toggle_details(self) -> None:
+        """Toggle the complete grader details."""
+        if self._details:
+            self._expanded = not self._expanded
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Refresh the hint and publish user-driven expansion for virtualization."""
+        self._update_hint()
+        # Publish only genuine changes: dedupe against the store's known value to
+        # drop the reactive's initialization watcher and the deferred restore, and
+        # require `is_attached` so `_expanded` set in pre-mount test setup does not
+        # `post_message` on a detached widget (NoActiveAppError).
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    def _update_hint(self) -> None:
+        """Render the current expansion hint."""
+        if self._hint_widget is None or not self._details:
+            return
+        action = "hide" if self._expanded else "show"
+        self._hint_widget.update(
+            Content.styled(f"click or Ctrl+O to {action} details", "dim italic")
+        )
+
+    @on(Click, "_RubricResultToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        """Toggle details from the summary or hint."""
+        event.stop()
+        self.toggle_details()
 
 
 class _MutedRichMarkdown:

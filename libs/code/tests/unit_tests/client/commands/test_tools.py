@@ -127,6 +127,22 @@ class TestToolsInstall:
         assert code == 1
         assert "SHA-256" in output
 
+    def test_install_unavailable_returns_specific_message(self, tmp_path: Path) -> None:
+        args = argparse.Namespace(tools_command="install", output_format="text")
+        error = managed_tools.ManagedToolUnavailableError(
+            tool="ripgrep",
+            reason="artifact_not_found",
+            message="Managed ripgrep artifact for linux/x86_64 was not found.",
+        )
+        with (
+            patch.object(managed_tools, "ensure_ripgrep", side_effect=error),
+            patch.object(managed_tools, "managed_rg_path", return_value=tmp_path / "x"),
+        ):
+            code, output = _run_text(args)
+        assert code == 1
+        assert "linux/x86_64" in output
+        assert "unexpectedly" not in output
+
     def test_install_unexpected_error_returns_nonzero(self, tmp_path: Path) -> None:
         """An unexpected exception degrades to a clean error, not a traceback."""
         args = argparse.Namespace(tools_command="install", output_format="text")
@@ -480,9 +496,30 @@ class TestToolsList:
         assert code == 0
         assert "Unavailable MCP servers" in output
         assert "offsvc" in output
-        assert "disabled" in output
+        assert "disabled by user" in output
         # Empty detail → status stands alone, no trailing `: `.
         assert "disabled:" not in output
+
+    def test_pending_reenable_renders_reconnect_guidance(self) -> None:
+        catalog = ToolCatalog(
+            groups=(),
+            unavailable=(
+                UnavailableServer(
+                    name="notion",
+                    status="disabled",
+                    detail="Re-enabled — press Ctrl+R to load.",
+                ),
+            ),
+        )
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_catalog", return_value=catalog
+        ):
+            code, output = _run_text(args)
+
+        assert code == 0
+        assert "Re-enabled — press Ctrl+R to load." in output
+        assert "disabled by user" not in output
 
     def test_list_end_to_end_offline_renders_real_built_ins(self) -> None:
         """Real `collect_catalog` compiles the agent offline and renders it."""

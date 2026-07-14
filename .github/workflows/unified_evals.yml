@@ -1,0 +1,645 @@
+name: "📊 Evals - Unified"
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Comma-separated provider:model specs"
+        type: string
+        required: true
+      categories:
+        description: "Comma list"
+        type: string
+        default: "autonomous,conversation,context"
+      agent_impl:
+        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
+        type: choice
+        default: "bare"
+        options:
+          - bare
+          - dcode
+      rollouts:
+        type: string
+        default: "3"
+      concurrency:
+        type: string
+        default: "4"
+      shard_parallel:
+        type: string
+        default: "10"
+      n_shards_autonomous:
+        type: string
+        default: "10"
+      n_shards_conversation:
+        type: string
+        default: "3"
+      n_shards_context:
+        type: string
+        default: "3"
+      sandbox_env:
+        type: string
+        default: "langsmith"
+      force_build:
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
+        type: boolean
+        default: false
+      harbor_package_override:
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  # Lets the called reusable workflow manage run artifacts; a caller caps the
+  # callee's token, so it must be granted here (provider jobs inherit this).
+  actions: write
+
+concurrency:
+  group: unified-evals-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: "🔧 Parse models + build provider matrices"
+    runs-on: ubuntu-latest
+    environment: evals
+    outputs:
+      anthropic_matrix: ${{ steps.p.outputs.anthropic_matrix }}
+      anthropic_has_models: ${{ steps.p.outputs.anthropic_has_models }}
+      baseten_matrix: ${{ steps.p.outputs.baseten_matrix }}
+      baseten_has_models: ${{ steps.p.outputs.baseten_has_models }}
+      fireworks_matrix: ${{ steps.p.outputs.fireworks_matrix }}
+      fireworks_has_models: ${{ steps.p.outputs.fireworks_has_models }}
+      google_genai_matrix: ${{ steps.p.outputs.google_genai_matrix }}
+      google_genai_has_models: ${{ steps.p.outputs.google_genai_has_models }}
+      groq_matrix: ${{ steps.p.outputs.groq_matrix }}
+      groq_has_models: ${{ steps.p.outputs.groq_has_models }}
+      nvidia_matrix: ${{ steps.p.outputs.nvidia_matrix }}
+      nvidia_has_models: ${{ steps.p.outputs.nvidia_has_models }}
+      ollama_matrix: ${{ steps.p.outputs.ollama_matrix }}
+      ollama_has_models: ${{ steps.p.outputs.ollama_has_models }}
+      openai_matrix: ${{ steps.p.outputs.openai_matrix }}
+      openai_has_models: ${{ steps.p.outputs.openai_has_models }}
+      openrouter_matrix: ${{ steps.p.outputs.openrouter_matrix }}
+      openrouter_has_models: ${{ steps.p.outputs.openrouter_has_models }}
+      xai_matrix: ${{ steps.p.outputs.xai_matrix }}
+      xai_has_models: ${{ steps.p.outputs.xai_has_models }}
+      other_matrix: ${{ steps.p.outputs.other_matrix }}
+      other_has_models: ${{ steps.p.outputs.other_has_models }}
+      effective_shard_parallel: ${{ steps.p.outputs.effective_shard_parallel }}
+      models: ${{ steps.p.outputs.models }}
+      categories: ${{ steps.p.outputs.categories }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🧮 Parse models + build provider matrices"
+        id: p
+        env:
+          UNIFIED_MODELS: ${{ inputs.models }}
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
+          UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
+          UNIFIED_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
+          UNIFIED_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
+          UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}
+          UNIFIED_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
+        run: python .github/scripts/unified_prep.py
+
+      # A single place to see exactly what a dispatch ran with — the raw inputs
+      # plus the values prep derived from them (resolved model list, effective
+      # shard_parallel after clamping). Runs even if the parse step failed, so a
+      # bad dispatch still shows what was requested. Values are passed via env
+      # (never interpolated into the script) so free-form inputs can't inject.
+      - name: "📝 Summarize dispatch inputs"
+        if: ${{ always() }}
+        env:
+          IN_MODELS: ${{ inputs.models }}
+          RESOLVED_MODELS: ${{ steps.p.outputs.models }}
+          IN_CATEGORIES: ${{ inputs.categories }}
+          RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
+          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_ROLLOUTS: ${{ inputs.rollouts }}
+          IN_CONCURRENCY: ${{ inputs.concurrency }}
+          IN_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
+          EFFECTIVE_SHARD_PARALLEL: ${{ steps.p.outputs.effective_shard_parallel }}
+          IN_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
+          IN_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}
+          IN_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
+          IN_SANDBOX_ENV: ${{ inputs.sandbox_env }}
+          IN_FORCE_BUILD: ${{ inputs.force_build }}
+          HARBOR_OVERRIDE_SET: ${{ inputs.harbor_package_override != '' }}
+        run: |
+          # Never echo the override spec: uv accepts authenticated specs
+          # (e.g. git+https://user:token@host/repo.git) and this summary is
+          # public, so report only whether an override was set.
+          override_status="(pinned)"
+          [ "${HARBOR_OVERRIDE_SET}" = "true" ] && override_status="(override set)"
+
+          # RESOLVED_MODELS is a JSON array; render it as a plain comma list.
+          resolved_models="${RESOLVED_MODELS:-(prep did not complete)}"
+          resolved_models="${resolved_models#[}"
+          resolved_models="${resolved_models%]}"
+          resolved_models="${resolved_models//\"/}"
+
+          # agent_impl only affects the autonomous/context (deep-agents)
+          # categories. When neither ran, the value is inert — flag it rather
+          # than imply a harness was used. An empty RESOLVED_CATEGORIES means
+          # prep didn't complete, so report the requested value as-is.
+          agent_impl_note=""
+          case "${RESOLVED_CATEGORIES}" in
+            *'"autonomous"'* | *'"context"'* | '') ;;
+            *) agent_impl_note=" — not applicable (no autonomous/context category selected)" ;;
+          esac
+          {
+            echo "## Unified evals — run configuration"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| models (requested) | \`${IN_MODELS}\` |"
+            echo "| models (resolved) | \`${resolved_models}\` |"
+            echo "| categories | \`${IN_CATEGORIES}\` |"
+            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| rollouts | \`${IN_ROLLOUTS}\` |"
+            echo "| concurrency | \`${IN_CONCURRENCY}\` |"
+            echo "| shard_parallel (requested → effective) | \`${IN_SHARD_PARALLEL}\` → \`${EFFECTIVE_SHARD_PARALLEL:-?}\` |"
+            echo "| n_shards (autonomous/conversation/context) | \`${IN_N_SHARDS_AUTONOMOUS}\` / \`${IN_N_SHARDS_CONVERSATION}\` / \`${IN_N_SHARDS_CONTEXT}\` |"
+            echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
+            echo "| force_build | \`${IN_FORCE_BUILD}\` |"
+            echo "| harbor_package_override | \`${override_status}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  eval-anthropic:
+    needs: prep
+    if: needs.prep.outputs.anthropic_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.anthropic_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-baseten:
+    needs: prep
+    if: needs.prep.outputs.baseten_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.baseten_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-fireworks:
+    needs: prep
+    if: needs.prep.outputs.fireworks_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.fireworks_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-google_genai:
+    needs: prep
+    if: needs.prep.outputs.google_genai_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.google_genai_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-groq:
+    needs: prep
+    if: needs.prep.outputs.groq_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.groq_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-nvidia:
+    needs: prep
+    if: needs.prep.outputs.nvidia_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.nvidia_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-ollama:
+    needs: prep
+    if: needs.prep.outputs.ollama_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.ollama_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-openai:
+    needs: prep
+    if: needs.prep.outputs.openai_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.openai_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-openrouter:
+    needs: prep
+    if: needs.prep.outputs.openrouter_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.openrouter_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-xai:
+    needs: prep
+    if: needs.prep.outputs.xai_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.xai_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  eval-other:
+    needs: prep
+    if: needs.prep.outputs.other_has_models == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.other_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      category: ${{ matrix.category }}
+      dataset: ${{ matrix.dataset }}
+      dataset_path: ${{ matrix.dataset_path }}
+      agent_impl: ${{ matrix.agent_impl }}
+      langsmith_dataset: ${{ matrix.langsmith_dataset }}
+      n_shards: ${{ matrix.n_shards }}
+      shard_parallel: ${{ matrix.shard_parallel }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+
+  combine:
+    name: "📊 Combine cross-model results"
+    needs:
+      - prep
+      - eval-anthropic
+      - eval-baseten
+      - eval-fireworks
+      - eval-google_genai
+      - eval-groq
+      - eval-nvidia
+      - eval-ollama
+      - eval-openai
+      - eval-openrouter
+      - eval-xai
+      - eval-other
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    # Every ref publishes to the same branch. Serialize the publishing jobs so
+    # each one fetches the branch tip after the previous writer has pushed.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      ROLLOUTS: ${{ inputs.rollouts }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-combine
+          working-directory: libs/evals
+
+      - name: "⬇️ Download leaf summaries"
+        run: |
+          attempt=1
+          while :; do
+            attempt_dir=$(mktemp -d)
+            if gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-*' --dir "$attempt_dir" >dl.log 2>&1; then
+              mv "$attempt_dir" _leaves
+              break
+            fi
+            if grep -Eqi 'no (valid )?artifacts? (were )?(found|matched|matches)' dl.log; then
+              rm -rf "$attempt_dir"
+              mkdir -p _leaves
+              echo "::warning::No harbor-* artifacts matched; combining an empty set."
+              break
+            fi
+            echo "Leaf download attempt ${attempt} failed:"
+            cat dl.log
+            rm -rf "$attempt_dir"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Leaf download failed after ${attempt} attempts (not an empty-artifact case)."
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep $((attempt * 5))
+          done
+
+      - name: "📊 Combine"
+        env:
+          # Expected grid, so a model whose leaf never uploaded is shown and
+          # flagged incomplete rather than silently ranking on fewer categories.
+          EXPECTED_MODELS: ${{ needs.prep.outputs.models }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+        run: |
+          mkdir -p _leaves
+          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+
+      - name: "📊 Generate radar chart"
+        id: radar-chart
+        # radar_results.json is emitted only for full (>=3 category) runs, so its
+        # presence is the gate. Best-effort: a chart failure must not fail combine.
+        if: hashFiles('_combined/radar_results.json') != ''
+        continue-on-error: true
+        working-directory: libs/evals
+        run: |
+          uv sync --extra charts
+          uv run --extra charts python scripts/generate_radar.py \
+            --results ../../_combined/radar_results.json \
+            -o ../../_combined/radar.png \
+            --individual-dir ../../_combined/individual \
+            --title "Deep Agents Unified Evals"
+
+      - name: "📤 Upload combined results"
+        if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-combined
+          path: _combined/
+
+      - name: "🖼️ Publish charts to eval-assets branch"
+        id: publish-charts
+        if: hashFiles('_combined/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded (unified-combined artifact + leaderboard summary), so a
+        # transient git/push failure must not fail an otherwise-successful
+        # combine. The "Append charts" step gates on this outcome == 'success'.
+        continue-on-error: true
+        env:
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}"
+
+          # Set up a temp workdir so we don't disturb the main checkout.
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # Fetch eval-assets if it exists; otherwise start an orphan branch.
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
+          mkdir -p "${asset_dir}"
+          cp "$GITHUB_WORKSPACE/_combined/radar.png" "${asset_dir}/radar.png"
+          if [ -f "$GITHUB_WORKSPACE/_combined/radar-dark.png" ]; then
+            cp "$GITHUB_WORKSPACE/_combined/radar-dark.png" "${asset_dir}/radar-dark.png"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/_combined/individual" ]; then
+            cp -r "$GITHUB_WORKSPACE/_combined/individual" "${asset_dir}/individual"
+          fi
+          if [ -d "$GITHUB_WORKSPACE/_combined/individual-dark" ]; then
+            cp -r "$GITHUB_WORKSPACE/_combined/individual-dark" "${asset_dir}/individual-dark"
+          fi
+
+          git add "${asset_dir}"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+
+          # Expose base URL for the summary step.
+          base="https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}"
+          echo "base_url=${base}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append charts to summary"
+        if: steps.publish-charts.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish-charts.outputs.base_url }}
+        run: |
+          # Use <picture> with prefers-color-scheme so GitHub automatically
+          # shows the right variant based on the reader's theme setting.
+          # Direct download links are included for each variant.
+          has_dark=false
+          [ -f _combined/radar-dark.png ] && has_dark=true
+
+          {
+            echo ""
+            echo "## Radar charts"
+            echo ""
+            echo "### Combined"
+            echo ""
+            if $has_dark; then
+              echo '<picture>'
+              echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/radar-dark.png\">"
+              echo "  <img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo '</picture>'
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png) · [dark](${BASE_URL}/radar-dark.png)"
+            else
+              echo "<img alt=\"Combined radar chart\" src=\"${BASE_URL}/radar.png\" width=\"500\">"
+              echo ""
+              echo "Download: [light](${BASE_URL}/radar.png)"
+            fi
+            echo ""
+
+            if [ -d _combined/individual ]; then
+              echo "### Per-model"
+              echo ""
+              for img in _combined/individual/*.png; do
+                name="$(basename "$img" .png)"
+                if [ -d _combined/individual-dark ] && [ -f "_combined/individual-dark/${name}.png" ]; then
+                  echo '<picture>'
+                  echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/individual-dark/${name}.png\">"
+                  echo "  <img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo '</picture>'
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png) · [dark](${BASE_URL}/individual-dark/${name}.png)"
+                else
+                  echo "<img alt=\"${name}\" src=\"${BASE_URL}/individual/${name}.png\" width=\"500\">"
+                  echo ""
+                  echo "Download: [light](${BASE_URL}/individual/${name}.png)"
+                fi
+                echo ""
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

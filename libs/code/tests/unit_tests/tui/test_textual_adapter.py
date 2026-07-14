@@ -33,6 +33,7 @@ from deepagents_code.tui.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
@@ -41,6 +42,7 @@ from deepagents_code.tui.textual_adapter import (
 )
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
 )
@@ -126,6 +128,26 @@ class TestTextualUIAdapterInit:
             on_tool_complete=callback,
         )
         assert adapter._on_tool_complete is callback
+
+    def test_on_user_visible_output_started_defaults_to_none_and_accepts_callback(
+        self,
+    ) -> None:
+        """Verify the user-visible-output callback can be assigned."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        assert adapter._on_user_visible_output_started is None
+
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=callback,
+        )
+        assert adapter._on_user_visible_output_started is callback
 
     def test_set_token_callbacks(self) -> None:
         """Verify token callbacks can be assigned."""
@@ -836,7 +858,7 @@ class TestBuildStreamConfig:
         from deepagents_code._version import __version__
 
         metadata = build_stream_config("t-id", assistant_id=None)["metadata"]
-        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_agent_purpose"] == "coding"
         assert metadata["ls_integration"] == "deepagents-code"
         assert metadata["ls_agent_runtime"] == "Deep Agents Code"
         assert metadata["ls_trace_schema_version"] == "coding-agent-v1"
@@ -1072,6 +1094,26 @@ class TestBuildStreamConfig:
             config = build_stream_config("t-nouid", assistant_id=None)
         assert "user_id" not in config["metadata"]
 
+    def test_experimental_included_when_enabled(self) -> None:
+        """Experimental runs should be identifiable in trace metadata."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_EXPERIMENTAL": "true"}):
+            config = build_stream_config("t-experimental", assistant_id=None)
+        assert config["metadata"]["dcode_experimental"] is True
+
+    def test_experimental_absent_when_disabled(self) -> None:
+        """Default runs should not be labeled experimental."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_EXPERIMENTAL": "false"}):
+            config = build_stream_config("t-stable", assistant_id=None)
+        assert "dcode_experimental" not in config["metadata"]
+
+    def test_experimental_absent_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The default path (env var unset) is not labeled experimental."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
+        config = build_stream_config("t-default", assistant_id=None)
+        assert "dcode_experimental" not in config["metadata"]
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""
@@ -1222,8 +1264,8 @@ class TestFormatRubricEvent:
             == "⏳ Checking acceptance criteria (iteration 2)…"
         )
 
-    def test_needs_revision_includes_failed_criteria(self) -> None:
-        """Failed criteria should be shown with actionable gaps."""
+    def test_needs_revision_uses_work_status_copy(self) -> None:
+        """An unmet rubric should describe the work, not call the rubric deficient."""
         assert (
             _format_rubric_event(
                 {
@@ -1236,7 +1278,7 @@ class TestFormatRubricEvent:
                     ],
                 },
             )
-            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
+            == "↻ Acceptance criteria not yet satisfied"
         )
 
     def test_satisfied_event(self) -> None:
@@ -1258,31 +1300,49 @@ class TestFormatRubricEvent:
         )
 
     def test_max_iterations_reached_event(self) -> None:
-        """Hitting the iteration cap should warn the user it is unsatisfied."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
-            )
-            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
-        )
+        """The summary stays concise while details preserve goal recovery guidance."""
+        event = {
+            "type": "rubric_evaluation_end",
+            "result": "max_iterations_reached",
+            "explanation": "coverage is still missing",
+            "criteria": [
+                {
+                    "name": "tests pass",
+                    "passed": False,
+                    "gap": "integration test failed",
+                },
+                {"name": "docs updated", "passed": True},
+            ],
+        }
 
-    def test_grader_failure_results_render_warning(self) -> None:
-        """Grader failures should surface as warnings with the explanation."""
+        assert _format_rubric_event(event) == (
+            "⚠ Acceptance criteria not yet satisfied (iteration limit reached)"
+        )
+        details = _format_rubric_details(event, goal_active=True)
+        assert "coverage is still missing" in details
+        assert "tests pass" in details
+        assert "integration test failed" in details
+        assert "The goal remains active" in details
+        assert "`/goal <objective>`" in details
+        assert "`/goal clear`" in details
+
+    def test_invalid_rubric_and_grader_failure_have_distinct_copy(self) -> None:
+        """Rubric validity and grader infrastructure failures must stay distinct."""
         assert (
             _format_rubric_event(
                 {
                     "type": "rubric_evaluation_end",
                     "result": "failed",
-                    "explanation": "timeout",
+                    "explanation": "contradictory criteria",
                 },
             )
-            == "⚠ Rubric grader failed: timeout"
+            == "⚠ Rubric is invalid or cannot be evaluated"
         )
         assert (
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "grader_error"},
             )
-            == "⚠ Rubric grader error"
+            == "⚠ Acceptance criteria check failed"
         )
 
     def test_unknown_terminal_result_renders_fallback(self) -> None:
@@ -1291,8 +1351,96 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "something_new"},
             )
-            == "⚠ Rubric grading ended"
+            == "⚠ Acceptance criteria check ended"
         )
+
+    def test_complete_details_preserve_explanation_gaps_and_next_step(self) -> None:
+        """Details should retain every structured field without repr truncation."""
+        explanation = "First paragraph.\n\nSecond paragraph.\n" + "detail " * 1000
+        details = _format_rubric_details(
+            {
+                "type": "rubric_evaluation_end",
+                "result": "needs_revision",
+                "explanation": explanation,
+                "criteria": [
+                    {
+                        "name": "Exact copy remains intact",
+                        "passed": False,
+                        "gap": "Expected 'Not ready'; found 'Pending'.",
+                    },
+                    {"name": "Passing criterion", "passed": True},
+                ],
+            }
+        )
+
+        assert explanation.strip() in details
+        assert "Exact copy remains intact" in details
+        assert "Expected 'Not ready'; found 'Pending'." in details
+        assert "Passing criterion" not in details
+        assert "Address every unmet criterion, then retry the check." in details
+        assert "{'name':" not in details
+        assert "truncated" not in details
+
+    def test_invalid_rubric_and_grader_failure_details_recommend_next_steps(
+        self,
+    ) -> None:
+        """Each terminal failure class should provide the relevant recovery action."""
+        invalid = _format_rubric_details(
+            {
+                "result": "failed",
+                "explanation": "The criteria contradict each other.",
+            }
+        )
+        grader_error = _format_rubric_details(
+            {"result": "grader_error", "explanation": "Provider timeout."}
+        )
+
+        assert "Review or replace the rubric" in invalid
+        assert "Retry the check, or choose a different grader model." in grader_error
+
+    def test_no_detail_results_return_empty_string(self) -> None:
+        """`None` and satisfied verdicts have no failure detail to expand."""
+        assert _format_rubric_details({"result": None}) == ""
+        assert _format_rubric_details({"result": "satisfied"}) == ""
+
+    def test_failure_without_explanation_returns_next_step_only(self) -> None:
+        """A failure with no explanation still yields an actionable next step."""
+        details = _format_rubric_details({"result": "failed"})
+
+        assert "Explanation" not in details
+        assert "Unmet criteria" not in details
+        assert details == (
+            "Next step\nReview or replace the rubric before grading again."
+        )
+
+    def test_unknown_result_uses_generic_next_step(self) -> None:
+        """An unrecognized terminal verdict falls back to a generic recovery step."""
+        details = _format_rubric_details({"result": "something_new"})
+
+        assert "Next step\nReview the grader details before continuing." in details
+
+    def test_unnamed_failing_criterion_without_gap(self) -> None:
+        """A failing criterion missing name/gap renders a bare default bullet."""
+        details = _format_rubric_details(
+            {
+                "result": "needs_revision",
+                "criteria": [{"passed": False}],
+            }
+        )
+
+        assert "- Unnamed criterion" in details
+        # No gap line follows a criterion with no gap.
+        assert "- Unnamed criterion\n  " not in details
+
+    def test_active_goal_max_iterations_details_offer_goal_commands(self) -> None:
+        """An unfinished goal that hit the limit should point at goal recovery."""
+        details = _format_rubric_details(
+            {"result": "max_iterations_reached"},
+            goal_active=True,
+        )
+
+        assert "The goal remains active" in details
+        assert "`/goal clear`" in details
 
     def test_end_event_without_result_returns_none(self) -> None:
         """Partial end events should not render a spurious warning."""
@@ -1328,11 +1476,12 @@ class TestFormatRubricEvent:
             )
         assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
         assert revision == (
-            f"{ASCII_GLYPHS.retry} Changes need revision\n"
-            f"  {ASCII_GLYPHS.error} tests pass — not run"
+            f"{ASCII_GLYPHS.retry} Acceptance criteria not yet satisfied"
         )
         assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
-        assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
+        assert failed == (
+            f"{ASCII_GLYPHS.warning} Rubric is invalid or cannot be evaluated"
+        )
 
 
 class _FakeAgent:
@@ -2149,6 +2298,239 @@ def _text_message(text: str) -> SimpleNamespace:
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
 
 
+class TestExecuteTaskTextualUserVisibleOutputStarted:
+    """The callback fires once on the first output rendered for the user."""
+
+    async def test_fires_once_on_first_streamed_text(self) -> None:
+        """Streaming text triggers `on_user_visible_output_started` a single time."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("hello"), {})),
+            ((), "messages", (_text_message(" world"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_once_across_text_then_tool_call(self) -> None:
+        """Text followed by a tool call in one turn still fires exactly once."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_text_message("thinking"), {})),
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_on_first_tool_call_without_text(self) -> None:
+        """A turn that opens with a tool call still reports output started."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            ((), "messages", (_tool_call_message("task", {"task": "a"}, "t-a"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_fires_on_synthesized_ask_user_tool_call(self) -> None:
+        """An updates-only `ask_user` row reports visible output after mounting."""
+        user_visible_output_started = MagicMock()
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_called_once_with()
+
+    async def test_not_fired_when_no_output_is_produced(self) -> None:
+        """A turn that streams no text or tool call never reports output."""
+        user_visible_output_started = MagicMock()
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent([]),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_for_subagent_output(self) -> None:
+        """Text and tool calls hidden in a subagent namespace do not count."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            (("subagent",), "messages", (_text_message("hidden"), {})),
+            (
+                ("subagent",),
+                "messages",
+                (_tool_call_message("read_file", {"path": "x"}, "t-a"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_for_hidden_summarization_output(self) -> None:
+        """Hidden main-namespace summarization text does not count."""
+        user_visible_output_started = MagicMock()
+        chunks = [
+            (
+                (),
+                "messages",
+                (_text_message("hidden summary"), {"lc_source": "summarization"}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+    async def test_not_fired_when_tool_widget_does_not_mount(self) -> None:
+        """A tool call that never reaches the transcript does not count."""
+        user_visible_output_started = MagicMock()
+
+        async def fail_mount(_widget: object) -> None:
+            await asyncio.sleep(0)
+            msg = "mount failed"
+            raise RuntimeError(msg)
+
+        adapter = TextualUIAdapter(
+            mount_message=fail_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_user_visible_output_started=user_visible_output_started,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "messages",
+                        (_tool_call_message("read_file", {"path": "x"}, "t-a"), {}),
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        user_visible_output_started.assert_not_called()
+
+
 class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
@@ -2834,14 +3216,23 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         ]
 
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
-        app_text = [str(widget._content) for widget in app_messages]
-        assert app_text == [
+        assert [str(widget._content) for widget in app_messages] == [
             (
                 f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
                 f"{UNICODE_GLYPHS.ellipsis}"
-            ),
-            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
+            )
         ]
+        rubric_messages = [
+            widget for widget in mounted if isinstance(widget, RubricResultMessage)
+        ]
+        assert len(rubric_messages) == 1
+        assert rubric_messages[0]._summary == (
+            f"{UNICODE_GLYPHS.retry} Acceptance criteria not yet satisfied"
+        )
+        assert rubric_messages[0]._details == (
+            "Explanation\nsay yellow\n\n"
+            "Next step\nAddress every unmet criterion, then retry the check."
+        )
 
 
 class TestExecuteTaskTextualHITLShellSuppression:

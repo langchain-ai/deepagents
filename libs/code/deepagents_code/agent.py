@@ -69,6 +69,7 @@ from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmReadFileMediaGuard,
+    _GlmTerminalStallRecovery,
 )
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
@@ -1354,8 +1355,10 @@ def create_cli_agent(
             If `None`, generates one based on `sandbox_type`, `assistant_id`,
             and `interactive`.
         interactive: When `False`, the auto-generated system prompt is
-            tailored for headless non-interactive execution. Ignored when
-            `system_prompt` is provided explicitly.
+            tailored for headless non-interactive execution, and GLM-5.2 stacks
+            add terminal-stall recovery middleware. Only the system-prompt
+            tailoring is ignored when `system_prompt` is provided explicitly;
+            the recovery wiring still applies.
         auto_approve: If `True`, no tools trigger human-in-the-loop
             interrupts — all calls (shell execution, file writes/edits,
             web search, URL fetch) run automatically.
@@ -1507,12 +1510,14 @@ def create_cli_agent(
         middleware: list[AgentMiddleware[Any, Any]] = []
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        middleware.append(
-            _GlmReadFileMediaGuard(
-                construction_model,
-                recover_terminal_stalls=not interactive,
-            )
-        )
+        # Both guards self-gate on the runtime model, so a stack built for a
+        # non-GLM model still applies once a `/model` switch resolves to GLM.
+        # Recovery is headless-only: interactive turns may legitimately be
+        # tool-free, so they must not be forced into an action. It sits inner to
+        # the media guard so its retry keeps the guard's transitioned prompt.
+        middleware.append(_GlmReadFileMediaGuard(construction_model))
+        if not interactive:
+            middleware.append(_GlmTerminalStallRecovery())
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1576,11 +1581,12 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _GlmReadFileMediaGuard(
-            model,
-            recover_terminal_stalls=not interactive,
-        ),
+        _GlmReadFileMediaGuard(model),
     ]
+    # Headless-only terminal-stall recovery, inner to the media guard. See the
+    # subagent stack above for the model-scoping and ordering rationale.
+    if not interactive:
+        agent_middleware.append(_GlmTerminalStallRecovery())
 
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata

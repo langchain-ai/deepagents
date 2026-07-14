@@ -41,7 +41,7 @@ _FIREWORKS_GLM_5P2_IDENTIFIER = _GLM_5P2_MODEL_SPECS[0].partition(":")[2]
 """Fireworks model identifier whose terminal output cap was measured."""
 
 _SYSTEM_PROMPT_SUFFIX = """\
-<glm_5p2_execution>
+<execution>
 Execute the task directly. Identify every required output path before acting, and \
 translate all must, only, exact, ordered, ranged, and prohibited requirements into \
 a short execution checklist. Prefer concrete progress over commentary.
@@ -80,7 +80,7 @@ approach.
 
 Fix only failures caused by your work. Stop immediately once every requested artifact \
 is complete and the assertions pass; do not add speculative extras.
-</glm_5p2_execution>"""
+</execution>"""
 """Text appended to the Deep Agents system prompt for GLM-5.2."""
 
 _MEDIA_READ_ERROR = (
@@ -89,16 +89,13 @@ _MEDIA_READ_ERROR = (
 )
 """Fixed error used instead of reflecting unsupported media results."""
 
-_TERMINAL_STALL_OUTPUT_TOKENS = 32_768
-"""Exact GLM output cap observed on tool-free, unfinished Harbor turns."""
-
 _TERMINAL_STALL_RECOVERY_SUFFIX = """\
-<glm_5p2_terminal_stall_recovery>
+<terminal_stall_recovery>
 Your prior attempt exhausted its output budget without taking an action. Stop \
 explaining or planning and call a tool now to create or update the requested \
 deliverable. Prefer the smallest valid artifact, then run one discriminating check. \
 Keep any reasoning brief enough to reach the tool call.
-</glm_5p2_terminal_stall_recovery>"""
+</terminal_stall_recovery>"""
 """One-shot instruction used to recover a capped headless model turn."""
 
 
@@ -189,22 +186,14 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
 
     state_schema = _GlmReadFileMediaState
 
-    def __init__(
-        self,
-        model: str | BaseChatModel,
-        *,
-        recover_terminal_stalls: bool = False,
-    ) -> None:
+    def __init__(self, model: str | BaseChatModel) -> None:
         """Capture the construction model as a safe tool-state fallback.
 
         Args:
             model: Model instance or spec used to construct this agent stack.
-            recover_terminal_stalls: Retry once when a headless GLM response hits
-                the exact output cap without calling a tool.
         """
         super().__init__()
         self._construction_active = _is_glm_5p2_model(model)
-        self._recover_terminal_stalls = recover_terminal_stalls
 
     @staticmethod
     def _prepare_model_request(
@@ -236,56 +225,6 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
             command=Command(update={"_glm_5p2_active": active}),
         )
 
-    @staticmethod
-    def _is_terminal_stall(response: ModelResponse) -> bool:
-        """Return whether a response matches the exact observed stall signature."""
-        if response.structured_response is not None or len(response.result) != 1:
-            return False
-        message = response.result[0]
-        if not isinstance(message, AIMessage) or message.tool_calls:
-            return False
-        usage = message.usage_metadata
-        return (
-            isinstance(usage, dict)
-            and usage.get("output_tokens") == _TERMINAL_STALL_OUTPUT_TOKENS
-        )
-
-    @staticmethod
-    def _recovery_request(request: ModelRequest) -> ModelRequest:
-        """Append a trusted one-shot recovery instruction to a model request.
-
-        Returns:
-            Request with the recovery instruction appended to its system prompt.
-        """
-        prompt = request.system_prompt
-        recovery_prompt = (
-            _TERMINAL_STALL_RECOVERY_SUFFIX
-            if not prompt
-            else f"{prompt}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
-        )
-        model_settings = {
-            **request.model_settings,
-            "reasoning_effort": "none",
-        }
-        return request.override(
-            system_prompt=recovery_prompt,
-            tool_choice="any",
-            model_settings=model_settings,
-        )
-
-    def _should_recover(
-        self,
-        response: ModelResponse,
-        *,
-        model: str | BaseChatModel,
-    ) -> bool:
-        """Return whether this headless GLM call should receive one retry."""
-        return (
-            self._recover_terminal_stalls
-            and _is_fireworks_glm_5p2_model(model)
-            and self._is_terminal_stall(response)
-        )
-
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -298,8 +237,6 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
         """
         request, active = self._prepare_model_request(request)
         response = handler(request)
-        if self._should_recover(response, model=request.model):
-            response = handler(self._recovery_request(request))
         return self._model_result(response, active=active)
 
     async def awrap_model_call(
@@ -314,8 +251,6 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
         """
         request, active = self._prepare_model_request(request)
         response = await handler(request)
-        if self._should_recover(response, model=request.model):
-            response = await handler(self._recovery_request(request))
         return self._model_result(response, active=active)
 
     def _active_for_tool(self, request: ToolCallRequest) -> bool:
@@ -383,21 +318,129 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
         return self._normalize(request, result)
 
 
+class _GlmTerminalStallRecovery(AgentMiddleware):
+    """Recover a headless GLM-5.2 turn that hit the output cap without acting.
+
+    A tool-free GLM response truncated by the output cap (`finish_reason
+    "length"`) has stalled: the empty turn would otherwise end a headless run
+    with no deliverable. This retries such a turn once with a trusted recovery
+    instruction, reasoning disabled, and a forced tool call, which by
+    construction cannot itself re-stall. It is scoped to headless runs by only
+    being registered on the profile there; interactive turns may legitimately be
+    tool-free, so they must not be forced into an action.
+    """
+
+    @staticmethod
+    def _is_terminal_stall(response: ModelResponse) -> bool:
+        """Return whether a turn was truncated by the output cap without acting."""
+        if response.structured_response is not None or len(response.result) != 1:
+            return False
+        message = response.result[0]
+        if not isinstance(message, AIMessage) or message.tool_calls:
+            return False
+        metadata = message.response_metadata
+        return isinstance(metadata, dict) and metadata.get("finish_reason") == "length"
+
+    @staticmethod
+    def _recovery_request(request: ModelRequest) -> ModelRequest:
+        """Append a trusted one-shot recovery instruction to a model request.
+
+        Returns:
+            Request with the recovery instruction appended to its system prompt.
+        """
+        prompt = request.system_prompt
+        recovery_prompt = (
+            _TERMINAL_STALL_RECOVERY_SUFFIX
+            if not prompt
+            else f"{prompt}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
+        )
+        model_settings = {
+            **request.model_settings,
+            "reasoning_effort": "none",
+        }
+        return request.override(
+            system_prompt=recovery_prompt,
+            tool_choice="any",
+            model_settings=model_settings,
+        )
+
+    @classmethod
+    def _should_recover(
+        cls,
+        response: ModelResponse,
+        *,
+        model: str | BaseChatModel,
+    ) -> bool:
+        """Return whether this GLM call should receive one recovery retry."""
+        return _is_fireworks_glm_5p2_model(model) and cls._is_terminal_stall(response)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Retry once when a headless GLM turn stalls at the output cap.
+
+        Returns:
+            The original response, or the recovered response after one retry.
+        """
+        response = handler(request)
+        if self._should_recover(response, model=request.model):
+            response = handler(self._recovery_request(request))
+        return response
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Retry once when a headless GLM turn stalls at the output cap.
+
+        Returns:
+            The original response, or the recovered response after one retry.
+        """
+        response = await handler(request)
+        if self._should_recover(response, model=request.model):
+            response = await handler(self._recovery_request(request))
+        return response
+
+
 _GLM_5P2_PROFILE = HarnessProfile(
     system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
 )
-"""Harness profile shared by the exact GLM-5.2 registrations."""
+"""Harness profile shared by the exact GLM-5.2 registrations.
+
+Kept suffix-only: process-global registration cannot express per-session or
+per-model wiring, so `_GlmReadFileMediaGuard` and `_GlmTerminalStallRecovery`
+are installed per stack by `create_cli_agent` where the session mode is known
+and the runtime model is re-checked on every call.
+"""
 
 _glm_5p2_profile_registered = False
 """Process-wide guard that keeps profile registration idempotent."""
 
 
 def _ensure_glm_5p2_profile_registered() -> None:
-    """Register the GLM-5.2 harness profile exactly once per process."""
+    """Register the GLM-5.2 harness profile once per process, per provider spec.
+
+    Registration is additive with the incoming profile winning on scalar
+    conflicts, so a spec that already carries a suffix profile (a user override
+    or a built-in) is skipped rather than silently replaced. In the common case
+    no GLM profile exists yet, so the dcode profile is registered for each spec.
+    """
     global _glm_5p2_profile_registered  # noqa: PLW0603
     if _glm_5p2_profile_registered:
         return
 
+    from deepagents.profiles.harness.harness_profiles import (
+        _HARNESS_PROFILES,  # noqa: PLC2701
+        _ensure_harness_profiles_loaded,  # noqa: PLC2701
+    )
+
+    _ensure_harness_profiles_loaded()
     for spec in _GLM_5P2_MODEL_SPECS:
+        existing = _HARNESS_PROFILES.get(spec)
+        if existing is not None and existing.system_prompt_suffix is not None:
+            continue
         register_harness_profile(spec, _GLM_5P2_PROFILE)
     _glm_5p2_profile_registered = True

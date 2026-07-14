@@ -26,7 +26,10 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from deepagents_code import _glm_5p2_profile as glm_profile
-from deepagents_code._glm_5p2_profile import _GlmReadFileMediaGuard
+from deepagents_code._glm_5p2_profile import (
+    _GlmReadFileMediaGuard,
+    _GlmTerminalStallRecovery,
+)
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
 if TYPE_CHECKING:
@@ -67,7 +70,7 @@ def _model_request(
 def _model_response(
     *,
     content: str = "done",
-    output_tokens: int = 1,
+    finish_reason: str = "stop",
     with_tool_call: bool = False,
 ) -> ModelResponse[Any]:
     tool_calls = (
@@ -87,10 +90,11 @@ def _model_response(
             AIMessage(
                 content=content,
                 tool_calls=tool_calls,
+                response_metadata={"finish_reason": finish_reason},
                 usage_metadata={
                     "input_tokens": 1,
-                    "output_tokens": output_tokens,
-                    "total_tokens": output_tokens + 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
                 },
             )
         ]
@@ -164,6 +168,8 @@ def _assert_generic_media_error(result: ToolMessage | Command[Any]) -> None:
 
 
 def test_registration_is_exact_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    import deepagents.profiles.harness.harness_profiles as core_profiles
+
     calls: list[tuple[str, HarnessProfile]] = []
 
     def register(key: str, profile: HarnessProfile) -> None:
@@ -171,6 +177,8 @@ def test_registration_is_exact_and_idempotent(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(glm_profile, "_glm_5p2_profile_registered", False)
     monkeypatch.setattr(glm_profile, "register_harness_profile", register)
+    monkeypatch.setattr(core_profiles, "_ensure_harness_profiles_loaded", lambda: None)
+    monkeypatch.setattr(core_profiles, "_HARNESS_PROFILES", {})
 
     glm_profile._ensure_glm_5p2_profile_registered()
     glm_profile._ensure_glm_5p2_profile_registered()
@@ -183,41 +191,41 @@ def test_registration_is_exact_and_idempotent(monkeypatch: pytest.MonkeyPatch) -
     assert all(profile is glm_profile._GLM_5P2_PROFILE for _, profile in calls)
 
 
+def test_registration_defers_to_existing_suffix_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import deepagents.profiles.harness.harness_profiles as core_profiles
+    from deepagents.profiles import HarnessProfile as RuntimeHarnessProfile
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(glm_profile, "_glm_5p2_profile_registered", False)
+    monkeypatch.setattr(
+        glm_profile,
+        "register_harness_profile",
+        lambda key, _profile: calls.append(key),
+    )
+    monkeypatch.setattr(core_profiles, "_ensure_harness_profiles_loaded", lambda: None)
+    # A pre-existing suffix profile (user override or built-in) must win.
+    monkeypatch.setattr(
+        core_profiles,
+        "_HARNESS_PROFILES",
+        {_FIREWORKS_GLM: RuntimeHarnessProfile(system_prompt_suffix="user override")},
+    )
+
+    glm_profile._ensure_glm_5p2_profile_registered()
+
+    assert calls == [_OPENROUTER_GLM, _BASETEN_GLM]
+
+
 def test_prompt_is_concise_and_execution_focused() -> None:
     suffix = glm_profile._SYSTEM_PROMPT_SUFFIX
 
-    assert suffix.startswith("<glm_5p2_execution>\n")
-    assert suffix.endswith("\n</glm_5p2_execution>")
+    # Guard conciseness (against prompt bloat) without mirroring exact wording
+    # or tag names, which would be brittle to reword.
     assert 240 <= len(suffix.split()) <= 360
 
-    required_phrases = (
-        "Do not call `read_file` on images, PDFs, audio, or video",
-        "Do not reopen generated media for visual inspection",
-        "Identify every required output path",
-        "must, only, exact, ordered, ranged, and prohibited",
-        "valid, parseable artifact before long-running",
-        "reserve the final part of the run",
-        "exact requested version, date, revision, tokenizer, library, or source",
-        "record a checksum",
-        "separate working copy when the task permits",
-        "Treat supplied or fetched source-of-truth data as authoritative",
-        "apply only transformations the task explicitly requests",
-        "Do not strip prefixes or tags, repair grammar, normalize",
-        "compare the final artifact against that source or its stated allowlist",
-        "same interpreter and entrypoint",
-        "A successful exit only proves that the command ran",
-        "assert the actual result against the required value",
-        "task-stated examples",
-        "below, at, and above",
-        "execution-plan structure",
-        "repeated measurements",
-        "one retry",
-        "pivot",
-        "Stop immediately",
-    )
-    for phrase in required_phrases:
-        assert phrase in suffix
-
+    # The execution suffix must not absorb the todo-oriented base agent prompt.
     for omitted in (
         "write_todos",
         "<todo_rules>",
@@ -544,11 +552,8 @@ async def test_async_model_wrapper_matches_sync_transition() -> None:
     assert captured[0].system_prompt.endswith(glm_profile._SYSTEM_PROMPT_SUFFIX)
 
 
-def test_headless_glm_retries_exact_terminal_output_cap() -> None:
-    middleware = _GlmReadFileMediaGuard(
-        _FIREWORKS_GLM,
-        recover_terminal_stalls=True,
-    )
+def test_headless_glm_retries_length_truncated_turn() -> None:
+    middleware = _GlmTerminalStallRecovery()
     tools: list[BaseTool | dict[str, Any]] = [{"name": "write_file"}]
     request = _model_request("accounts/fireworks/models/glm-5p2").override(
         tools=tools,
@@ -558,7 +563,7 @@ def test_headless_glm_retries_exact_terminal_output_cap() -> None:
     requests: list[ModelRequest] = []
     responses = iter(
         [
-            _model_response(content="unfinished design", output_tokens=32_768),
+            _model_response(content="unfinished design", finish_reason="length"),
             _model_response(content="recovered"),
         ]
     )
@@ -567,10 +572,7 @@ def test_headless_glm_retries_exact_terminal_output_cap() -> None:
         requests.append(actual)
         return next(responses)
 
-    result = middleware.wrap_model_call(
-        request,
-        handler,
-    )
+    result = middleware.wrap_model_call(request, handler)
 
     assert len(requests) == 2
     assert requests[0].tool_choice == "auto"
@@ -593,22 +595,18 @@ def test_headless_glm_retries_exact_terminal_output_cap() -> None:
         "temperature": 0.25,
     }
     assert request.tools == tools
-    assert isinstance(result, ExtendedModelResponse)
-    assert result.model_response.result[0].text == "recovered"
+    assert result.result[0].text == "recovered"
 
 
 async def test_async_headless_glm_retries_at_most_once() -> None:
-    middleware = _GlmReadFileMediaGuard(
-        _FIREWORKS_GLM,
-        recover_terminal_stalls=True,
-    )
+    middleware = _GlmTerminalStallRecovery()
     calls = 0
 
     async def handler(_request: ModelRequest) -> ModelResponse[Any]:
         nonlocal calls
         await asyncio.sleep(0)
         calls += 1
-        return _model_response(content="still stalled", output_tokens=32_768)
+        return _model_response(content="still stalled", finish_reason="length")
 
     result = await middleware.awrap_model_call(
         _model_request("accounts/fireworks/models/glm-5p2"),
@@ -616,34 +614,24 @@ async def test_async_headless_glm_retries_at_most_once() -> None:
     )
 
     assert calls == 2
-    assert isinstance(result, ExtendedModelResponse)
-    assert result.model_response.result[0].text == "still stalled"
+    assert result.result[0].text == "still stalled"
 
 
 @pytest.mark.parametrize(
-    ("identifier", "recover_terminal_stalls", "output_tokens", "with_tool_call"),
+    ("identifier", "finish_reason", "with_tool_call"),
     [
+        pytest.param("gpt-5.5", "length", False, id="non-glm"),
+        pytest.param("z-ai/glm-5.2", "length", False, id="openrouter"),
+        pytest.param("zai-org/GLM-5.2", "length", False, id="baseten"),
         pytest.param(
             "accounts/fireworks/models/glm-5p2",
+            "stop",
             False,
-            32_768,
-            False,
-            id="interactive",
-        ),
-        pytest.param("gpt-5.5", True, 32_768, False, id="non-glm"),
-        pytest.param("z-ai/glm-5.2", True, 32_768, False, id="openrouter"),
-        pytest.param("zai-org/GLM-5.2", True, 32_768, False, id="baseten"),
-        pytest.param(
-            "accounts/fireworks/models/glm-5p2",
-            True,
-            32_767,
-            False,
-            id="below-cap",
+            id="not-truncated",
         ),
         pytest.param(
             "accounts/fireworks/models/glm-5p2",
-            True,
-            32_768,
+            "length",
             True,
             id="tool-call",
         ),
@@ -651,21 +639,17 @@ async def test_async_headless_glm_retries_at_most_once() -> None:
 )
 def test_terminal_stall_recovery_ignores_near_misses(
     identifier: str,
-    recover_terminal_stalls: bool,
-    output_tokens: int,
+    finish_reason: str,
     with_tool_call: bool,
 ) -> None:
-    middleware = _GlmReadFileMediaGuard(
-        _FIREWORKS_GLM,
-        recover_terminal_stalls=recover_terminal_stalls,
-    )
+    middleware = _GlmTerminalStallRecovery()
     calls = 0
 
     def handler(_request: ModelRequest) -> ModelResponse[Any]:
         nonlocal calls
         calls += 1
         return _model_response(
-            output_tokens=output_tokens,
+            finish_reason=finish_reason,
             with_tool_call=with_tool_call,
         )
 

@@ -3297,7 +3297,10 @@ class TestCreateCliAgentInterpreterWiring:
         self,
         tmp_path: Path,
     ) -> None:
-        from deepagents_code._glm_5p2_profile import _GlmReadFileMediaGuard
+        from deepagents_code._glm_5p2_profile import (
+            _GlmReadFileMediaGuard,
+            _GlmTerminalStallRecovery,
+        )
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3336,11 +3339,67 @@ class TestCreateCliAgentInterpreterWiring:
             if type(item).__name__.startswith("_GlmCompletion")
         ]
         assert completion_agents == []
-        guards = [
-            item for item in middleware if isinstance(item, _GlmReadFileMediaGuard)
+        # Headless installs one media guard plus terminal-stall recovery, with
+        # recovery inner to (i.e. after) the guard so its retry keeps the
+        # guard's transitioned prompt.
+        guard_indexes = [
+            i
+            for i, mw in enumerate(middleware)
+            if isinstance(mw, _GlmReadFileMediaGuard)
         ]
-        assert len(guards) == 1
-        assert guards[0]._recover_terminal_stalls is True
+        recovery_indexes = [
+            i
+            for i, mw in enumerate(middleware)
+            if isinstance(mw, _GlmTerminalStallRecovery)
+        ]
+        assert len(guard_indexes) == 1
+        assert len(recovery_indexes) == 1
+        assert recovery_indexes[0] > guard_indexes[0]
+
+    def test_glm_interactive_omits_terminal_stall_recovery(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from deepagents_code._glm_5p2_profile import (
+            _GlmReadFileMediaGuard,
+            _GlmTerminalStallRecovery,
+        )
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fireworks:accounts/fireworks/models/glm-5p2",
+                assistant_id="test",
+                interactive=True,
+                auto_approve=True,
+                enable_ask_user=False,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=tmp_path,
+            )
+
+        _, kwargs = mock_create.call_args
+        middleware = kwargs["middleware"]
+        # Interactive turns may legitimately be tool-free, so the media guard is
+        # present but terminal-stall recovery must not be.
+        assert any(isinstance(mw, _GlmReadFileMediaGuard) for mw in middleware)
+        assert not any(isinstance(mw, _GlmTerminalStallRecovery) for mw in middleware)
 
     def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

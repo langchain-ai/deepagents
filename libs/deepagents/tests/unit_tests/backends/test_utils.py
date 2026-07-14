@@ -523,6 +523,15 @@ class TestSliceReadResponse:
         assert result.error is not None
         assert "exceeds file length" in result.error
 
+    def test_offset_at_eof_returns_info_result(self) -> None:
+        """An offset exactly at EOF is benign: no error, a self-correcting notice."""
+        result = slice_read_response(self._file("a\nb"), offset=2, limit=5)
+        assert result.error is None
+        assert result.file_data is None
+        assert result.info is not None
+        assert "2 lines" in result.info
+        assert "offset 1" in result.info
+
 
 class TestGrepMaxCount:
     """`max_count` total-cap semantics for `grep_matches_from_files`.

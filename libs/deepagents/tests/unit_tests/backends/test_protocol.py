@@ -397,6 +397,16 @@ class TestReadResultPaginationInvariants:
         result = ReadResult(total_lines=5, start_line=2, end_line=3, next_offset=3)
         assert result.next_offset == result.end_line
 
+    def test_info_result_is_valid(self) -> None:
+        """An informational (non-error) result carries no window and must not raise."""
+        result = ReadResult(info="at end of file")
+        assert result.info == "at end of file"
+        assert result.error is None
+
+    def test_info_and_error_are_mutually_exclusive(self) -> None:
+        with pytest.raises(ValueError, match="ReadResult cannot set both error and info"):
+            ReadResult(error="boom", info="also boom")
+
     def test_terminal_window_has_no_next_offset(self) -> None:
         """The final page (`next_offset` unset) is valid even when it reaches EOF."""
         result = ReadResult(total_lines=3, start_line=2, end_line=3, next_offset=None)

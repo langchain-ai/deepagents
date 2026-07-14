@@ -212,6 +212,12 @@ class ReadResult:
     error: str | None = None
     """Error message on failure, `None` on success."""
 
+    info: str | None = None
+    """Informational, non-error notice for a benign read (e.g. an offset sitting
+    exactly at end-of-file). Surfaced to the model as a successful result so a
+    harmless boundary is not treated as a failure. Mutually exclusive with
+    `error`."""
+
     file_data: FileData | None = None
     """File data on success, `None` on failure."""
 
@@ -241,6 +247,9 @@ class ReadResult:
         emitting a `next_offset` that would silently skip unshown source lines
         once it reaches the middleware.
         """
+        if self.info is not None and self.error is not None:
+            msg = "ReadResult cannot set both error and info"
+            raise ValueError(msg)
         if (self.start_line is None) != (self.end_line is None):
             msg = "ReadResult.start_line and end_line must be set together or both left unset"
             raise ValueError(msg)

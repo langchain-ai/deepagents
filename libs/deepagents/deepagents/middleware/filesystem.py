@@ -1730,6 +1730,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
+            if read_result.info is not None:
+                # A benign boundary (e.g. an offset sitting exactly at EOF) is a
+                # successful, non-error result so the model self-corrects rather
+                # than treating it as a failure.
+                return ToolMessage(
+                    content=read_result.info,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    status="success",
+                )
+
             if read_result.error:
                 return ToolMessage(
                     content=f"Error: {read_result.error}",

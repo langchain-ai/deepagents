@@ -16,6 +16,7 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -146,6 +147,28 @@ class TestMessageData:
         assert restored.id == "test-app-1"
         assert restored._is_markdown is False
 
+    def test_rubric_result_roundtrip_preserves_complete_details(self) -> None:
+        """Virtualization must not discard or flatten expandable grader output."""
+        details = "Explanation\nfull output\n\nNext step\nfix it"
+        original = RubricResultMessage(
+            "Acceptance criteria not yet satisfied",
+            details,
+            id="test-rubric-1",
+        )
+        original._expanded = True
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.RUBRIC
+        assert data.content == "Acceptance criteria not yet satisfied"
+        assert data.rubric_details == details
+        assert data.rubric_expanded is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, RubricResultMessage)
+        assert restored._summary == "Acceptance criteria not yet satisfied"
+        assert restored._details == details
+        assert restored._deferred_expanded is True
+
     def test_app_message_markdown_roundtrip(self):
         """Markdown AppMessages must survive dehydrate/rehydrate with their flag.
 
@@ -178,13 +201,19 @@ class TestMessageData:
     def test_diff_message_roundtrip(self):
         """Test DiffMessage serialization and deserialization."""
         diff_content = "--- a/file.py\n+++ b/file.py\n@@ -1 +1 @@\n-old\n+new"
-        original = DiffMessage(diff_content, file_path="src/file.py", id="test-diff-1")
+        original = DiffMessage(
+            diff_content,
+            file_path="src/file.py",
+            tool_name="edit_file",
+            id="test-diff-1",
+        )
 
         # Serialize
         data = MessageData.from_widget(original)
         assert data.type == MessageType.DIFF
         assert data.content == diff_content
         assert data.diff_file_path == "src/file.py"
+        assert data.diff_tool_name == "edit_file"
         assert data.id == "test-diff-1"
 
         # Deserialize
@@ -192,6 +221,7 @@ class TestMessageData:
         assert isinstance(restored, DiffMessage)
         assert restored._diff_content == diff_content
         assert restored._file_path == "src/file.py"
+        assert restored._tool_name == "edit_file"
         assert restored.id == "test-diff-1"
 
     def test_summarization_message_roundtrip(self):
@@ -215,6 +245,7 @@ class TestMessageData:
         assert data.id.startswith("msg-")
         assert data.timestamp > 0
         assert data.tool_name is None
+        assert data.tool_duration is None
         assert data.is_streaming is False
         assert data.height_hint is None
 

@@ -234,18 +234,7 @@ class StateBackend(BackendProtocol):
         if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return slice_read_response(file_data, offset, limit)
 
     def write(
         self,
@@ -322,10 +311,12 @@ class StateBackend(BackendProtocol):
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> GrepResult:
         """Search state files for a literal text pattern."""
         files = self._read_files()
-        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob)
+        return grep_matches_from_files(files, pattern, path if path is not None else "/", glob, max_count=max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Get `FileInfo` for files matching glob pattern."""

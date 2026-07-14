@@ -2,6 +2,29 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.38](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.37...deepagents-code==0.1.38) (2026-07-14)
+
+### Features
+
+* Improve `/goal` criteria UX ([#4694](https://github.com/langchain-ai/deepagents/issues/4694)) ([06f46ff](https://github.com/langchain-ai/deepagents/commit/06f46fffe36efa9f3adcb331b07df283d8bed874))
+* Add interactive goal management ([#4693](https://github.com/langchain-ai/deepagents/issues/4693)) ([64205e2](https://github.com/langchain-ai/deepagents/commit/64205e238c280ae05b2bf9253ac40c6f85ffb49c))
+* Conditionally drop `TodoListMiddleware` ([#4685](https://github.com/langchain-ai/deepagents/issues/4685)) ([d3a3077](https://github.com/langchain-ai/deepagents/commit/d3a3077e8536696dcf4a9dcd8555e9c871562e74))
+* Add `memory.auto_save` config flag ([#4700](https://github.com/langchain-ai/deepagents/issues/4700)) ([55b60ca](https://github.com/langchain-ai/deepagents/commit/55b60ca08da4eef294ac3c162610b2a151584ea5))
+* Trace experimental mode in metadata ([#4705](https://github.com/langchain-ai/deepagents/issues/4705)) ([22d5045](https://github.com/langchain-ai/deepagents/commit/22d50456324e9b8c0121a3a06787e19c1b88e1aa))
+
+### Bug Fixes
+
+* Align context diff rows with changed rows ([#4714](https://github.com/langchain-ai/deepagents/issues/4714)) ([f9915db](https://github.com/langchain-ai/deepagents/commit/f9915db4206ef2d794ad07fdccbdd4ee58963142))
+* Hydrate virtualized transcript on scroll offset changes ([#4646](https://github.com/langchain-ai/deepagents/issues/4646)) ([f77eeb0](https://github.com/langchain-ai/deepagents/commit/f77eeb0a036281f84bf7d0b05ea60e02630f55c1))
+* Keep TODO and edit tools expanded ([#4704](https://github.com/langchain-ai/deepagents/issues/4704)) ([1d549d3](https://github.com/langchain-ai/deepagents/commit/1d549d3f3c9bb60c3ce39d4a0c913bcefe9610d5))
+* Make `/goal` completion and grading reliable ([#4691](https://github.com/langchain-ai/deepagents/issues/4691)) ([9da63c6](https://github.com/langchain-ai/deepagents/commit/9da63c64a59503e3366e9bc7224cb1251af476be))
+* Preflight Ollama host reachability before discovery probe ([#4702](https://github.com/langchain-ai/deepagents/issues/4702)) ([96fe71a](https://github.com/langchain-ai/deepagents/commit/96fe71a3815e1020edeb3be1af70b0cadb85931c))
+* Quiet expected non-repo `git ls-files` logging ([#4701](https://github.com/langchain-ai/deepagents/issues/4701)) ([3d499db](https://github.com/langchain-ai/deepagents/commit/3d499db8a6c76743810a8983107d7c7d7bdb35e6))
+* Rename `ls_agent_kind` to `ls_agent_purpose` ([#4708](https://github.com/langchain-ai/deepagents/issues/4708)) ([2678b16](https://github.com/langchain-ai/deepagents/commit/2678b1680d8928e72e8efae00632a694c9b2737a))
+* Run MCP login during a run, queue the restart ([#4643](https://github.com/langchain-ai/deepagents/issues/4643)) ([65e1ee8](https://github.com/langchain-ai/deepagents/commit/65e1ee802e2f69762a6d8e6c7c6d37060161ea5a))
+* Show "Took &lt;duration&gt;" when `task` tool completes ([#4638](https://github.com/langchain-ai/deepagents/issues/4638)) ([19538e0](https://github.com/langchain-ai/deepagents/commit/19538e0a46a5c2c050412b79fd45608a63cdde52))
+* Support unambiguous `read_file` gutters ([#4711](https://github.com/langchain-ai/deepagents/issues/4711)) ([2089b54](https://github.com/langchain-ai/deepagents/commit/2089b54e2a674ede313e790b59febf9dc6f22571))
+
 ## [0.1.37](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.36...deepagents-code==0.1.37) (2026-07-13)
 
 ### Features

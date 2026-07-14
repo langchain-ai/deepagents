@@ -167,6 +167,8 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
 
     settings.model_name = name
     settings.model_provider = provider
+    settings.model_context_limit = None
+    settings.model_unsupported_modalities = frozenset()
 
     # Mirror create_model: pull context window + unsupported input modalities
     # from the model profile when the provider exposes one.
@@ -213,7 +215,9 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     # Gated to GLM-5.2 so the shared harness is unaffected for other models; an
     # explicit `configurable.model_kwargs` reasoning_effort still wins.
     normalized_model_spec = model_spec.lower()
-    if "glm-5p2" in normalized_model_spec or "glm-5.2" in normalized_model_spec:
+    if "reasoning_effort" not in model_kwargs and (
+        "glm-5p2" in normalized_model_spec or "glm-5.2" in normalized_model_spec
+    ):
         nested = model_kwargs.setdefault("model_kwargs", {})
         if isinstance(nested, dict):
             nested.setdefault("reasoning_effort", "high")

@@ -263,6 +263,33 @@ def test_make_graph_populates_model_identity_settings(
     assert settings.model_unsupported_modalities == frozenset({"audio", "video"})
 
 
+def test_make_graph_resets_model_identity_for_model_without_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    settings.model_context_limit = 200_000
+    settings.model_unsupported_modalities = frozenset({"audio", "video"})
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_cli_agent",
+        lambda **_kwargs: (object(), object()),
+    )
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": "ollama:local-model",
+                "cwd": str(tmp_path),
+            }
+        }
+    )
+
+    assert settings.model_context_limit is None
+    assert settings.model_unsupported_modalities == frozenset()
+
+
 @pytest.mark.parametrize(
     "model_spec",
     [
@@ -321,6 +348,32 @@ def test_make_graph_preserves_explicit_glm_reasoning_effort(
     )
 
     assert captured_kwargs[0].get("model_kwargs") == {"reasoning_effort": "max"}
+
+
+def test_make_graph_preserves_top_level_glm_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_kwargs: list[dict[str, object]] = []
+
+    def fake_init_chat_model(_model: str, **kwargs: object) -> object:
+        captured_kwargs.append(kwargs)
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_k: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": "fireworks:accounts/fireworks/models/glm-5p2",
+                "cwd": str(tmp_path),
+                "model_kwargs": {"reasoning_effort": "max"},
+            }
+        }
+    )
+
+    assert captured_kwargs[0] == {"reasoning_effort": "max"}
 
 
 def test_make_graph_leaves_non_glm_model_kwargs_untouched(

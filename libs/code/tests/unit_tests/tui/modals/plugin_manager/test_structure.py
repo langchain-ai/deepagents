@@ -1,8 +1,13 @@
 """Tests for the plugin manager modal structure."""
 
 import inspect
+import re
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from textual.widgets import Static
+
+from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.content import _plugin_options
 from deepagents_code.tui.modals.plugin_manager.models import _PluginRow
@@ -29,3 +34,26 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
         "detail:second@source",
     ]
     assert options[1].disabled
+
+
+async def test_plugin_manager_overlays_underlying_content() -> None:
+    """Transparent modal backdrop must composite the screen underneath."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app.theme = "textual-dark"
+        await pilot.pause()
+
+        await app.mount(Static("TOP_MARKER_VISIBLE", id="top-marker"))
+        marker = app.query_one("#top-marker")
+        marker.styles.dock = "top"
+        marker.styles.height = 1
+        await pilot.pause()
+
+        app.push_screen(PluginManagerScreen())
+        await pilot.pause()
+
+        assert app.screen.styles.background.a == 0
+        plain = re.sub(r"<[^>]+>", " ", app.export_screenshot())
+        assert "TOP_MARKER_VISIBLE" in plain
+        assert "Plugins" in plain

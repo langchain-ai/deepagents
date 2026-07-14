@@ -11,7 +11,6 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
-from typing_extensions import override
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -95,15 +94,6 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
-
-    @override
-    def render(self) -> str:
-        """Render an empty modal background.
-
-        Returns:
-            Blank renderable content for the modal screen itself.
-        """
-        return ""
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.

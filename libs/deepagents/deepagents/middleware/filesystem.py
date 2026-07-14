@@ -541,16 +541,16 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
 
     Returns:
         A model-facing notice describing the window that was read and where to
-        resume, or an empty string when no window metadata is present or the
-        window already reached the end of the file (nothing more to read).
+            resume, or an empty string when no window metadata is present or the
+            window already reached the end of the file (nothing more to read).
     """
-    total_lines = read_result.total_lines
     start_line = read_result.start_line
     end_line = read_result.end_line
     next_offset = read_result.next_offset
     if start_line is None or end_line is None or next_offset is None:
         return ""
 
+    total_lines = read_result.total_lines
     read_count = end_line - start_line + 1
     read_unit = "line" if read_count == 1 else "lines"
     if total_lines is None:
@@ -638,7 +638,16 @@ def _truncate_paginated_read(
 
     Returns:
         The (possibly truncated) content with a notice that never overstates
-        which source lines were shown.
+            which source lines were shown.
+
+    Examples:
+        If the backend returns source lines 11-20 with `next_offset=20`, but
+        the budget fits only through line 14, the returned notice reports lines
+        11-14 and tells the caller to resume from offset 14 rather than 20.
+
+        A long source line may be rendered as rows `14` and `14.1`. If the
+        budget fits row `14` but not `14.1`, neither row is retained: the notice
+        reports line 13 as the last displayed line and resumes from offset 13.
     """
     notice = _remaining_lines_notice(read_result)
     if not token_limit or len(content) + len(notice) < NUM_CHARS_PER_TOKEN * token_limit:
@@ -647,6 +656,13 @@ def _truncate_paginated_read(
     truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
     threshold = NUM_CHARS_PER_TOKEN * token_limit
     if read_result.start_line is not None and read_result.end_line is not None and read_result.next_offset is not None:
+        # Build the safe places where the content can be truncated. A long source
+        # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
+        # at every newline could keep only part of that source line. `position`
+        # tracks each rendered row's end in `content`; comparing the integer part
+        # of adjacent row markers records a boundary only after the final row for
+        # a source line. The loop below uses these boundaries to find the latest
+        # complete source line that fits alongside both notices.
         rows = content.split("\n")
         position = 0
         boundaries: list[tuple[int, int]] = []

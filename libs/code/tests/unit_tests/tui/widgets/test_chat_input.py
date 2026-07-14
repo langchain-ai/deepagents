@@ -232,6 +232,23 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+def _capture_notifications(
+    monkeypatch: pytest.MonkeyPatch, app: App[None]
+) -> list[tuple[str, dict[str, object]]]:
+    """Patch ``app.notify`` and return a list recording each call.
+
+    Each entry is ``(message, kwargs)`` so tests can assert both the toast
+    text and the notification options (e.g. ``markup``, ``timeout``).
+    """
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _record(message: str, *_args: object, **kwargs: object) -> None:
+        calls.append((str(message), kwargs))
+
+    monkeypatch.setattr(app, "notify", _record)
+    return calls
+
+
 async def _noop() -> None:
     pass
 
@@ -4944,11 +4961,14 @@ class TestPasteCollapseIntegration:
             assert chat._pasted_contents[1].content == text
             assert chat._pasted_contents[2].content == text
 
-    async def test_bracketed_paste_event_collapses(self) -> None:
+    async def test_bracketed_paste_event_collapses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A real Paste event over the threshold collapses to a placeholder.
 
         Exercises the production path (`_on_paste` -> `PastedText` message ->
-        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`.
+        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`,
+        and asserts the collapse toast fires on that path too.
         """
         big_text = "z" * 900
         app = _RecordingApp()
@@ -4956,12 +4976,20 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
+            calls = _capture_notifications(monkeypatch, app)
+
             await chat._text_area._on_paste(events.Paste(big_text))
             await pilot.pause()
 
             assert "[Pasted text #1]" in chat._text_area.text
             assert big_text not in chat._text_area.text
             assert chat._pasted_contents[1].content == big_text
+            assert calls == [
+                (
+                    chat_input_module._PASTE_COLLAPSED_TOAST,
+                    {"timeout": 5, "markup": False},
+                )
+            ]
 
     async def test_collapse_emits_expand_toast(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4973,20 +5001,20 @@ class TestPasteCollapseIntegration:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
 
-            messages: list[str] = []
-
-            def _capture_notify(
-                message: str, *_args: object, **_kwargs: object
-            ) -> None:
-                messages.append(str(message))
-
-            monkeypatch.setattr(app, "notify", _capture_notify)
+            calls = _capture_notifications(monkeypatch, app)
 
             chat.handle_external_paste(text)
             await pilot.pause()
 
             assert chat._text_area.text == "[Pasted text #1]"
-            assert messages == [chat_input_module._PASTE_COLLAPSED_TOAST]
+            # Render the message literally (no markup) so bracketed text like
+            # `[Pasted text #N]` is never interpreted as Textual markup.
+            assert calls == [
+                (
+                    chat_input_module._PASTE_COLLAPSED_TOAST,
+                    {"timeout": 5, "markup": False},
+                )
+            ]
 
     async def test_repeat_paste_expansion_does_not_emit_toast(
         self, monkeypatch: pytest.MonkeyPatch
@@ -5002,28 +5030,55 @@ class TestPasteCollapseIntegration:
             await pilot.pause()
             assert chat._text_area.text == "[Pasted text #1]"
 
-            messages: list[str] = []
-
-            def _capture_notify(
-                message: str, *_args: object, **_kwargs: object
-            ) -> None:
-                messages.append(str(message))
-
-            monkeypatch.setattr(app, "notify", _capture_notify)
+            # Patch after the first (expected) toast so only the repeat-paste
+            # expansion branch is recorded.
+            calls = _capture_notifications(monkeypatch, app)
 
             chat.handle_external_paste(text)
             await pilot.pause()
 
             assert chat._text_area.text == text
-            assert messages == []
+            assert calls == []
 
-    async def test_paste_burst_flush_collapses_large_payload(self) -> None:
-        """A large buffered paste burst collapses to a placeholder on flush."""
+    async def test_distinct_pastes_each_emit_toast(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each distinct large paste collapses to its own placeholder + toast."""
+        first = "A" * 900
+        second = "B" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            calls = _capture_notifications(monkeypatch, app)
+
+            chat.handle_external_paste(first)
+            await pilot.pause()
+            chat.handle_external_paste(second)
+            await pilot.pause()
+
+            assert chat._text_area.text == "[Pasted text #1][Pasted text #2]"
+            toast = (
+                chat_input_module._PASTE_COLLAPSED_TOAST,
+                {"timeout": 5, "markup": False},
+            )
+            assert calls == [toast, toast]
+
+    async def test_paste_burst_flush_collapses_large_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A large buffered paste burst collapses to a placeholder on flush.
+
+        Also asserts the collapse toast fires on the burst-flush path.
+        """
         big_text = "q" * 900
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
+
+            calls = _capture_notifications(monkeypatch, app)
 
             chat._text_area._paste_burst_buffer = big_text
             await chat._text_area._flush_paste_burst()
@@ -5032,6 +5087,12 @@ class TestPasteCollapseIntegration:
             assert "[Pasted text #1]" in chat._text_area.text
             assert big_text not in chat._text_area.text
             assert chat._pasted_contents[1].content == big_text
+            assert calls == [
+                (
+                    chat_input_module._PASTE_COLLAPSED_TOAST,
+                    {"timeout": 5, "markup": False},
+                )
+            ]
 
     async def test_backspace_removes_full_paste_placeholder(self) -> None:
         """Backspace deletes a [Pasted text #N] placeholder as a single token."""

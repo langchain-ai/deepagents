@@ -132,7 +132,11 @@ def _should_collapse_chat_paste(text: str) -> bool:
 
 
 _PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand it inline."
-"""Toast shown when a paste is collapsed into a `[Pasted text #N]` placeholder."""
+"""Toast shown when a paste collapses into a `[Pasted text #N]` placeholder.
+
+Emitted only for a new collapse, not when a repeat paste expands an existing
+placeholder back to full text.
+"""
 
 
 class CompletionOption(Static):

@@ -33,7 +33,7 @@ from deepagents_code.tui.modals.plugin_manager.models import (
 logger = logging.getLogger(__name__)
 
 
-def _author_display(value: object) -> str | None:
+def _extract_name(value: object) -> str | None:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
@@ -170,7 +170,7 @@ def _load_manager_state(mcp_server_info: Sequence[MCPServerInfo] = ()) -> _Manag
                 plugin.description or "",
                 is_enabled,
                 instance.version if instance else None,
-                _author_display(plugin.author),
+                _extract_name(plugin.author),
                 len(skill_names) if instance else None,
                 skill_names,
                 _plugin_mcp_connected(instance, mcp_server_info)

@@ -108,8 +108,6 @@ class TestSlashCommands:
         assert len(entries) <= len(COMMANDS)
 
     def test_entry_format(self) -> None:
-        from deepagents_code.command_registry import get_slash_commands
-
         for entry in get_slash_commands():
             assert isinstance(entry, CommandEntry)
             assert isinstance(entry.name, str)
@@ -119,8 +117,6 @@ class TestSlashCommands:
             assert isinstance(entry.argument_hint, str)
 
     def test_excludes_aliases(self) -> None:
-        from deepagents_code.command_registry import get_slash_commands
-
         names = {entry.name for entry in get_slash_commands()}
         for cmd in COMMANDS:
             for alias in cmd.aliases:
@@ -134,8 +130,6 @@ class TestSlashCommands:
         assert set(get_slash_commands()) <= command_entries
 
     def test_experimental_plugin_commands_hidden_by_default(self) -> None:
-        from deepagents_code.command_registry import get_slash_commands
-
         names = {entry.name for entry in get_slash_commands()}
         assert "/plugins" not in names
         assert "/reload-plugins" not in names
@@ -144,7 +138,6 @@ class TestSlashCommands:
         self, monkeypatch
     ) -> None:
         from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.command_registry import get_slash_commands
 
         monkeypatch.setenv(EXPERIMENTAL, "1")
         names = {entry.name for entry in get_slash_commands()}
@@ -321,24 +314,34 @@ class TestCommandsCatalogDrift:
 
 
 class TestHelpBodyDrift:
-    """Ensure the /help body in app.py stays in sync with COMMANDS.
+    """Ensure `/help` stays wired to the public slash-command registry.
 
-    The "Commands: ..." line in the `/help` handler is hand-maintained
-    separately from the `COMMANDS` tuple in `command_registry.py`.  This
-    test catches drift — e.g. a new command added to the registry but
-    forgotten in the help output.
+    Help text is composed at runtime from `get_slash_commands()`, so drift is
+    no longer a stale hard-coded name list — it is someone reintroducing a
+    hand-maintained command string in `app.py`.
     """
 
-    def test_help_body_uses_command_registry(self) -> None:
-        """The help display composes command names from the public registry API."""
+    def test_help_handler_builds_command_list_from_registry(self) -> None:
+        """`/help` must iterate `get_slash_commands()`, not a hard-coded list."""
         app_src = (
             Path(__file__).resolve().parents[2] / "deepagents_code" / "app.py"
         ).read_text()
 
-        assert (
-            "from deepagents_code.command_registry import get_slash_commands" in app_src
+        help_handler = app_src.split('elif cmd == "/help":', 1)[1].split(
+            "elif cmd in", 1
+        )[0]
+        assert "get_slash_commands()" in help_handler
+        assert "for entry in get_slash_commands()" in help_handler
+
+    def test_help_command_line_includes_every_public_entry(self) -> None:
+        """The same join used by `/help` must list every public registry entry."""
+        command_names = ", ".join(
+            f"{entry.name} {entry.argument_hint}".rstrip()
+            for entry in get_slash_commands()
         )
-        assert "for entry in get_slash_commands()" in app_src
+        help_line = f"Commands: {command_names}, /skill:<name>"
+        for entry in get_slash_commands():
+            assert entry.name in help_line
 
     def test_help_body_describes_incognito_shell_prefix(self) -> None:
         """The `/help` body should document local-only incognito shell mode."""

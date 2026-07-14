@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 PluginTab = Literal["discover", "installed", "marketplaces", "errors"]
-ViewMode = Literal[
+PluginManagerView = Literal[
     "list",
     "add_marketplace",
     "plugin_details",

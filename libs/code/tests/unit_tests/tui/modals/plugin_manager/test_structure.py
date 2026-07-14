@@ -1,5 +1,6 @@
 """Tests for the plugin manager modal structure."""
 
+import inspect
 from pathlib import Path
 
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
@@ -7,11 +8,11 @@ from deepagents_code.tui.modals.plugin_manager.content import _plugin_options
 from deepagents_code.tui.modals.plugin_manager.models import _PluginRow
 
 
-def test_plugin_manager_exports_root_component_with_colocated_css() -> None:
+def test_plugin_manager_css_is_colocated_with_screen() -> None:
+    screen_file = Path(inspect.getfile(PluginManagerScreen))
+    css_path = screen_file.parent / PluginManagerScreen.CSS_PATH
     assert PluginManagerScreen.CSS_PATH == "plugin_manager.tcss"
-    assert (
-        Path(PluginManagerScreen.__module__.replace(".", "/")).name == "plugin_manager"
-    )
+    assert css_path.is_file(), f"expected colocated CSS at {css_path}"
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:

@@ -50,9 +50,14 @@ class TestInitialPromptArg:
         assert args.initial_prompt == ""
 
 
-def test_plugin_command_parses_when_experimental_features_are_disabled(
+def test_plugin_subcommand_parses_without_experimental_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Argparse still accepts `plugin` when experimental is off.
+
+    The experimental gate lives at execution time in `main` (exit 2 + hint),
+    not in argparse, so disabled users get a clear message instead of a usage error.
+    """
     monkeypatch.delenv(EXPERIMENTAL, raising=False)
     with patch.object(sys, "argv", ["deepagents", "plugin", "list"]):
         args = parse_args()

@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.tui.modals.plugin_manager.models import (
+        PluginManagerView,
         PluginTab,
-        ViewMode,
         _MarketplaceRow,
         _PluginRow,
     )
@@ -88,7 +88,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         """
         super().__init__()
         self._tab: PluginTab = "discover"
-        self._mode: ViewMode = "list"
+        self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
         self._state = _load_manager_state(mcp_server_info)
         self._status: str | None = None

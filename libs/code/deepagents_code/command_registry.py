@@ -145,15 +145,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),
     SlashCommand(
-        name="/reload-plugins",
-        description=(
-            "Reload installed plugins (experimental; requires "
-            "DEEPAGENTS_CODE_EXPERIMENTAL=1)"
-        ),
-        bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="plugin plugins refresh marketplace",
-    ),
-    SlashCommand(
         name="/model",
         description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -176,6 +167,17 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Save useful context to memory or skills",
         bypass_tier=BypassTier.QUEUED,
         argument_hint="[context]",
+    ),
+    # Keep after `/remember` so equal-score prefix ties resolve as
+    # `re` → `/remember`, `rel` → `/reload-plugins` (ahead of `/reload`).
+    SlashCommand(
+        name="/reload-plugins",
+        description=(
+            "Reload installed plugins (experimental; requires "
+            "DEEPAGENTS_CODE_EXPERIMENTAL=1)"
+        ),
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="plugin plugins refresh marketplace",
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
         name="/skill-creator",

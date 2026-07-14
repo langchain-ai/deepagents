@@ -3538,6 +3538,47 @@ class TestMessageQueue:
             widgets = app.query(QueuedUserMessage)
             assert len(widgets) == 1
 
+    async def test_deferred_restart_keeps_prompts_queued_until_ready(self) -> None:
+        """A deferred restart must not let task cleanup consume queued prompts."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("after restart", "normal")
+            app._agent_running = False
+
+            processed = AsyncMock()
+            app._process_message = processed  # ty: ignore
+
+            async def begin_restart() -> None:
+                await asyncio.sleep(0)
+                app._agent = None
+                app._connecting = True
+
+            app._defer_action(
+                DeferredAction(kind="mcp_reconnect", execute=begin_restart),
+            )
+
+            # Match task cleanup: drain deferred work, then try queued input.
+            await app._maybe_drain_deferred()
+            await app._process_next_from_queue()
+
+            processed.assert_not_awaited()
+            assert [message.text for message in app._pending_messages] == [
+                "after restart"
+            ]
+            assert len(app._queued_widgets) == 1
+
+            # `ServerReady` clears the connecting state before its startup
+            # backlog resumes queue draining.
+            app._agent = MagicMock()
+            app._connecting = False
+            await app._process_next_from_queue()
+
+            processed.assert_awaited_once_with("after restart", "normal")
+            assert not app._pending_messages
+            assert not app._queued_widgets
+
     async def test_message_blocked_while_thread_switching(self) -> None:
         """Submissions should be ignored while thread switching is in-flight."""
         app = DeepAgentsApp()
@@ -9187,6 +9228,7 @@ class TestMessageTimestampFooters:
             app._sync_tool_message_state(tool)
             assert stored.tool_status == ToolStatus.SUCCESS
             assert stored.tool_output == "done"
+            assert stored.tool_duration is not None
             assert not app._message_store.is_protected("tool-sync")
 
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
@@ -15034,6 +15076,24 @@ class TestStartMcpLogin:
         assert run_worker_kwargs["group"] == "mcp-login-provider"
         assert run_worker_kwargs["exclusive"] is False
 
+    async def test_starts_worker_immediately_while_agent_running(self) -> None:
+        """A live agent run runs login now; only the restart defers later.
+
+        The OAuth handshake and token write never touch the running server, so
+        an active generation must not block login — the follow-up restart is
+        what gets queued (see `_prompt_mcp_reconnect`).
+        """
+        app = self._make_app()
+        app._connecting = False
+        app._server_proc = object()  # ty: ignore
+        app._agent_running = True
+        app._run_mcp_login_worker = MagicMock()  # ty: ignore
+
+        app._start_mcp_login("provider")
+
+        app.run_worker.assert_called_once()  # ty: ignore
+        app._defer_action.assert_not_called()  # ty: ignore
+
 
 class TestBuildModelSwitchErrorBody:
     """Tests for `_build_model_switch_error_body` link-aware formatting."""
@@ -19737,7 +19797,9 @@ class TestMCPLoginCommand:
       - `/mcp login <name>` reaches `_start_mcp_login`.
       - Bare `/mcp` still opens the viewer.
       - Remote-server mode refuses login and tells the user.
-      - Busy state defers login via `DeferredAction(kind="mcp_login")`.
+      - A busy agent/shell run runs login immediately (only the follow-up
+        reconnect defers); the still-connecting path defers login via
+        `DeferredAction(kind="mcp_login")`.
       - The viewer's dismiss with a server name kicks off login.
     """
 
@@ -19803,8 +19865,8 @@ class TestMCPLoginCommand:
             message = notify.call_args.args[0]
             assert "remote server" in message.lower()
 
-    async def test_mcp_login_defers_while_agent_running(self) -> None:
-        """Busy state queues the login via `DeferredAction(kind='mcp_login')`."""
+    async def test_mcp_login_runs_immediately_while_agent_running(self) -> None:
+        """A live run no longer defers login; the OAuth worker starts at once."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -19817,10 +19879,13 @@ class TestMCPLoginCommand:
             app._server_proc = MagicMock()
             app._agent_running = True
             try:
-                with patch.object(app, "run_worker") as run_worker:
+                with (
+                    patch.object(app, "run_worker") as run_worker,
+                    patch.object(app, "_run_mcp_login_worker", new=MagicMock()),
+                ):
                     app._start_mcp_login("notion")
-                run_worker.assert_not_called()
-                assert any(a.kind == "mcp_login" for a in app._deferred_actions)
+                run_worker.assert_called_once()
+                assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
             finally:
                 app._agent_running = False
 
@@ -20298,8 +20363,8 @@ class TestMCPLoginCommand:
             finally:
                 app._agent_switching = False
 
-    async def test_mcp_login_defers_while_shell_running(self) -> None:
-        """`_shell_running=True` also defers login via `DeferredAction`."""
+    async def test_mcp_login_runs_immediately_while_shell_running(self) -> None:
+        """`_shell_running=True` no longer defers login; the worker starts now."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20312,10 +20377,13 @@ class TestMCPLoginCommand:
             app._server_proc = MagicMock()
             app._shell_running = True
             try:
-                with patch.object(app, "run_worker") as run_worker:
+                with (
+                    patch.object(app, "run_worker") as run_worker,
+                    patch.object(app, "_run_mcp_login_worker", new=MagicMock()),
+                ):
                     app._start_mcp_login("notion")
-                run_worker.assert_not_called()
-                assert any(a.kind == "mcp_login" for a in app._deferred_actions)
+                run_worker.assert_called_once()
+                assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
             finally:
                 app._shell_running = False
 
@@ -20612,6 +20680,175 @@ class TestMCPLoginCommand:
             restart.assert_awaited_once_with("notion")
             assert app._pending_mcp_reconnect is False
 
+    async def test_prompt_mcp_reconnect_restart_choice_queues_while_busy(self) -> None:
+        """Accepting reconnect during a live run queues the restart, not runs it.
+
+        Also pins the two things the queued path must get right: the just-
+        authenticated server is optimistically flipped to `awaiting_reconnect`
+        so `/mcp` stops calling it unauthenticated during the busy window, and
+        draining once idle fires exactly one restart carrying the real server
+        name.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._mcp_server_info = [
+                MCPServerInfo(
+                    name="notion",
+                    transport="http",
+                    status="unauthenticated",
+                    error="Login required.",
+                ),
+            ]
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("reconnect")
+
+            try:
+                with (
+                    patch.object(app, "push_screen", side_effect=_push_screen),
+                    patch.object(
+                        app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                    ) as restart,
+                    patch.object(app, "notify") as notify,
+                ):
+                    await app._prompt_mcp_reconnect("notion")
+
+                    # Restart is deferred, not run mid-generation.
+                    restart.assert_not_called()
+                    assert app._pending_mcp_reconnect is True
+                    queued = [
+                        a for a in app._deferred_actions if a.kind == "mcp_reconnect"
+                    ]
+                    assert len(queued) == 1
+                    message = notify.call_args.args[0]
+                    assert "notion" in message
+                    assert "current task completes" in message
+
+                    # Optimistic state: notion now reads as awaiting_reconnect,
+                    # not unauthenticated, so `_apply_optimistic_..._state`
+                    # cannot be silently dropped without failing here.
+                    notion = next(s for s in app._mcp_server_info if s.name == "notion")
+                    assert notion.status == "awaiting_reconnect"
+                    assert app._pending_mcp_login_reconnect is True
+
+                    # Once the run ends, the drain fires one restart with the
+                    # real server name (not the "pending login" sentinel).
+                    app._agent_running = False
+                    await app._drain_deferred_actions()
+
+                restart.assert_awaited_once_with("notion")
+            finally:
+                app._agent_running = False
+
+    async def test_deferred_mcp_reconnect_restarts_when_still_pending(self) -> None:
+        """The queued reconnect restarts while the pending flag is still set."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._run_deferred_mcp_reconnect("notion")
+            restart.assert_awaited_once_with("notion")
+
+    async def test_deferred_mcp_reconnect_skips_when_already_reconnected(self) -> None:
+        """A manual `/mcp reconnect` before the drain clears the pending flag.
+
+        The queued action must then be a no-op so the server is not restarted
+        a second time.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = False
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._run_deferred_mcp_reconnect("notion")
+            restart.assert_not_called()
+
+    async def test_reconnect_queue_dedupes_across_prompt_and_command(self) -> None:
+        """Prompt-queued reconnect + `/mcp reconnect` while busy = one restart.
+
+        `_defer_action` is last-write-wins per kind, so the `/mcp reconnect`
+        subcommand (sentinel name) replaces the prompt's queued action (real
+        name). Only one survives, and the drain fires a single restart — the
+        respawn reloads every token regardless of which name it carries.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("reconnect")
+
+            try:
+                with (
+                    patch.object(app, "push_screen", side_effect=_push_screen),
+                    patch.object(
+                        app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                    ) as restart,
+                    patch.object(app, "notify"),
+                ):
+                    # Accept "reconnect now" mid-run: queues the real name.
+                    await app._prompt_mcp_reconnect("notion")
+                    # Then `/mcp reconnect` mid-run: queues the sentinel,
+                    # replacing the prior action.
+                    await app._handle_mcp_reconnect_command()
+
+                    queued = [
+                        a for a in app._deferred_actions if a.kind == "mcp_reconnect"
+                    ]
+                    assert len(queued) == 1
+
+                    app._agent_running = False
+                    await app._drain_deferred_actions()
+
+                restart.assert_awaited_once()
+            finally:
+                app._agent_running = False
+
+    async def test_interrupt_warns_when_dropping_queued_reconnect(self) -> None:
+        """Interrupting a run that queued a reconnect surfaces a recovery notice.
+
+        The token is already on disk, but the "will reconnect once the task
+        completes" promise no longer holds once the queue is discarded, so the
+        drop must not be silent.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._defer_action(
+                DeferredAction(kind="mcp_reconnect", execute=AsyncMock()),
+            )
+            with patch.object(app, "notify") as notify:
+                app._cancel_worker(None)
+
+            assert not app._deferred_actions
+            messages = [call.args[0] for call in notify.call_args_list if call.args]
+            assert any("Cancelled the queued MCP reconnect" in m for m in messages)
+
+    async def test_restart_path_drops_queued_reconnect_without_warning(self) -> None:
+        """A full restart fulfills the reconnect, so it fires no cancel notice."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._defer_action(
+                DeferredAction(kind="mcp_reconnect", execute=AsyncMock()),
+            )
+            with patch.object(app, "notify") as notify:
+                app._cancel_worker(None, abort_pending_reconnect=False)
+
+            assert not app._deferred_actions
+            messages = [call.args[0] for call in notify.call_args_list if call.args]
+            assert not any("Cancelled the queued MCP reconnect" in m for m in messages)
+
     async def test_prompt_mcp_reconnect_restart_choice_clears_splash_prompts(
         self,
     ) -> None:
@@ -20719,6 +20956,49 @@ class TestMCPLoginCommand:
                 await app._handle_command("/mcp reconnect")
                 await pilot.pause()
             restart.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        ("agent_running", "shell_running"),
+        [(True, False), (False, True)],
+    )
+    async def test_mcp_reconnect_subcommand_queues_while_busy(
+        self, *, agent_running: bool, shell_running: bool
+    ) -> None:
+        """`/mcp reconnect` waits for an active agent or shell task to finish."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_login_reconnect = True
+            app._sync_pending_mcp_reconnect()
+            app._agent_running = agent_running
+            app._shell_running = shell_running
+
+            try:
+                with (
+                    patch.object(
+                        app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                    ) as restart,
+                    patch.object(app, "notify") as notify,
+                ):
+                    await app._handle_command("/mcp reconnect")
+
+                    restart.assert_not_called()
+                    queued = [
+                        action
+                        for action in app._deferred_actions
+                        if action.kind == "mcp_reconnect"
+                    ]
+                    assert len(queued) == 1
+                    assert "current task completes" in notify.call_args.args[0]
+
+                    app._agent_running = False
+                    app._shell_running = False
+                    await app._drain_deferred_actions()
+
+                restart.assert_awaited_once_with("pending login")
+            finally:
+                app._agent_running = False
+                app._shell_running = False
 
     async def test_mcp_reconnect_subcommand_noop_when_not_pending(self) -> None:
         """`/mcp reconnect` surfaces a notice and does nothing when idle."""

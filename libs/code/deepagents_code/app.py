@@ -1348,6 +1348,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "mcp_reconnect",
     "rubric_model_switch",
     "rubric_max_iterations_switch",
 ]
@@ -11413,8 +11414,16 @@ class DeepAgentsApp(App):
 
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
+        Leaves the queue untouched while the server is connecting so the
+        `ServerReady` path can resume draining against the fully initialized
+        session.
         """
-        if self._processing_pending or not self._pending_messages or self._exit:
+        if (
+            self._processing_pending
+            or not self._pending_messages
+            or self._exit
+            or self._connecting
+        ):
             return
 
         self._processing_pending = True
@@ -12449,6 +12458,7 @@ class DeepAgentsApp(App):
             widget.id,
             tool_status=data.tool_status,
             tool_output=data.tool_output,
+            tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
         )
@@ -12644,6 +12654,7 @@ class DeepAgentsApp(App):
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
+        self._warn_dropped_mcp_reconnect()
         self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
@@ -12692,12 +12703,41 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
 
-    def _cancel_worker(self, worker: Worker[None] | None) -> None:
+    def _warn_dropped_mcp_reconnect(self) -> None:
+        """Warn when an interrupt discards a queued MCP reconnect.
+
+        `_start_mcp_login` -> `_prompt_mcp_reconnect` can queue the server
+        restart while a run is in flight, telling the user it will fire once
+        the task completes. An interrupt (`Ctrl+C`, `Esc`, `/clear`) drops that
+        queued action before it drains, so that promise no longer holds. The
+        token is already on disk and the pending banner / `/mcp reconnect`
+        state survive the discard, so recovery is one command away — surface
+        that rather than letting the reconnect lapse silently.
+        """
+        if not any(a.kind == "mcp_reconnect" for a in self._deferred_actions):
+            return
+        self.notify(
+            "Cancelled the queued MCP reconnect. Run `/mcp reconnect` to load "
+            "the new tools when ready.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def _cancel_worker(
+        self, worker: Worker[None] | None, *, abort_pending_reconnect: bool = True
+    ) -> None:
         """Discard the message queue and cancel an active worker.
 
         Args:
             worker: The worker to cancel.
+            abort_pending_reconnect: When `True` (the interrupt default), warn
+                if the discarded queue held a promised MCP reconnect. Pass
+                `False` from paths that fulfill the reconnect another way (a
+                full server restart) so the notice does not misfire.
         """
+        if abort_pending_reconnect:
+            self._warn_dropped_mcp_reconnect()
         self._discard_queue()
         if worker is not None:
             worker.cancel()
@@ -15576,8 +15616,11 @@ class DeepAgentsApp(App):
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
         """Restart the server to pick up any deferred MCP login tokens.
 
-        No-op (with an inline notice) when nothing is pending so the
-        command is safe to run idempotently. `force=True` bypasses the
+        Restarts immediately when a login is pending and the session is
+        idle; when an agent or shell task is running the restart is queued
+        via `DeferredAction(kind="mcp_reconnect")` and drained once the task
+        completes. No-op (with an inline notice) when nothing is pending so
+        the command is safe to run idempotently. `force=True` bypasses the
         no-op guard via a confirmation modal — the escape hatch for
         stale-cache or externally-edited-config cases where the server
         needs a fresh load even though no login is queued in this
@@ -15588,6 +15631,22 @@ class DeepAgentsApp(App):
                 if no MCP login is queued.
         """
         if self._pending_mcp_reconnect:
+            if self._agent_running or self._shell_running:
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(
+                            "pending login"
+                        ),
+                    ),
+                )
+                self.notify(
+                    "The server will reconnect once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             await self._restart_server_for_mcp_refresh("pending login")
             return
         if not force:
@@ -15972,10 +16031,13 @@ class DeepAgentsApp(App):
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
         to restart), or while an agent switch is in progress. When the local
-        server is still connecting or the session is mid-run, the login is
-        queued via `_defer_action` and runs once the server is ready and the
-        user is idle. Config resolution and server-name validation happen
-        later, in `_run_mcp_login_worker`.
+        server is still connecting, the login is queued via `_defer_action`
+        and runs once the server is ready. An active agent or shell run does
+        *not* defer login: the OAuth handshake and token write never touch the
+        running server, so they proceed concurrently; only the follow-up
+        server restart is queued (see `_prompt_mcp_reconnect`). Config
+        resolution and server-name validation happen later, in
+        `_run_mcp_login_worker`.
 
         Args:
             server_name: MCP server name from `mcpServers`.
@@ -16027,20 +16089,10 @@ class DeepAgentsApp(App):
             )
             return
 
-        if self._agent_running or self._shell_running:
-            self.notify(
-                "MCP login will start once the current task completes.",
-                timeout=5,
-                markup=False,
-            )
-            self._defer_action(
-                DeferredAction(
-                    kind="mcp_login",
-                    execute=lambda: self._run_mcp_login_worker(server_name),
-                ),
-            )
-            return
-
+        # An active agent/shell run is intentionally not a defer gate: the
+        # OAuth handshake and on-disk token write are independent of the
+        # running server, so login proceeds immediately and only the restart
+        # is queued once the task finishes (`_prompt_mcp_reconnect`).
         self.run_worker(
             self._run_mcp_login_worker(server_name),
             exclusive=False,
@@ -16231,6 +16283,30 @@ class DeepAgentsApp(App):
                 choice = "later"
 
         if choice == "reconnect":
+            if self._agent_running or self._shell_running:
+                # The restart tears down the server the active run lives on,
+                # so honor the user's "reconnect now" intent without killing
+                # the in-flight generation: queue the restart to fire once the
+                # task finishes (drained via `_maybe_drain_deferred`). The
+                # token is already on disk, so mark the reconnect pending for
+                # `/mcp reconnect` and the splash banner in the meantime.
+                self._pending_mcp_login_reconnect = True
+                self._sync_pending_mcp_reconnect()
+                self._apply_optimistic_mcp_login_pending_state(server_name)
+                self._defer_action(
+                    DeferredAction(
+                        kind="mcp_reconnect",
+                        execute=lambda: self._run_deferred_mcp_reconnect(server_name),
+                    ),
+                )
+                self.notify(
+                    f"Logged in to {server_name!r}. The server will reconnect "
+                    "once the current task completes.",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+                return
             self._pending_mcp_login_reconnect = False
             self._pending_mcp_disable_reconnect_servers.clear()
             self._sync_pending_mcp_reconnect()
@@ -16280,6 +16356,24 @@ class DeepAgentsApp(App):
                     timeout=8,
                     markup=False,
                 )
+
+    async def _run_deferred_mcp_reconnect(self, server_name: str) -> None:
+        """Restart for MCP token refresh once the busy state clears.
+
+        Queued by `_prompt_mcp_reconnect` when the user accepts the restart
+        while an agent or shell task is still running — restarting then would
+        tear down the server the active run depends on. Re-checks the pending
+        flag so a manual `/mcp reconnect` in the interim isn't followed by a
+        redundant restart. (The queue is in-memory only, so a relaunch never
+        reaches this path — the fresh process loads the token on startup.)
+
+        Args:
+            server_name: Server whose login triggered the reconnect.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        self._clear_mcp_login_reconnect_banner_counts(server_name)
+        await self._restart_server_for_mcp_refresh(server_name)
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -16609,9 +16703,11 @@ class DeepAgentsApp(App):
 
         # Sever in-flight work bound to the dying subprocess. `_cancel_worker`
         # discards the queued backlog too — those messages would otherwise
-        # fire against the freshly respawned agent silently.
+        # fire against the freshly respawned agent silently. This restart *is*
+        # the reconnect, so suppress the dropped-reconnect warning: the respawn
+        # below reloads every on-disk MCP token regardless.
         if self._agent_running and self._agent_worker:
-            self._cancel_worker(self._agent_worker)
+            self._cancel_worker(self._agent_worker, abort_pending_reconnect=False)
             self._agent_running = False
         else:
             self._discard_queue()

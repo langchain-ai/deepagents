@@ -370,6 +370,69 @@ class TestServerGraph:
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info == []
 
+    async def test_build_tools_passes_project_dir_to_plugin_mcp_discovery(
+        self,
+    ) -> None:
+        """Server graph discovery should preserve project substitution context."""
+        fetch_tool = object()
+        thread_tool = object()
+        project_root = object()
+        project_context = SimpleNamespace(
+            project_root=project_root,
+            user_cwd=object(),
+        )
+        plugin_configs = ({"mcpServers": {"plugin": {}}},)
+        resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            settings=SimpleNamespace(has_tavily=False),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            fetch_url=fetch_tool,
+            get_current_thread_id=thread_tool,
+            web_search=object(),
+        )
+
+        class FakeSessionManager:
+            pass
+
+        mcp_module = _module_with_attrs(
+            "deepagents_code.mcp_tools",
+            MCPSessionManager=FakeSessionManager,
+            resolve_and_load_mcp_tools=resolve_mcp_tools,
+        )
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "deepagents_code.config": config_module,
+                    "deepagents_code.tools": tools_module,
+                    "deepagents_code.mcp_tools": mcp_module,
+                },
+            ),
+            patch(
+                "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
+                return_value=plugin_configs,
+            ) as discover_plugin_mcp,
+        ):
+            module = _import_fresh_server_graph()
+            tools, mcp_server_info = await module._build_tools(
+                ServerConfig(no_mcp=False),
+                project_context,
+            )
+
+        assert tools == [fetch_tool, thread_tool]
+        assert mcp_server_info == []
+        discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
+        resolve_mcp_tools.assert_awaited_once()
+        await_args = resolve_mcp_tools.await_args
+        assert await_args is not None
+        assert await_args.kwargs["additional_configs"] == plugin_configs
+        assert await_args.kwargs["project_context"] is project_context
+
 
 class TestStartupErrorMarker:
     """`emit_startup_failure` must produce the parser marker on stderr.

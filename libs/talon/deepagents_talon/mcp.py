@@ -19,6 +19,7 @@ from deepagents_code.mcp_tools import (
     discover_mcp_configs,
     resolve_and_load_mcp_tools,
 )
+from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
 from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
@@ -71,11 +72,18 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     Raises:
         MCPConfigError: If a selected config source is malformed.
     """
+    project_context = _project_context(config)
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
     try:
         tools, manager, infos = await resolve_and_load_mcp_tools(
             explicit_config_path=_first_env_value(config.env),
             trust_project_mcp=None,
-            project_context=_project_context(config),
+            project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         msg = str(exc)

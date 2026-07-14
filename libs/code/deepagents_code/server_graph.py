@@ -107,13 +107,18 @@ async def _build_tools(
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
         from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
 
+        project_dir = (
+            project_context.project_root or project_context.user_cwd
+            if project_context is not None
+            else None
+        )
         try:
             mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
                 explicit_config_path=config.mcp_config_path,
                 no_mcp=config.no_mcp,
                 trust_project_mcp=config.trust_project_mcp,
                 project_context=project_context,
-                additional_configs=discover_plugin_mcp_configs(),
+                additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
                 stateless=True,
                 session_manager=_get_mcp_session_manager(),
             )

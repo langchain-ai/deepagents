@@ -1158,6 +1158,7 @@ async def _preload_session_mcp_server_info(
         return None
 
     from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
     from deepagents_code.project_utils import ProjectContext
 
     session_manager = None
@@ -1167,11 +1168,17 @@ async def _preload_session_mcp_server_info(
         except OSError:
             logger.warning("Could not determine working directory for MCP preload")
             project_context = None
+        project_dir = (
+            project_context.project_root or project_context.user_cwd
+            if project_context is not None
+            else None
+        )
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             project_context=project_context,
+            additional_configs=discover_plugin_mcp_configs(project_dir=project_dir),
         )
         return server_info
     finally:
@@ -2219,6 +2226,8 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
+    from deepagents_code.project_utils import ProjectContext
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     try:
@@ -2232,6 +2241,17 @@ async def _run_acp_cli_async(
         sys.stderr.flush()
         return 1
     model_result.apply_to_settings()
+
+    try:
+        project_context = ProjectContext.from_user_cwd(Path.cwd())
+    except (OSError, RuntimeError):
+        logger.warning("Could not determine working directory for ACP MCP loading")
+        project_context = None
+    project_dir = (
+        project_context.project_root or project_context.user_cwd
+        if project_context is not None
+        else None
+    )
 
     # Persist the resolved model so [models].recent is always populated.
     resolved_spec = f"{model_result.provider}:{model_result.model_name}"
@@ -2255,6 +2275,12 @@ async def _run_acp_cli_async(
             explicit_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            project_context=project_context,
+            additional_configs=(
+                discover_plugin_mcp_configs(project_dir=project_dir)
+                if not no_mcp
+                else ()
+            ),
         )
         tools.extend(mcp_tools)
     except FileNotFoundError as exc:

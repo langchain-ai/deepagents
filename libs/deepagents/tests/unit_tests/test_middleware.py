@@ -46,8 +46,9 @@ from deepagents.middleware._message_eviction import (
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
+    GLOB_TRUNCATION_NOTE,
+    GREP_TRUNCATION_NOTE,
     NUM_CHARS_PER_TOKEN,
-    SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
@@ -688,7 +689,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "1: import os" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     def test_grep_truncated_regex_pattern_no_matches_keeps_note(self):
         """A regex-looking miss still reports that the backend search was incomplete."""
@@ -711,7 +712,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert result.content.startswith("No matches found")
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
         assert "literal text, not regex" not in result.content
 
     def test_glob_truncated_renders_as_success_with_note(self):
@@ -738,7 +739,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "/test.py" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GLOB_TRUNCATION_NOTE in result.content
 
     def test_grep_not_truncated_omits_note(self):
         """A complete grep must not carry the truncation note."""
@@ -755,7 +756,7 @@ class TestFilesystemMiddleware:
             result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
 
         assert result.status == "success"
-        assert SEARCH_TRUNCATION_NOTE not in result.content
+        assert GREP_TRUNCATION_NOTE not in result.content
 
     def test_grep_forwards_default_max_count_to_backend(self):
         """The grep tool forwards the middleware's `grep_max_count` default to the backend."""
@@ -842,7 +843,7 @@ class TestFilesystemMiddleware:
         assert "/one.py" in result.content
         assert "/two.py" in result.content
         assert "/three.py" not in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     async def test_async_grep_caps_legacy_backend_without_forwarding_max_count(self):
         """The inherited async wrapper also supports the previous `grep` signature."""
@@ -864,13 +865,35 @@ class TestFilesystemMiddleware:
         assert result.status == "success"
         assert "/one.py" in result.content
         assert "/two.py" not in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
-    def test_invalid_grep_max_count_raises(self):
+    @pytest.mark.parametrize("grep_max_count", [0, -1])
+    def test_invalid_grep_max_count_raises(self, grep_max_count: int):
         """A non-positive `grep_max_count` is rejected at construction."""
         backend, _ = _make_backend()
         with pytest.raises(ValueError, match="grep_max_count must be positive"):
-            FilesystemMiddleware(backend=backend, grep_max_count=0)
+            FilesystemMiddleware(backend=backend, grep_max_count=grep_max_count)
+
+    def test_default_grep_max_count_is_1000(self):
+        """The documented default cap (1000) is forwarded when no override is given."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        captured: dict[str, object] = {}
+
+        def _grep(_pattern, path=None, glob=None, *, max_count=None):  # noqa: ARG001
+            captured["max_count"] = max_count
+            return GrepResult(matches=[])
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", side_effect=_grep),
+        ):
+            grep_search_tool.invoke({"pattern": "import", "runtime": _runtime()})
+
+        assert captured["max_count"] == 1000
 
     @pytest.mark.parametrize("max_count", [0, -1])
     def test_non_positive_per_call_max_count_is_rejected(self, max_count: int) -> None:
@@ -893,7 +916,7 @@ class TestFilesystemMiddleware:
             result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
 
         assert result.status == "success"
-        assert SEARCH_TRUNCATION_NOTE not in result.content
+        assert GLOB_TRUNCATION_NOTE not in result.content
 
     def test_grep_truncation_note_survives_size_truncation(self):
         """A grep that is both time-truncated and size-overflowing keeps the truncation note (it isn't tail-cut)."""
@@ -914,7 +937,7 @@ class TestFilesystemMiddleware:
         assert result.status == "success"
         # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
         assert TRUNCATION_GUIDANCE in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     async def test_async_grep_truncated_renders_as_success_with_note(self):
         """The async grep handler renders a truncated result as success with the note (parity with sync)."""
@@ -932,7 +955,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "1: import os" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GREP_TRUNCATION_NOTE in result.content
 
     async def test_async_glob_truncated_renders_as_success_with_note(self):
         """The async glob handler renders a truncated result as success with the note (parity with sync)."""
@@ -950,7 +973,7 @@ class TestFilesystemMiddleware:
 
         assert result.status == "success"
         assert "/test.py" in result.content
-        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert GLOB_TRUNCATION_NOTE in result.content
 
     def test_grep_search_shortterm_content_mode(self):
         files = {

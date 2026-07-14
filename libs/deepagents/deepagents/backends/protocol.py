@@ -534,9 +534,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         bounds how long the caller waits; it does not stop the worker thread
         created by `asyncio.to_thread`.
 
-        `max_count` is forwarded when the concrete `grep` accepts it; otherwise
-        the cap is applied post-hoc via `_apply_grep_max_count`, so callers get
-        the same guarantee regardless of which path runs.
+        `max_count` is forwarded when the concrete `grep` accepts it (so the
+        search can bound itself); backends that don't accept it run uncapped and
+        are trimmed afterward. Either way the return value is always passed
+        through `_apply_grep_max_count` (a no-op when already within the cap), so
+        callers get the same guarantee regardless of which path runs.
         """
         grep_kwargs = {"max_count": max_count} if _method_accepts_max_count(type(self), "grep") else {}
         grep_call = partial(self.grep, pattern, path, glob, **grep_kwargs)

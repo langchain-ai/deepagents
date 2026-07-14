@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     GrepResult,
     LsResult,
     SandboxBackendProtocol,
+    _method_accepts_max_count,
     _supports_delete,
 )
 
@@ -205,6 +206,30 @@ class TestLegacySubclassOverrideRouting:
             assert LegacyBackend().grep("x") == GrepResult(matches=[{"path": "/f", "line": 1, "text": "x"}])
         assert any("grep_raw" in str(x.message) for x in w)
 
+    def test_grep_raw_override_respects_max_count(self) -> None:
+        """`grep` caps a legacy `grep_raw` override post-hoc, honoring the boundary."""
+
+        class LegacyBackend(BackendProtocol):
+            def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict[str, str | int]] | str:
+                return [
+                    {"path": "/one", "line": 1, "text": pattern},
+                    {"path": "/two", "line": 2, "text": pattern},
+                    {"path": "/three", "line": 3, "text": pattern},
+                ]
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            capped = LegacyBackend().grep("x", max_count=2)
+            exact = LegacyBackend().grep("x", max_count=3)
+
+        # More matches than the cap: trimmed to `max_count` and flagged truncated.
+        assert capped.matches == [{"path": "/one", "line": 1, "text": "x"}, {"path": "/two", "line": 2, "text": "x"}]
+        assert capped.truncated is True
+        # Exactly `max_count` matches with none dropped is reported complete.
+        assert exact.matches is not None
+        assert len(exact.matches) == 3
+        assert exact.truncated is False
+
     def test_glob_routes_to_glob_info_override(self) -> None:
         class LegacyBackend(BackendProtocol):
             def glob_info(self, pattern: str, path: str = "/") -> list[dict[str, str]]:
@@ -329,3 +354,30 @@ class TestMapFileOperationError:
         assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"
+
+
+class TestMethodAcceptsMaxCount:
+    """`_method_accepts_max_count` decides whether the cap is forwarded or applied post-hoc."""
+
+    def test_explicit_keyword_param_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_var_keyword_param_detected(self) -> None:
+        """A `**kwargs` grep is treated as accepting the cap (forwarded, not post-hoc)."""
+
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, **kwargs: object) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_missing_param_not_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:  # ty: ignore[invalid-method-override]
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is False

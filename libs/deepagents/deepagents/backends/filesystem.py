@@ -678,7 +678,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
 
-    def _ripgrep_search(  # noqa: C901, PLR0911, PLR0912, PLR0915
+    def _ripgrep_search(  # noqa: C901, PLR0911, PLR0912, PLR0915  # single streaming loop + watchdog + per-branch fallback logging; splitting it would scatter the cap/timeout bookkeeping
         self,
         pattern: str,
         base_full: Path,
@@ -688,10 +688,12 @@ class FilesystemBackend(BackendProtocol):
         """Search using ripgrep with fixed-string (literal) mode.
 
         Streams ripgrep's newline-delimited `--json` output line-by-line via
-        `subprocess.Popen` instead of buffering all of stdout, so a pathological
-        pattern on a huge repository cannot spike memory. Once more than
-        `max_count` matches are found the process is terminated and the search
-        stops early, returning exactly `max_count` matches flagged truncated.
+        `subprocess.Popen` instead of buffering all of stdout, so it holds only
+        parsed matches rather than the full JSON output. When `max_count` is set,
+        memory is additionally bounded: once more than `max_count` matches are
+        found the process is terminated and the search stops early, returning
+        exactly `max_count` matches flagged truncated. With no cap, `results`
+        still grows with the total match count.
 
         Args:
             pattern: Literal string to search for (unescaped).
@@ -830,7 +832,7 @@ class FilesystemBackend(BackendProtocol):
 
         return results, truncated
 
-    def _parse_rg_match(  # noqa: PLR0911
+    def _parse_rg_match(  # noqa: PLR0911  # one early return per skip reason reads clearer than nesting the checks
         self,
         line: str,
         base_full: Path,
@@ -838,10 +840,11 @@ class FilesystemBackend(BackendProtocol):
     ) -> tuple[str, int, str] | None:
         """Parse one ripgrep `--json` line into `(virtual_path, line_no, text)`.
 
-        Returns `None` for non-match frames, unparseable lines, matches missing a
-        path or line number, and matches whose resolved path escapes `base_full`
-        (each logged and skipped). Extracted from the streaming loop so the
-        cap/watchdog bookkeeping there stays readable.
+        Returns `None` for non-match frames, unparseable lines, and matches
+        missing a path or line number (all skipped silently), as well as for
+        matches whose resolved path escapes `base_full` and per-file `error`
+        frames (both logged, then skipped). Extracted from the streaming loop so
+        the cap/watchdog bookkeeping there stays readable.
         """
         try:
             data = json.loads(line)
@@ -918,7 +921,16 @@ class FilesystemBackend(BackendProtocol):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            try:
+                # Bound the post-SIGKILL wait too. A process wedged in
+                # uninterruptible I/O (e.g. a dead NFS mount) can ignore even
+                # SIGKILL until the I/O returns; an unbounded wait here would
+                # hang the grep call past its deadline — the exact hang the
+                # watchdog exists to prevent. Abandon the handle after a grace
+                # period rather than block the caller forever.
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("ripgrep did not exit after SIGKILL; abandoning process handle")
 
     def _python_search(  # noqa: C901, PLR0912, PLR0915
         self,

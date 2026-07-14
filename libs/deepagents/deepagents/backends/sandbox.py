@@ -595,6 +595,15 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count:
         )
 
     glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
+    # Known limitation (pre-existing): `2>/dev/null` + `|| true` means a genuine
+    # grep failure (exit 2 — unreadable root, bad option) is swallowed and parses
+    # as an empty "no matches" result, indistinguishable from a real zero-match.
+    # Surfacing exit 2 while still tolerating no-match (exit 1) AND the SIGPIPE
+    # (exit 141) that `head` sends grep on the cap path requires `set -o pipefail`
+    # (bash/zsh only, not POSIX sh/dash/busybox); buffering to a temp file instead
+    # would defeat the `head` early-stop below. A portable fix belongs in its own
+    # sandbox-tested change. The in-process `_GREP_PATH_GLOB_TEMPLATE` route does
+    # surface its errors (see its docstring); only this GNU-grep route swallows.
     base = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null"
     if max_count is not None:
         # Read one record beyond the cap so the parser can distinguish "exactly

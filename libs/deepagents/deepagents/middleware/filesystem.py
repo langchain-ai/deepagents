@@ -499,7 +499,7 @@ def _format_grep_tool_result(
     """Format a backend grep result for the tool boundary.
 
     Size-truncation is applied to the match body here, before any note is
-    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    appended, so a trailing `GREP_TRUNCATION_NOTE` survives instead of being
     sliced off by an outer `truncate_if_too_long` at the call site. Callers
     should use the returned content as-is rather than re-truncating it.
 
@@ -522,7 +522,7 @@ def _format_grep_tool_result(
         return f"{error}\n\nPartial matches:\n{formatted}", "error"
     notes: list[str] = []
     if result.truncated:
-        notes.append(SEARCH_TRUNCATION_NOTE)
+        notes.append(GREP_TRUNCATION_NOTE)
     if not result.truncated and not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
         notes.append(hint)
     if notes:
@@ -560,17 +560,23 @@ def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
     """Render glob paths for the tool boundary, appending the truncation note when partial."""
     content = _format_file_paths(paths)
     if truncated:
-        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+        return f"{content}\n\n{GLOB_TRUNCATION_NOTE}"
     return content
 
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 10.0  # seconds
 LINE_NUMBER_WIDTH = 6
-SEARCH_TRUNCATION_NOTE = (
+GREP_TRUNCATION_NOTE = (
     "Note: the search stopped early (it hit its time limit or the maximum match count). "
     "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
     "narrower path), or raise max_count, to see the rest."
+)
+# Glob has no match-count cap and no `max_count` argument, so its note names only
+# the time/size limit and omits the (inapplicable) "raise max_count" remedy.
+GLOB_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The paths above are valid but "
+    "incomplete. Narrow the search (a more specific pattern or a narrower path) to see the rest."
 )
 
 

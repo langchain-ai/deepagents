@@ -423,6 +423,13 @@ class CompositeBackend(BackendProtocol):
                 globally (not per backend), short-circuits remaining routes once
                 the cap is reached, and flags the result `truncated=True`.
 
+                Unlike a single backend, composite does not guarantee the
+                "exactly `max_count` matches means complete" boundary: when an
+                earlier route fills the budget exactly, the remaining routes are
+                short-circuited and the result is flagged `truncated=True` even
+                if those routes would have contributed nothing. The flag is thus
+                conservative — it may over-report truncation, never under-report.
+
         Returns:
             `GrepResult` with matches or error.
 
@@ -471,9 +478,11 @@ class CompositeBackend(BackendProtocol):
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
-            # Defense-in-depth: the budget split above already keeps the total at
-            # or under `max_count`, so this only trims a non-compliant backend
-            # that returned more than its allotted budget.
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
             if max_count is not None and len(all_matches) > max_count:
                 all_matches = all_matches[:max_count]
                 truncated = True
@@ -531,9 +540,11 @@ class CompositeBackend(BackendProtocol):
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
                 truncated = truncated or grep_result.truncated
 
-            # Defense-in-depth: the budget split above already keeps the total at
-            # or under `max_count`, so this only trims a non-compliant backend
-            # that returned more than its allotted budget.
+            # Unreachable safety net: each routed result is already capped to its
+            # allotted budget by the `_grep_backend`/`_agrep_backend` helpers
+            # (via `_apply_grep_max_count`), so the running total can never exceed
+            # `max_count`. Kept as belt-and-suspenders against a future refactor
+            # that bypasses that per-route capping.
             if max_count is not None and len(all_matches) > max_count:
                 all_matches = all_matches[:max_count]
                 truncated = True

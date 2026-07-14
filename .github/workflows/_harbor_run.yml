@@ -31,6 +31,19 @@ on:
       shard_parallel:
         type: string
         default: "10"
+      flat_matrix:
+        # A pre-expanded `{"include":[...]}` job matrix (one entry per
+        # model/category/shard leaf), e.g. from a unified multi-model dispatch.
+        # When non-empty, `prep` passes it through verbatim instead of running
+        # `shard_matrix.py`'s single-dataset expansion.
+        type: string
+        default: ""
+      max_parallel:
+        # Explicit size of the harbor job's parallel runner pool, for a caller
+        # driving `flat_matrix` across several models/categories at once. 0
+        # falls back to `shard_parallel` (today's single-dataset behavior).
+        type: string
+        default: "0"
       concurrency:
         type: string
         default: "4"
@@ -89,16 +102,24 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      matrix: ${{ steps.shard-matrix.outputs.matrix }}
+      matrix: ${{ steps.resolve-matrix.outputs.matrix }}
       # Effective shard count after capping to the selectable work (<= n_shards).
       # The harbor job reads this so its partition matches the emitted matrix.
-      n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
+      n_shards: ${{ steps.resolve-matrix.outputs.n_shards }}
+      # Size of the harbor job's parallel runner pool: an explicit max_parallel
+      # override when the caller supplied one, else the per-leaf shard_parallel
+      # (today's behavior).
+      effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
+        # Only the single-dataset path needs this expansion; a caller supplying
+        # flat_matrix has already pre-expanded its own model/category/shard
+        # entries (see the passthrough step below).
+        if: ${{ inputs.flat_matrix == '' }}
         # This leaf evaluates exactly ONE model (inputs.model), so the model
         # matrix is a single-entry include (no models.py/validate_harbor_limits
         # step needed here). Cross-products it with the shard axis, caps the
@@ -111,6 +132,35 @@ jobs:
           N_TASKS: ${{ inputs.n_tasks }}
         run: python .github/scripts/shard_matrix.py
 
+      - name: "🧮 Resolve matrix + parallel pool"
+        id: resolve-matrix
+        # Picks the flat_matrix passthrough or the shard-matrix expansion
+        # (whichever ran) and derives the parallel pool, all in bash so the
+        # fallback logic isn't an inline `fromJson`/ternary expression.
+        env:
+          FLAT_MATRIX: ${{ inputs.flat_matrix }}
+          SHARD_MATRIX: ${{ steps.shard-matrix.outputs.matrix }}
+          SHARD_N_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
+          MAX_PARALLEL: ${{ inputs.max_parallel }}
+          SHARD_PARALLEL: ${{ inputs.shard_parallel }}
+        run: |
+          if [ -n "$FLAT_MATRIX" ]; then
+            matrix="$FLAT_MATRIX"
+          else
+            matrix="$SHARD_MATRIX"
+          fi
+          {
+            echo "matrix=$matrix"
+            echo "n_shards=$SHARD_N_SHARDS"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] && [ "$MAX_PARALLEL" -gt 0 ]; then
+            effective_max_parallel="$MAX_PARALLEL"
+          else
+            effective_max_parallel="$SHARD_PARALLEL"
+          fi
+          echo "effective_max_parallel=$effective_max_parallel" >> "$GITHUB_OUTPUT"
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
@@ -122,7 +172,7 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJson(inputs.shard_parallel) }}
+      max-parallel: ${{ fromJson(needs.prep.outputs.effective_max_parallel) }}
       matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
 
     defaults:
@@ -130,11 +180,11 @@ jobs:
         working-directory: libs/evals
     env:
       UV_NO_SYNC: "true"
-      HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
-      HARBOR_DATASET_PATH: ${{ inputs.dataset_path }}
+      HARBOR_DATASET: ${{ matrix.dataset || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+      HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
       HARBOR_CONCURRENCY: ${{ inputs.concurrency }}
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
-      HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+      HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
@@ -143,12 +193,17 @@ jobs:
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_FORCE_BUILD: ${{ inputs.force_build || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
-      # Effective shard count from prep (capped to selectable work), not the raw
-      # input — the partition must match the matrix or tasks would be dropped.
-      HARBOR_N_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
+      # A flat_matrix entry carries its own (already-effective) n_shards;
+      # otherwise fall back to prep's effective shard count (capped to
+      # selectable work), not the raw input — the partition must match the
+      # matrix or tasks would be dropped.
+      HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
-      HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
+      HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
+      # Per-leaf category, so a multi-category flat_matrix run can be
+      # aggregated per category downstream.
+      HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
       HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"

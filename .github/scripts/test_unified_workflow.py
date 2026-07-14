@@ -435,6 +435,74 @@ def test_override_inputs_warn_against_mutable_or_credentialed_sources() -> None:
     assert descriptions[0] == descriptions[1]
 
 
+def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
+    """Wire a flat per-model matrix through prep without losing the single-dataset path."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    call_inputs = _indented_block(workflow, "    inputs:")
+    assert 'flat_matrix:' in call_inputs
+    assert 'max_parallel:' in call_inputs
+    flat_matrix_input = _indented_block(call_inputs, "      flat_matrix:")
+    assert 'default: ""' in flat_matrix_input
+    max_parallel_input = _indented_block(call_inputs, "      max_parallel:")
+    assert 'default: "0"' in max_parallel_input
+
+    prep_job = _indented_block(workflow, "  prep:")
+    assert (
+        "matrix: ${{ steps.resolve-matrix.outputs.matrix }}" in prep_job
+    )
+    assert (
+        "effective_max_parallel: ${{ steps.resolve-matrix.outputs.effective_max_parallel }}"
+        in prep_job
+    )
+    expand_step = _indented_block(prep_job, '      - name: "🔀 Expand matrix by shard"')
+    assert "if: ${{ inputs.flat_matrix == '' }}" in expand_step
+
+    resolve_step = _indented_block(prep_job, '      - name: "🧮 Resolve matrix + parallel pool"')
+    assert 'FLAT_MATRIX: ${{ inputs.flat_matrix }}' in resolve_step
+    assert 'MAX_PARALLEL: ${{ inputs.max_parallel }}' in resolve_step
+    assert 'SHARD_PARALLEL: ${{ inputs.shard_parallel }}' in resolve_step
+    assert 'if [ -n "$FLAT_MATRIX" ]; then' in resolve_step
+    assert 'matrix="$FLAT_MATRIX"' in resolve_step
+    assert 'echo "matrix=$matrix"' in resolve_step
+    assert (
+        'if [[ "$MAX_PARALLEL" =~ ^[0-9]+$ ]] && [ "$MAX_PARALLEL" -gt 0 ]; then'
+        in resolve_step
+    )
+    assert 'effective_max_parallel="$MAX_PARALLEL"' in resolve_step
+    assert 'effective_max_parallel="$SHARD_PARALLEL"' in resolve_step
+    assert 'echo "effective_max_parallel=$effective_max_parallel"' in resolve_step
+
+    harbor_job = _indented_block(workflow, "  harbor:")
+    strategy = _indented_block(harbor_job, "    strategy:")
+    assert (
+        "max-parallel: ${{ fromJson(needs.prep.outputs.effective_max_parallel) }}"
+        in strategy
+    )
+
+    job_env = _indented_block(harbor_job, "    env:")
+    assert (
+        "HARBOR_DATASET: ${{ matrix.dataset || inputs.dataset || 'terminal-bench/terminal-bench-2' }}"
+        in job_env
+    )
+    assert (
+        "HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}"
+        in job_env
+    )
+    assert (
+        "HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}" in job_env
+    )
+    assert (
+        "HARBOR_INCLUDE_TASKS: ${{ matrix.include_tasks || inputs.include_tasks }}"
+        in job_env
+    )
+    assert (
+        "HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}"
+        in job_env
+    )
+    assert "HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}" in job_env
+    assert "HARBOR_SHARD_INDEX: ${{ matrix.shard }}" in job_env
+
+
 def test_evals_ci_filter_includes_unified_workflows() -> None:
     """Run evals CI when either unified workflow changes in isolation."""
     workflow = CI_WORKFLOW.read_text()

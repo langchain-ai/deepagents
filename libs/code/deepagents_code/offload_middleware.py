@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
+from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_middleware,
@@ -167,29 +168,47 @@ def _offload_tool_call_id(context: object) -> str | None:
 
 
 class _ArchiveReadGuard:
-    """Prevent an archive write after its prerequisite read raises.
+    """Prevent an archive write after its prerequisite read fails.
 
-    The SDK archive helper treats a raised read like a missing file and follows
-    it with a truncating `write`. This narrow backend adapter preserves the SDK
-    formatting and append behavior while making that fallback fail closed.
+    The SDK archive helper treats any unsuccessful read like a missing file and
+    follows it with a truncating `write`. This narrow backend adapter preserves
+    the SDK formatting and append behavior while making that fallback fail closed.
     """
 
     def __init__(self, backend: BackendProtocol) -> None:
         self._backend = backend
         self._read_failed = False
 
+    def _record_response_errors(
+        self, responses: list[FileDownloadResponse]
+    ) -> list[FileDownloadResponse]:
+        """Record read errors other than an expected missing archive.
+
+        Args:
+            responses: Backend download responses to inspect.
+
+        Returns:
+            The unchanged backend download responses.
+        """
+        if any(
+            response.error is not None and response.error != FILE_NOT_FOUND
+            for response in responses
+        ):
+            self._read_failed = True
+        return responses
+
     def _ensure_read_succeeded(self) -> None:
         """Raise when a prior archive read failed in this operation.
 
         Raises:
-            RuntimeError: If the prerequisite archive read raised.
+            RuntimeError: If the prerequisite archive read failed.
         """
         if self._read_failed:
             msg = "archive read failed; refusing to overwrite existing history"
             raise RuntimeError(msg)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Delegate a synchronous read while recording raised failures.
+        """Delegate a synchronous read while recording failures.
 
         Args:
             paths: Backend paths to read.
@@ -198,13 +217,14 @@ class _ArchiveReadGuard:
             The backend download responses.
         """
         try:
-            return self._backend.download_files(paths)
+            responses = self._backend.download_files(paths)
         except Exception:
             self._read_failed = True
             raise
+        return self._record_response_errors(responses)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Delegate an asynchronous read while recording raised failures.
+        """Delegate an asynchronous read while recording failures.
 
         Args:
             paths: Backend paths to read.
@@ -213,13 +233,14 @@ class _ArchiveReadGuard:
             The backend download responses.
         """
         try:
-            return await self._backend.adownload_files(paths)
+            responses = await self._backend.adownload_files(paths)
         except Exception:
             self._read_failed = True
             raise
+        return self._record_response_errors(responses)
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        """Write only when the prerequisite archive read did not raise.
+        """Write only when the prerequisite archive read succeeded.
 
         Args:
             file_path: Backend path to write.

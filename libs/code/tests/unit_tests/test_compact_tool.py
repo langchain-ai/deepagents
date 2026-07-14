@@ -10,12 +10,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
     COMPACTION_FAILURE_PREFIX,
     CLICompactionMiddleware,
+    _ArchiveReadGuard,
     _runtime_model_config,
 )
 from deepagents_code.tool_display import format_tool_display
@@ -52,6 +55,59 @@ class TestDisplayFormatting:
         """format_tool_display should return the expected string."""
         result = format_tool_display("compact_conversation", {})
         assert "compact_conversation()" in result
+
+
+class TestArchiveReadGuard:
+    """Cover fail-closed archive writes after backend read errors."""
+
+    def test_sync_error_response_blocks_write(self) -> None:
+        """A synchronous error response must not permit a truncating write."""
+        response = FileDownloadResponse(
+            path="/conversation_history/thread.md",
+            error="permission_denied",
+        )
+        backend = MagicMock()
+        backend.download_files.return_value = [response]
+        backend.write.return_value = WriteResult(path=response.path)
+        guard = _ArchiveReadGuard(backend)
+
+        assert guard.download_files([response.path]) == [response]
+        with pytest.raises(RuntimeError, match="refusing to overwrite"):
+            guard.write(response.path, "new history")
+
+        backend.write.assert_not_called()
+
+    async def test_async_error_response_blocks_write(self) -> None:
+        """An asynchronous error response must not permit a truncating write."""
+        response = FileDownloadResponse(
+            path="/conversation_history/thread.md",
+            error="transient backend error",
+        )
+        backend = MagicMock()
+        backend.adownload_files = AsyncMock(return_value=[response])
+        backend.awrite = AsyncMock(return_value=WriteResult(path=response.path))
+        guard = _ArchiveReadGuard(backend)
+
+        assert await guard.adownload_files([response.path]) == [response]
+        with pytest.raises(RuntimeError, match="refusing to overwrite"):
+            await guard.awrite(response.path, "new history")
+
+        backend.awrite.assert_not_awaited()
+
+    def test_missing_archive_allows_create(self) -> None:
+        """A missing archive remains the expected first-write path."""
+        response = FileDownloadResponse(
+            path="/conversation_history/thread.md",
+            error="file_not_found",
+        )
+        backend = MagicMock()
+        backend.download_files.return_value = [response]
+        expected = WriteResult(path=response.path)
+        backend.write.return_value = expected
+        guard = _ArchiveReadGuard(backend)
+
+        assert guard.download_files([response.path]) == [response]
+        assert guard.write(response.path, "new history") == expected
 
 
 class TestCLICompactionMiddleware:

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.config import Settings
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
@@ -117,6 +118,26 @@ class TestCollectBuiltInTools:
             pytest.raises(RuntimeError, match="does not expose"),
         ):
             collect_built_in_tools()
+
+
+class TestExperimentalTodoRemoval:
+    """`DEEPAGENTS_CODE_EXPERIMENTAL` drops the SDK `write_todos` tool."""
+
+    def test_write_todos_bound_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        names = {tool.name for tool in collect_built_in_tools()}
+        assert "write_todos" in names
+
+    def test_write_todos_removed_when_experimental(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        names = {tool.name for tool in collect_built_in_tools()}
+        assert "write_todos" not in names
+        # Only the todo tool is dropped; the rest of the core set stays bound.
+        assert names >= _CORE_BUILT_IN - {"write_todos"}
 
 
 class TestCollectToolsFromAgent:

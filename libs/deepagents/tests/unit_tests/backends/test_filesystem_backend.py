@@ -1649,6 +1649,32 @@ class TestFilesystemGrepContext:
             },
         ]
 
+    def test_ripgrep_context_strips_crlf_terminators(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_bytes(b"before\r\nneedle\r\nafter\r\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(2, "needle")]}, False),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [{"line": 3, "text": "after"}],
+            }
+        ]
+
     def test_ripgrep_context_treats_bare_carriage_returns_as_text(
         self,
         tmp_path: Path,

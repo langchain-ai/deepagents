@@ -763,7 +763,8 @@ class FilesystemBackend(BackendProtocol):
                     if range_index == len(line_ranges):
                         break
                     if line_num >= line_ranges[range_index][0]:
-                        context[line_num] = raw_line.rstrip("\n")
+                        text = raw_line[:-2] if raw_line.endswith("\r\n") else raw_line.removesuffix("\n")
+                        context[line_num] = text
         except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as e:
             # A matched file that cannot be re-read (e.g. non-UTF-8 bytes ripgrep
             # tolerated, a symlink loop, a mid-search deletion, or a path that no

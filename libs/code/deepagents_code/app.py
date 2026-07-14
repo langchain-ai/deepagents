@@ -6941,26 +6941,68 @@ class DeepAgentsApp(App):
                     "approval prompts may continue."
                 )
 
-    async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
+    async def _remove_inline_prompt_widget(  # noqa: PLR6301  # Shared inline-prompt cleanup; kept an instance method for handler symmetry
         self,
-        widget: AskUserMenu,
+        widget: Widget,
         *,
+        prompt_name: str,
         context: str,
     ) -> None:
-        """Remove an ask_user widget without surfacing cleanup races.
+        """Remove an inline prompt without surfacing cleanup races.
+
+        Swallows only the `AttributeError`/`RuntimeError` a `remove()` raises
+        when the widget was already detached, matching the other teardown
+        paths in this app. A different exception is a real teardown bug and is
+        left to propagate rather than being hidden at debug level.
 
         Args:
-            widget: Ask-user widget instance to remove.
+            widget: Inline prompt widget instance to remove.
+            prompt_name: Flow-specific name included in diagnostics.
             context: Short context string for diagnostics.
         """
         try:
             await widget.remove()
-        except Exception:
+        except (AttributeError, RuntimeError):
             logger.debug(
-                "Failed to remove ask-user widget during %s",
+                "Failed to remove %s widget during %s",
+                prompt_name,
                 context,
                 exc_info=True,
             )
+
+    async def _mount_inline_prompt(
+        self,
+        widget: Widget,
+        *,
+        focus: Callable[[], None],
+    ) -> None:
+        """Mount, scroll, and focus an inline prompt.
+
+        Args:
+            widget: Prompt to mount before queued messages.
+            focus: Flow-specific callback that focuses the active control.
+        """
+        messages = self.query_one("#messages", Container)
+        await self._mount_before_queued(messages, widget)
+        self.call_after_refresh(lambda: self._scroll_inline_prompt_into_view(widget))
+        self.call_after_refresh(focus)
+
+    def _scroll_inline_prompt_into_view(self, widget: Widget) -> None:
+        """Scroll a mounted inline prompt into view.
+
+        A prompt taller than the viewport anchors to its top so the title and
+        top border stay visible, rather than exposing only its bottom edge.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if widget.outer_size.height > chat.size.height:
+            widget.scroll_visible(animate=False, top=True)
+            return
+        widget.scroll_visible()
+
+    def _focus_chat_input_after_refresh(self) -> None:
+        """Restore chat input focus after an inline prompt is removed."""
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
 
     async def _request_ask_user(
         self,
@@ -6991,9 +7033,10 @@ class DeepAgentsApp(App):
                     if old_widget is not None:
                         old_widget.action_cancel()
                         self._pending_ask_user_widget = None
-                        await self._remove_ask_user_widget(
+                        await self._remove_inline_prompt_widget(
                             old_widget,
-                            context="ask-user timeout cleanup",
+                            prompt_name="ask-user",
+                            context="timeout cleanup",
                         )
                     break
                 await asyncio.sleep(0.1)
@@ -7007,10 +7050,7 @@ class DeepAgentsApp(App):
         self._pending_ask_user_widget = menu
 
         try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
-            self.call_after_refresh(menu.focus_active)
+            await self._mount_inline_prompt(menu, focus=menu.focus_active)
         except Exception as e:
             logger.exception(
                 "Failed to mount ask-user menu (id=%s)",
@@ -7022,60 +7062,31 @@ class DeepAgentsApp(App):
 
         return result_future
 
-    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
-        """Scroll mounted ask_user prompts into view.
-
-        Oversized prompts should start at the top of the viewport so the first
-        question and menu border are visible, instead of only exposing the
-        bottom edge of the widget.
-        """
-        chat = self.query_one("#chat", VerticalScroll)
-        if menu.outer_size.height > chat.size.height:
-            menu.scroll_visible(animate=False, top=True)
-            return
-        menu.scroll_visible()
+    async def _finish_ask_user_prompt(self, *, context: str) -> None:
+        """Remove the active ask-user prompt and restore chat input focus."""
+        if self._pending_ask_user_widget:
+            widget = self._pending_ask_user_widget
+            self._pending_ask_user_widget = None
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="ask-user",
+                context=context,
+            )
+        self._focus_chat_input_after_refresh()
 
     async def on_ask_user_menu_answered(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu answers - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user answered")
-
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        await self._finish_ask_user_prompt(context="answered")
 
     async def on_ask_user_menu_cancelled(
         self,
         event: Any,  # noqa: ARG002, ANN401
     ) -> None:
         """Handle ask_user menu cancellation - remove widget and refocus input."""
-        if self._pending_ask_user_widget:
-            widget = self._pending_ask_user_widget
-            self._pending_ask_user_widget = None
-            await self._remove_ask_user_widget(widget, context="ask-user cancelled")
-
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
-
-    async def _remove_goal_review_widget(  # noqa: PLR6301  # kept an instance method for symmetry with the other _*_goal_review_* helpers
-        self,
-        widget: GoalReviewMenu,
-        *,
-        context: str,
-    ) -> None:
-        """Remove a goal review widget without surfacing cleanup races."""
-        try:
-            await widget.remove()
-        except Exception:
-            logger.debug(
-                "Failed to remove goal review widget during %s",
-                context,
-                exc_info=True,
-            )
+        await self._finish_ask_user_prompt(context="cancelled")
 
     def _cancel_goal_review_task(self) -> None:
         """Cancel any pending goal review continuation task."""
@@ -7098,7 +7109,11 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget = None
         if widget is not None:
             widget.action_cancel()
-            await self._remove_goal_review_widget(widget, context=context)
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="goal review",
+                context=context,
+            )
 
     def _cancel_goal_proposal_generation(self) -> bool:
         """Cancel in-flight goal criteria generation.
@@ -7166,10 +7181,7 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget = menu
 
         try:
-            messages = self.query_one("#messages", Container)
-            await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(lambda: self._scroll_goal_review_into_view(menu))
-            self.call_after_refresh(menu.focus_active)
+            await self._mount_inline_prompt(menu, focus=menu.focus_active)
         except Exception as e:
             logger.exception(
                 "Failed to mount goal review menu (id=%s)",
@@ -7180,14 +7192,6 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
-
-    def _scroll_goal_review_into_view(self, menu: GoalReviewMenu) -> None:
-        """Scroll mounted goal review prompts into view."""
-        chat = self.query_one("#chat", VerticalScroll)
-        if menu.outer_size.height > chat.size.height:
-            menu.scroll_visible(animate=False, top=True)
-            return
-        menu.scroll_visible()
 
     async def on_goal_review_menu_decided(
         self,
@@ -7200,10 +7204,13 @@ class DeepAgentsApp(App):
         ):
             widget = self._pending_goal_review_widget
             self._pending_goal_review_widget = None
-            await self._remove_goal_review_widget(widget, context="goal-review decided")
+            await self._remove_inline_prompt_widget(
+                widget,
+                prompt_name="goal review",
+                context="decided",
+            )
 
-        if self._chat_input:
-            self.call_after_refresh(self._chat_input.focus_input)
+        self._focus_chat_input_after_refresh()
 
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
@@ -15718,12 +15725,17 @@ class DeepAgentsApp(App):
                         )
                 if self._pending_ask_user_widget is not None:
                     try:
-                        await self._pending_ask_user_widget.remove()
-                    except Exception:
+                        self._pending_ask_user_widget.action_cancel()
+                    except (AttributeError, RuntimeError):
                         logger.debug(
-                            "Failed to remove pending ask_user during agent swap",
+                            "Failed to cancel pending ask-user during agent swap",
                             exc_info=True,
                         )
+                    await self._remove_inline_prompt_widget(
+                        self._pending_ask_user_widget,
+                        prompt_name="ask-user",
+                        context="agent swap",
+                    )
                     self._pending_ask_user_widget = None
 
                 self._pending_messages.clear()

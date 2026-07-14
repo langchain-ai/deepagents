@@ -1010,7 +1010,7 @@ class TestAskUserMenu:
             assert other_input.has_focus
 
     async def test_cancel_after_submit_does_not_override_answer(self) -> None:
-        """Cancel after submit should be ignored by the `_submitted` guard."""
+        """Cancel after submit is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:
@@ -1034,7 +1034,7 @@ class TestAskUserMenu:
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
     async def test_submit_after_cancel_does_not_override_cancel(self) -> None:
-        """Submit after cancel should be ignored by the `_submitted` guard."""
+        """Submit after cancel is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:

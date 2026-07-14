@@ -130,16 +130,18 @@ def build_provider_matrices(
             # conversation category's tau3 harness is left untouched.
             agent_impl = dcode_impl if cm["agent_impl"] == "dcode" else cm["agent_impl"]
             # `lite` runs a frozen high-signal subset (full rollouts, fewer tasks).
-            # Spread ~2 tasks per shard, capped at shard_parallel so every shard
-            # runs at once: this maxes concurrency (categories are serialized per
-            # provider, so a category never exceeds shard_parallel*concurrency
-            # trials in flight) and scatters heavy task images one-per-runner
-            # instead of concentrating them in a fat shard.
+            # One task per shard: `shard_parallel` (the leaf's matrix max-parallel)
+            # is the number of concurrent runner slots, and GitHub pulls the next
+            # single-task shard in the instant one finishes. That gives dynamic
+            # load-balancing across runners -- the long pole is the slowest single
+            # task, not a static bucket -- and scatters each task's image onto its
+            # own runner so heavy images never concentrate and blow the disk.
+            # Bounded by shard_matrix.MAX_SHARDS (and its 256-job matrix guard).
             include = lite_tasks.include_tasks(cat) if profile == "lite" else ""
             n_shards = n_shards_by_cat.get(cat, DEFAULT_N_SHARDS[cat])
             if include:
                 n_tasks = len(include.split())
-                n_shards = min(shard_parallel, max(1, (n_tasks + 1) // 2))
+                n_shards = min(n_tasks, shard_matrix.MAX_SHARDS)
             entry = {
                 "model": spec,
                 "provider": prov,

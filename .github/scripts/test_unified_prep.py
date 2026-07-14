@@ -109,7 +109,7 @@ def test_full_profile_has_empty_include_tasks():
     assert mats["openai"][0]["include_tasks"] == ""
 
 
-def test_lite_profile_sets_include_tasks_and_maxes_shards():
+def test_lite_profile_sets_include_tasks_and_shards_one_task_each():
     import lite_tasks
 
     defaults = {"autonomous": 10, "conversation": 3, "context": 3}
@@ -125,16 +125,15 @@ def test_lite_profile_sets_include_tasks_and_maxes_shards():
     for cat in ("autonomous", "conversation", "context"):
         n = len(lite_tasks.LITE_TASKS[cat])
         assert by_cat[cat]["include_tasks"] == " ".join(lite_tasks.LITE_TASKS[cat])
-        # ~2 tasks/shard, capped at shard_parallel so every shard runs at once
-        # (ignores the full-run per-category default, which is irrelevant to lite).
-        assert by_cat[cat]["n_shards"] == min(10, max(1, (n + 1) // 2))
-    # A 15-task autonomous slice fans out to 8 shards, not the old 3.
-    assert by_cat["autonomous"]["n_shards"] == 8
+        # One task per shard: max-parallel drains the queue, GH pulls the next
+        # single-task shard as each finishes (dynamic load-balancing).
+        assert by_cat[cat]["n_shards"] == n
+    assert by_cat["autonomous"]["n_shards"] == 15
 
 
-def test_lite_shards_capped_by_shard_parallel():
-    # When shard_parallel is small, lite must not create more shards than can run
-    # concurrently (queued shards just idle behind the serialized category).
+def test_lite_shards_independent_of_shard_parallel():
+    # n_shards is the queue depth (one task each), NOT capped at shard_parallel:
+    # a small max-parallel just means GH drains the queue in more waves.
     mats = up.build_provider_matrices(
         ["openai:gpt"],
         ["autonomous"],
@@ -142,7 +141,7 @@ def test_lite_shards_capped_by_shard_parallel():
         n_shards_by_cat={"autonomous": 10},
         profile="lite",
     )
-    assert mats["openai"][0]["n_shards"] == 2
+    assert mats["openai"][0]["n_shards"] == 15
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

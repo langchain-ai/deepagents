@@ -12315,25 +12315,36 @@ class DeepAgentsApp(App):
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
     def _restore_effort_override(self, model_spec: str) -> None:
-        """Restore a persisted reasoning effort when valid for the model."""
+        """Restore a persisted reasoning effort when valid for the model.
+
+        Explicit per-session or resumed-thread model params take precedence:
+        a saved effort only fills in when the active params do not already
+        specify one, so `/model ... --model-params` and adopted checkpoints
+        are never silently overridden.
+        """
         from deepagents_code.model_config import (
             clear_effort_for_model,
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
             merge_effort_model_params,
             model_params_for_effort,
-            without_effort_model_params,
         )
 
+        if (
+            current_effort_from_model_params(model_spec, self._model_params_override)
+            is not None
+        ):
+            return
         effort = load_effort_for_model(model_spec)
         if effort is None:
             return
         params = model_params_for_effort(model_spec, effort)
         if params is None:
-            self._model_params_override = without_effort_model_params(
-                self._model_params_override
-            )
+            # Saved label is no longer valid for this model; drop the stale
+            # entry so the model default applies. The active params carry no
+            # effort here (checked above), so there is nothing to strip.
             if not clear_effort_for_model(model_spec):
                 logger.warning(
                     "Could not clear invalid reasoning effort %r for %s",

@@ -340,13 +340,27 @@ def test_restore_effort_override_applies_persisted_model_choice() -> None:
     }
 
 
+def test_restore_effort_override_keeps_explicit_params() -> None:
+    model_config.save_effort_for_model("openai:gpt-5.5", "high")
+    app = DeepAgentsApp()
+    # Explicit per-session params already specify an effort.
+    app._model_params_override = {"reasoning": {"effort": "low", "summary": "auto"}}
+
+    app._restore_effort_override("openai:gpt-5.5")
+
+    # The explicit low effort wins; the saved high is not merged over it.
+    assert app._model_params_override == {
+        "reasoning": {"effort": "low", "summary": "auto"}
+    }
+
+
 def test_restore_effort_override_prunes_invalid_model_choice() -> None:
+    # gpt-5.5 does not support `max`, so the saved label is invalid for it.
     model_config.save_effort_for_model("openai:gpt-5.5", "max")
     app = DeepAgentsApp()
-    app._model_params_override = {
-        "temperature": 0.2,
-        "reasoning": {"effort": "high", "summary": "auto"},
-    }
+    # No effort in the active params, so the invalid saved label is pruned and
+    # unrelated params are preserved.
+    app._model_params_override = {"temperature": 0.2}
 
     app._restore_effort_override("openai:gpt-5.5")
 

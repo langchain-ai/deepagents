@@ -415,6 +415,33 @@ class TestModelSwitchNoOp:
             "output_config": {"effort": "high"},
         }
 
+    async def test_switch_model_params_effort_overrides_saved(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+        model_config.save_effort_for_model("openai:gpt-5.5", "high")
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
+            ),
+        ):
+            await app._switch_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+            )
+
+        # Explicit --model-params effort wins over the saved preference.
+        assert app._model_params_override == {
+            "reasoning": {"effort": "low", "summary": "auto"}
+        }
+
 
 class TestModelSwitchErrorHandling:
     """Tests for error handling in _switch_model."""

@@ -786,6 +786,17 @@ _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
+_config_write_lock = threading.RLock()
+"""Serializes read-modify-write transactions against `config.toml`.
+
+Every helper that reads the file, mutates a section, and atomically replaces it
+(`_save_toml_field`, `clear_default_model`, `_update_effort_for_model`, ...)
+must hold this lock for the whole transaction. The atomic rename alone only
+prevents torn writes; without a lock covering read-through-replace, two
+overlapping writers (e.g. concurrent effort-selection workers) can each read the
+same snapshot and the last `replace()` silently drops the other's change. It is
+reentrant so a future caller can compose these helpers under one transaction.
+Cross-process races are out of scope (mirrors the existing helpers)."""
 _ollama_installed_models_cache: dict[str, list[str]] = {}
 _ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
@@ -2854,30 +2865,31 @@ def _save_toml_field(
         config_path = DEFAULT_CONFIG_PATH
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Read existing config or start fresh
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+            # Read existing config or start fresh
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        if section not in data:
-            data[section] = {}
-        data[section][field] = value
+            if section not in data:
+                data[section] = {}
+            data[section][field] = value
 
-        # Write to temp file then rename to prevent corruption if write is interrupted
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            # Clean up temp file on any failure
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            # Write to temp file then rename so an interrupted write can't corrupt
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                # Clean up temp file on any failure
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a
@@ -2954,24 +2966,25 @@ def clear_default_model(config_path: Path | None = None) -> bool:
         return True  # Nothing to clear
 
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        with _config_write_lock:
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
 
-        models_section = data.get("models")
-        if not isinstance(models_section, dict) or "default" not in models_section:
-            return True  # Already absent
+            models_section = data.get("models")
+            if not isinstance(models_section, dict) or "default" not in models_section:
+                return True  # Already absent
 
-        del models_section["default"]
+            del models_section["default"]
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
@@ -3088,38 +3101,39 @@ def _update_effort_for_model(
         return value
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        effort_section = _require_table(data.setdefault("effort", {}), "[effort]")
-        by_model = _require_table(
-            effort_section.setdefault("by_model", {}), "[effort.by_model]"
-        )
+            effort_section = _require_table(data.setdefault("effort", {}), "[effort]")
+            by_model = _require_table(
+                effort_section.setdefault("by_model", {}), "[effort.by_model]"
+            )
 
-        if effort is None:
-            if model_spec not in by_model:
-                return True
-            del by_model[model_spec]
-            if not by_model:
-                del effort_section["by_model"]
-            if not effort_section:
-                del data["effort"]
-        else:
-            by_model[model_spec] = effort
+            if effort is None:
+                if model_spec not in by_model:
+                    return True
+                del by_model[model_spec]
+                if not by_model:
+                    del effort_section["by_model"]
+                if not effort_section:
+                    del data["effort"]
+            else:
+                by_model[model_spec] = effort
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         logger.exception(
             "Could not update reasoning effort preference for %s", model_spec

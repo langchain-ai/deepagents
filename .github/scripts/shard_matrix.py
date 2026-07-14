@@ -33,9 +33,11 @@ from fnmatch import fnmatch
 # https://docs.github.com/actions/using-jobs/using-a-matrix-for-your-jobs
 GITHUB_MATRIX_MAX = 256
 
-# Upper bound on the shard axis itself, independent of the matrix cap. Keeps a
-# fat-fingered dispatch (e.g. n_shards=1000) from producing a nonsensical run.
-MAX_SHARDS = 64
+# Upper bound on the shard axis itself, independent of the matrix cap. Set below
+# GitHub's hard GITHUB_MATRIX_MAX so an oversized pool trips this clear error
+# rather than GitHub's opaque one; pools larger than this pack multiple tasks
+# per shard (see pack_tasks) instead of failing.
+MAX_SHARDS = 200
 
 
 class ShardConfigError(Exception):

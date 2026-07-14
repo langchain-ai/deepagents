@@ -87,9 +87,23 @@ def test_expand_matrix_rejects_real_all_set_overflow(shard: ModuleType) -> None:
         shard.expand_matrix(_models(56), 5)
 
 
-@pytest.mark.parametrize("bad", [0, 65, -1])
+def test_expand_matrix_accepts_max_shards_boundary(shard: ModuleType) -> None:
+    """n_shards == MAX_SHARDS is accepted (boundary)."""
+    m = {"include": [{"model": "x"}]}
+    out = shard.expand_matrix(m, shard.MAX_SHARDS)
+    assert len(out["include"]) == shard.MAX_SHARDS
+
+
+def test_expand_matrix_rejects_over_max_shards(shard: ModuleType) -> None:
+    """n_shards == MAX_SHARDS + 1 is rejected (out of range)."""
+    m = {"include": [{"model": "x"}]}
+    with pytest.raises(shard.ShardConfigError, match=r"1\.\.200"):
+        shard.expand_matrix(m, shard.MAX_SHARDS + 1)
+
+
+@pytest.mark.parametrize("bad", [0, 201, -1])
 def test_expand_matrix_rejects_out_of_range_shards(shard: ModuleType, bad: int) -> None:
-    """n_shards must be an integer in 1..64."""
+    """n_shards must be an integer in 1..200."""
     with pytest.raises(shard.ShardConfigError, match="Invalid n_shards"):
         shard.expand_matrix(_models(2), bad)
 

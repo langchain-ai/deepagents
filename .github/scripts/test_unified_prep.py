@@ -70,7 +70,8 @@ def test_main_dedupes_repeated_categories(tmp_path, monkeypatch):
     )
     assert _j.loads(lines["categories"]) == ["context"]  # one entry, not three
     # the flat matrix isn't tripled either: one shard per context task
-    matrix = _j.loads(lines["model_0_matrix"])["include"]
+    eval_matrix = _j.loads(lines["eval_matrix"])["include"]
+    matrix = _j.loads(eval_matrix[0]["flat_matrix"])["include"]
     assert len(matrix) == len(lite_tasks.LITE_TASKS["context"])
 
 
@@ -178,13 +179,24 @@ def test_main_emits_per_model_flat_matrix_lite(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_ROLLOUTS", "3")
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     assert up.main([]) == 0
-    lines = dict(l.split("=", 1) for l in out.read_text().splitlines())
-    slugs = _j.loads(lines["model_slugs"])
-    assert len(slugs) == 2
+    lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
     assert lines["max_parallel"] == "13"      # conc4,roll3 -> 40//3
     assert lines["model_parallel"] == "2"     # 80//13=6 -> min(6, 2 models)
-    m0 = _j.loads(lines["model_0_matrix"])["include"]
-    # lite totals 15+11+8 = 34 single-task shards per model
-    assert len(m0) == 34
-    assert {e["category"] for e in m0} == {"autonomous", "conversation", "context"}
-    assert "openai_matrix" not in lines  # provider outputs removed
+    eval_matrix = _j.loads(lines["eval_matrix"])["include"]
+    assert len(eval_matrix) == 2  # one entry per model
+    assert {e["model"] for e in eval_matrix} == {"openai:gpt", "anthropic:opus"}
+    for entry in eval_matrix:
+        assert set(entry) == {"model", "slug", "flat_matrix"}
+        flat = _j.loads(entry["flat_matrix"])["include"]
+        # lite totals 15+11+8 = 34 single-task shards per model
+        assert len(flat) == 34
+        assert {e["category"] for e in flat} == {
+            "autonomous",
+            "conversation",
+            "context",
+        }
+    # No other output carries per-model or per-provider data; eval_matrix is
+    # the single source for both.
+    assert "model_slugs" not in lines
+    assert "model_0_matrix" not in lines
+    assert "openai_matrix" not in lines

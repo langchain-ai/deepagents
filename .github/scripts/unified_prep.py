@@ -270,11 +270,24 @@ def main(argv: list[str] | None = None) -> int:
         "categories": categories,
         "max_parallel": str(max_parallel),
         "model_parallel": str(model_parallel),
-        "model_slugs": [_slug(m) for m in model_specs],
     }
-    for idx, model in enumerate(model_specs):
-        entries = build_flat_matrix(model, categories, tasks_by_cat, dcode_impl)
-        outputs[f"model_{idx}_matrix"] = {"include": entries}
+    # One eval_matrix entry per model, each carrying its own pre-serialized
+    # flat matrix. GitHub job outputs are statically declared, so a single
+    # matrixable output (rather than one `model_<idx>_matrix` output per
+    # model) is what lets the `eval` job's `strategy.matrix` scale to an
+    # arbitrary model count.
+    eval_include = [
+        {
+            "model": m,
+            "slug": _slug(m),
+            "flat_matrix": json.dumps(
+                {"include": build_flat_matrix(m, categories, tasks_by_cat, dcode_impl)},
+                separators=(",", ":"),
+            ),
+        }
+        for m in model_specs
+    ]
+    outputs["eval_matrix"] = {"include": eval_include}
     _emit(os.environ.get("GITHUB_OUTPUT"), outputs)
     return 0
 

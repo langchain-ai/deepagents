@@ -31,18 +31,6 @@ on:
       concurrency:
         type: string
         default: "4"
-      shard_parallel:
-        type: string
-        default: "10"
-      n_shards_autonomous:
-        type: string
-        default: "10"
-      n_shards_conversation:
-        type: string
-        default: "3"
-      n_shards_context:
-        type: string
-        default: "3"
       sandbox_env:
         type: string
         default: "langsmith"
@@ -58,7 +46,7 @@ on:
 permissions:
   contents: read
   # Lets the called reusable workflow manage run artifacts; a caller caps the
-  # callee's token, so it must be granted here (provider jobs inherit this).
+  # callee's token, so it must be granted here (the eval job inherits this).
   actions: write
 
 concurrency:
@@ -67,40 +55,116 @@ concurrency:
 
 jobs:
   prep:
-    name: "🔧 Parse models + build provider matrices"
+    name: "🔧 Parse models + build the per-model flat matrix"
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      anthropic_matrix: ${{ steps.p.outputs.anthropic_matrix }}
-      anthropic_has_models: ${{ steps.p.outputs.anthropic_has_models }}
-      baseten_matrix: ${{ steps.p.outputs.baseten_matrix }}
-      baseten_has_models: ${{ steps.p.outputs.baseten_has_models }}
-      fireworks_matrix: ${{ steps.p.outputs.fireworks_matrix }}
-      fireworks_has_models: ${{ steps.p.outputs.fireworks_has_models }}
-      google_genai_matrix: ${{ steps.p.outputs.google_genai_matrix }}
-      google_genai_has_models: ${{ steps.p.outputs.google_genai_has_models }}
-      groq_matrix: ${{ steps.p.outputs.groq_matrix }}
-      groq_has_models: ${{ steps.p.outputs.groq_has_models }}
-      nvidia_matrix: ${{ steps.p.outputs.nvidia_matrix }}
-      nvidia_has_models: ${{ steps.p.outputs.nvidia_has_models }}
-      ollama_matrix: ${{ steps.p.outputs.ollama_matrix }}
-      ollama_has_models: ${{ steps.p.outputs.ollama_has_models }}
-      openai_matrix: ${{ steps.p.outputs.openai_matrix }}
-      openai_has_models: ${{ steps.p.outputs.openai_has_models }}
-      openrouter_matrix: ${{ steps.p.outputs.openrouter_matrix }}
-      openrouter_has_models: ${{ steps.p.outputs.openrouter_has_models }}
-      xai_matrix: ${{ steps.p.outputs.xai_matrix }}
-      xai_has_models: ${{ steps.p.outputs.xai_has_models }}
-      other_matrix: ${{ steps.p.outputs.other_matrix }}
-      other_has_models: ${{ steps.p.outputs.other_has_models }}
-      effective_shard_parallel: ${{ steps.p.outputs.effective_shard_parallel }}
+      eval_matrix: ${{ steps.p.outputs.eval_matrix }}
+      max_parallel: ${{ steps.p.outputs.max_parallel }}
+      model_parallel: ${{ steps.p.outputs.model_parallel }}
       models: ${{ steps.p.outputs.models }}
       categories: ${{ steps.p.outputs.categories }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: "🧮 Parse models + build provider matrices"
+      - name: "🐍 Set up Python + UV"
+        if: ${{ inputs.profile == 'full' }}
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-enumerate
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        if: ${{ inputs.profile == 'full' }}
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🔢 Enumerate full-profile tasks"
+        # Only the full profile needs the live task list per category; lite
+        # uses the frozen subset baked into lite_tasks.py and skips this
+        # entirely. Resolves each selected category's task names the same way
+        # the harbor leaf's own sharding does (enumerate_tasks.py), so
+        # unified_prep.py's flat matrix always matches the real dataset.
+        if: ${{ inputs.profile == 'full' }}
+        id: enumerate
+        working-directory: libs/evals
+        env:
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          # Category -> dataset mapping mirrors unified_prep.py's CATEGORY_MAP.
+          # Kept as separate constants here (rather than importing that
+          # module) since this step runs before unified_prep.py's own
+          # validation; the two are pinned together by test_unified_workflow.py.
+          CATEGORY_DATASET = {
+              "autonomous": "harbor-index/harbor-index-1.0",
+              "conversation": "tau3-subset",
+          }
+          CATEGORY_DATASET_PATH = {
+              "context": "datasets/context-retrieval-evals",
+          }
+          KNOWN_CATEGORIES = set(CATEGORY_DATASET) | set(CATEGORY_DATASET_PATH)
+
+          raw = os.environ.get("UNIFIED_CATEGORIES", "")
+          categories = list(dict.fromkeys(c.strip() for c in raw.split(",") if c.strip()))
+          unknown = [c for c in categories if c not in KNOWN_CATEGORIES]
+          if unknown:
+              sys.exit(f"::error::Unknown categor(y/ies) for enumeration: {unknown}")
+          if not categories:
+              sys.exit("::error::No categories selected to enumerate for the full profile")
+
+          enumerate_script = os.path.join(
+              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "enumerate_tasks.py"
+          )
+          tasks_by_cat: dict[str, list[str]] = {}
+          for category in categories:
+              env = os.environ.copy()
+              if category in CATEGORY_DATASET_PATH:
+                  # Local dataset: the per-task corpus is git-ignored and must be
+                  # regenerated from the vendored copy before enumeration can see
+                  # any task.toml files, mirroring the leaf's own populate step.
+                  dataset_path = CATEGORY_DATASET_PATH[category]
+                  subprocess.run(
+                      [
+                          "uv", "run", "python", "-m",
+                          "harbor_adapters.contextbench.main",
+                          "--populate", dataset_path,
+                      ],
+                      check=True,
+                  )
+                  env["ENUM_DATASET_PATH"] = dataset_path
+                  env.pop("ENUM_DATASET", None)
+              else:
+                  env["ENUM_DATASET"] = CATEGORY_DATASET[category]
+                  env.pop("ENUM_DATASET_PATH", None)
+              result = subprocess.run(
+                  ["uv", "run", "python", enumerate_script],
+                  env=env,
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              names = [line for line in result.stdout.splitlines() if line.strip()]
+              if not names:
+                  sys.exit(f"::error::Enumerated 0 tasks for category {category!r}")
+              tasks_by_cat[category] = names
+
+          out_path = os.path.join(os.environ["RUNNER_TEMP"], "tasks.json")
+          with open(out_path, "w") as f:
+              json.dump(tasks_by_cat, f)
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"UNIFIED_TASKS_JSON={out_path}\n")
+          PY
+
+      - name: "🧮 Parse models + build the per-model flat matrix"
         id: p
         env:
           UNIFIED_MODELS: ${{ inputs.models }}
@@ -108,302 +172,48 @@ jobs:
           UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
-          UNIFIED_SHARD_PARALLEL: ${{ inputs.shard_parallel }}
-          UNIFIED_N_SHARDS_AUTONOMOUS: ${{ inputs.n_shards_autonomous }}
-          UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}
-          UNIFIED_N_SHARDS_CONTEXT: ${{ inputs.n_shards_context }}
+          UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
+          # Set by the enumerate step above for the full profile only; empty
+          # (unset) for lite, which unified_prep.py never reads in that case.
+          UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
         run: python .github/scripts/unified_prep.py
 
-  eval-anthropic:
+  eval:
+    name: "🚀 Evaluate (${{ matrix.model }})"
     needs: prep
-    if: needs.prep.outputs.anthropic_has_models == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.anthropic_matrix) }}
+      # Caps how many models run concurrently so total runners across every
+      # model's own shard pool stay within the global runner budget (see
+      # unified_prep.py's derive_pool).
+      max-parallel: ${{ fromJson(needs.prep.outputs.model_parallel) }}
+      matrix: ${{ fromJson(needs.prep.outputs.eval_matrix) }}
     uses: ./.github/workflows/_harbor_run.yml
     secrets: inherit
     with:
       model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
+      # The model's full multi-category, multi-shard matrix, pre-serialized by
+      # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
+      # entries directly instead of expanding a single-dataset shard axis.
+      flat_matrix: ${{ matrix.flat_matrix }}
+      max_parallel: ${{ needs.prep.outputs.max_parallel }}
+      # Fallbacks only: every flat_matrix entry carries its own category,
+      # dataset, dataset_path, agent_impl, and include_tasks.
+      category: ""
+      dataset: ""
+      dataset_path: ""
+      agent_impl: ${{ inputs.agent_impl }}
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-baseten:
-    needs: prep
-    if: needs.prep.outputs.baseten_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.baseten_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-fireworks:
-    needs: prep
-    if: needs.prep.outputs.fireworks_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.fireworks_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-google_genai:
-    needs: prep
-    if: needs.prep.outputs.google_genai_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.google_genai_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-groq:
-    needs: prep
-    if: needs.prep.outputs.groq_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.groq_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-nvidia:
-    needs: prep
-    if: needs.prep.outputs.nvidia_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.nvidia_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-ollama:
-    needs: prep
-    if: needs.prep.outputs.ollama_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.ollama_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-openai:
-    needs: prep
-    if: needs.prep.outputs.openai_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.openai_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-openrouter:
-    needs: prep
-    if: needs.prep.outputs.openrouter_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.openrouter_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-xai:
-    needs: prep
-    if: needs.prep.outputs.xai_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.xai_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
-
-  eval-other:
-    needs: prep
-    if: needs.prep.outputs.other_has_models == 'true'
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix: ${{ fromJson(needs.prep.outputs.other_matrix) }}
-    uses: ./.github/workflows/_harbor_run.yml
-    secrets: inherit
-    with:
-      model: ${{ matrix.model }}
-      category: ${{ matrix.category }}
-      dataset: ${{ matrix.dataset }}
-      dataset_path: ${{ matrix.dataset_path }}
-      agent_impl: ${{ matrix.agent_impl }}
-      langsmith_dataset: ${{ matrix.langsmith_dataset }}
-      n_shards: ${{ matrix.n_shards }}
-      shard_parallel: ${{ matrix.shard_parallel }}
-      rollouts: ${{ inputs.rollouts }}
-      concurrency: ${{ inputs.concurrency }}
-      sandbox_env: ${{ inputs.sandbox_env }}
-      force_build: ${{ inputs.force_build }}
-      harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
 
   combine:
     name: "📊 Combine cross-model results"
     needs:
       - prep
-      - eval-anthropic
-      - eval-baseten
-      - eval-fireworks
-      - eval-google_genai
-      - eval-groq
-      - eval-nvidia
-      - eval-ollama
-      - eval-openai
-      - eval-openrouter
-      - eval-xai
-      - eval-other
+      - eval
     if: ${{ always() }}
     runs-on: ubuntu-latest
     # Every ref publishes to the same branch. Serialize the publishing jobs so

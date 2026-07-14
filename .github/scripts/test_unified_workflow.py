@@ -90,38 +90,20 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
 
     categories = _indented_block(dispatch, "      categories:")
     assert 'default: "autonomous,conversation,context"' in categories
-    conversation_shards = _indented_block(dispatch, "      n_shards_conversation:")
-    assert 'default: "3"' in conversation_shards
 
-    provider_jobs = [
-        "eval-anthropic",
-        "eval-baseten",
-        "eval-fireworks",
-        "eval-google_genai",
-        "eval-groq",
-        "eval-nvidia",
-        "eval-ollama",
-        "eval-openai",
-        "eval-openrouter",
-        "eval-xai",
-        "eval-other",
-    ]
+    # Exactly one reusable-workflow call: the flat-pool `eval` job (see
+    # test_eval_job_uses_single_flat_pool_matrix below for its shape).
     reusable_call = "uses: ./.github/workflows/_harbor_run.yml"
-    assert workflow.count(reusable_call) == len(provider_jobs)
-    for job_name in provider_jobs:
-        job = _indented_block(workflow, f"  {job_name}:")
-        assert job.count(reusable_call) == 1
-        assert job.count("force_build: ${{ inputs.force_build }}") == 1
-        assert (
-            job.count("harbor_package_override: ${{ inputs.harbor_package_override }}")
-            == 1
-        )
+    assert workflow.count(reusable_call) == 1
+    eval_job = _indented_block(workflow, "  eval:")
+    assert eval_job.count("force_build: ${{ inputs.force_build }}") == 1
+    assert (
+        eval_job.count("harbor_package_override: ${{ inputs.harbor_package_override }}")
+        == 1
+    )
 
     prep_job = _indented_block(workflow, "  prep:")
     assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in prep_job
-    assert (
-        "UNIFIED_N_SHARDS_CONVERSATION: ${{ inputs.n_shards_conversation }}" in prep_job
-    )
     assert "run: python .github/scripts/unified_prep.py" in prep_job
 
     prep_source = PREP_SCRIPT.read_text()
@@ -129,6 +111,83 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert '"dataset": "tau3-subset"' in conversation
     assert '"dataset_path": ""' in conversation
     assert '"agent_impl": "tau3"' in conversation
+
+
+def test_eval_job_uses_single_flat_pool_matrix() -> None:
+    """One eval job matrixes over per-model flat matrices, capped by model_parallel."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+
+    prep_job = _indented_block(workflow, "  prep:")
+    prep_outputs = _indented_block(prep_job, "    outputs:")
+    assert "eval_matrix: ${{ steps.p.outputs.eval_matrix }}" in prep_outputs
+    assert "max_parallel: ${{ steps.p.outputs.max_parallel }}" in prep_outputs
+    assert "model_parallel: ${{ steps.p.outputs.model_parallel }}" in prep_outputs
+    assert "models: ${{ steps.p.outputs.models }}" in prep_outputs
+    assert "categories: ${{ steps.p.outputs.categories }}" in prep_outputs
+    # No per-provider output or gate exists anywhere in the workflow.
+    assert "_has_models" not in workflow
+
+    eval_job = _indented_block(workflow, "  eval:")
+    assert "needs: prep" in eval_job
+    strategy = _indented_block(eval_job, "    strategy:")
+    assert "fail-fast: false" in strategy
+    assert (
+        "max-parallel: ${{ fromJson(needs.prep.outputs.model_parallel) }}" in strategy
+    )
+    assert "matrix: ${{ fromJson(needs.prep.outputs.eval_matrix) }}" in strategy
+    assert "max-parallel: 1" not in workflow
+
+    eval_with = _indented_block(eval_job, "    with:")
+    assert "model: ${{ matrix.model }}" in eval_with
+    assert "flat_matrix: ${{ matrix.flat_matrix }}" in eval_with
+    assert "max_parallel: ${{ needs.prep.outputs.max_parallel }}" in eval_with
+    # n_shards/shard_parallel/langsmith_dataset/include_tasks are per-shard
+    # values now carried inside flat_matrix, not passed at the top level.
+    assert "n_shards:" not in eval_with
+    assert "shard_parallel:" not in eval_with
+    assert "langsmith_dataset:" not in eval_with
+    assert "include_tasks:" not in eval_with
+
+
+def test_enumerate_step_gated_on_full_profile() -> None:
+    """The task-enumeration step only runs for the full profile; lite skips it."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    prep_job = _indented_block(workflow, "  prep:")
+    enumerate_step = _indented_block(
+        prep_job, '      - name: "🔢 Enumerate full-profile tasks"'
+    )
+    assert "if: ${{ inputs.profile == 'full' }}" in enumerate_step
+    assert "ENUM_DATASET" in enumerate_step
+    assert "ENUM_DATASET_PATH" in enumerate_step
+    assert "harbor_adapters.contextbench.main" in enumerate_step
+    assert "--populate" in enumerate_step
+    assert "UNIFIED_TASKS_JSON" in enumerate_step
+
+    p_step = _indented_block(
+        prep_job, '      - name: "🧮 Parse models + build the per-model flat matrix"'
+    )
+    p_env = _indented_block(p_step, "        env:")
+    assert "UNIFIED_MODELS: ${{ inputs.models }}" in p_env
+    assert "UNIFIED_CATEGORIES: ${{ inputs.categories }}" in p_env
+    assert "UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}" in p_env
+    assert "UNIFIED_PROFILE: ${{ inputs.profile }}" in p_env
+    assert "UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}" in p_env
+    assert "UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}" in p_env
+    assert "UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}" in p_env
+    assert "UNIFIED_SHARD_PARALLEL" not in workflow
+    assert "UNIFIED_N_SHARDS_" not in workflow
+
+
+def test_combine_needs_prep_and_eval() -> None:
+    """Combine waits on the single eval job, not a fixed provider job list."""
+    workflow = UNIFIED_WORKFLOW.read_text()
+    combine_job = _indented_block(workflow, "  combine:")
+    needs = _indented_block(combine_job, "    needs:")
+    assert "- prep" in needs
+    assert "- eval" in needs
+    # marker line ("needs:") plus exactly the two job names, no leftover
+    # provider jobs.
+    assert len([line for line in needs.splitlines() if line.strip()]) == 3
 
 
 def test_combine_download_classifies_no_artifacts_and_retries_failures() -> None:

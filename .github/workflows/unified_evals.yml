@@ -99,18 +99,16 @@ jobs:
           import subprocess
           import sys
 
-          # Category -> dataset mapping mirrors unified_prep.py's CATEGORY_MAP.
-          # Kept as separate constants here (rather than importing that
-          # module) since this step runs before unified_prep.py's own
-          # validation; the two are pinned together by test_unified_workflow.py.
-          CATEGORY_DATASET = {
-              "autonomous": "harbor-index/harbor-index-1.0",
-              "conversation": "tau3-subset",
-          }
-          CATEGORY_DATASET_PATH = {
-              "context": "datasets/context-retrieval-evals",
-          }
-          KNOWN_CATEGORIES = set(CATEGORY_DATASET) | set(CATEGORY_DATASET_PATH)
+          # Resolve dataset refs straight from unified_prep.py's CATEGORY_MAP
+          # (the same module the flat-matrix step below imports) so there is
+          # a single source of truth for category -> dataset and a version
+          # bump there can't silently drift out of sync with enumeration.
+          sys.path.insert(
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts")
+          )
+          from unified_prep import CATEGORY_MAP
+
+          KNOWN_CATEGORIES = set(CATEGORY_MAP)
 
           raw = os.environ.get("UNIFIED_CATEGORIES", "")
           categories = list(dict.fromkeys(c.strip() for c in raw.split(",") if c.strip()))
@@ -125,12 +123,13 @@ jobs:
           )
           tasks_by_cat: dict[str, list[str]] = {}
           for category in categories:
+              dataset = CATEGORY_MAP[category]["dataset"]
+              dataset_path = CATEGORY_MAP[category]["dataset_path"]
               env = os.environ.copy()
-              if category in CATEGORY_DATASET_PATH:
+              if dataset_path:
                   # Local dataset: the per-task corpus is git-ignored and must be
                   # regenerated from the vendored copy before enumeration can see
                   # any task.toml files, mirroring the leaf's own populate step.
-                  dataset_path = CATEGORY_DATASET_PATH[category]
                   subprocess.run(
                       [
                           "uv", "run", "python", "-m",
@@ -142,7 +141,7 @@ jobs:
                   env["ENUM_DATASET_PATH"] = dataset_path
                   env.pop("ENUM_DATASET", None)
               else:
-                  env["ENUM_DATASET"] = CATEGORY_DATASET[category]
+                  env["ENUM_DATASET"] = dataset
                   env.pop("ENUM_DATASET_PATH", None)
               result = subprocess.run(
                   ["uv", "run", "python", enumerate_script],

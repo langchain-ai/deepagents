@@ -283,14 +283,14 @@ class TestGenerateGoalRubric:
         # tools, or none of the isolation-level limit tests reflect real runs.
         assert isinstance(wired_middleware[1], _RepositoryToolBudgetMiddleware)
         agent.invoke.assert_called_once()
-        assert agent.invoke.call_args.kwargs["config"] == {"recursion_limit": 10}
+        assert agent.invoke.call_args.kwargs["config"] == {"recursion_limit": 52}
         assert model.invoked_with is None
 
     def test_repository_context_permits_full_sequential_tool_budget(
         self,
         tmp_path: Path,
     ) -> None:
-        """Four sequential repository calls should still reach a final response."""
+        """All allowed repository calls should still reach a final response."""
         responses = [
             AIMessage(
                 content="",
@@ -303,7 +303,7 @@ class TestGenerateGoalRubric:
                     }
                 ],
             )
-            for index in range(4)
+            for index in range(_REPOSITORY_TOOL_CALL_LIMIT)
         ]
         responses.append(AIMessage(content="- repository context used"))
         model = _ToolCallingFakeModel(messages=iter(responses))
@@ -480,13 +480,13 @@ class TestRepositoryToolBudgetMiddleware:
 
         results = [
             middleware.wrap_tool_call(self._request(call_id=str(index)), handler)
-            for index in range(5)
+            for index in range(_REPOSITORY_TOOL_CALL_LIMIT + 1)
         ]
 
-        assert seen_limits == [120, 120, 120, 120]
+        assert seen_limits == [120] * _REPOSITORY_TOOL_CALL_LIMIT
         assert all(
             isinstance(result, ToolMessage) and len(result.content) <= 12_000
-            for result in results[:4]
+            for result in results[:_REPOSITORY_TOOL_CALL_LIMIT]
         )
         final = results[-1]
         assert isinstance(final, ToolMessage)

@@ -183,6 +183,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "huggingface",
         "ibm",
         "litellm",
+        "meta",
         "mistralai",
         "nvidia",
         "ollama",

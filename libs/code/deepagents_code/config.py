@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
 
+from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     ENABLED_PROJECT_MCP_SERVERS,
@@ -518,10 +519,13 @@ def _quiet_sdk_tracing_logging() -> None:
     stay off the terminal.
     """
     from deepagents_code._debug import configure_debug_logging
+    from deepagents_code._env_vars import DEBUG, is_env_truthy
 
+    debug_enabled = is_env_truthy(DEBUG)
     for name in ("langsmith", "langchain"):
         sdk_logger = logging.getLogger(name)
-        configure_debug_logging(sdk_logger)
+        if debug_enabled:
+            configure_debug_logging(sdk_logger)
         if not sdk_logger.handlers:
             sdk_logger.addHandler(logging.NullHandler())
 
@@ -577,9 +581,9 @@ def _build_orphaned_tracing_disabled_notice() -> str:
     if shutil.which("langsmith"):
         return (
             f"{base} Set LANGSMITH_API_KEY or run `langsmith auth login`, "
-            "then restart Deep Agents Code."
+            "then restart dcode."
         )
-    return f"{base} Set LANGSMITH_API_KEY, then restart Deep Agents Code."
+    return f"{base} Set LANGSMITH_API_KEY, then restart dcode."
 
 
 def consume_orphaned_tracing_disabled_notice() -> str | None:
@@ -1538,9 +1542,9 @@ def _get_repository_metadata() -> RepositoryMetadata | None:
     return repo
 
 
-# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
-CODING_AGENT_KIND = "coding_agent"
-"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+# coding-agent-v1 contract literals. See `build_coding_agent_metadata`.
+CODING_AGENT_PURPOSE = "coding"
+"""Fixed `ls_agent_purpose` literal identifying the coding-agent trace class."""
 
 CODING_AGENT_INTEGRATION = "deepagents-code"
 """Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
@@ -1564,9 +1568,9 @@ def build_coding_agent_metadata(
 ) -> dict[str, Any]:
     """Build the shared coding-agent-v1 trace-metadata block.
 
-    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    Implements the `coding-agent-v1` contract for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
-    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    markers, and repo/git/cwd attribution. The six identity/version keys and
     `thread_id` are always present; the optional keys whose value is unknown are
     omitted (per the contract), so callers can pass `None` for any of them.
 
@@ -1599,7 +1603,7 @@ def build_coding_agent_metadata(
         The contract metadata dict with unknown keys omitted.
     """
     metadata: dict[str, Any] = {
-        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_agent_purpose": CODING_AGENT_PURPOSE,
         "ls_integration": CODING_AGENT_INTEGRATION,
         "ls_agent_runtime": CODING_AGENT_RUNTIME,
         "thread_id": thread_id,
@@ -1646,7 +1650,7 @@ def build_stream_config(
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    Stamps the shared `coding-agent-v1` trace-metadata contract via
     `build_coding_agent_metadata` — identity block, plugin/runtime versions,
     turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
     here propagates trace-wide to every run in the graph (root, llm, tool, and
@@ -1672,6 +1676,9 @@ def build_stream_config(
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
+    Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
+    is enabled, so experimental runs are filterable in trace metadata.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1695,7 +1702,7 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    from deepagents_code._env_vars import USER_ID
+    from deepagents_code._env_vars import EXPERIMENTAL, USER_ID
 
     metadata: dict[str, Any] = build_coding_agent_metadata(
         thread_id=thread_id,
@@ -1706,6 +1713,10 @@ def build_stream_config(
         sandbox_type=sandbox_type,
         user_id=os.environ.get(USER_ID) or None,
     )
+
+    # Mark experimental runs so they are filterable in trace metadata.
+    if is_env_truthy(EXPERIMENTAL):
+        metadata["dcode_experimental"] = True
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
@@ -3069,6 +3080,26 @@ def is_langsmith_redaction_enabled() -> bool:
     return bool(value)
 
 
+def is_memory_auto_save_enabled() -> bool:
+    """Return whether the agent should proactively save learnings to memory.
+
+    Resolves the `memory.auto_save` option from env/`config.toml`, defaulting to
+    enabled. When disabled, memory is still loaded into context but the agent is
+    told not to auto-save.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("memory.auto_save")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def configure_langsmith_secret_redaction() -> bool:
     """Install the LangSmith SDK secret anonymizer for active agent tracing.
 
@@ -3780,6 +3811,36 @@ def get_default_coding_instructions() -> str:
     return default_prompt_path.read_text()
 
 
+_BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "us-gov.")
+"""Cross-region inference-profile prefixes that front a vendor namespace.
+
+E.g. `us.anthropic.claude-3-5-sonnet-20241022-v2:0`. Only stripped when a vendor
+namespace follows, so a bare name merely starting with `us`/`eu` is untouched.
+"""
+
+
+def _is_bedrock_model_id(model_lower: str) -> bool:
+    """Return whether *model_lower* is a bare Bedrock model ID.
+
+    Bedrock IDs have the shape `[<region>.]<vendor>.<model>[:<version>]`, e.g.
+    `meta.llama3-70b-instruct-v1:0` or the cross-region inference profile
+    `us.anthropic.claude-3-5-sonnet-20241022-v2:0`. Rather than enumerate AWS's
+    ever-growing vendor list, this keys off the structural signature: an
+    alphanumeric vendor token immediately followed by a dot. Bare direct-API
+    names don't fit -- they either have no dot (`mistral-large`, `command-r`),
+    carry a hyphen before their version dot (`claude-3.5`, `gemini-2.5`), or are
+    already claimed by an earlier prefix check (`gpt-4.1`). Case is folded by the
+    caller, and the explicit `bedrock:<model>` syntax is handled upstream via
+    `provider:model` parsing.
+    """
+    for region in _BEDROCK_REGION_PREFIXES:
+        if model_lower.startswith(region):
+            model_lower = model_lower.removeprefix(region)
+            break
+    vendor, dot, _ = model_lower.partition(".")
+    return bool(dot) and vendor.isalnum()
+
+
 def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
@@ -3795,14 +3856,36 @@ def detect_provider(model_name: str) -> str | None:
         model_name: Model name to detect provider from.
 
     Returns:
-        Provider name (openai, anthropic, google_genai, google_vertexai,
-            nvidia) or `None` if the provider cannot be determined from the
-            name alone.
+        Provider name inferred from the model name (some names, e.g. `claude`
+            and `gemini`, are disambiguated using configured credentials), or
+            `None` if the provider cannot be determined.
     """
     model_lower = model_name.lower()
 
-    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-davinci")):
         return "openai"
+
+    # Bedrock uses dotted, vendor-namespaced IDs. Match them before the bare
+    # `mistral`/`deepseek` prefixes below (which would otherwise swallow
+    # `mistral.`/`deepseek.` IDs) and before the fall-through `None`, so a
+    # `:version` suffix is never misparsed as a `provider:model` separator.
+    if _is_bedrock_model_id(model_lower):
+        return "bedrock"
+
+    if model_lower.startswith("command"):
+        return "cohere"
+
+    if model_lower.startswith(("mistral", "mixtral")):
+        return "mistralai"
+
+    if model_lower.startswith("deepseek"):
+        return "deepseek"
+
+    if model_lower.startswith("grok"):
+        return "xai"
+
+    if model_lower.startswith("sonar"):
+        return "perplexity"
 
     if model_lower.startswith("claude"):
         s = _get_settings()
@@ -3818,6 +3901,15 @@ def detect_provider(model_name: str) -> str | None:
 
     if model_lower.startswith(("nemotron", "nvidia/")):
         return "nvidia"
+
+    # Fireworks uses fully-qualified IDs like `accounts/fireworks/models/<name>`.
+    # `init_chat_model` can infer the provider from this prefix, but the inferred
+    # name is not exposed on the returned model, so resolving it here keeps the
+    # provider visible to every downstream consumer of `detect_provider` (e.g.
+    # the `/model` confirmation, the status bar, and the early credential check)
+    # instead of leaving the raw ID unprefixed.
+    if model_lower.startswith(FIREWORKS_PROVIDER_ID_PREFIX):
+        return "fireworks"
 
     return None
 
@@ -4346,11 +4438,19 @@ def create_model(
     if not model_spec:
         model_spec = _get_default_model_spec()
 
-    # Parse provider:model syntax
+    # Parse provider:model syntax. Bedrock model IDs can include a version suffix
+    # such as `:0`, so resolve their distinctive bare-ID prefixes unless the
+    # parsed provider is explicitly configured.
     provider: str
     model_name: str
+    config = ModelConfig.load()
+    inferred_provider = detect_provider(model_spec)
     parsed = ModelSpec.try_parse(model_spec)
-    if parsed:
+    if parsed and parsed.provider in config.providers:
+        provider, model_name = parsed.provider, parsed.model
+    elif inferred_provider == "bedrock":
+        provider, model_name = inferred_provider, model_spec
+    elif parsed:
         # Explicit provider:model (e.g., "anthropic:claude-sonnet-4-5")
         provider, model_name = parsed.provider, parsed.model
     elif ":" in model_spec:
@@ -4369,7 +4469,7 @@ def create_model(
     else:
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
-        provider = detect_provider(model_spec) or ""
+        provider = inferred_provider or ""
 
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so
@@ -4460,7 +4560,6 @@ def create_model(
         kwargs[_resolve_retry_param_name(provider)] = cli_max_retries
 
     # Check if this provider uses a custom BaseChatModel class
-    config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
 
     if provider == CODEX_PROVIDER:

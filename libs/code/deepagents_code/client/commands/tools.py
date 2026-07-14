@@ -226,6 +226,7 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     if not servers:
         return
     from deepagents_code.config import console
+    from deepagents_code.tool_catalog import unavailable_server_display
 
     name_width = max(len(server.name) for server in servers)
     console.print()
@@ -234,11 +235,16 @@ def _print_unavailable_servers(servers: tuple[UnavailableServer, ...]) -> None:
     )
     for server in servers:
         padded = server.name.ljust(name_width)
-        # `status: detail` (ASCII-only, no em-dash) so legacy consoles don't hit
-        # an encoding error; detail is discovery's own curated reason string.
-        detail = f": {server.detail}" if server.detail else ""
+        # `status: detail`, where detail is discovery's own curated reason string
+        # (ASCII on this CLI path, so legacy consoles don't hit an encoding
+        # error). `unavailable_server_display` collapses a disabled server to
+        # "disabled by user" with no detail; other statuses keep discovery's
+        # reason string. (The TUI's em-dash reconnect guidance is never produced
+        # by CLI discovery, so it cannot reach this column here.)
+        status, detail_text = unavailable_server_display(server)
+        detail = f": {detail_text}" if detail_text else ""
         console.print(
-            f"  {padded}  {server.status}{detail}".rstrip(),
+            f"  {padded}  {status}{detail}".rstrip(),
             style="dim",
             markup=False,
             highlight=False,
@@ -283,6 +289,7 @@ def _run_tools_install(args: argparse.Namespace) -> int:
     from deepagents_code.managed_tools import (
         RIPGREP_VERSION,
         ChecksumMismatchError,
+        ManagedToolUnavailableError,
         ensure_ripgrep,
         is_offline,
         managed_rg_path,
@@ -306,6 +313,13 @@ def _run_tools_install(args: argparse.Namespace) -> int:
                 "ripgrep install aborted: the downloaded archive failed SHA-256 "
                 "verification. Refusing to install."
             ),
+        )
+    except ManagedToolUnavailableError as exc:
+        logger.info("ripgrep install unavailable: %s", exc.reason)
+        return _emit_install_result(
+            output_format,
+            status="error",
+            message=exc.message,
         )
     except Exception:
         # Backstop for a clean exit instead of a raw traceback.
@@ -359,8 +373,8 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         output_format,
         status="error",
         message=(
-            "Could not install ripgrep (unsupported platform or download failure). "
-            "See logs, or install ripgrep manually."
+            "Could not install ripgrep (download failure). See logs, or install "
+            "ripgrep manually."
         ),
     )
 

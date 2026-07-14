@@ -43,35 +43,6 @@ _ANSI_THEMES: Final[frozenset[str]] = frozenset({"ansi-dark", "ansi-light"})
 """Theme names whose color palette is determined by the terminal emulator
 rather than by the app, so link styles use bold instead of a parsed color."""
 
-_TIPS: dict[str, int] = {
-    "Use @ to reference files and / for commands": 3,
-    "Try /threads to resume a previous conversation": 2,
-    "Use /offload when your conversation gets long": 2,
-    "Use /copy to copy the latest assistant message": 3,
-    "Use /mcp to search your MCP servers and inspect tool parameters": 1,
-    "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
-    "Use /remember to save learnings from this conversation": 1,
-    "Use /model to switch models mid-conversation": 2,
-    "Use /effort high to change the current model's reasoning effort": 1,
-    "Press ctrl+x to compose prompts in your external editor": 1,
-    "Press ctrl+u to delete to the start of the line in the chat input": 1,
-    "Use /skill:<name> to invoke a skill directly": 1,
-    "Type /update to check for and install updates": 1,
-    "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
-    "Use /theme to customize the TUI's colors": 1,
-    "Use /skill-creator to build reusable agent skills": 1,
-    "Ask for a workflow to fan work out to subagents in parallel": 3,
-    "Use /auto-update to toggle automatic updates": 1,
-    "Use /timestamps to show or hide message timestamp footers": 1,
-    "Use /agents to browse and switch between your available agents": 2,
-    "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
-    "Press Shift+Tab to toggle auto-approve mode": 2,
-    "Use --startup-cmd to run a shell command before the first prompt": 1,
-    "Use !! for incognito shell commands that stay out of model context": 1,
-    "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
-}
-"""Rotating tips shown in the welcome footer, with relative selection weights."""
-
 _LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
 """UTM source tag appended to LangSmith project URLs in the welcome banner."""
 
@@ -127,6 +98,23 @@ def _local_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
     return TStyle(foreground=TColor.parse(colors.tool), bold=True)
 
 
+def _debug_tag_style(*, ansi: bool, colors: theme.ThemeColors) -> str | TStyle:
+    """Build the style for the `(debug enabled)` tag.
+
+    Args:
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        A bold yellow markup style under ANSI themes (whose palette the terminal
+            owns, so a parsed color could be invisible) or a bold themed warning
+            color otherwise.
+    """
+    if ansi:
+        return "bold yellow"
+    return TStyle(foreground=TColor.parse(colors.warning), bold=True)
+
+
 def _home_prefixed(cwd: str) -> str:
     """Format a directory path, using `~` for the home directory when possible.
 
@@ -154,12 +142,16 @@ def _home_prefixed(cwd: str) -> str:
 class WelcomeBanner(Static):
     """Compact welcome banner shown at startup.
 
-    Renders a bordered box with the product title and version, followed by rows
-    that appear only when their data (and any env gate) is present. In render
-    order: the active model (`SPLASH_SHOW_MODEL`, opt-in), working directory
-    (`SPLASH_SHOW_CWD`, opt-in), LangSmith tracing project and its replica (each
-    clickable once its URL resolves), thread ID (debug mode only), and the MCP
-    tool count. MCP server warnings and the editable-install path follow.
+    Renders a bordered box with the product title and optional version. A
+    `(debug enabled)` tag appears when `DEEPAGENTS_CODE_DEBUG` is enabled
+    (truthy), even when the version is hidden. A `(local)` tag appears for
+    editable installs only when the version is shown. Rows follow that appear
+    only when their data (and any env gate) is present. In render order: the
+    active model
+    (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
+    opt-in), LangSmith tracing project and its replica (each clickable once its
+    URL resolves), thread ID (debug mode only), and the MCP tool count. MCP
+    server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -237,7 +229,8 @@ class WelcomeBanner(Static):
             else None
         )
         self._project_urls: dict[str, str] = {}
-        self._show_thread_id = is_env_truthy(DEBUG)
+        self._debug_enabled = is_env_truthy(DEBUG)
+        self._show_thread_id = self._debug_enabled
         super().__init__(self._build_banner(), **kwargs)
 
     def on_mount(self) -> None:
@@ -357,7 +350,9 @@ class WelcomeBanner(Static):
         """Build the banner content.
 
         Returns:
-            Content with the title and version, followed by any applicable rows
+            Content with the title, optional version, and any applicable header
+            tags (`(debug enabled)` when debug is on; `(local)` for editable
+            installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
             resolves), thread ID (debug only), MCP tool count, MCP server
@@ -379,8 +374,15 @@ class WelcomeBanner(Static):
         ]
         if not self._hide_version:
             parts.append((f"  v{__version__}", "dim"))
-            if _is_editable_install():
-                parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
+        if self._debug_enabled:
+            parts.append(
+                (
+                    " (debug enabled)",
+                    _debug_tag_style(ansi=ansi, colors=colors),
+                )
+            )
+        if not self._hide_version and _is_editable_install():
+            parts.append((" (local)", _local_tag_style(ansi=ansi, colors=colors)))
 
         # Row labels share a common column width so values stay aligned; the
         # longest label ("directory:") needs 11 columns including its space.

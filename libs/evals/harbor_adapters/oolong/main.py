@@ -3,11 +3,9 @@
 Run as ``python -m harbor_adapters.oolong.main``.
 
 ``--populate <dataset_dir>`` reads the bucket recorded in ``<dataset_dir>/bucket.toml``
-(``subset`` / ``context_len`` / ``n_examples``), fetches the matching rows from the
-HuggingFace datasets-server, and writes the task directories into ``<dataset_dir>``
-(the task dirs are git-ignored, so this runs before ``harbor run --path
-<dataset_dir>``). This mirrors ``harbor_adapters.contextbench.main --populate``, but
-the single source is the HuggingFace dataset rather than a vendored corpus.
+(``subset`` / ``context_len`` / ``n_examples``), fetches the matching rows from
+HuggingFace, and writes the task directories into ``<dataset_dir>``. The task dirs
+are git-ignored, so this runs before ``harbor run --path <dataset_dir>``.
 
 The bucket lives in the committed ``bucket.toml`` (not a runtime default) so the
 directory always reproduces the same dataset. To evaluate another bucket, add a

@@ -1,14 +1,12 @@
 """OOLONG-synth dataset loader — targeted HuggingFace fetch, no agent code.
 
-Vendored from PR #4213 (``tests/evals/oolong/benchmarks.py``), keeping only the
-dataset-loading half: pull a ``(dataset, context_len)`` bucket from the
-HuggingFace datasets-server ``/filter`` endpoint (only the matching rows, cached
-to JSONL) and materialize each row into an ``OolongExample``. The agent
-factories live with the runtime harness, not here — this module is import-light
-(stdlib only) so the task generator can run without the agent stack.
+Pull a ``(dataset, context_len)`` bucket from the HuggingFace datasets-server
+``/filter`` endpoint (only the matching rows, cached to JSONL) and materialize
+each row into an ``OolongExample``. Import-light (stdlib only) so the task
+generator can run without the agent stack.
 
 Adding a new eval set is just new args (``dataset`` / ``context_len``), never new
-code. When PR #4213 merges, dedupe against the canonical loader there.
+code.
 """
 
 from __future__ import annotations
@@ -28,10 +26,9 @@ from typing import Any
 #: HuggingFace dataset id for OOLONG-synth.
 _HF_DATASET = "oolongbench/oolong-synth"
 
-#: Default dataset (subset) to filter on. The RLM paper and the north-star
-#: LangSmith dataset both use ``trec_coarse`` — 6-way question classification
-#: aggregation, present in the ``validation`` split with 50 examples per
-#: context-length bucket.
+#: Default dataset (subset) to filter on. ``trec_coarse`` is 6-way question
+#: classification aggregation, present in the ``validation`` split with 50
+#: examples per context-length bucket.
 _DEFAULT_DATASET = "trec_coarse"
 
 #: HF dataset split per dataset (subset). ``trec_coarse`` lives in
@@ -207,11 +204,10 @@ def _load_rows_cached(subset: str, context_len: int | None, split: str) -> list[
 
 @dataclass(frozen=True)
 class OolongExample:
-    """One OOLONG-synth example, materialized into the harness shape.
+    """One OOLONG-synth example, materialized from a HuggingFace row.
 
-    Field names mirror the north-star LangSmith dataset inputs so the logged
-    example lines up 1:1 with it (``task_id`` ← HF ``id``, ``dataset`` ← HF
-    ``dataset``, ``task_type`` ← HF ``task``).
+    Field names map to the HuggingFace columns (``task_id`` ← ``id``,
+    ``dataset`` ← ``dataset``, ``task_type`` ← ``task``).
     """
 
     task_id: int
@@ -240,8 +236,8 @@ def load_oolong_examples(
 ) -> tuple[OolongExample, ...]:
     """Load a deterministic OOLONG-synth subset at one context length.
 
-    Defaults match the north-star LangSmith dataset: ``trec_coarse``
-    (validation split) at the 65536-token bucket, 50 examples total.
+    Defaults to ``trec_coarse`` (validation split) at the 65536-token bucket,
+    50 examples total.
 
     Rows are fetched targeted via the HuggingFace datasets-server ``/filter``
     endpoint (only the matching ``(dataset, context_len)`` bucket, cached to
@@ -250,7 +246,7 @@ def load_oolong_examples(
 
     Args:
         dataset: HF subset to filter on (the ``dataset`` column). Defaults to
-            ``"trec_coarse"`` — the paper's exact dataset.
+            ``"trec_coarse"``.
         context_len: Token-length bucket. OOLONG-synth has buckets at
             1024-4194304; 65536 and 131072 are the most useful.
         n_examples: How many examples to return. ``None`` means all 50.
@@ -309,8 +305,7 @@ def _row_to_example(row: dict[str, Any]) -> OolongExample:
 def _coerce_bool(raw: Any) -> bool:  # noqa: ANN401
     """Coerce the dataset's `input_subset` field into a bool.
 
-    The HF release stores it as a string (``"True"``/``"False"``); the
-    north-star dataset logs it as a real boolean.
+    The HF release stores it as a string (``"True"``/``"False"``).
     """
     if isinstance(raw, str):
         return raw.strip().lower() == "true"

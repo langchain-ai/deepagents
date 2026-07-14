@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
@@ -20,7 +21,9 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.agent import (
+    _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
@@ -916,6 +919,44 @@ class TestGetSystemPromptNonInteractive:
         assert "do NOT ask the user to approve your plan" in prompt
         assert "mark the first item `in_progress` immediately" in prompt
 
+    def test_experimental_prompt_omits_todo_section(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Experimental mode must not reference its removed todo tool."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Todo List Management" not in prompt
+        assert "write_todos" not in prompt
+        # `{todo_guidance}` lives only inside the gated section, so dropping the
+        # section must not leave the placeholder unresolved.
+        assert "{todo_list_section}" not in prompt
+        assert "{todo_guidance}" not in prompt
+
+    def test_default_prompt_resolves_todo_placeholders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default mode keeps the todo section with no unresolved placeholders.
+
+        Guards the `.replace` ordering in `get_system_prompt`: `{todo_guidance}`
+        is nested inside the todo section, so the section must be substituted
+        before the guidance placeholder is filled.
+        """
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Todo List Management" in prompt
+        assert "{todo_list_section}" not in prompt
+        assert "{todo_guidance}" not in prompt
+
 
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""
@@ -1687,6 +1728,98 @@ class TestCreateCliAgentMemorySources:
         sources = captured[0]
         # Only user AGENTS.md, no project paths
         assert sources == [str(agent_dir / "AGENTS.md")]
+
+
+class TestCreateCliAgentMemoryAutoSave:
+    """Test that `memory_auto_save` selects the memory prompt variant."""
+
+    @staticmethod
+    def _mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        return mock_settings
+
+    def _capture_system_prompt(
+        self, tmp_path: Path, *, memory_auto_save: bool
+    ) -> object:
+        mock_settings = self._mock_settings(tmp_path)
+        captured: list[object] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the system_prompt arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("system_prompt", "__unset__"))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_code.agent.FilesystemBackend"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                memory_auto_save=memory_auto_save,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_auto_save_on_uses_default_prompt(self, tmp_path: Path) -> None:
+        """Default (auto-save on) leaves the middleware's default prompt in place."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=True)
+        # No override passed -> MemoryMiddleware keeps its default persistence prompt.
+        assert system_prompt == "__unset__"
+
+    def test_auto_save_off_uses_readonly_prompt(self, tmp_path: Path) -> None:
+        """Auto-save off swaps in the Code-owned read-only prompt."""
+        system_prompt = self._capture_system_prompt(tmp_path, memory_auto_save=False)
+        assert system_prompt is _MEMORY_READONLY_SYSTEM_PROMPT
+
+        formatted = _MEMORY_READONLY_SYSTEM_PROMPT.format(
+            agent_memory="(No memory loaded)"
+        )
+        assert "<agent_memory>" in formatted
+        assert "**Trust and verification:**" in formatted
+        assert "**Learning from feedback:**" not in formatted
+        assert "**When to update memories:**" not in formatted
+        assert "**Automatic memory saving is disabled:**" in formatted
+        assert "Never store API keys, access tokens, passwords" in formatted
 
 
 class TestCreateCliAgentProjectContext:
@@ -3086,6 +3219,158 @@ class TestCreateCliAgentShellMiddlewareWiring:
         )
 
 
+class TestExperimentalTodoMiddlewareWiring:
+    """`DEEPAGENTS_CODE_EXPERIMENTAL` drops TodoListMiddleware from every stack.
+
+    `collect_built_in_tools` (see `test_tool_catalog.py`) only inspects the main
+    agent's bound tools, so the subagent splice needs its own coverage: these
+    tests capture the `create_deep_agent` kwargs and assert the stand-in reaches
+    the main agent, custom subagents, and the general-purpose subagent that
+    dcode auto-adds.
+    """
+
+    @staticmethod
+    def _build_mock_settings(tmp_path: Path) -> Mock:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+        mock_settings.shell_allow_list = ["ls", "cat"]
+        return mock_settings
+
+    def _capture_create_deep_agent_kwargs(
+        self, tmp_path: Path, *, subagent_model: str | None = None
+    ) -> dict[str, Any]:
+        """Build a default agent + custom subagent; capture `create_deep_agent` kwargs.
+
+        Returns the kwargs dcode forwards to `create_deep_agent` so callers can
+        assert on both the main `middleware` list and each `subagents` spec.
+        `subagent_model` sets the custom subagent's `model:` frontmatter, which
+        drives the `has_explicit_model` branch in `_subagent_cli_middleware`.
+        """
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": subagent_model,
+        }
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        return kwargs
+
+    @staticmethod
+    def _has_todo_standin(middleware: list[Any]) -> bool:
+        return any(
+            getattr(mw, "name", None) == TodoListMiddleware.__name__
+            for mw in middleware
+        )
+
+    def test_standin_name_matches_sdk_middleware(self) -> None:
+        """The stand-in must impersonate the real middleware's `.name`.
+
+        The name-based merge keys on the instance `.name`, so this guards a
+        hypothetical SDK `.name` override that `__name__`-derivation would miss.
+        """
+        from deepagents_code.agent import _NoTodoListMiddleware
+
+        assert _NoTodoListMiddleware().name == TodoListMiddleware().name
+
+    def test_dropped_from_main_and_subagents_when_experimental(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
+
+        assert self._has_todo_standin(kwargs["middleware"])
+
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        assert {"researcher", "general-purpose"} <= set(subagents_by_name)
+        for name, spec in subagents_by_name.items():
+            assert self._has_todo_standin(spec.get("middleware", [])), (
+                f"Expected TodoListMiddleware stand-in on subagent {name!r}"
+            )
+
+    def test_dropped_from_explicit_model_subagent_when_experimental(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The splice must survive the `has_explicit_model` branch.
+
+        `_subagent_cli_middleware` extends the stand-in in *before* the
+        `if not has_explicit_model:` model-middleware check, so a subagent with
+        an explicit `model:` in frontmatter must still receive it. The other
+        wiring cases only exercise the `model: None` branch, so without this a
+        regression that moved the splice inside that `if` would pass unnoticed.
+        """
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        kwargs = self._capture_create_deep_agent_kwargs(
+            tmp_path, subagent_model="fake-model"
+        )
+
+        subagents_by_name = {sa["name"]: sa for sa in kwargs["subagents"]}
+        researcher = subagents_by_name["researcher"]
+        # Guards the premise: an explicit model must reach the spec, else the
+        # subagent would take the `model: None` path and the test proves nothing.
+        assert researcher.get("model"), "explicit subagent model was not forwarded"
+        assert self._has_todo_standin(researcher.get("middleware", []))
+
+    def test_absent_from_all_stacks_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        kwargs = self._capture_create_deep_agent_kwargs(tmp_path)
+
+        assert not self._has_todo_standin(kwargs["middleware"])
+        for spec in kwargs["subagents"]:
+            assert not self._has_todo_standin(spec.get("middleware", []))
+
+
 def _mock_agents_dir(agents_dir: Path) -> Mock:
     mock_settings = Mock()
     mock_settings.user_deepagents_dir = agents_dir
@@ -3324,8 +3609,8 @@ class TestCreateCliAgentInterpreterWiring:
             runtime=runtime,
         )
 
-        assert "1\tfirst" in allowed.content
-        assert "2\tsecond" in allowed.content
+        assert "1  first" in allowed.content
+        assert "2  second" in allowed.content
         assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:

@@ -518,6 +518,226 @@ class TestRecommendedToggle:
             assert "Ctrl+R" not in str(help_text.content)
 
 
+class TestNamesToggle:
+    """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""
+
+    async def test_ctrl_n_toggles_rows_between_names_and_specs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+N flips rows between the friendly name and the raw spec."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            row = screen._option_widgets[0]
+            assert row.model_spec == "anthropic:claude-sonnet-5"
+            assert not screen._show_specs
+            text = str(row.content)
+            assert "Claude Sonnet 5" in text
+            assert "anthropic:claude-sonnet-5" not in text
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert screen._show_specs
+            text = str(screen._option_widgets[0].content)
+            assert "anthropic:claude-sonnet-5" in text
+            assert "Claude Sonnet 5" not in text
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert not screen._show_specs
+            text = str(screen._option_widgets[0].content)
+            assert "Claude Sonnet 5" in text
+            assert "anthropic:claude-sonnet-5" not in text
+
+    async def test_help_text_advertises_names_toggle_in_standard_mode(self) -> None:
+        """Standard `/model` help footer should mention Ctrl+N."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" in str(help_text.content)
+
+    async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
+        """Onboarding's curated help footer should not mention Ctrl+N."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" not in str(help_text.content)
+
+    async def test_names_toggle_available_in_curated_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Curated/onboarding mode still honors Ctrl+N (presentation only)."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+
+    async def test_show_specs_persists_across_filter_rebuild(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spec mode survives the full rebuild that filtering triggers.
+
+        `_relabel_options` (the in-place Ctrl+N path) is not the only renderer:
+        typing into the filter runs `_update_display`, which rebuilds every row
+        from scratch. That rebuild path must honor `_show_specs` too, so toggling
+        specs on and then filtering keeps the surviving rows in spec mode.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert screen._show_specs
+
+            # Typing filters the list, rebuilding rows via `_update_display`.
+            await pilot.press("c", "l", "a", "u", "d", "e")
+            await pilot.pause()
+
+            assert screen._show_specs
+            specs = [str(w.content) for w in screen._option_widgets]
+            assert any("anthropic:claude-sonnet-5" in s for s in specs)
+            assert all("Claude Sonnet 5" not in s for s in specs)
+
+    async def test_selection_preserved_after_names_toggle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Toggling names keeps the highlighted row highlighted.
+
+        Uses a multi-row list with the cursor moved off row 0 so a regression
+        that dropped the selection (e.g. hardcoding `selected=False` in
+        `_relabel_options`) would surface as a missing cursor glyph.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"], "openai": ["gpt-5.5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        cursor = get_glyphs().cursor
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            screen._recommended_only = False
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert len(screen._option_widgets) >= 2
+
+            await pilot.press("down")
+            await pilot.pause()
+            selected = screen._selected_index
+            assert selected != 0
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert screen._selected_index == selected
+            for index, widget in enumerate(screen._option_widgets):
+                text = str(widget.content)
+                if index == selected:
+                    assert text.startswith(f"{cursor} ")
+                else:
+                    assert not text.startswith(f"{cursor} ")
+
+    async def test_names_toggle_drops_provider_tag_in_recent_section(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In spec mode a Recent row shows the bare spec with no `(provider)` tag.
+
+        Recent rows (`show_provider=True`) append a dim ` (provider)` tag after
+        the friendly name to disambiguate the same model across providers. The
+        raw spec already embeds the provider, so spec mode must drop that tag
+        rather than print the provider twice.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            lambda: ["anthropic:claude-sonnet-5"],
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            recent_rows = [w for w in screen._option_widgets if w.show_provider]
+            assert recent_rows, "expected a Recent-section row"
+            before = str(recent_rows[0].content)
+            assert "Claude Sonnet 5" in before
+            assert "(Anthropic)" in before
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            recent_rows = [w for w in screen._option_widgets if w.show_provider]
+            after = str(recent_rows[0].content)
+            assert "anthropic:claude-sonnet-5" in after
+            assert "Claude Sonnet 5" not in after
+            assert "(Anthropic)" not in after
+
+
 class TestRecentModelsSection:
     """Tests for the "Recent" pseudo-provider section pinned at the top."""
 
@@ -2255,6 +2475,13 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
+            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
+            ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
+            ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
+            ("openai:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
+            ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
+            ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
             ("xai:grok-4.5", "Grok 4.5"),
         ],
     )

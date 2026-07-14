@@ -26,8 +26,8 @@ have no model-node write site; the two exceptions are called out below:
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
-- `_pending_goal_objective` / `_pending_goal_rubric` — a proposed goal awaiting
-    user acceptance of its criteria.
+- `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` — a
+    proposed goal or amendment awaiting user acceptance of its criteria.
 
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
@@ -66,14 +66,34 @@ from langchain_core.messages import AIMessage
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
-GoalStatus = Literal["active", "blocked", "complete"]
+GoalStatus = Literal["active", "paused", "blocked", "complete"]
 """Lifecycle status of a TUI-owned goal.
 
-`active` and `blocked` are unfinished states; `complete` is terminal. A blocked
-goal is still considered active (unfinished) by `get_goal`.
+`active` and `blocked` are unfinished working states, `paused` preserves the goal
+without driving work, and `complete` is terminal. A blocked goal is still
+considered actionable (`active=True`) by `get_goal`, whereas a paused goal is
+unfinished but reports `active=False`.
 """
 
+GoalProposalKind = Literal["create", "amend"]
+"""Whether a pending review creates a goal or amends the current one."""
+
 _GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
+_GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
+
+
+def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:
+    """Narrow a persisted proposal kind to a known value.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The recognized proposal kind, otherwise `None`.
+    """
+    if isinstance(value, str) and value in _GOAL_PROPOSAL_KIND_VALUES:
+        return cast("GoalProposalKind", value)
+    return None
 
 
 def coerce_goal_status(value: object) -> GoalStatus | None:
@@ -115,7 +135,7 @@ class GoalRubricChannels(AgentState):
     """Accepted goal objective restored by the TUI on resume."""
 
     _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
-    """Goal lifecycle status (`active`, `blocked`, `complete`, or `None`)."""
+    """Goal lifecycle status (`active`, `paused`, `blocked`, `complete`, or `None`)."""
 
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted rubric associated with `_goal_objective`."""
@@ -152,6 +172,11 @@ class ResumeState(GoalRubricChannels):
 
     _pending_goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Proposed criteria awaiting user acceptance."""
+
+    _pending_goal_kind: Annotated[
+        NotRequired[GoalProposalKind | None], PrivateStateAttr
+    ]
+    """Whether the pending review creates or amends a goal."""
 
 
 def _extract_context_tokens(message: AIMessage) -> int | None:

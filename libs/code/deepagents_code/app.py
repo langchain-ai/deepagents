@@ -6184,6 +6184,7 @@ class DeepAgentsApp(App):
             chat.scroll_y,
             chat.size.height,
             bottom_spacer_top,
+            max_scroll=chat.max_scroll_y,
         ):
             self.call_later(self._hydrate_messages_below)
 

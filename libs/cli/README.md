@@ -113,6 +113,8 @@ ignoring case and trailing slash).
 - **[Source code](https://github.com/langchain-ai/deepagents/tree/main/libs/cli)**
 - **[Deep Agents SDK](https://github.com/langchain-ai/deepagents)** — underlying agent harness
 - **[Deep Agents Code](https://pypi.org/project/deepagents-code/)** — coding agent
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ## 📕 Releases & Versioning
 

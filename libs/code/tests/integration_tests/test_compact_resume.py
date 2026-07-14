@@ -87,10 +87,10 @@ async def test_compact_resumed_thread_uses_persisted_history(
 
     from deepagents_code import model_config
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.config import create_model
-    from deepagents_code.server_manager import server_session
     from deepagents_code.sessions import generate_thread_id
-    from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
     config_path = home_dir / ".deepagents" / "config.toml"
     # Some tests import `model_config` earlier in the session, so override the

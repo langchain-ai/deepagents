@@ -1,12 +1,20 @@
 """Deep Agents package."""
 
 from deepagents._version import __version__
-from deepagents.graph import DeepAgentState, create_deep_agent
+from deepagents.graph import (
+    DeepAgentState,
+    SystemPromptConfig,
+    create_deep_agent,
+)
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware
+from deepagents.middleware.subagents import (
+    CompiledSubAgent,
+    SubAgent,
+    SubAgentMiddleware,
+)
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -25,6 +33,7 @@ __all__ = [
     "DeepAgentState",
     "FilesystemMiddleware",
     "FilesystemPermission",
+    "FsToolName",
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",
     "HarnessProfileConfig",
@@ -33,6 +42,7 @@ __all__ = [
     "RubricMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "SystemPromptConfig",
     "__version__",
     "create_deep_agent",
     "register_harness_profile",

@@ -8,7 +8,10 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
+    GlobResult,
+    GrepResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -257,6 +260,164 @@ def test_composite_backend_grep_path_isolation():
 
     # Should NOT find results in /memories (this is the bug)
     assert not any("/memories/" in p for p in match_paths), f"grep path=/tools should not return /memories results, but got: {match_paths}"
+
+
+def test_composite_backend_glob_path_isolation():
+    """Test that glob with path=/tools doesn't return results from /memories."""
+    mem_store = InMemoryStore()
+
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/tools/hammer.md", "tool for nailing")
+    comp.write("/notes/other.md", "unrelated note")
+    comp.write("/memories/secret.md", "private memory")
+
+    result = comp.glob("*.md", path="/tools")
+    matches = result.matches
+    match_paths = [m["path"] for m in matches] if matches is not None else []
+
+    # Only /tools files: excludes routed backend (/memories) and other default dirs (/notes)
+    assert match_paths == ["/tools/hammer.md"]
+    assert "/memories/secret.md" not in match_paths
+    assert "/notes/other.md" not in match_paths
+
+
+def test_composite_grep_and_glob_propagate_truncated(monkeypatch: pytest.MonkeyPatch):
+    """A truncated result from a routed/default backend must surface through the composite."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    monkeypatch.setattr(routed, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/notes.txt", "line": 1, "text": "hit"}], truncated=True))
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/notes.txt", "is_dir": False}], truncated=True))
+
+    grep_result = comp.grep("hit", path="/memories/")
+    assert grep_result.truncated is True
+    assert grep_result.matches and grep_result.matches[0]["path"] == "/memories/notes.txt"
+
+    glob_result = comp.glob("*.txt", path="/memories/")
+    assert glob_result.truncated is True
+    assert glob_result.matches and glob_result.matches[0]["path"] == "/memories/notes.txt"
+
+
+def _merge_composite() -> tuple[CompositeBackend, StoreBackend, StoreBackend]:
+    """Build a composite whose default + one route are both searched on a `/` merge."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+    return comp, default, routed
+
+
+@pytest.mark.parametrize(
+    ("default_truncated", "route_truncated", "expected"),
+    [(True, False, True), (False, True, True), (False, False, False), (True, True, True)],
+)
+def test_composite_grep_merge_ors_truncated_across_backends(
+    monkeypatch: pytest.MonkeyPatch, *, default_truncated: bool, route_truncated: bool, expected: bool
+) -> None:
+    """The merge path (`path='/'`) ORs `truncated` across the default and every route and keeps both sources' matches."""
+    comp, default, routed = _merge_composite()
+    monkeypatch.setattr(
+        default, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/d.txt", "line": 1, "text": "hit"}], truncated=default_truncated)
+    )
+    monkeypatch.setattr(
+        routed, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/r.txt", "line": 1, "text": "hit"}], truncated=route_truncated)
+    )
+
+    merged = comp.grep("hit", path="/")
+
+    assert merged.truncated is expected
+    assert {m["path"] for m in merged.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+
+@pytest.mark.parametrize(
+    ("default_truncated", "route_truncated", "expected"),
+    [(True, False, True), (False, True, True), (False, False, False), (True, True, True)],
+)
+def test_composite_glob_merge_ors_truncated_across_backends(
+    monkeypatch: pytest.MonkeyPatch, *, default_truncated: bool, route_truncated: bool, expected: bool
+) -> None:
+    """The glob merge path ORs `truncated` across the default and every route and keeps both sources' matches."""
+    comp, default, routed = _merge_composite()
+    monkeypatch.setattr(default, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/d.txt", "is_dir": False}], truncated=default_truncated))
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/r.txt", "is_dir": False}], truncated=route_truncated))
+
+    merged = comp.glob("*.txt", path="/")
+
+    assert merged.truncated is expected
+    assert {m["path"] for m in merged.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+
+@pytest.mark.parametrize("erroring", ["default", "route"])
+def test_composite_glob_merge_propagates_backend_error(monkeypatch: pytest.MonkeyPatch, erroring: str) -> None:
+    """A backend error in the glob merge path surfaces instead of being swallowed as a partial success."""
+    comp, default, routed = _merge_composite()
+    ok = GlobResult(matches=[{"path": "/ok.txt", "is_dir": False}])
+    err = GlobResult(error="sandbox RPC failed", matches=[])
+    monkeypatch.setattr(default, "glob", lambda *_a, **_k: err if erroring == "default" else ok)
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: err if erroring == "route" else ok)
+
+    result = comp.glob("*.txt", path="/")
+
+    assert result.error == "sandbox RPC failed"
+
+
+def test_composite_glob_default_error_short_circuits_routes() -> None:
+    """A root glob default error should return before consulting routed backends."""
+
+    class ErrorDefaultBackend(StoreBackend):
+        def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+            return GlobResult(error="Default backend error")
+
+    class TrackingRouteBackend(StoreBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.called = False
+
+        def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+            self.called = True
+            return GlobResult(matches=[])
+
+    routed_backend = TrackingRouteBackend()
+    comp = CompositeBackend(default=ErrorDefaultBackend(), routes={"/store/": routed_backend})
+
+    result = comp.glob("*", path="/")
+
+    assert result.error == "Default backend error"
+    assert not routed_backend.called
+
+
+async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agrep`/`aglob` merge paths mirror the sync accumulation and error precedence."""
+    comp, default, routed = _merge_composite()
+
+    async def _agrep_trunc(*_a: object, **_k: object) -> GrepResult:
+        return GrepResult(matches=[{"path": "/r.txt", "line": 1, "text": "hit"}], truncated=True)
+
+    async def _agrep_clean(*_a: object, **_k: object) -> GrepResult:
+        return GrepResult(matches=[{"path": "/d.txt", "line": 1, "text": "hit"}], truncated=False)
+
+    async def _aglob_clean(*_a: object, **_k: object) -> GlobResult:
+        return GlobResult(matches=[{"path": "/d.txt", "is_dir": False}], truncated=False)
+
+    async def _aglob_error(*_a: object, **_k: object) -> GlobResult:
+        return GlobResult(error="sandbox RPC failed", matches=[])
+
+    monkeypatch.setattr(default, "agrep", _agrep_clean)
+    monkeypatch.setattr(routed, "agrep", _agrep_trunc)
+    grep_result = await comp.agrep("hit", path="/")
+    assert grep_result.truncated is True
+    assert {m["path"] for m in grep_result.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+    monkeypatch.setattr(default, "aglob", _aglob_clean)
+    monkeypatch.setattr(routed, "aglob", _aglob_error)
+    glob_result = await comp.aglob("*.txt", path="/")
+    assert glob_result.error == "sandbox RPC failed"
 
 
 def test_composite_backend_ls_nested_directories(tmp_path: Path):
@@ -1045,7 +1206,7 @@ def test_composite_grep_error_in_routed_backend() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return "Invalid regex pattern error"
 
     error_backend = ErrorBackend()
@@ -1064,7 +1225,7 @@ def test_composite_grep_error_in_routed_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return "Backend error occurred"
 
     error_backend = ErrorBackend()
@@ -1083,7 +1244,7 @@ def test_composite_grep_error_in_default_backend_at_root() -> None:
 
     # Create a mock backend that returns error strings for grep
     class ErrorDefaultBackend(StoreBackend):
-        def grep(self, pattern: str, path: str | None = None, glob: str | None = None):
+        def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None):
             return "Default backend error"
 
     error_default = ErrorDefaultBackend()
@@ -1207,6 +1368,92 @@ def test_grep_path_stripping_matches_get_backend_and_key() -> None:
     # Search with nested path inside route
     matches2 = comp.grep("hello", path="/memories/readme.md").matches
     assert matches2 is not None
+
+
+def test_grep_max_count_enforced_across_routes() -> None:
+    """`max_count` caps total matches across the default and all routed backends."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=3)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_grep_max_count_short_circuits_routes() -> None:
+    """Once the default backend fills the cap, routed backends are not consulted."""
+    mem_store = InMemoryStore()
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+
+    class _RaisingBackend(StoreBackend):
+        def grep(self, *_args: object, **_kwargs: object) -> GrepResult:
+            msg = "routed backend should not be queried once the cap is met"
+            raise AssertionError(msg)
+
+    route = _RaisingBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=state, routes={"/memories/": route})
+
+    comp.write("/root_a.txt", "hit\nhit\nhit\n")
+
+    result = comp.grep("hit", path="/", max_count=2)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_grep_no_cap_returns_all_across_routes() -> None:
+    """`max_count=None` preserves prior behavior: every match across routes is returned."""
+    mem_store = InMemoryStore()
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=state, routes={"/memories/": store_be})
+
+    comp.write("/root_a.txt", "hit\nhit\n")
+    comp.write("/memories/mem_a.txt", "hit\nhit\n")
+
+    result = comp.grep("hit", path="/")
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 4
+
+
+def test_grep_supports_legacy_backends_across_routes() -> None:
+    """Composite grep preserves old child signatures and caps their results."""
+
+    class LegacyBackend(BackendProtocol):
+        def __init__(self, paths: list[str]) -> None:
+            self.paths = paths
+
+        def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+            self,
+            pattern: str,
+            path: str | None = None,
+            glob: str | None = None,
+        ) -> GrepResult:
+            return GrepResult(matches=[{"path": item, "line": 1, "text": pattern} for item in self.paths])
+
+    comp = CompositeBackend(
+        default=LegacyBackend(["/default.txt"]),
+        routes={"/legacy/": LegacyBackend(["/one.txt", "/two.txt", "/three.txt"])},
+    )
+
+    uncapped = comp.grep("needle", path="/")
+    capped = comp.grep("needle", path="/", max_count=2)
+
+    assert uncapped.matches is not None
+    assert len(uncapped.matches) == 4
+    assert capped.matches is not None
+    assert len(capped.matches) == 2
+    assert capped.truncated is True
 
 
 def test_glob_path_stripping_matches_get_backend_and_key() -> None:
@@ -1403,3 +1650,115 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_delete_routes_to_correct_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/file.txt", "alpha")
+    be.write("/memories/note.txt", "beta")
+
+    # delete default-routed file; path is remapped back to the original
+    res_default = be.delete("/file.txt")
+    assert res_default.error is None
+    assert res_default.path == "/file.txt"
+    assert be.read("/file.txt").error is not None
+
+    # delete route-routed file
+    res_route = be.delete("/memories/note.txt")
+    assert res_route.error is None
+    assert res_route.path == "/memories/note.txt"
+    assert be.read("/memories/note.txt").error is not None
+
+
+def test_composite_delete_directory_recurses_within_route() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/memories/proj/a.txt", "a")
+    be.write("/memories/proj/sub/b.txt", "b")
+    be.write("/memories/keep.txt", "k")
+
+    # Deleting a directory inside a route removes the whole subtree there,
+    # remapped back to the original path, while siblings survive.
+    res = be.delete("/memories/proj")
+    assert res.error is None
+    assert res.path == "/memories/proj"
+    assert be.read("/memories/proj/a.txt").error is not None
+    assert be.read("/memories/proj/sub/b.txt").error is not None
+    assert be.read("/memories/keep.txt").error is None
+
+
+def test_composite_delete_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = be.delete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+async def test_composite_adelete_routes_to_correct_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    await be.awrite("/memories/note.txt", "beta")
+    res = await be.adelete("/memories/note.txt")
+    assert res.error is None
+    assert res.path == "/memories/note.txt"
+    assert (await be.aread("/memories/note.txt")).error is not None
+
+
+async def test_composite_adelete_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = await be.adelete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+class _NoDeleteStore(StoreBackend):
+    """StoreBackend variant that opts out of delete (inherits protocol default)."""
+
+    delete = BackendProtocol.delete
+    adelete = BackendProtocol.adelete
+
+
+def test_composite_delete_unsupported_route_returns_error() -> None:
+    """A route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = be.delete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+async def test_composite_adelete_unsupported_route_returns_error() -> None:
+    """The async route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = await be.adelete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error

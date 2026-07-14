@@ -66,7 +66,7 @@ class TestHelpScreenExamples:
         text = self._render(show_agents_help)
         assert "Examples:" in text
         assert "dcode agents list" in text
-        assert "dcode agents reset --agent coder" in text
+        assert "dcode agents reset --agent NAME" in text
 
     def test_update_help_has_examples(self) -> None:
         text = self._render(show_update_help)
@@ -568,6 +568,14 @@ class TestHelpScreenDriftExtended:
         with patch("deepagents_code.ui.console", test_console):
             show_help()
         assert "dcode mcp" in buf.getvalue()
+
+    def test_show_help_includes_tools_subcommand(self) -> None:
+        """show_help should mention the tools subcommand."""
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=200)
+        with patch("deepagents_code.ui.console", test_console):
+            show_help()
+        assert "dcode tools" in buf.getvalue()
 
     def test_show_help_includes_stdin(self) -> None:
         """show_help should mention --stdin."""

@@ -52,8 +52,8 @@
   ],
   "pull-request-title-pattern": "release(${component}): ${version}",
   "component-no-space": true,
-  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Everything below this line will be the GitHub release body._\n",
-  "pull-request-footer": "\n_Everything above this line will be the GitHub release body._\n\n---\n\n> [!NOTE]\n> A **New Contributors** section is appended to the GitHub release notes automatically at publish time (see [Release Pipeline](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pipeline), step 2).",
+  "pull-request-header": "> [!CAUTION]\n> Merging this PR will automatically publish to **PyPI** and create a **GitHub release**.\n\nFor the full release process, see [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md).\n\n---\n\n_Release notes preview: keep this section in sync with the package `CHANGELOG.md`. The published GitHub release body is extracted from the merged `CHANGELOG.md` by `release.yml`, not from this PR description._\n",
+  "pull-request-footer": "\n_End release notes preview._\n\n---\n\n> [!NOTE]\n> A **New Contributors** section is appended to the GitHub release notes automatically at publish time (see [Release Pipeline](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-pipeline), step 2).",
   "packages": {
     "libs/cli": {
       "release-type": "python",
@@ -65,7 +65,10 @@
         "pyproject.toml",
         "deepagents_cli/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/cli/tests"
+      ]
     },
     "libs/deepagents": {
       "release-type": "python",
@@ -77,7 +80,10 @@
         "pyproject.toml",
         "deepagents/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/deepagents/tests"
+      ]
     },
     "libs/acp": {
       "release-type": "python",
@@ -89,7 +95,10 @@
         "pyproject.toml",
         "deepagents_acp/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/acp/tests"
+      ]
     },
     "libs/code": {
       "release-type": "python",
@@ -101,7 +110,10 @@
         "pyproject.toml",
         "deepagents_code/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/code/tests"
+      ]
     },
     "libs/talon": {
       "release-type": "python",
@@ -113,7 +125,10 @@
         "pyproject.toml",
         "deepagents_talon/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/talon/tests"
+      ]
     },
     "libs/partners/daytona": {
       "release-type": "python",
@@ -125,7 +140,10 @@
         "pyproject.toml",
         "langchain_daytona/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/daytona/tests"
+      ]
     },
     "libs/partners/modal": {
       "release-type": "python",
@@ -137,7 +155,10 @@
         "pyproject.toml",
         "langchain_modal/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/modal/tests"
+      ]
     },
     "libs/partners/runloop": {
       "release-type": "python",
@@ -149,7 +170,25 @@
         "pyproject.toml",
         "langchain_runloop/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/runloop/tests"
+      ]
+    },
+    "libs/partners/vercel": {
+      "release-type": "python",
+      "package-name": "langchain-vercel-sandbox",
+      "component": "langchain-vercel-sandbox",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_vercel_sandbox/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/vercel/tests"
+      ]
     },
     "libs/partners/quickjs": {
       "release-type": "python",
@@ -161,7 +200,10 @@
         "pyproject.toml",
         "langchain_quickjs/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/quickjs/tests"
+      ]
     }
   },
   "tag-separator": "==",

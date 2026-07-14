@@ -38,7 +38,7 @@ READABLE_DOCUMENT_EXTENSIONS = frozenset(
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".3gp", ".m4v"})
 
 ContentBlock = dict[str, object]
-OutboundMediaType = Literal["image", "video"]
+OutboundMediaType = Literal["image", "video", "document", "audio", "voice"]
 
 _MARKDOWN_MEDIA_PATTERN = re.compile(r"!\[([^\]]*)]\(([^)\s]+)\)")
 _FENCE_PATTERN = re.compile(r"```[\s\S]*?```")
@@ -81,11 +81,12 @@ def build_inbound_text(text: str, metadata: dict[str, object]) -> str:
         parts.extend(_document_parts(media_paths))
     elif media_type == "image":
         parts.extend(_image_fallback_parts(media_paths))
+    elif media_type == "video":
+        parts.extend(_binary_media_parts(media_paths, media_type="video"))
     elif media_type in {"voice", "audio"}:
         return text
     else:
-        names = ", ".join(path.name for path in media_paths)
-        parts.append(f"_(Received unsupported WhatsApp media attachment: {names}.)_")
+        parts.extend(_binary_media_parts(media_paths, media_type="media"))
 
     return "\n\n".join(part for part in parts if part.strip()) or text
 
@@ -268,6 +269,10 @@ def _image_fallback_parts(paths: list[Path]) -> list[str]:
     return parts
 
 
+def _binary_media_parts(paths: list[Path], *, media_type: str) -> list[str]:
+    return [f"_(Received {media_type} attachment: {path}.)_" for path in paths]
+
+
 def _media_paths(metadata: dict[str, object]) -> list[Path]:
     values: list[object] = []
     raw_many = metadata.get("media_paths") or metadata.get("media_urls")
@@ -297,11 +302,7 @@ def _path_from_value(value: object) -> Path | None:
 
 
 def _media_mime_types(metadata: dict[str, object]) -> list[str]:
-    raw = (
-        metadata.get("media_mime_types")
-        or metadata.get("mime_types")
-        or metadata.get("media_types")
-    )
+    raw = metadata.get("media_mime_types") or metadata.get("mime_types")
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, str) and "/" in item]

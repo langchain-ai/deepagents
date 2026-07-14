@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -228,8 +230,8 @@ def format_relative_timestamp(iso_timestamp: str | None) -> str:
     days = hours // 24
     if days < 30:  # noqa: PLR2004
         return f"{days}d ago"
-    months = days // 30
-    if months < 12:  # noqa: PLR2004
+    if days < 365:  # noqa: PLR2004
+        months = days // 30
         return f"{months}mo ago"
     years = days // 365
     return f"{years}y ago"
@@ -309,6 +311,56 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
+_THREADS_LIST_INDEX = "idx_dcode_threads_list"
+"""Covering index that makes the `list_threads` GROUP BY an index-only scan.
+
+LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
+`checkpoints` row alongside the small `metadata` field. The thread-list query
+only needs `metadata` (per-thread latest `updated_at`, `agent_name`, etc.), but
+without a covering index SQLite scans the whole table — dragging every state
+blob through I/O. On a large profile (e.g. ~12 GB of blobs) that scan takes
+tens of seconds. This index carries exactly the expressions the query reads, so
+the planner satisfies the GROUP BY from the index alone and never touches the
+blob-bearing rows, turning a ~60 s scan into a sub-second lookup.
+
+The column order (leading `thread_id`) also lets the GROUP BY consume the index
+in order. Keep the indexed expressions in sync with the `list_threads` query.
+"""
+
+
+async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
+    """Create the `list_threads` covering index if it does not already exist.
+
+    Idempotent: `CREATE INDEX IF NOT EXISTS` is a near-instant catalog check once
+    the index exists. The one-time build on a pre-existing large database costs a
+    single full table scan (seconds to tens of seconds), after which every
+    `list_threads` call is a sub-second index-only scan. Runs in the aiosqlite
+    worker thread, so it does not block the event loop.
+
+    A failure here is non-fatal: the list query still returns correct results via
+    the slower table scan, so we log and continue rather than break `threads
+    list` (e.g. on a read-only database or under write-lock contention).
+    """
+    try:
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS {_THREADS_LIST_INDEX} ON checkpoints("
+            "thread_id, "
+            "json_extract(metadata, '$.updated_at'), "
+            "checkpoint_id, "
+            "json_extract(metadata, '$.agent_name'), "
+            "json_extract(metadata, '$.git_branch'), "
+            "json_extract(metadata, '$.cwd'))"
+        )
+        await conn.commit()
+    except Exception:
+        logger.warning(
+            "Failed to create the %s index; `threads list` will fall back to a "
+            "full table scan and may be slow on large databases",
+            _THREADS_LIST_INDEX,
+            exc_info=True,
+        )
+
+
 async def list_threads(
     agent_name: str | None = None,
     limit: int = 20,
@@ -342,6 +394,11 @@ async def list_threads(
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return []
+
+        # Ensure the covering index exists before the GROUP BY below, so the
+        # query is an index-only scan instead of a full scan over the (large,
+        # blob-bearing) checkpoints table.
+        await _ensure_threads_list_index(conn)
 
         if sort_by not in {"updated", "created"}:
             msg = f"Invalid sort_by {sort_by!r}; expected 'updated' or 'created'"
@@ -403,26 +460,6 @@ async def list_threads(
         if sort_by == "updated" and branch is None and cwd is None:
             _cache_recent_threads(agent_name, limit, threads)
         return threads
-
-
-async def populate_thread_message_counts(threads: list[ThreadInfo]) -> list[ThreadInfo]:
-    """Populate `message_count` for an existing thread list.
-
-    This is used by the `/threads` modal to render rows quickly, then backfill
-    counts in the background without issuing a second thread-list query.
-
-    Args:
-        threads: Thread rows to enrich in place.
-
-    Returns:
-        The same list object with `message_count` values populated.
-    """
-    if not threads:
-        return threads
-
-    async with _connect() as conn:
-        await _populate_message_counts(conn, threads)
-    return threads
 
 
 async def populate_thread_checkpoint_details(
@@ -679,43 +716,6 @@ def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
     return [ThreadInfo(**thread) for thread in threads]
 
 
-async def _extract_initial_prompt(
-    conn: aiosqlite.Connection,
-    thread_id: str,
-    serde: JsonPlusSerializer,
-) -> str | None:
-    """Extract the first human message from the latest checkpoint.
-
-    Args:
-        conn: Database connection.
-        thread_id: The thread ID to extract from.
-        serde: Serializer for decoding checkpoint data.
-
-    Returns:
-        First human message content, or None if not found.
-    """
-    summary = await _load_latest_checkpoint_summary(conn, thread_id, serde)
-    return summary.initial_prompt
-
-
-async def populate_thread_initial_prompts(threads: list[ThreadInfo]) -> None:
-    """Populate `initial_prompt` for thread rows in the background.
-
-    Args:
-        threads: Thread rows to enrich in place.
-    """
-    if not threads:
-        return
-
-    async with _connect() as conn:
-        await _populate_checkpoint_fields(
-            conn,
-            threads,
-            include_message_count=False,
-            include_initial_prompt=True,
-        )
-
-
 async def _populate_checkpoint_fields(
     conn: aiosqlite.Connection,
     threads: list[ThreadInfo],
@@ -970,11 +970,16 @@ async def _load_message_counts_from_writes_batch(
     `add_messages` as a count-equivalent stand-in for the channel's actual
     reducer (`_messages_delta_reducer`): both dedup by ID and honor
     `RemoveMessage` / `REMOVE_ALL_MESSAGES`, so they produce the same final
-    message set. The reducer is batching-invariant, so folding the write history
-    from empty yields the same value LangGraph reconstructs from the latest
-    snapshot plus subsequent deltas. An `Overwrite` write resets the accumulator
-    to its value, matching the net effect of `DeltaChannel.replay_writes` (where
-    the last `Overwrite` is the reset point).
+    message set. An `Overwrite` write resets the accumulator to its value,
+    matching the net effect of `DeltaChannel.replay_writes` (where the last
+    `Overwrite` is the reset point).
+
+    Reduction runs in a single worker-thread hop per chunk (decode is CPU-bound
+    and a long thread can have thousands of writes; dispatching per row both
+    serialized the work and added an executor round-trip each time). The common
+    append-and-clear history folds in one `add_messages` pass (linear), which is
+    why a busy thread no longer takes seconds to count. See
+    `_count_messages_from_deltas` for the fold and its exact-fold fallback.
 
     Only the root namespace (`checkpoint_ns = ''`) is counted, matching both the
     inline path and the conversation the `/threads` selector cares about;
@@ -1004,14 +1009,12 @@ async def _load_message_counts_from_writes_batch(
     if not thread_ids:
         return {}
 
-    from langgraph.graph.message import add_messages
-    from langgraph.types import Overwrite
-
     loop = asyncio.get_running_loop()
-    # Accumulate one reduced message list per thread across chunks. Ordering by
-    # (checkpoint_id, task_id, idx) replays deltas oldest-to-newest, matching
-    # how LangGraph applies them on load.
-    reduced: dict[str, list[Any]] = {}
+    results: dict[str, int] = {}
+    # Chunks partition by thread, so every write for a given thread lands in the
+    # same query; each thread is counted exactly once. Ordering by
+    # (checkpoint_id, task_id, idx) replays deltas oldest-to-newest, matching how
+    # LangGraph applies them on load.
     for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
         chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
         placeholders = ",".join("?" * len(chunk))
@@ -1026,69 +1029,144 @@ async def _load_message_counts_from_writes_batch(
         async with conn.execute(query, chunk) as cursor:
             rows = await cursor.fetchall()
 
-        for tid, type_str, value_blob in rows:
-            if not type_str or not value_blob:
-                continue
-            try:
-                delta = await loop.run_in_executor(
-                    None, serde.loads_typed, (type_str, value_blob)
-                )
-                if isinstance(delta, Overwrite):
-                    # Overwrite resets the channel; its value becomes the base.
-                    value = delta.value
-                    reduced[tid] = list(value) if isinstance(value, list) else []
-                else:
-                    # `add_messages` with a list left arg returns a list.
-                    reduced[tid] = cast(
-                        "list[Any]", add_messages(reduced.get(tid, []), delta)
-                    )
-            except Exception:
-                logger.warning(
-                    "Failed to replay messages write for thread %s; "
-                    "message count may be inaccurate",
-                    tid,
-                    exc_info=True,
-                )
-                continue
+        chunk_counts = await loop.run_in_executor(
+            None, _reduce_message_write_rows, list(rows), serde
+        )
+        results.update(chunk_counts)
 
-    return {tid: len(messages) for tid, messages in reduced.items()}
+    return results
 
 
-async def _load_latest_checkpoint_summary(
-    conn: aiosqlite.Connection,
-    thread_id: str,
+def _reduce_message_write_rows(
+    rows: list[tuple[str, str | None, bytes | None]],
     serde: JsonPlusSerializer,
-) -> _CheckpointSummary:
-    """Load checkpoint-derived summary data from the latest checkpoint row.
+) -> dict[str, int]:
+    """Decode `messages`-channel write rows and count messages per thread.
+
+    Runs synchronously in a worker thread. Rows must be ordered so each thread's
+    deltas are oldest-to-newest. Undecodable rows are skipped (logged), matching
+    the per-row error handling of the previous implementation.
 
     Returns:
-        Message-count and prompt data extracted from the latest checkpoint row.
+        Mapping of thread ID to reconstructed message count.
     """
-    query = """
-        SELECT type, checkpoint
-        FROM checkpoints
-        WHERE thread_id = ?
-        ORDER BY checkpoint_id DESC
-        LIMIT 1
-    """
-    async with conn.execute(query, (thread_id,)) as cursor:
-        row = await cursor.fetchone()
-        if not row or not row[0] or not row[1]:
-            return _CheckpointSummary(message_count=None, initial_prompt=None)
-
-        type_str, checkpoint_blob = row
+    deltas_by_thread: dict[str, list[Any]] = {}
+    for tid, type_str, value_blob in rows:
+        if not type_str or not value_blob:
+            continue
         try:
-            data = serde.loads_typed((type_str, checkpoint_blob))
-        except (ValueError, TypeError, KeyError, AttributeError):
+            delta = serde.loads_typed((type_str, value_blob))
+        except Exception:
             logger.warning(
-                "Failed to deserialize checkpoint for thread %s; "
-                "message count and initial prompt may be incomplete",
-                thread_id,
+                "Failed to replay messages write for thread %s; "
+                "message count may be inaccurate",
+                tid,
                 exc_info=True,
             )
-            return _CheckpointSummary(message_count=None, initial_prompt=None)
+            continue
+        deltas_by_thread.setdefault(tid, []).append(delta)
 
-    return _summarize_checkpoint(data)
+    counts: dict[str, int] = {}
+    for tid, deltas in deltas_by_thread.items():
+        try:
+            counts[tid] = _count_messages_from_deltas(deltas)
+        except Exception:
+            # Keep one malformed thread from failing the whole `threads list`
+            # load: skip it (its count is simply absent) rather than propagating.
+            logger.warning(
+                "Failed to count messages for thread %s; omitting its count",
+                tid,
+                exc_info=True,
+            )
+    return counts
+
+
+def _count_messages_from_deltas(deltas: list[Any]) -> int:
+    """Count messages from an ordered list of `messages`-channel write deltas.
+
+    Fast path: appends and full-clears (`REMOVE_ALL_MESSAGES`, `Overwrite`) fold
+    into one `add_messages` pass — O(n) instead of the O(n^2) incremental fold,
+    so threads with thousands of writes count in milliseconds. For these ops the
+    single-pass result is count-equivalent to the sequential fold (both dedup by
+    ID, and clears collapse to the post-clear tail).
+
+    Slow path: a specific `RemoveMessage` (delete-by-ID) or any reducer error
+    falls back to the exact sequential fold as a conservative measure. A
+    delete-by-ID concatenated into the single `buffer` can make batch
+    `add_messages` raise (the target ID may be absent at that buffer position),
+    and we do not rely on unproven count-equivalence of batched removal. In
+    practice the two folds still agree on the count for these histories; the
+    sequential fold simply guarantees it. Such deletes are rare in linear dcode
+    histories, so the common case stays on the fast path.
+
+    Returns:
+        Number of messages after reducing the deltas.
+    """
+    from langchain_core.messages import RemoveMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES, add_messages
+    from langgraph.types import Overwrite
+
+    buffer: list[Any] = []
+    needs_exact_fold = False
+    for delta in deltas:
+        if isinstance(delta, Overwrite):
+            value = delta.value
+            buffer = list(value) if isinstance(value, list) else []
+            continue
+        items = delta if isinstance(delta, list) else [delta]
+        for item in items:
+            if isinstance(item, RemoveMessage):
+                if item.id == REMOVE_ALL_MESSAGES:
+                    buffer = []
+                else:
+                    needs_exact_fold = True
+                    break
+            else:
+                buffer.append(item)
+        if needs_exact_fold:
+            break
+
+    if not needs_exact_fold:
+        try:
+            return len(cast("list[Any]", add_messages([], buffer)))
+        except Exception:
+            logger.debug(
+                "Batched message-count fold failed; using sequential fold",
+                exc_info=True,
+            )
+
+    return _incremental_message_count(deltas)
+
+
+def _incremental_message_count(deltas: list[Any]) -> int:
+    """Count messages by folding deltas sequentially through `add_messages`.
+
+    Exact reference reduction: applies one delta at a time, resetting on
+    `Overwrite` and skipping any delta the reducer rejects (e.g. a delete for an
+    absent ID). Used as the fallback when the batched fast path cannot guarantee
+    a matching count.
+
+    Returns:
+        Number of messages after the sequential fold.
+    """
+    from langgraph.graph.message import add_messages
+    from langgraph.types import Overwrite
+
+    reduced: list[Any] = []
+    for delta in deltas:
+        if isinstance(delta, Overwrite):
+            value = delta.value
+            reduced = list(value) if isinstance(value, list) else []
+            continue
+        try:
+            reduced = cast("list[Any]", add_messages(reduced, delta))
+        except Exception:
+            logger.warning(
+                "Failed to replay messages write; message count may be inaccurate",
+                exc_info=True,
+            )
+            continue
+    return len(reduced)
 
 
 def _summarize_checkpoint(data: object) -> _CheckpointSummary:
@@ -1130,23 +1208,32 @@ def _checkpoint_messages(data: object) -> list[object] | None:
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a message list.
+    """Return the first non-system human message content from a message list.
 
     Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
     plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
     first write to the `messages` channel is the raw user input passed to the
     agent, which is preserved verbatim as a dict; subsequent writes are
     serialized `BaseMessage` instances produced after the model runs.
+
+    Synthetic `[SYSTEM]`-prefixed human messages (e.g. an interrupt
+    cancellation notice) are skipped so they never surface as a thread's prompt.
     """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
-            return _coerce_prompt_text(getattr(msg, "content", None))
-        if isinstance(msg, dict):
+            prompt = _coerce_prompt_text(getattr(msg, "content", None))
+        elif isinstance(msg, dict):
             msg_dict = cast("dict[str, object]", msg)
             role = msg_dict.get("role")
             type_ = msg_dict.get("type")
-            if role in {"user", "human"} or type_ == "human":
-                return _coerce_prompt_text(msg_dict.get("content"))
+            if role not in {"user", "human"} and type_ != "human":
+                continue
+            prompt = _coerce_prompt_text(msg_dict.get("content"))
+        else:
+            continue
+        if prompt is not None and prompt.startswith(SYSTEM_MESSAGE_PREFIX):
+            continue
+        return prompt
     return None
 
 
@@ -1174,24 +1261,49 @@ def _coerce_prompt_text(content: object) -> str | None:
     return str(content)
 
 
-async def get_most_recent(agent_name: str | None = None) -> str | None:
-    """Get most recent thread_id, optionally filtered by agent.
+async def get_most_recent(
+    agent_name: str | None = None,
+    *,
+    exclude_thread_id: str | None = None,
+) -> str | None:
+    """Get the most recent thread, optionally agent-filtered and/or excluding a thread.
+
+    Args:
+        agent_name: Return only threads created by this agent.
+        exclude_thread_id: Ignore this thread when selecting the most recent one.
 
     Returns:
-        Most recent thread_id or None if no threads exist.
+        Most recent thread ID, or `None` if no matching threads exist.
     """
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
             return None
 
-        if agent_name:
+        if agent_name and exclude_thread_id:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE json_extract(metadata, '$.agent_name') = ?
+                  AND thread_id != ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params: tuple[str, ...] = (agent_name, exclude_thread_id)
+        elif agent_name:
             query = """
                 SELECT thread_id FROM checkpoints
                 WHERE json_extract(metadata, '$.agent_name') = ?
                 ORDER BY checkpoint_id DESC
                 LIMIT 1
             """
-            params: tuple = (agent_name,)
+            params = (agent_name,)
+        elif exclude_thread_id:
+            query = """
+                SELECT thread_id FROM checkpoints
+                WHERE thread_id != ?
+                ORDER BY checkpoint_id DESC
+                LIMIT 1
+            """
+            params = (exclude_thread_id,)
         else:
             query = (
                 "SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 1"

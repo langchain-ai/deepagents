@@ -2,7 +2,7 @@
 
 `deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split.
 
-For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`.
+For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
 ## Textual (terminal UI framework)
 
@@ -38,6 +38,13 @@ Textual's `App.notify(message)` parses the message string as Rich markup by defa
 
 `console.print()` defaults to `highlight=True`, which runs `ReprHighlighter` and auto-applies bold + cyan to any detected numbers. This visually overrides subtle styles like `dim` (bold cancels dim in most terminals). Pass `highlight=False` on any `console.print()` call where the content contains numbers and consistent dim/subtle styling matters.
 
+### Glyphs and spinners — reuse, don't redefine
+
+Charset-dependent characters and animations have **single sources of truth**. Reuse them instead of hand-rolling new ones — copies drift, and (more subtly) a hardcoded Unicode literal won't degrade to ASCII on terminals that need it.
+
+- **Glyphs** (checkmarks, arrows, ellipsis, cursor, box-drawing, branch icon, etc.): pull from `get_glyphs()` (`config.Glyphs`). Each glyph has a Unicode and an ASCII variant; `get_glyphs()` returns the right set for the active terminal. Never inline `"✓"`, `"…"`, `"›"`, and friends.
+- **Animated spinners**: reuse the `Spinner` class in `tui/widgets/loading.py`, which wraps `get_glyphs().spinner_frames` (braille on Unicode, `(-) (\) (|) (/)` on ASCII) and exposes `next_frame()`/`current_frame()`. Do **not** define your own frame tuples or interval constants for a spinner — drive a `Spinner` on a `set_interval`. The status-bar reconnect indicator (`tui/widgets/status.py`) is the reference example; it ticks at the same 0.1s cadence as `LoadingWidget`. All connection/queue progress lives in the status bar — the welcome banner deliberately stays out of it, so there are currently no bespoke spinners to carve an exception for.
+
 ### Textual patterns used in this codebase
 
 - **Workers** (`@work` decorator) for async operations - see [Workers guide](https://textual.textualize.io/guide/workers/)
@@ -62,42 +69,9 @@ Casts are acceptable when the type violation is the point of the test (for examp
 
 ## SDK dependency pin
 
-`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.
 
-## Local dev installs
-
-Keep the released CLI and editable development CLI separate:
-
-- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
-- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
-
-This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
-
-`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
-
-Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
-
-```bash
-uv venv ~/.local/share/dcode-dev --python 3.13
-uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
-ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
-```
-
-When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
-
-```bash
-uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
-```
-
-Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
-
-```bash
-which dcode
-which dcode-dev
-dcode --version
-dcode-dev --version
-~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
-```
+For a persistent editable `dcode-dev` install that stays separate from a released install, see [Local dev installs](./DEVELOPMENT.md#local-dev-installs) in the development guide.
 
 ## Startup performance
 
@@ -108,7 +82,7 @@ dcode-dev --version
 - To read another package's version without importing it, use `importlib.metadata.version("package-name")`.
 - Feature-gate checks on the startup hot path (before background workers fire) must be lightweight — env var lookups, small file reads. Never pull in expensive modules just to decide whether to skip a feature.
 - When adding logic that already exists elsewhere (e.g., editable-install detection), import the existing cached implementation rather than duplicating it.
-- Features that run shell commands silently must be opt-in, never default-enabled. Gate behind an explicit env var or config key.
+- Features that run shell commands must never do so *silently* by default. Either gate them behind an explicit env var or config key (opt-in), or — if default-enabled — announce the action before running it and offer a documented opt-out. Auto-update is the sole default-enabled exception: it shows a one-time migration notice and skips the first install when enabled only by the opt-out default, prints the upgrade it is about to perform, is overridable via `DEEPAGENTS_CODE_AUTO_UPDATE` / `[update].auto_update`, and is always disabled for editable installs.
 - Background workers that spawn subprocesses must set a timeout to avoid blocking indefinitely.
 
 ## Logging
@@ -117,7 +91,8 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 
 - Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
-- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEV.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
+- The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; that path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
+- Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
 ## CLI help screen
 
@@ -125,13 +100,13 @@ The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, sepa
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding tip to the `_TIPS` list in `deepagents_code/widgets/welcome.py`. Tips are shown randomly on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
 
 ## Slash commands
 
 Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `deepagents_code/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
 
-To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make commands-catalog` if you changed command names, aliases, descriptions, visibility, or hidden-command metadata, then (5) run `make lint && make test` — the drift test will catch any mismatch.
 
 ## Adding a new model provider
 
@@ -140,7 +115,9 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
 2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
 3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-4. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
+4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
+5. `deepagents_code/tui/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
+6. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
 
 ### `PROVIDER_BASE_URL_ENV` guidelines
 

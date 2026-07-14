@@ -37,6 +37,7 @@ on:
           - langchain-modal
           - langchain-quickjs
           - langchain-runloop
+          - langchain-vercel-sandbox
         default: deepagents
       package-override:
         required: false
@@ -86,6 +87,7 @@ permissions:
 jobs:
   # Determine working directory from package input and resolve the release SHA
   setup:
+    name: 🧭 Resolve release target
     runs-on: ubuntu-latest
     outputs:
       package: ${{ steps.parse.outputs.package }}
@@ -138,9 +140,12 @@ jobs:
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
+            langchain-vercel-sandbox)
+              echo "working-dir=libs/partners/vercel" >> $GITHUB_OUTPUT
+              ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac
@@ -149,9 +154,61 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          PACKAGE_RESOLVED: ${{ steps.parse.outputs.package }}
+          PACKAGE_OVERRIDE: ${{ inputs.package-override }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release-sha }}
+          IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
+          SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+        run: |
+          set -euo pipefail
+
+          escape_cell() {
+            local value="$1"
+            # Backticks can't be escaped inside the single-backtick code spans
+            # below (there's no backslash-escape inside a GFM code span), so
+            # strip them outright rather than risk a malformed table row.
+            value="${value//\`/}"
+            value="${value//|/\\|}"
+            value="${value//$'\r\n'/<br>}"
+            value="${value//$'\n'/<br>}"
+            printf '%s' "$value"
+          }
+
+          {
+            echo "### 🌳 Source tree"
+            echo ""
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on [\`${GITHUB_REF_NAME}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME})."
+            echo ""
+            echo "### 🚀 Release dispatch inputs"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| \`package\` | \`$(escape_cell "${PACKAGE_RESOLVED}")\` |"
+            if [ -n "${PACKAGE_OVERRIDE}" ]; then
+              echo "| \`package-override\` | \`$(escape_cell "${PACKAGE_OVERRIDE}")\` |"
+            fi
+            echo "| \`version\` | \`$(escape_cell "${INPUT_VERSION}")\` |"
+            if [ -n "${INPUT_SHA}" ]; then
+              echo "| \`release-sha\` | \`$(escape_cell "${INPUT_SHA}")\` |"
+            else
+              echo "| \`release-sha\` | (empty) |"
+            fi
+            if [ "${IS_DANGEROUS}" = "true" ]; then
+              echo "| \`dangerous-nonmain-release\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
 
       - name: Resolve and validate release SHA
         id: resolve-sha
@@ -234,6 +291,7 @@ jobs:
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
+    name: 📦 Build distribution
     needs: setup
     if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
@@ -251,7 +309,7 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -276,6 +334,10 @@ jobs:
       - name: Build project for distribution
         run: uv build
         working-directory: ${{ env.WORKING_DIR }}
+        env:
+          # Stamp the exact release commit into deepagents-code so `dcode doctor`
+          # reports it on installed wheels. Other packages ignore this env var.
+          DEEPAGENTS_CODE_BUILD_COMMIT: ${{ needs.setup.outputs.release-sha }}
 
       - name: Upload build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -290,13 +352,49 @@ jobs:
         run: |
           import os
           import re
+          import sys
           import tomllib
+          import urllib.error
+          import urllib.request
           with open("pyproject.toml", "rb") as f:
               data = tomllib.load(f)
           pkg_name = data["project"]["name"]
           version = data["project"]["version"]
           # PEP 440 pre-release: contains a/b/rc/dev suffix or dash separator
           is_pre = bool(re.search(r"(a|b|rc|\.dev)\d", version) or "-" in version)
+
+          # Query the per-version endpoint so PyPI applies PEP 440 normalization
+          # (e.g. `0.1.0-rc1` and `0.1.0rc1` resolve to the same release): HTTP 200
+          # means the version is already published, 404 means it's available
+          # (including the first-ever release of a new package). Only the status
+          # code is used, so a malicious or malformed response body can't mislead us.
+          url = f"https://pypi.org/pypi/{pkg_name}/{version}/json"
+          try:
+              with urllib.request.urlopen(url, timeout=10):
+                  already_published = True
+          except urllib.error.HTTPError as err:
+              if err.code == 404:
+                  already_published = False
+              else:
+                  # Fail closed: an unexpected status means we can't verify.
+                  print(
+                      f"::error::PyPI returned HTTP {err.code} checking whether "
+                      f"{pkg_name}=={version} exists; cannot verify, aborting."
+                  )
+                  sys.exit(1)
+          except urllib.error.URLError as err:
+              # Fail closed: if PyPI is unreachable we must not assume the version
+              # is free, or we risk re-publishing an existing release.
+              print(
+                  f"::error::Could not reach PyPI to verify {pkg_name}=={version} "
+                  f"({err.reason}); cannot verify, aborting."
+              )
+              sys.exit(1)
+
+          if already_published:
+              print(f"::error::{pkg_name}=={version} already exists on PyPI.")
+              sys.exit(1)
+
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"pkg-name={pkg_name}\n")
               f.write(f"version={version}\n")
@@ -312,9 +410,10 @@ jobs:
             exit 1
           fi
 
-  # Generate release notes from CHANGELOG.md (with git log fallback)
-  # and collect contributor shoutouts from merged PRs
+  # Generate release notes from CHANGELOG.md, append the package commit history,
+  # and collect contributor shoutouts
   release-notes:
+    name: 📝 Generate release notes
     needs:
       - setup
       - build
@@ -325,10 +424,10 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
-      release-body: ${{ steps.generate-release-body.outputs.release-body }}
+      release-body: ${{ steps.finalize-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -349,6 +448,7 @@ jobs:
         id: resolve-refs
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           # Detect PEP 440 pre-release versions:
@@ -360,7 +460,46 @@ jobs:
           fi
           echo "is-prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
 
-          # Determine previous tag
+          # Fail loudly if RELEASE_SHA does not resolve. The helpers below pass it
+          # to git as the second arg of `merge-base --is-ancestor` and to `git tag
+          # --merged`, where an unresolvable value exits 128 — indistinguishable
+          # from "no predecessor" — and would silently mislabel the Git log as an
+          # initial release. Verifying it once here rules that failure mode out.
+          if ! git rev-parse -q --verify "$RELEASE_SHA^{commit}" >/dev/null; then
+            echo "::error::RELEASE_SHA '$RELEASE_SHA' does not resolve to a commit"
+            exit 1
+          fi
+
+          valid_previous_tag() {
+            local tag="$1"
+            # merge-base --is-ancestor exits 1 for "not an ancestor" and 128 on
+            # error; both are treated as "invalid predecessor" and trigger the
+            # fallback below. Both arguments are known to resolve — the tag via the
+            # rev-parse --verify below, and RELEASE_SHA via the check above — so a
+            # non-zero exit reflects ancestry, not a bad ref, and the fallback is
+            # the safe response.
+            [ -n "$tag" ] \
+              && [ "$tag" != "$PKG_NAME==0.0.0" ] \
+              && git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null \
+              && git merge-base --is-ancestor "$tag" "$RELEASE_SHA"
+          }
+
+          latest_stable_tag() {
+            local tag
+            local tag_version
+            while IFS= read -r tag; do
+              [ "$tag" = "$PKG_NAME==$VERSION" ] && continue
+              tag_version="${tag#"$PKG_NAME=="}"
+              if [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                printf '%s' "$tag"
+                return
+              fi
+            done < <(git tag --merged "$RELEASE_SHA" --sort=-version:refname \
+              --list "$PKG_NAME==*")
+          }
+
+          # Prefer the expected predecessor, then fall back to the highest stable
+          # package tag that is actually in the release commit's history.
           if [ "$IS_PRERELEASE" = "true" ]; then
             # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
             # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
@@ -371,26 +510,30 @@ jobs:
               echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
             fi
 
-            # Try exact base version tag first (e.g. deepagents==0.5.2)
-            PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==${BASE_VERSION}$" || true) | head -1)
-            if [ -z "$PREV_TAG" ]; then
-              # Fall back to latest stable release tag
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
+            PREV_TAG="$PKG_NAME==$BASE_VERSION"
           else
             PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
             [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-            if [ -z "$PREV_TAG" ]; then
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
           fi
 
-          # Validate prev tag exists
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
-            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-            [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
-          else
-            PREV_TAG=""
+          if ! valid_previous_tag "$PREV_TAG"; then
+            PREV_TAG=$(latest_stable_tag)
+          fi
+
+          # A stable release with no reachable predecessor tag is anomalous unless
+          # this is genuinely the package's first release. Distinguish the two by
+          # whether any prior stable package tag exists at all: none means a true
+          # initial release (the log spanning full history is expected); some, but
+          # none reachable from the release commit, means the log would wrongly span
+          # the full history and be labeled an initial release — surface that. This
+          # covers minor/major bumps (X.Y.0), not just patches.
+          if [ -z "$PREV_TAG" ] && [ "$IS_PRERELEASE" != "true" ]; then
+            PRIOR_STABLE_TAGS=$(git tag --list "$PKG_NAME==*" \
+              | (grep -Ev "^${PKG_NAME}==${VERSION}$" || true) \
+              | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true))
+            if [ -n "$PRIOR_STABLE_TAGS" ]; then
+              echo "::warning::No prior stable tag reachable from $RELEASE_SHA for $PKG_NAME==$VERSION; Git log will span the package's full history"
+            fi
           fi
 
           echo "Previous tag: $PREV_TAG"
@@ -415,6 +558,154 @@ jobs:
           echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
+      - name: Generate package Git log
+        id: generate-git-log
+        env:
+          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          RANGE="$RELEASE_SHA"
+          SUMMARY="Git log for initial release"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..$RELEASE_SHA"
+            SUMMARY="Git log since $PREV_TAG"
+          fi
+
+          MAX_COMMITS=100
+          MAX_GIT_LOG_BYTES=25000
+          MAX_SUBJECT_LENGTH=200
+          COMMIT_COUNT=0
+          GIT_LOG_BYTES=0
+          TRUNCATED=false
+          GIT_LOG_FAILED=false
+          GIT_LOG=""
+
+          # Capture the SHAs first so a `git log` failure is caught here. A command
+          # inside a `< <(...)` process substitution is exempt from `set -e`, so its
+          # failure would otherwise be swallowed and mistaken for an empty history.
+          if ! COMMITS=$(git log --date-order --max-count=$((MAX_COMMITS + 1)) \
+            --format=%H "$RANGE" -- "$WORKING_DIR"); then
+            echo "::warning::git log failed for range '$RANGE'; the Git log section will note the failure"
+            GIT_LOG_FAILED=true
+            COMMITS=""
+          fi
+
+          while IFS= read -r SHA; do
+            if [ -z "$SHA" ]; then
+              continue
+            fi
+            SUBJECT=$(git show -s --format=%s "$SHA")
+
+            if [ "$COMMIT_COUNT" -ge "$MAX_COMMITS" ]; then
+              TRUNCATED=true
+              break
+            fi
+            if [ "${#SUBJECT}" -gt "$MAX_SUBJECT_LENGTH" ]; then
+              SUBJECT="${SUBJECT:0:$MAX_SUBJECT_LENGTH}…"
+            fi
+            SUBJECT=$(printf '%s' "$SUBJECT" \
+              | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+            SHORT_SHA=$(git rev-parse --short=7 "$SHA")
+            ENTRY="- [\`$SHORT_SHA\`](https://github.com/$REPOSITORY/commit/$SHA) $SUBJECT"
+            ENTRY_BYTES=$(printf '%s' "$ENTRY" | wc -c | tr -d ' ')
+            SEPARATOR_BYTES=0
+            if [ -n "$GIT_LOG" ]; then
+              SEPARATOR_BYTES=1
+            fi
+            if [ $((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES)) \
+              -gt "$MAX_GIT_LOG_BYTES" ]; then
+              TRUNCATED=true
+              break
+            fi
+
+            if [ -z "$GIT_LOG" ]; then
+              GIT_LOG="$ENTRY"
+            else
+              GIT_LOG=$(printf "%s\n%s" "$GIT_LOG" "$ENTRY")
+            fi
+            GIT_LOG_BYTES=$((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES))
+            COMMIT_COUNT=$((COMMIT_COUNT + 1))
+          done <<< "$COMMITS"
+
+          if [ "$GIT_LOG_FAILED" = "true" ]; then
+            GIT_LOG="Git log unavailable: \`git log\` failed for range \`$RANGE\`."
+          elif [ -z "$GIT_LOG" ]; then
+            GIT_LOG="No commits found."
+          fi
+
+          DESCRIPTION="This commit history includes changes to this package. Commits are listed newest first."
+          if [ "$TRUNCATED" = "true" ]; then
+            DESCRIPTION="$DESCRIPTION The log is truncated to the newest $COMMIT_COUNT commits to keep the release notes a reasonable size."
+          fi
+          DETAILS=$(printf '<details>\n<summary>%s</summary>\n\n%s\n\n%s\n\n</details>' "$SUMMARY" "$DESCRIPTION" "$GIT_LOG")
+          {
+            echo 'details<<EOF'
+            echo "$DETAILS"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      # Resolve the human who shipped this release so release notes can credit
+      # them. Primary source is whoever merged the release PR (the release commit
+      # is that PR's squash-merge); when the release commit has no associated
+      # merged PR (initial release, or a direct push / manual recovery), fall back
+      # to the actor who triggered the workflow. Bot accounts are dropped — there's
+      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
+      - name: Resolve releaser
+        id: resolve-releaser
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          RELEASER=""
+
+          # Primary: the user who merged the release PR. Distinguish "commit has no
+          # associated merged PR" (initial release, direct push, manual recovery, or
+          # eventual-consistency on a fresh squash-merge) from a real API failure.
+          # The latter must warn rather than silently fall through to the actor —
+          # on a manual release that would credit the dispatcher instead of the
+          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
+          # release-label resolution.
+          if [ -n "$RELEASE_COMMIT" ]; then
+            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
+              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
+            else
+              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
+              PR_NUM=""
+            fi
+            if [ -n "$PR_NUM" ]; then
+              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
+                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
+                RELEASER="$MERGED_BY"
+              else
+                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
+              fi
+            fi
+          fi
+
+          # Fallback: the actor who dispatched the workflow (manual releases).
+          if [ -z "$RELEASER" ]; then
+            RELEASER="$ACTOR"
+          fi
+
+          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
+          # literal suffix, not a glob char class — "*[bot]" matches any login ending
+          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
+          # without the "[bot]" suffix, which "*[bot]" would not catch.
+          case "$RELEASER" in
+            ""|*"[bot]"|github-actions) RELEASER="" ;;
+          esac
+
+          echo "Resolved releaser: ${RELEASER:-<none>}"
+          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
+
       - name: Generate release body
         id: generate-release-body
         env:
@@ -423,7 +714,11 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$RELEASE_COMMIT" ]; then
             echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
@@ -433,9 +728,9 @@ jobs:
           CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
           RELEASE_BODY=""
 
-          # Try to extract current version's section from CHANGELOG.md
-          # (Pre-releases won't have a CHANGELOG entry and the git log fallback is
-          # also skipped for them — they get the banner + contributors only)
+          # Try to extract the current version's section from CHANGELOG.md. When
+          # there is no matching section, the package Git log appended below
+          # serves as the release notes instead.
           if [ -f "$CHANGELOG_PATH" ]; then
             echo "Found CHANGELOG.md, extracting version $VERSION section..."
 
@@ -457,23 +752,6 @@ jobs:
             fi
           else
             echo "No CHANGELOG.md found at $CHANGELOG_PATH"
-          fi
-
-          # Fallback to git log if CHANGELOG extraction failed
-          # (Skip for pre-releases — they get the banner + contributors only)
-          if [ -z "$RELEASE_BODY" ] && [ "$IS_PRERELEASE" != "true" ]; then
-            echo "Falling back to git log for release notes..."
-
-            FALLBACK_PREV="$PREV_TAG"
-            if [ -z "$FALLBACK_PREV" ]; then
-              PREAMBLE="Initial release"
-              FALLBACK_PREV=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
-            else
-              PREAMBLE="Changes since $FALLBACK_PREV"
-            fi
-
-            GIT_LOG=$(git log --format="%s" "$FALLBACK_PREV".."$RELEASE_COMMIT" -- "$WORKING_DIR")
-            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
           fi
 
           # ── Collect contributors from merged PRs ──
@@ -587,7 +865,9 @@ jobs:
             fi
           done
 
-          echo "Found community contributors: $CONTRIBUTOR_LIST"
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            echo "Found community contributors: $CONTRIBUTOR_LIST"
+          fi
 
           # Build internal maintainers list: @ghuser, @ghuser, ...
           INTERNAL_LIST=""
@@ -599,11 +879,30 @@ jobs:
             fi
           done
 
-          echo "Found internal maintainers: $INTERNAL_LIST"
+          if [ -n "$INTERNAL_LIST" ]; then
+            echo "Found internal maintainers: $INTERNAL_LIST"
+          fi
+
+          if [ -n "$RELEASER" ]; then
+            echo "Found releaser: @$RELEASER"
+          fi
 
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
+          fi
+
+          # Annotate releases cut from a non-default branch (a vX.Y version line
+          # or an alpha/* throwaway branch) with the originating branch and the
+          # immutable release commit. Skipped for normal default-branch releases,
+          # where the branch carries no signal. The branch is rendered as plain
+          # text and the link targets the commit SHA, never tree/<branch>: alpha
+          # branches are deleted after release, so a branch link would 404, and
+          # the commit is the exact code that shipped even when release-sha points
+          # somewhere other than the branch tip.
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
           fi
 
           # Append contributor shoutouts
@@ -616,8 +915,20 @@ jobs:
           if [ -n "$INTERNAL_LIST" ]; then
             if [ "$SEPARATOR_ADDED" = "false" ]; then
               RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
             fi
             RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
+          fi
+
+          # Credit whoever shipped the release. This is a distinct role from
+          # contributing release changes, so show it even when the same user also
+          # appears as a community contributor or internal maintainer.
+          if [ -n "$RELEASER" ]; then
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
+            fi
+            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
           fi
 
           # Output release body using heredoc for proper multiline handling
@@ -627,7 +938,59 @@ jobs:
             echo EOF
           } >> "$GITHUB_OUTPUT"
 
+      - name: Add package Git log to release body
+        id: finalize-release-body
+        env:
+          BASE_RELEASE_BODY: ${{ steps.generate-release-body.outputs.release-body }}
+          GIT_LOG_DETAILS: ${{ steps.generate-git-log.outputs.details }}
+        run: |
+          set -euo pipefail
+
+          # Keep the generated output below 120,000 bytes as a conservative margin
+          # beneath GitHub's 125,000-character release-body limit. Replace the log
+          # with a small notice when room is tight, or drop it entirely if even the
+          # notice would not fit.
+          MAX_RELEASE_BODY_BYTES=120000
+          BODY_BYTES=$(printf '%s' "$BASE_RELEASE_BODY" | wc -c | tr -d ' ')
+          DETAILS_BYTES=$(printf '%s' "$GIT_LOG_DETAILS" | wc -c | tr -d ' ')
+          RELEASE_BODY="$BASE_RELEASE_BODY"
+          SEPARATOR_BYTES=0
+          if [ -n "$BASE_RELEASE_BODY" ]; then
+            SEPARATOR_BYTES=2
+          fi
+          # The base body alone can exceed the budget (e.g. a very large CHANGELOG
+          # section). Nothing here can shrink it, so surface that accurately rather
+          # than blaming the Git log in the branch below, and append nothing —
+          # RELEASE_BODY stays as the base body initialized above.
+          if [ "$BODY_BYTES" -gt "$MAX_RELEASE_BODY_BYTES" ]; then
+            echo "::warning::Base release body ($BODY_BYTES bytes) already exceeds the ${MAX_RELEASE_BODY_BYTES}-byte budget before the Git log is added; GitHub may reject it"
+          elif [ $((BODY_BYTES + DETAILS_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
+            if [ -n "$BASE_RELEASE_BODY" ]; then
+              RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$GIT_LOG_DETAILS")
+            else
+              RELEASE_BODY="$GIT_LOG_DETAILS"
+            fi
+          else
+            echo "::warning::Full Git log omitted to keep the release body within GitHub's size limit"
+            COMPACT_DETAILS=$(printf '<details>\n<summary>Git log</summary>\n\nGit log omitted because the rest of these release notes is near GitHub'"'"'s size limit.\n\n</details>')
+            COMPACT_BYTES=$(printf '%s' "$COMPACT_DETAILS" | wc -c | tr -d ' ')
+            if [ $((BODY_BYTES + COMPACT_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
+              if [ -n "$BASE_RELEASE_BODY" ]; then
+                RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$COMPACT_DETAILS")
+              else
+                RELEASE_BODY="$COMPACT_DETAILS"
+              fi
+            fi
+          fi
+
+          {
+            echo 'release-body<<EOF'
+            echo "$RELEASE_BODY"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
   test-pypi-publish:
+    name: 🧪 Publish to TestPyPI
     needs:
       - setup
       - build
@@ -644,7 +1007,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -668,6 +1031,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
+    name: ✅ Pre-release checks
     needs:
       - setup
       - build
@@ -679,7 +1043,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -708,44 +1072,53 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Verify package pins latest SDK version
+      - name: Verify package pins SDK at or ahead of workspace version
         if: |
           needs.build.outputs.pkg-name == 'deepagents-code'
           && !inputs.dangerous-skip-sdk-pin-check
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
-          case "$PKG_NAME" in
-            deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
-            *)
-              echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"
-              exit 1
-              ;;
-          esac
+          python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
 
-          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
-          if [ -z "$SDK_VERSION" ]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          fi
+          pkg_name = os.environ["PKG_NAME"]
+          root = Path.cwd()
+          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
+          if spec is None or spec.loader is None:
+              print(f"::error::Could not load {script}")
+              raise SystemExit(1)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
-          if [ -z "$PKG_SDK_PIN" ]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          fi
+          try:
+              sdk_version = module._sdk_version(root)
+              pkg_pin = module._code_pin(root)
+              comparison = module.compare_versions(pkg_pin, sdk_version)
+          except ValueError as e:
+              print(
+                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  f"Could not determine {pkg_name} SDK pin status: {e}"
+              )
+              raise SystemExit(1) from None
 
-          if [ "$SDK_VERSION" != "$PKG_SDK_PIN" ]; then
-            echo "::error::${PKG_NAME} SDK pin does not match SDK version!"
-            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
-            echo "${PKG_NAME} SDK pin (${PKG_PYPROJECT}): $PKG_SDK_PIN"
-            echo ""
-            echo "Update the deepagents dependency in ${PKG_PYPROJECT} to deepagents==$SDK_VERSION"
-            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
-            exit 1
-          else
-            echo "${PKG_NAME} SDK pin matches SDK version: $SDK_VERSION"
-          fi
+          if comparison < 0:
+              print(f"::error::{pkg_name} SDK pin is older than the workspace SDK version!")
+              print(f"SDK version (libs/deepagents/pyproject.toml): {sdk_version}")
+              print(f"{pkg_name} SDK pin (libs/code/pyproject.toml): {pkg_pin}")
+              print("")
+              print(f"Update the deepagents dependency in libs/code/pyproject.toml to deepagents=={sdk_version}")
+              print("Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass.")
+              raise SystemExit(1)
+
+          if comparison > 0:
+              print(f"{pkg_name} SDK pin is ahead of workspace SDK: {pkg_pin} >= {sdk_version}")
+          else:
+              print(f"{pkg_name} SDK pin matches SDK version: {sdk_version}")
+          PY
 
       - name: Import dist package
         shell: bash
@@ -756,7 +1129,12 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -781,7 +1159,12 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
@@ -802,6 +1185,8 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           # langchain-runloop
           RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
+          # langchain-vercel-sandbox
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
         # We skip test_sandbox_factory.py and test_sandbox_operations.py in CLI
         # releases — overlap with partner-level SandboxIntegrationTests.
@@ -819,6 +1204,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
   publish:
+    name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
     needs:
       - setup
@@ -841,7 +1227,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -867,6 +1253,7 @@ jobs:
 
   # Create GitHub release after checks pass
   mark-release:
+    name: 🏷️ Tag GitHub release
     needs:
       - setup
       - build
@@ -891,7 +1278,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 

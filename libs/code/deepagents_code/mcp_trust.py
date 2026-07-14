@@ -32,7 +32,7 @@ def _default_store_path() -> Path:
 
     Resolved at call time (not import time) so tests can redirect storage by
     monkeypatching `deepagents_code.model_config.DEFAULT_STATE_DIR` — the same
-    pattern `auth_store._auth_path` and `mcp_auth._tokens_dir` use.
+    pattern `auth_store.auth_path` and `mcp_auth._tokens_dir` use.
     """
     from deepagents_code.model_config import DEFAULT_STATE_DIR
 

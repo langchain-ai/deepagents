@@ -19,6 +19,7 @@ from deepagents.backends.protocol import ReadResult
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
     _to_legacy_file_data,
+    compile_grep_include_glob,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -262,6 +263,65 @@ def test_grep_new_format():
 # ---------------------------------------------------------------------------
 # 11. Grep with legacy format
 # ---------------------------------------------------------------------------
+
+
+def test_grep_glob_filters_by_filename():
+    """`grep_matches_from_files` honors the glob filter (cached compile path)."""
+    files = {
+        "/src/main.py": create_file_data("import os"),
+        "/src/notes.txt": create_file_data("import os"),
+    }
+    result = grep_matches_from_files(files, "import", path="/", glob="*.py")
+    assert result.matches is not None
+    assert len(result.matches) == 1
+    assert result.matches[0]["path"] == "/src/main.py"
+
+
+def test_grep_glob_brace_expansion():
+    """Brace-expansion globs match either extension via the cached matcher."""
+    files = {
+        "/a.py": create_file_data("hit"),
+        "/b.md": create_file_data("hit"),
+        "/c.txt": create_file_data("hit"),
+    }
+    result = grep_matches_from_files(files, "hit", path="/", glob="*.{py,md}")
+    paths = sorted(m["path"] for m in result.matches)
+    assert paths == ["/a.py", "/b.md"]
+
+
+def test_grep_glob_matches_nothing():
+    """A glob matching no files yields an empty (not `None`) match list."""
+    files = {
+        "/a.py": create_file_data("hit"),
+        "/b.md": create_file_data("hit"),
+    }
+    result = grep_matches_from_files(files, "hit", path="/", glob="*.rs")
+    assert result.matches == []
+
+
+def test_compile_glob_is_cached():
+    """`compile_grep_include_glob` returns the identical matcher for a repeated pattern.
+
+    This is the optimization the change exists to provide: the compiled matcher
+    is reused across calls rather than recompiled per candidate file.
+    """
+    assert compile_grep_include_glob("*.py") is compile_grep_include_glob("*.py")
+    # A distinct pattern produces a distinct matcher.
+    assert compile_grep_include_glob("*.py") is not compile_grep_include_glob("*.md")
+
+
+def test_grep_glob_repeated_pattern_stays_correct():
+    """Repeated greps with the same glob return correct results each time.
+
+    Guards against a cached matcher being mutated or carrying state between
+    calls, which would corrupt the second invocation.
+    """
+    first = {"/x.py": create_file_data("hit"), "/x.md": create_file_data("hit")}
+    second = {"/y.py": create_file_data("hit"), "/y.txt": create_file_data("hit")}
+    r1 = grep_matches_from_files(first, "hit", path="/", glob="*.py")
+    r2 = grep_matches_from_files(second, "hit", path="/", glob="*.py")
+    assert [m["path"] for m in r1.matches] == ["/x.py"]
+    assert [m["path"] for m in r2.matches] == ["/y.py"]
 
 
 def test_grep_legacy_format():

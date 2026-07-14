@@ -16,9 +16,9 @@ from pydantic import Field
 
 
 class FakeChatModel(GenericFakeChatModel):
-    """GenericFakeChatModel whose ``bind_tools`` returns self.
+    """GenericFakeChatModel whose `bind_tools` returns self.
 
-    Without this override, ``create_deep_agent``/``create_agent`` wraps the model in
+    Without this override, `create_deep_agent`/`create_agent` wraps the model in
     a binding that no longer reads from the scripted message iterator.
     """
 

@@ -38,6 +38,7 @@ jobs:
               "cli": "cli",
               "acp": "acp",
               "code": "dcode",
+              "dcode": "dcode",
               "talon": "talon",
               "evals": "evals",
               "harbor": "harbor",
@@ -45,6 +46,7 @@ jobs:
               "modal": "modal",
               "quickjs": "quickjs",
               "runloop": "runloop",
+              "vercel": "vercel",
               "langsmith-sandbox": "langsmith-sandbox",
             };
 

@@ -8,11 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents_code.server import (
+from deepagents_code.agent import _apply_inherited_pythonpath
+from deepagents_code.client.launch.server import (
+    _SERVER_ENV_DENYLIST,
     _build_server_cmd,
     _build_server_env,
     _scoped_env_overrides,
 )
+from deepagents_code.config import _DOTENV_DENIED_ENV_KEYS, _INHERITED_PYTHONPATH_ENV
 
 
 class TestBuildServerCmd:
@@ -60,20 +63,78 @@ class TestBuildServerEnv:
         assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
     def test_strips_subprocess_hijack_variables(self) -> None:
+        injected = {key: f"/tmp/evil-{key}" for key in _SERVER_ENV_DENYLIST}
         with patch.dict(
             os.environ,
-            {
-                "LD_PRELOAD": "/tmp/evil.so",
-                "PYTHONPATH": "/tmp/evil",
-                "NODE_OPTIONS": "--require /tmp/evil.js",
-                "PATH": os.environ.get("PATH", ""),
-            },
+            {**injected, "PATH": os.environ.get("PATH", "")},
         ):
             env = _build_server_env()
-        assert "LD_PRELOAD" not in env
-        assert "PYTHONPATH" not in env
-        assert "NODE_OPTIONS" not in env
+        for key in _SERVER_ENV_DENYLIST:
+            assert key not in env
         assert "PATH" in env
+
+    def test_relays_pythonpath_off_server_interpreter(self) -> None:
+        """A launch `PYTHONPATH` is kept off the server but carried for `execute`."""
+        with patch.dict(os.environ, {"PYTHONPATH": "src"}):
+            env = _build_server_env()
+        assert "PYTHONPATH" not in env
+        assert env[_INHERITED_PYTHONPATH_ENV] == "src"
+
+    def test_no_carrier_when_pythonpath_absent(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            env = _build_server_env()
+        assert _INHERITED_PYTHONPATH_ENV not in env
+
+    def test_inherited_carrier_var_is_dropped(self) -> None:
+        """A pre-existing carrier var is never trusted as a PYTHONPATH source."""
+        with patch.dict(
+            os.environ,
+            {_INHERITED_PYTHONPATH_ENV: "smuggled", "KEEP_ME": "1"},
+            clear=True,
+        ):
+            env = _build_server_env()
+        assert _INHERITED_PYTHONPATH_ENV not in env
+        assert env["KEEP_ME"] == "1"
+
+    def test_relays_empty_pythonpath_as_empty(self) -> None:
+        """An empty launch `PYTHONPATH` relays as `""` (distinct from absent)."""
+        with patch.dict(os.environ, {"PYTHONPATH": ""}):
+            env = _build_server_env()
+        assert env[_INHERITED_PYTHONPATH_ENV] == ""
+
+    def test_startup_hijack_keys_blocked_from_dotenv(self) -> None:
+        """Project `.env` files must not inject interpreter startup hooks."""
+        assert "PYTHONPATH" in _SERVER_ENV_DENYLIST
+        for key in (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
+            "PYTHONPATH",
+            "SHELLOPTS",
+            _INHERITED_PYTHONPATH_ENV,
+        ):
+            assert key in _DOTENV_DENIED_ENV_KEYS
+
+
+class TestPythonpathRelayRoundTrip:
+    def test_launch_pythonpath_round_trips_to_execute_env(self) -> None:
+        """A launch `PYTHONPATH` survives the server-env relay to `execute`.
+
+        Composes the two halves (`_build_server_env` strips + carries; the agent
+        helper re-applies) to pin the end-to-end contract that the carrier var
+        name agrees across modules.
+        """
+        with patch.dict(os.environ, {"PYTHONPATH": "src"}):
+            server_env = _build_server_env()
+        assert "PYTHONPATH" not in server_env
+
+        # The shell backend re-applies the relayed value for `execute` commands.
+        shell_env = dict(server_env)
+        _apply_inherited_pythonpath(shell_env)
+        assert shell_env["PYTHONPATH"] == "src"
+        assert _INHERITED_PYTHONPATH_ENV not in shell_env
 
 
 class TestScopedEnvOverrides:

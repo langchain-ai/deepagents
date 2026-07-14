@@ -59,7 +59,7 @@ GraderVerdict = Literal["satisfied", "needs_revision", "failed"]
 - `satisfied`: every criterion passes.
 - `needs_revision`: at least one criterion fails; loop continues.
 - `failed`: the rubric itself is malformed or impossible to evaluate
-  against the transcript.
+    against the transcript.
 """
 
 RubricResult = GraderVerdict | Literal["max_iterations_reached", "grader_error"]
@@ -69,11 +69,12 @@ Superset of `GraderVerdict` with two middleware-synthesized terminal
 statuses the grader cannot emit itself:
 
 - `max_iterations_reached`: the iteration cap fired on a `needs_revision`
-  verdict; the agent terminates with its last response intact.
+    verdict; the agent terminates with its last response intact.
 - `grader_error`: the grader sub-agent raised an exception (provider
-  timeout, missing credentials, malformed structured response, etc.).
-  Distinct from `failed`, which the grader returns about the *rubric*,
-  not about its own machinery.
+    timeout, missing credentials, malformed structured response, etc.).
+
+    Distinct from `failed`, which the grader returns about the *rubric*,
+    not about its own machinery.
 
 Only `needs_revision` continues the loop; every other status ends the
 grading run.
@@ -106,9 +107,6 @@ characters plus `...(truncated)`, keeping the grader prompt bounded even
 when a single tool call returns a large blob (e.g. a file dump or test
 log).
 """
-
-_MAX_ITERATIONS_HARD_CAP = 20
-"""Hard upper bound for `max_iterations`."""
 
 _PAYLOAD_CLOSER_RE = re.compile(r"</(rubric|transcript)", re.IGNORECASE)
 """Matches a closing `rubric` or `transcript` tag in payload content."""
@@ -303,6 +301,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     unconditionally in a `create_deep_agent` stack.
 
     !!! note "Observing non-satisfied terminations"
+
         When grading ends with `failed`, `max_iterations_reached`, or
         `grader_error`, the middleware does **not** mutate the response
         messages. The last `AIMessage` in the agent's output is whatever
@@ -310,35 +309,37 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         need to branch on non-satisfied termination must inspect one of:
 
         - `_rubric_status` on the returned state (or `agent.get_state(...)`
-          on a checkpointed thread),
+            on a checkpointed thread),
         - the `on_evaluation` callback,
         - the `rubric_evaluation_end` stream event.
 
-        A `logger.warning` is also emitted when `max_iterations_reached`
-        fires.
+        An info log is also emitted when `max_iterations_reached` fires.
 
     Args:
-        model: Model used by the grader sub-agent. Accepts either a model
-            string like `"provider:model-id"` or a `BaseChatModel`
-            instance.
+        model: Model used by the grader sub-agent.
+
+            Accepts either a model string like `"provider:model-id"` or
+            a `BaseChatModel` instance.
         system_prompt: Custom grading instructions; falls back to the
             built-in grader prompt when not set.
         tools: Tools the grader may call before producing its
-            `GraderResponse`. With none, the grader reasons from the
-            transcript alone.
-        max_iterations: Hard cap on grader iterations per rubric attempt;
-            hard-capped at 20. When the cap is reached without a
-            `satisfied` verdict, the agent terminates with status
-            `'max_iterations_reached'` (see the note above on how to
-            observe this).
+            `GraderResponse`.
+
+            With none, the grader reasons from the transcript alone.
+        max_iterations: Maximum grader iterations per rubric attempt; must be a
+            positive integer.
+
+            When the cap is reached without a `satisfied` verdict, the agent
+            terminates with status `'max_iterations_reached'` (see the
+            note above on how to observe this).
         on_evaluation: Optional callback one can invoke with each `RubricEvaluation` after
-            grading. Exceptions raised by the callback are logged at
-            error level and suppressed; do not use this callback to
-            enforce control flow.
+            grading.
+
+            Exceptions raised by the callback are logged at error level and
+            suppressed; do not use this callback to enforce control flow.
 
     Raises:
-        ValueError: If `max_iterations` is outside `[1, 20]`, or if `model`
-            is falsy.
+        ValueError: If `max_iterations` is less than 1, or if `model` is falsy.
         TypeError: If `max_iterations` is not an `int`.
     """
 
@@ -359,8 +360,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
             msg = f"RubricMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
             raise TypeError(msg)
-        if not 1 <= max_iterations <= _MAX_ITERATIONS_HARD_CAP:
-            msg = f"RubricMiddleware: `max_iterations` must be in [1, {_MAX_ITERATIONS_HARD_CAP}], got {max_iterations}."
+        if max_iterations < 1:
+            msg = f"RubricMiddleware: `max_iterations` must be positive, got {max_iterations}."
             raise ValueError(msg)
 
         self.max_iterations = max_iterations
@@ -501,13 +502,22 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         (sync `_grade` vs `await _agrade`).
         """
         evaluation = self._build_evaluation(graded, grading_run_id, iteration)
+        if graded.result == "needs_revision" and iteration + 1 >= self.max_iterations:
+            # Emit and persist the terminal status rather than a misleading
+            # `needs_revision` event that the middleware will not actually loop on.
+            logger.info(
+                "RubricMiddleware exhausted max_iterations=%d without 'satisfied' verdict (grading_run_id=%s)",
+                self.max_iterations,
+                evaluation["grading_run_id"],
+            )
+            evaluation["result"] = "max_iterations_reached"
         self._emit(runtime, "rubric_evaluation_end", grading_run_id, iteration, evaluation)
         if self._on_evaluation is not None:
             try:
                 self._on_evaluation(evaluation)
             except Exception:
                 logger.exception("RubricMiddleware on_evaluation callback raised")
-        return self._compose_update(state, evaluation, graded.result)
+        return self._compose_update(state, evaluation)
 
     def _ensure_grader(self) -> Any:  # noqa: ANN401
         if self._grader is not None:
@@ -625,7 +635,6 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         self,
         state: RubricState,
         evaluation: RubricEvaluation,
-        graded_result: GraderVerdict,
     ) -> dict[str, Any]:
         iteration = evaluation["iteration"]
         next_iteration = iteration + 1
@@ -637,24 +646,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             "_rubric_status": evaluation["result"],
         }
 
-        if graded_result == "satisfied":
-            return update
-
-        if graded_result == "failed":
-            update["_rubric_status"] = "failed"
-            return update
-
-        # needs_revision
-        if next_iteration >= self.max_iterations:
-            # Default logging level is WARNING, so this surfaces under
-            # the default config -- the alternative would be silent: see
-            # the class docstring "Observing non-satisfied terminations".
-            logger.warning(
-                "RubricMiddleware exhausted max_iterations=%d without 'satisfied' verdict (grading_run_id=%s)",
-                self.max_iterations,
-                evaluation["grading_run_id"],
-            )
-            update["_rubric_status"] = "max_iterations_reached"
+        if evaluation["result"] != "needs_revision":
             return update
 
         return {

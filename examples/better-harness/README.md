@@ -202,3 +202,8 @@ Supported splits:
 Local artifacts are the source of truth.
 
 If pytest or Harbor logs include trace links, `better-harness` saves them into the run directory. LangSmith is supported the same way: if trace URLs are present in logs or summaries, they are captured and written with the run.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

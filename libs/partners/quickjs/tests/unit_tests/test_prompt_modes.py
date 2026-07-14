@@ -40,6 +40,7 @@ def test_render_repl_system_prompt_mode_specific(
     )
     assert expected_fragment in prompt
     assert "Timeout: 5.0s per call. Memory: 64 MB total." in prompt
+    assert "### Dispatching Subagents with `task`" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -88,4 +89,6 @@ def test_render_eval_tool_description_mode_specific(
 ) -> None:
     description = render_eval_tool_description(mode=mode)
     assert expected_fragment in description
+    assert "Top-level `await` is supported" in description
+    assert "will not resolve" not in description
     assert description.startswith("Execute JavaScript in a sandboxed REPL.")

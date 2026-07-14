@@ -602,9 +602,13 @@ DETECT_CONTEXT_SCRIPT = build_detect_script()
 class LocalContextState(AgentState):
     """State for local context middleware."""
 
-    local_context: NotRequired[str]
-    """Formatted local context: cwd, project, package managers,
-    runtimes, git, test command, files, tree, Makefile.
+    _local_context: NotRequired[Annotated[str, PrivateStateAttr]]
+    """Private formatted local context cached for prompt injection.
+
+    The context is intentionally stored in private state rather than recomputed
+    before every model call: volatile sections such as git status, file lists,
+    and directory trees would otherwise churn the system prompt and reduce
+    provider prompt-cache hits across a conversation.
     """
 
     _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
@@ -742,9 +746,9 @@ class LocalContextMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated on success. On a
+            State update with `_local_context` populated on success. On a
                 post-summarization refresh failure, returns a state update
-                recording the cutoff (without `local_context`) to prevent
+                recording the cutoff (without `_local_context`) to prevent
                 retry loops.
 
                 Returns `None` if context is already set and no refresh is
@@ -764,20 +768,20 @@ class LocalContextMiddleware(AgentMiddleware):
                 output = self._run_detect_script()
                 if output:
                     return {
-                        "local_context": output,
+                        "_local_context": output,
                         "_local_context_refreshed_at_cutoff": cutoff,
                     }
                 # Script failed — record cutoff to avoid retry loop,
-                # keep existing local_context.
+                # keep existing `_local_context`.
                 return {"_local_context_refreshed_at_cutoff": cutoff}
 
         # --- Initial detection (first invocation) ---
-        if state.get("local_context"):
+        if state.get("_local_context"):
             return None
 
         output = self._run_detect_script()
         if output:
-            return {"local_context": output}
+            return {"_local_context": output}
         return None
 
     async def _arun_detect_script(self) -> str | None:
@@ -832,9 +836,9 @@ class LocalContextMiddleware(AgentMiddleware):
             runtime: Runtime context.
 
         Returns:
-            State update with `local_context` populated on success. On a
+            State update with `_local_context` populated on success. On a
                 post-summarization refresh failure, returns a state update
-                recording the cutoff (without `local_context`) to prevent
+                recording the cutoff (without `_local_context`) to prevent
                 retry loops.
 
                 Returns `None` if context is already set and no refresh is
@@ -849,17 +853,17 @@ class LocalContextMiddleware(AgentMiddleware):
                 output = await self._arun_detect_script()
                 if output:
                     return {
-                        "local_context": output,
+                        "_local_context": output,
                         "_local_context_refreshed_at_cutoff": cutoff,
                     }
                 return {"_local_context_refreshed_at_cutoff": cutoff}
 
-        if state.get("local_context"):
+        if state.get("_local_context"):
             return None
 
         output = await self._arun_detect_script()
         if output:
-            return {"local_context": output}
+            return {"_local_context": output}
         return None
 
     def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
@@ -872,7 +876,7 @@ class LocalContextMiddleware(AgentMiddleware):
             Modified request with context appended, or `None`.
         """
         state = cast("LocalContextState", request.state)
-        local_context = state.get("local_context", "")
+        local_context = state.get("_local_context", "")
 
         parts = [
             p for p in (local_context, self._tracing_context, self._mcp_context) if p

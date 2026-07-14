@@ -6,14 +6,22 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deepagents_code import model_config
 from deepagents_code.model_config import (
+    DEFAULT_STARTUP_MODE,
+    IMPLICIT_AUTH_PROVIDERS,
+    NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
+    PROVIDER_BASE_URL_ENV,
+    RETRY_PARAM_BY_PROVIDER,
+    STARTUP_MODE_DANGEROUSLY_AUTO,
+    STARTUP_MODE_MANUAL,
     THREAD_COLUMN_DEFAULTS,
+    McpServerTrustLists,
     ModelConfig,
     ModelConfigError,
     ModelProfileEntry,
@@ -35,8 +43,10 @@ from deepagents_code.model_config import (
     has_provider_credentials,
     is_warning_suppressed,
     load_default_agent,
+    load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
+    load_startup_mode,
     load_thread_columns,
     save_default_agent,
     save_recent_agent,
@@ -54,6 +64,27 @@ def _clear_model_caches() -> Iterator[None]:
     clear_caches()
     yield
     clear_caches()
+
+
+class TestRetryParamByProvider:
+    """Tests for retry-parameter registry drift."""
+
+    def test_all_retry_providers_are_known(self) -> None:
+        """Every retry-enabled provider is a known provider."""
+        known_providers = (
+            set(PROVIDER_API_KEY_ENV)
+            | set(IMPLICIT_AUTH_PROVIDERS)
+            | set(NO_AUTH_REQUIRED_PROVIDERS)
+            | {"bedrock"}
+        )
+        assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
+
+    def test_contains_expected_retry_params(self) -> None:
+        """Major retry-enabled providers use `max_retries`."""
+        assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
+        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
 
 
 class TestModelSpec:
@@ -296,6 +327,27 @@ class TestStoredCredentials:
         # The alternate name the SDK also reads must not retain a stale value.
         assert "OPENAI_API_BASE" not in os.environ
 
+    def test_apply_stored_credentials_sets_baseten_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Baseten endpoint writes `BASETEN_BASE_URL` and clears legacy."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("BASETEN_API_KEY", raising=False)
+        monkeypatch.setenv("BASETEN_API_BASE", "https://stale.example/v1")
+        auth_store.set_stored_key(
+            "baseten", "from-store", base_url="https://mine.example/v1"
+        )
+
+        assert apply_stored_credentials("baseten") is True
+        assert os.environ["BASETEN_BASE_URL"] == "https://mine.example/v1"
+        assert "BASETEN_API_BASE" not in os.environ
+
     def test_apply_stored_credentials_blank_base_url_clears_gateway(
         self,
         fake_state_dir: Path,  # noqa: ARG002
@@ -345,6 +397,146 @@ class TestStoredCredentials:
         assert apply_stored_credentials("google_genai") is True
         assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
 
+    def test_apply_stored_credentials_blank_base_url_clears_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key with no base_url clears `ANTHROPIC_CUSTOM_HEADERS`.
+
+        The Anthropic SDK reads `ANTHROPIC_CUSTOM_HEADERS` and injects the
+        headers into every request. A gateway-provisioned environment sets
+        this to `X-Api-Key: <gateway-key>`, which overrides the SDK's own
+        `api_key`-derived header. When switching to a personal key, the
+        custom header must also be cleared or the gateway key is sent to
+        the provider's native endpoint and rejected.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://gateway.smith.langchain.com/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert "ANTHROPIC_CUSTOM_HEADERS" not in os.environ
+
+    def test_apply_stored_credentials_with_base_url_preserves_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key *with* a base_url preserves custom headers.
+
+        When the user stores a gateway endpoint in `/auth`, the custom
+        headers env var should be left in place — it carries the gateway
+        auth header that the gateway expects.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key(
+            "anthropic",
+            "lsv2_sk_gateway_key",
+            base_url="https://gateway.smith.langchain.com/anthropic",
+        )
+
+        assert apply_stored_credentials("anthropic") is True
+        assert (
+            os.environ["ANTHROPIC_BASE_URL"]
+            == "https://gateway.smith.langchain.com/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_config_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A config-routed Anthropic gateway keeps its custom headers."""
+        import os
+
+        from deepagents_code import auth_store, model_config
+        from deepagents_code.model_config import apply_stored_credentials, clear_caches
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+base_url = "https://configured.gateway.example/anthropic"
+models = ["claude-sonnet-4-5"]
+""")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            assert apply_stored_credentials("anthropic") is True
+            assert (
+                model_config.ModelConfig.load().get_base_url("anthropic")
+                == "https://configured.gateway.example/anthropic"
+            )
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_prefixed_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped Anthropic endpoint override keeps its gateway headers."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+            "https://scoped.gateway.example/anthropic",
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["DEEPAGENTS_CODE_ANTHROPIC_BASE_URL"]
+            == "https://scoped.gateway.example/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
     def test_apply_stored_credentials_clears_config_base_url_env(
         self,
         fake_state_dir: Path,  # noqa: ARG002
@@ -393,6 +585,152 @@ models = ["m1"]
         status = get_provider_auth_status("anthropic")
         assert status.state is ProviderAuthState.CONFIGURED
         assert status.source is ProviderAuthSource.ENV
+
+
+class TestServiceCredentials:
+    """Non-model services (e.g. Tavily) resolve and apply stored keys."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_tavily_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip Tavily env vars so each test controls its own state."""
+        for var in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_is_service(self) -> None:
+        """`is_service` recognizes registered services, not model providers."""
+        from deepagents_code.model_config import is_service
+
+        assert is_service("tavily") is True
+        assert is_service("langsmith") is True
+        assert is_service("anthropic") is False
+
+    def test_langsmith_service_env_var(self) -> None:
+        """LangSmith is registered as a service mapped to its API-key env var."""
+        from deepagents_code.model_config import (
+            LANGSMITH_SERVICE,
+            SERVICE_API_KEY_ENV,
+        )
+
+        assert SERVICE_API_KEY_ENV[LANGSMITH_SERVICE] == "LANGSMITH_API_KEY"
+
+    def test_apply_exports_stored_langsmith_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored LangSmith key is copied onto LANGSMITH_API_KEY."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
+
+    def test_status_missing_when_unset(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """No stored or env key reports MISSING with the canonical env var."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "TAVILY_API_KEY"
+
+    def test_status_configured_from_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An env var reports CONFIGURED from the env source."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+
+    def test_status_configured_from_store(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """A stored key reports CONFIGURED from the stored source."""
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import get_service_auth_status
+
+        auth_store.set_stored_key("tavily", "from-store")
+        status = get_service_auth_status("tavily")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.STORED
+
+    def test_apply_exports_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+    ) -> None:
+        """`apply_stored_service_credentials` copies the stored key to env."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        auth_store.set_stored_key("tavily", "from-store")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+    def test_apply_noop_without_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key leaves an existing env var untouched."""
+        import os
+
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-env"
+
+    def test_apply_stored_key_overrides_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key wins over a conflicting existing env var.
+
+        Guards the documented precedence (matching `apply_stored_credentials`):
+        a key entered via `/auth` must beat a plain `TAVILY_API_KEY` already in
+        the environment, otherwise the stored key would be silently ignored.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        auth_store.set_stored_key("tavily", "from-store")
+        apply_stored_service_credentials()
+        assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+    def test_apply_stored_key_respects_prefixed_override(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped service key is not overwritten by a stored key."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_prefixed")
+        auth_store.set_stored_key("langsmith", "lsv2_stored")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
 
 
 class TestSplitCredentialSource:
@@ -1106,6 +1444,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
+        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1113,6 +1452,21 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
         assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
+
+
+class TestProviderBaseUrlEnv:
+    """Tests for PROVIDER_BASE_URL_ENV constant."""
+
+    def test_baseten_matches_langchain_baseten_precedence(self) -> None:
+        """Baseten reads the new env var before the legacy fallback."""
+        assert PROVIDER_BASE_URL_ENV["baseten"] == (
+            "BASETEN_BASE_URL",
+            "BASETEN_API_BASE",
+        )
+
+    def test_meta_matches_langchain_meta(self) -> None:
+        """Meta reads its dedicated model API base URL variable."""
+        assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
 
 
 class TestModelConfigLoad:
@@ -1125,6 +1479,40 @@ class TestModelConfigLoad:
 
         assert config.default_model is None
         assert config.providers == {}
+
+    def test_returns_empty_config_when_models_section_is_not_a_table(
+        self, tmp_path, caplog
+    ):
+        """Valid TOML with a scalar `models` falls back instead of raising.
+
+        `load()` must be total: a structurally wrong config surfaces as an
+        AttributeError from `.get(...)` after a clean parse, which callers like
+        the /auth modal do not guard against.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('models = "oops"\n')
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.default_model is None
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
+
+    def test_returns_empty_config_when_providers_is_not_a_table(self, tmp_path, caplog):
+        """Valid TOML with a non-table `providers` falls back instead of raising.
+
+        This shape raises a TypeError from the dataclass constructor
+        (`MappingProxyType(5)`), the other post-parse failure mode.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nproviders = 5\n")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            config = ModelConfig.load(config_path)
+
+        assert config.providers == {}
+        assert any("structurally invalid" in r.getMessage() for r in caplog.records)
 
     def test_loads_default_model(self, tmp_path):
         """Loads default model from config."""
@@ -1158,6 +1546,91 @@ api_key_env = "OPENAI_API_KEY"
             "claude-haiku-4-5",
         ]
         assert config.providers["anthropic"]["api_key_env"] == "ANTHROPIC_API_KEY"
+
+    def test_loads_provider_display_metadata(self, tmp_path):
+        """Loads provider metadata used by auth UI."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = "My Gateway"
+short_name = "Gateway"
+api_key_url = "https://gateway.example/keys"
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_display_name("my_gateway") == "My Gateway"
+        assert config.get_provider_short_name("my_gateway") == "Gateway"
+        assert (
+            config.get_provider_api_key_url("my_gateway")
+            == "https://gateway.example/keys"
+        )
+        assert config.get_provider_display_name("missing") is None
+        assert config.get_provider_short_name("missing") is None
+        assert config.get_provider_api_key_url("missing") is None
+
+    def test_ignores_non_string_provider_api_key_url(self, tmp_path):
+        """Non-string provider API-key URLs are ignored."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+api_key_url = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_api_key_url("my_gateway") is None
+
+    def test_ignores_non_string_provider_display_name(self, tmp_path):
+        """Non-string provider display names fall back to the default label."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_display_name("my_gateway") is None
+
+    def test_ignores_non_string_provider_short_name(self, tmp_path):
+        """Non-string provider short names fall back to the display name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+short_name = 123
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        config = ModelConfig.load(config_path)
+
+        assert config.get_provider_short_name("my_gateway") is None
+
+    def test_warns_on_non_string_provider_metadata(self, tmp_path, caplog):
+        """Malformed `display_name`/`short_name`/`api_key_url` warn at load.
+
+        Surfaces the misconfiguration as a diagnostic instead of silently
+        dropping it, consistent with the `enabled`/`class_path` validation.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.my_gateway]
+display_name = 123
+short_name = 456
+api_key_url = ["not", "a", "string"]
+models = ["my-model"]
+api_key_env = "MY_GATEWAY_API_KEY"
+""")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            ModelConfig.load(config_path)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("non-string 'display_name'" in m for m in messages)
+        assert any("non-string 'short_name'" in m for m in messages)
+        assert any("non-string 'api_key_url'" in m for m in messages)
 
     def test_loads_custom_base_url(self, tmp_path):
         """Loads custom base_url for providers."""
@@ -1351,6 +1824,21 @@ models = ["llama3"]
 
         assert config.get_base_url("openai") == "https://gw.example/openai/v1"
 
+    def test_baseten_base_url_precedes_legacy_api_base(self, monkeypatch):
+        """Baseten follows `langchain-baseten` endpoint env precedence."""
+        monkeypatch.setenv("BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://new.example/v1"
+
+    def test_baseten_falls_back_to_legacy_api_base(self, monkeypatch):
+        """Baseten still honors the legacy endpoint env var."""
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://legacy.example/v1"
+
     def test_env_prefix_overrides_plain(self, monkeypatch):
         """`DEEPAGENTS_CODE_*` beats the plain env var, like API keys."""
         monkeypatch.setenv("OPENAI_BASE_URL", "https://plain.example/v1")
@@ -1393,17 +1881,17 @@ models = ["m1"]
     ) -> None:
         """A `/auth` endpoint resolves for a provider with no base-URL env var.
 
-        Some OpenAI-compatible providers (e.g. Baseten) have an API-key env var
-        but no dedicated base-URL env var, so steps 1-2 find nothing. The
-        stored endpoint must still resolve here so it reaches the model as the
-        `base_url` kwarg — otherwise a value saved in `/auth` is silently lost.
+        Some providers have an API-key env var but no dedicated base-URL env var,
+        so steps 1-2 find nothing. The stored endpoint must still resolve here so
+        it reaches the model as the `base_url` kwarg — otherwise a value saved in
+        `/auth` is silently lost.
         """
         from deepagents_code import auth_store
 
-        auth_store.set_stored_key("baseten", "k", base_url="https://proxy.example/v1")
+        auth_store.set_stored_key("litellm", "k", base_url="https://proxy.example/v1")
         config = ModelConfig()
 
-        assert config.get_base_url("baseten") == "https://proxy.example/v1"
+        assert config.get_base_url("litellm") == "https://proxy.example/v1"
 
     def test_config_literal_wins_over_stored_base_url(
         self,
@@ -1466,6 +1954,31 @@ class TestGetDefaultBaseUrlEnv:
         assert (
             model_config.get_default_base_url_env("openai")
             == "DEEPAGENTS_CODE_OPENAI_BASE_URL"
+        )
+
+    def test_returns_prefixed_alternate_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefixed alternate is named when it supplies the blank fallback."""
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_API_BASE"
+        )
+
+    def test_canonical_prefixed_name_precedes_alternate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The helper matches `get_base_url` provider env precedence."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_BASE_URL"
         )
 
     def test_ignores_plain_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2251,6 +2764,82 @@ class _BytesContext:
 class TestFetchOllamaInstalledModels:
     """Tests for the `_fetch_ollama_installed_models` HTTP probe."""
 
+    @pytest.fixture(autouse=True)
+    def _assume_host_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Bypass the TCP presence preflight so HTTP parsing paths are exercised."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: True,
+        )
+
+    def test_skips_http_probe_when_host_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreachable daemon short-circuits before any HTTP request."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable",
+            lambda *_args, **_kwargs: False,
+        )
+
+        with patch("urllib.request.urlopen") as fake:
+            assert (
+                model_config._fetch_ollama_installed_models("http://localhost:11434")
+                == []
+            )
+
+        fake.assert_not_called()
+
+    def test_hosted_endpoint_skips_tcp_preflight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hosted endpoints proceed through the proxy-aware HTTP probe."""
+        import json
+
+        reachable = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_BytesContext(json.dumps({"models": []}).encode("utf-8")),
+        ) as urlopen:
+            assert (
+                model_config._fetch_ollama_installed_models(
+                    "https://ollama.example.com"
+                )
+                == []
+            )
+
+        reachable.assert_not_called()
+        urlopen.assert_called_once()
+
+    def test_forwards_normalized_base_and_timeout_to_preflight(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rstrip'd base and the caller's timeout reach the preflight."""
+        import json
+
+        reachable = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "deepagents_code.model_config._ollama_host_reachable", reachable
+        )
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OLLAMA_API_KEY", raising=False)
+
+        with patch(
+            "urllib.request.urlopen",
+            return_value=_BytesContext(json.dumps({"models": []}).encode("utf-8")),
+        ):
+            assert (
+                model_config._fetch_ollama_installed_models(
+                    "http://localhost:11434/", timeout=0.5
+                )
+                == []
+            )
+
+        reachable.assert_called_once_with("http://localhost:11434", timeout=0.5)
+
     def test_returns_sorted_names_from_payload(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2423,6 +3012,146 @@ class TestFetchOllamaInstalledModels:
         fake.assert_not_called()
 
 
+class TestOllamaHostReachable:
+    """Tests for the `_ollama_host_reachable` TCP presence preflight."""
+
+    def test_true_when_connection_succeeds(self) -> None:
+        """A successful TCP connection reports the daemon as present.
+
+        Also pins that the default timeout reaches `socket.create_connection`:
+        the preflight exists to fail *fast*, so a dropped timeout would let an
+        absent host stall on the OS connect timeout -- the hang this removes.
+        """
+        captured: list[tuple[tuple[str, int], float]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int], *, timeout: float
+        ) -> MagicMock:
+            captured.append((address, timeout))
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert model_config._ollama_host_reachable("http://localhost:11434") is True
+
+        assert captured == [
+            (("localhost", 11434), model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS)
+        ]
+
+    def test_forwards_explicit_timeout(self) -> None:
+        """A caller-supplied timeout is forwarded to the socket connect."""
+        captured: list[float] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],  # noqa: ARG001
+            *,
+            timeout: float,
+        ) -> MagicMock:
+            captured.append(timeout)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert (
+                model_config._ollama_host_reachable(
+                    "http://localhost:11434", timeout=0.25
+                )
+                is True
+            )
+
+        assert captured == [0.25]
+
+    def test_false_and_silent_when_connection_refused(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Connection refused (an `OSError`) reports absent without warning."""
+        refused = ConnectionRefusedError(61, "Connection refused")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise refused
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"),
+            patch("socket.create_connection", side_effect=boom),
+        ):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+        assert caplog.records == []
+
+    def test_false_and_warns_when_error_unexpected(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`OSError` failure reports absent and surfaces a warning.
+
+        Covers `pytest-socket`'s `SocketBlockedError`, which inherits from
+        `Exception` (not `OSError`); an unexpected error here is a possible
+        real bug, so it is logged rather than silently swallowed.
+        """
+        blocked = RuntimeError("sockets disabled")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise blocked
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"),
+            patch("socket.create_connection", side_effect=boom),
+        ):
+            assert (
+                model_config._ollama_host_reachable("http://localhost:11434") is False
+            )
+
+        assert any("unexpected RuntimeError" in r.getMessage() for r in caplog.records)
+
+    def test_defers_to_probe_when_host_unparseable(self) -> None:
+        """A URL without a host defers to the HTTP probe instead of blocking it."""
+        with patch("socket.create_connection") as fake:
+            assert model_config._ollama_host_reachable("http://") is True
+
+        fake.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        ["http://localhost:notaport", "http://localhost:99999"],
+    )
+    def test_defers_to_probe_when_port_invalid(self, endpoint: str) -> None:
+        """An invalid port defers to the best-effort HTTP probe."""
+        with patch("socket.create_connection") as fake:
+            assert model_config._ollama_host_reachable(endpoint) is True
+
+        fake.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            ("https://ollama.example.com", ("ollama.example.com", 443)),
+            ("http://ollama.internal", ("ollama.internal", 80)),
+        ],
+    )
+    def test_defaults_scheme_port_when_absent(
+        self, endpoint: str, expected: tuple[str, int]
+    ) -> None:
+        """A schemed URL without an explicit port falls back to the scheme default.
+
+        The preflight and the HTTP probe must agree on the target, so a portless
+        `http` host resolves to 80 and `https` to 443 -- matching what urllib
+        would connect to.
+        """
+        captured: list[tuple[str, int]] = []
+
+        def fake_create_connection(
+            address: tuple[str, int],
+            *,
+            timeout: float,  # noqa: ARG001
+        ) -> MagicMock:
+            captured.append(address)
+            return MagicMock()
+
+        with patch("socket.create_connection", side_effect=fake_create_connection):
+            assert model_config._ollama_host_reachable(endpoint) is True
+
+        assert captured == [expected]
+
+
 class TestFetchOllamaInstalledModelProfiles:
     """Tests for Ollama `/api/show` profile discovery."""
 
@@ -2497,7 +3226,7 @@ class TestFetchOllamaInstalledModelProfiles:
         """Unexpected capability shape does not produce false flags."""
         payload = {"model_info": {}, "capabilities": "tools"}
 
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             profile = model_config._profile_from_ollama_show_payload(payload)
 
         assert profile == {}
@@ -4747,6 +5476,327 @@ class TestUnsuppressWarning:
         assert not is_warning_suppressed("tavily", config_path)
 
 
+class TestMcpServerTrustLists:
+    """Tests for the McpServerTrustLists value object itself."""
+
+    def test_post_init_enforces_disjointness_on_direct_construction(self) -> None:
+        """A name in both lists is dropped from enabled, however constructed.
+
+        The docstring promises the invariant holds "no matter how it was
+        constructed; callers need not pre-subtract" — pin that at the type level,
+        independent of the loader.
+        """
+        lists = McpServerTrustLists(
+            enabled=frozenset({"keep", "both"}),
+            disabled=frozenset({"both"}),
+        )
+
+        assert lists.enabled == frozenset({"keep"})
+        assert lists.disabled == frozenset({"both"})
+
+    def test_read_error_excluded_from_equality(self) -> None:
+        """`read_error` is diagnostic only and does not affect equality."""
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ) == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_load_failed_tracks_read_error(self) -> None:
+        """`load_failed` names the fail-closed contract for `read_error`."""
+        assert not McpServerTrustLists(frozenset(), frozenset()).load_failed
+        assert McpServerTrustLists(
+            frozenset(), frozenset(), read_error="boom"
+        ).load_failed
+
+
+class TestLoadMcpServerTrustLists:
+    """Tests for load_mcp_server_trust_lists()."""
+
+    def test_reads_both_lists_from_toml(self, tmp_path: Path) -> None:
+        """Parses enabled and disabled lists from the [mcp] table."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "reference"]\n'
+            'disabled_project_servers = ["blocked"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(
+            enabled=frozenset({"docs", "reference"}),
+            disabled=frozenset({"blocked"}),
+        )
+
+    def test_reject_precedence_removes_from_enabled(self, tmp_path: Path) -> None:
+        """A name in both lists is reported only as disabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["docs", "both"]\n'
+            'disabled_project_servers = ["both"]\n'
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset({"docs"})
+        assert result.disabled == frozenset({"both"})
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        """A missing config file yields empty lists, not an error.
+
+        A missing file is the normal "unset" case and must NOT set `read_error`
+        (that is reserved for a file that exists but cannot be read/parsed), so
+        callers do not fail closed just because the user has no config.toml.
+        """
+        result = load_mcp_server_trust_lists(tmp_path / "nonexistent.toml")
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is None
+
+    def test_env_deny_beats_toml_allow_same_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reject wins across sources: env-disabled beats TOML-enabled by name.
+
+        Proves the disjointness invariant runs on the final merged frozensets
+        (after env/TOML resolution), not merely within a single source.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["srv"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "srv")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.disabled == frozenset({"srv"})
+
+    def test_missing_mcp_section_returns_empty(self, tmp_path: Path) -> None:
+        """A config without an [mcp] table yields empty lists."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+
+    def test_corrupt_toml_falls_back_to_empty_and_sets_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Malformed TOML degrades to empty lists but records a read error.
+
+        The empty lists compare equal to a clean empty result (`read_error` is
+        excluded from equality), but `read_error` is set so callers can fail
+        closed instead of treating a broken config as "nothing denied."
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[[invalid toml")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.read_error is not None
+        assert str(config_path) in result.read_error
+
+    def test_scalar_coerced_and_mixed_elements_dropped(self, tmp_path: Path) -> None:
+        """A bare string is one name; non-string list elements are dropped."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = "docs"\n'  # bare string -> single name
+            'disabled_project_servers = [1, "blocked", true]\n'  # mixed types
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset({"docs"})
+        assert result.disabled == frozenset({"blocked"})
+
+    def test_env_overrides_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Env lists replace their TOML counterparts, independently per list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS,
+            "env-enabled, env-two",
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # Enabled comes from env; disabled falls back to the TOML value.
+        assert result.enabled == frozenset({"env-enabled", "env-two"})
+        assert result.disabled == frozenset({"toml-disabled"})
+
+    def test_empty_env_clears_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty env var overrides (clears) the TOML list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = ["toml-enabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.ENABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+
+    def test_defaults_to_user_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no argument, the loader reads the user-level config path only."""
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        result = load_mcp_server_trust_lists()
+
+        assert result.enabled == frozenset({"docs"})
+
+    def test_disabled_env_honored_without_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deny list can be set purely from the env var."""
+        config_path = tmp_path / "config.toml"  # no [mcp] table
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "blocked, other"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"blocked", "other"})
+
+    def test_disabled_env_unions_with_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The disabled env list UNIONS with the TOML deny list (denies accrue).
+
+        Unlike the enabled list (env replaces TOML), a deny must never be
+        silently dropped by the other source, so both contribute.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[mcp]\n"
+            'enabled_project_servers = ["toml-enabled"]\n'
+            'disabled_project_servers = ["toml-disabled"]\n'
+        )
+        monkeypatch.setenv(
+            model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "env-disabled"
+        )
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"toml-disabled", "env-disabled"})
+        assert result.enabled == frozenset({"toml-enabled"})
+
+    def test_empty_disabled_env_preserves_toml_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A set-but-empty disabled env var cannot clear the TOML deny list.
+
+        Because disabled unions across sources, an empty env value contributes
+        nothing and the configured deny survives — closing the fail-open where
+        `DISABLED=""` (e.g. from an attacker-adjacent source) would silently
+        neutralize the user's deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = ["toml-disabled"]\n')
+        monkeypatch.setenv(model_config._env_vars.DISABLED_PROJECT_MCP_SERVERS, "")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"toml-disabled"})
+
+    def test_toml_entries_are_trimmed(self, tmp_path: Path) -> None:
+        """TOML names are stripped, matching env parsing (no whitespace mismatch)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\nenabled_project_servers = [" docs ", "  "]\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        # " docs " -> "docs"; the whitespace-only "  " entry is dropped.
+        assert result.enabled == frozenset({"docs"})
+
+    def test_bare_string_disabled_is_coerced_to_single_name(
+        self, tmp_path: Path
+    ) -> None:
+        """A bare-string deny list is one server name, not a dropped-to-empty typo.
+
+        Coercing (rather than silently dropping) is the safe direction for the
+        deny list: it keeps enforcing the user's rejection instead of failing
+        open on a scalar-instead-of-list mistake.
+        """
+        config_path = tmp_path / "config.toml"
+        # Valid TOML, but a string rather than a list — the [mcp] table is still
+        # a dict, so the "should be a table" branch does not fire.
+        config_path.write_text('[mcp]\ndisabled_project_servers = "blocked"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"blocked"})
+
+    def test_bare_string_disabled_splits_on_commas(self, tmp_path: Path) -> None:
+        """A comma-separated bare-string deny list parses like the env form.
+
+        Without splitting, `"a, b"` would become one bogus token matching no
+        server and silently enforce nothing — a fail-open for the deny list.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[mcp]\ndisabled_project_servers = "evil, backdoor"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset({"evil", "backdoor"})
+        assert result.read_error is None
+
+    def test_wrong_typed_disabled_fails_closed_with_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed deny list sets `read_error` instead of silently emptying.
+
+        Emptying the deny on a malformed value would be a fail-open (the user's
+        rejection stops being enforced). Surfacing `read_error` lets callers fail
+        closed, matching the corrupt-file path.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\ndisabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.disabled == frozenset()
+        assert result.load_failed
+        assert "disabled_project_servers" in (result.read_error or "")
+
+    def test_wrong_typed_enabled_stays_empty_without_read_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A wrong-typed allow list degrades to empty (already fail-closed).
+
+        Unlike the deny list, an unreadable allow list approves nothing extra, so
+        it must NOT set `read_error` (which would block even trusted configs).
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[mcp]\nenabled_project_servers = 123\n")
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result.enabled == frozenset()
+        assert result.read_error is None
+
+    def test_non_table_mcp_sets_read_error(self, tmp_path: Path) -> None:
+        """An `[mcp]` value that is not a table fails closed (deny unreadable)."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('mcp = "oops"\n')
+
+        result = load_mcp_server_trust_lists(config_path)
+
+        assert result == McpServerTrustLists(frozenset(), frozenset())
+        assert result.load_failed
+
+
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
@@ -4977,3 +6027,187 @@ max_input_tokens = 8192
         assert entry["profile"]["max_output_tokens"] == 2048
         assert "max_output_tokens" in entry["overridden_keys"]
         assert "max_input_tokens" in entry["overridden_keys"]
+
+
+class TestCodexProviderMirror:
+    """`openai_codex` mirrors the curated `CODEX_MODELS` subset of `openai`.
+
+    The Codex backend serves a narrower lineup than the full `openai` API, so
+    only models in the `CODEX_MODELS` allowlist are exposed under
+    `openai_codex`; other openai models are not mirrored.
+    """
+
+    def test_gpt_56_models_are_allowlisted(self) -> None:
+        assert {
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        } <= model_config.CODEX_MODELS
+
+    def test_available_models_mirror_codex_allowlist(self) -> None:
+        model_config.clear_caches()
+        available = model_config.get_available_models()
+        openai_models = available.get("openai", [])
+        assert openai_models, "expected openai models to be discoverable"
+        codex_models = available.get(model_config.CODEX_PROVIDER, [])
+        # Only allowlisted openai models are mirrored under codex.
+        assert codex_models == [
+            name for name in openai_models if name in model_config.CODEX_MODELS
+        ]
+        # The curated flagship is present...
+        assert "gpt-5.5" in codex_models
+        # ...while a non-allowlisted openai model is excluded from codex even
+        # though openai itself offers it.
+        assert "gpt-5.4-pro" in openai_models
+        assert "gpt-5.4-pro" not in codex_models
+
+    def test_available_models_preserve_configured_codex_models(
+        self, tmp_path: Path
+    ) -> None:
+        """Config-only codex models are preserved when OpenAI models mirror."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+models = ["gpt-custom-codex", "gpt-5.5"]
+""")
+        fake_profiles = {
+            "gpt-5.2": {"tool_calling": True},
+            "gpt-5.5": {"tool_calling": True},
+        }
+
+        with (
+            patch(
+                "deepagents_code.model_config._get_provider_profile_modules",
+                return_value=[("openai", "langchain_openai.data._profiles")],
+            ),
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            available = model_config.get_available_models()
+
+        assert available[model_config.CODEX_PROVIDER] == [
+            "gpt-custom-codex",
+            "gpt-5.5",
+            "gpt-5.2",
+        ]
+
+    def test_profiles_mirror_codex_allowlist_under_codex(self) -> None:
+        model_config.clear_caches()
+        profiles = model_config.get_model_profiles()
+        openai_models = [
+            spec.split(":", 1)[1] for spec in profiles if spec.startswith("openai:")
+        ]
+        assert openai_models, "expected openai profiles to load"
+        for model_name in openai_models:
+            codex_spec = f"{model_config.CODEX_PROVIDER}:{model_name}"
+            if model_name in model_config.CODEX_MODELS:
+                assert codex_spec in profiles
+            else:
+                assert codex_spec not in profiles
+
+    def test_codex_positioned_immediately_after_openai(self) -> None:
+        """The switcher lists `openai_codex` right after `openai`.
+
+        Dict insertion order is the `/model` switcher's display order, so the
+        two OpenAI-backed providers must stay adjacent rather than codex
+        trailing at the end of the dict (after, e.g., `azure_openai`).
+        """
+        model_config.clear_caches()
+        keys = list(model_config.get_available_models())
+        assert "openai" in keys
+        assert "openai_codex" in keys
+        assert keys.index("openai_codex") == keys.index("openai") + 1
+
+    def test_disabled_codex_not_mirrored(self, tmp_path: Path) -> None:
+        """`enabled = false` for `openai_codex` suppresses the mirror entirely."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai_codex]
+enabled = false
+""")
+        fake_profiles = {"gpt-5.5": {"tool_calling": True}}
+        with (
+            patch(
+                "deepagents_code.model_config._get_provider_profile_modules",
+                return_value=[("openai", "langchain_openai.data._profiles")],
+            ),
+            patch(
+                "deepagents_code.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            available = model_config.get_available_models()
+            profiles = model_config.get_model_profiles()
+
+        assert "openai" in available
+        assert model_config.CODEX_PROVIDER not in available
+        assert not any(
+            spec.startswith(f"{model_config.CODEX_PROVIDER}:") for spec in profiles
+        )
+
+
+class TestLoadStartupMode:
+    """Tests for `load_startup_mode` reading `[startup].mode` from config.toml."""
+
+    def test_missing_file_returns_default(self, tmp_path: Path) -> None:
+        """A nonexistent config file falls back to the default mode."""
+        assert load_startup_mode(tmp_path / "missing.toml") == DEFAULT_STARTUP_MODE
+        assert DEFAULT_STARTUP_MODE == STARTUP_MODE_MANUAL
+
+    def test_unset_option_returns_default(self, tmp_path: Path) -> None:
+        """A config file without `[startup].mode` falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[threads]\nsort_order = 'created_at'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_manual(self, tmp_path: Path) -> None:
+        """`mode = 'manual'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'manual'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_explicit_dangerously_auto(self, tmp_path: Path) -> None:
+        """`mode = 'dangerously-auto'` is returned verbatim."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'dangerously-auto'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_DANGEROUSLY_AUTO
+
+    def test_invalid_value_returns_default(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unrecognized mode logs a warning and falls back to the default."""
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = 'yolo'\n")
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        assert any("startup" in r.getMessage().lower() for r in caplog.records)
+
+    def test_malformed_startup_table_returns_default(self, tmp_path: Path) -> None:
+        """A non-table `startup` value does not crash and falls back."""
+        config = tmp_path / "config.toml"
+        config.write_text("startup = 'oops'\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_non_scalar_mode_returns_default(self, tmp_path: Path) -> None:
+        """A non-string `mode` (e.g. array) falls back instead of raising.
+
+        `value in VALID_STARTUP_MODES` (a frozenset) would raise `TypeError:
+        unhashable type` on a list/dict; the isinstance guard must prevent that.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("[startup]\nmode = ['dangerously-auto']\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+
+    def test_unparseable_file_returns_default(self, tmp_path: Path) -> None:
+        """Syntactically invalid TOML is swallowed and falls back to default.
+
+        Exercises the `except (OSError, tomllib.TOMLDecodeError)` branch, which
+        must fail closed (to `manual`) rather than propagate and abort startup.
+        """
+        config = tmp_path / "config.toml"
+        config.write_text("this is not valid toml [[[\n")
+        assert load_startup_mode(config) == STARTUP_MODE_MANUAL

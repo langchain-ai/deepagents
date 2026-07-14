@@ -43,8 +43,7 @@ body:
       description: Which area of the repository does this request relate to? Select at least one.
       options:
         - label: deepagents (SDK)
-        - label: cli
-        - label: code
+        - label: dcode
         - label: talon
         - label: acp
         - label: evals
@@ -53,6 +52,7 @@ body:
         - label: modal
         - label: quickjs
         - label: runloop
+        - label: vercel
         - label: langsmith-sandbox
         - label: Other / not sure / general
   - type: textarea

@@ -2,8 +2,10 @@
 
 import io
 import logging
+import threading
+import tomllib
 from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
@@ -38,6 +40,7 @@ from deepagents_code.model_config import (
     clear_caches,
     clear_default_agent,
     clear_default_model,
+    clear_effort_for_model,
     fingerprint_mcp_server_config,
     get_available_models,
     get_model_profiles,
@@ -45,6 +48,7 @@ from deepagents_code.model_config import (
     has_provider_credentials,
     is_warning_suppressed,
     load_default_agent,
+    load_effort_for_model,
     load_mcp_server_trust_lists,
     load_recent_agent,
     load_recent_models,
@@ -52,6 +56,7 @@ from deepagents_code.model_config import (
     load_thread_columns,
     normalize_mcp_project_root,
     save_default_agent,
+    save_effort_for_model,
     save_recent_agent,
     save_recent_model,
     save_thread_columns,
@@ -2186,6 +2191,140 @@ recent = "openai:gpt-5.2"
         result = clear_default_model(config_path)
 
         assert result is True
+
+
+class TestEffortPersistence:
+    """Tests for per-model reasoning effort persistence."""
+
+    def test_saves_and_loads_effort_by_model(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        assert save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        assert save_effort_for_model("anthropic:claude-opus-4-8", "xhigh", config_path)
+
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) == "max"
+        assert (
+            load_effort_for_model("anthropic:claude-opus-4-8", config_path) == "xhigh"
+        )
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
+
+    def test_preserves_unrelated_config(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "openai:gpt-5.5"\n')
+
+        assert save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+
+        content = config_path.read_text()
+        assert '[models]\ndefault = "openai:gpt-5.5"' in content
+        assert "[effort.by_model]" in content
+        assert '"openai:gpt-5.6-luna" = "max"' in content
+
+    def test_clears_only_requested_model(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        save_effort_for_model("anthropic:claude-opus-4-8", "high", config_path)
+
+        assert clear_effort_for_model("openai:gpt-5.6-luna", config_path)
+
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) is None
+        assert load_effort_for_model("anthropic:claude-opus-4-8", config_path) == "high"
+
+    def test_rejects_malformed_effort_table(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('effort = "high"\n')
+
+        assert not save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) is None
+        assert config_path.read_text() == 'effort = "high"\n'
+
+    def test_concurrent_config_writer_preserves_effort(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A concurrent thread-preference save cannot drop an effort save."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "openai:gpt-5.5"\n')
+        barrier = threading.Barrier(2)
+        original_load = tomllib.load
+
+        def synchronized_load(file: Any) -> dict[str, Any]:  # noqa: ANN401
+            data = original_load(file)
+            # With the shared lock, the first writer times out before the
+            # second can read. An unlocked implementation reaches both sides
+            # and deterministically exposes the lost update.
+            with suppress(threading.BrokenBarrierError):
+                barrier.wait(timeout=1)
+            return data
+
+        monkeypatch.setattr(model_config.tomllib, "load", synchronized_load)
+        columns = {**THREAD_COLUMN_DEFAULTS, "messages": False}
+        results: list[bool] = []
+        threads = [
+            threading.Thread(
+                target=lambda: results.append(
+                    save_effort_for_model("openai:gpt-5.6-luna", "max", config_path)
+                )
+            ),
+            threading.Thread(
+                target=lambda: results.append(save_thread_columns(columns, config_path))
+            ),
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(results) == 2
+        assert all(results)
+        assert load_effort_for_model("openai:gpt-5.6-luna", config_path) == "max"
+        assert load_thread_columns(config_path) == columns
+
+    def test_clear_prunes_empty_effort_tables(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        assert save_effort_for_model("openai:gpt-5.5", "high", config_path)
+
+        assert clear_effort_for_model("openai:gpt-5.5", config_path)
+
+        # Clearing the only entry removes the whole section rather than leaving
+        # an empty `[effort.by_model]` / `[effort]` behind.
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
+        assert "effort" not in config_path.read_text()
+
+    def test_clear_missing_file_is_noop(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+
+        # Nothing to clear and nothing to create.
+        assert clear_effort_for_model("openai:gpt-5.5", config_path)
+        assert not config_path.exists()
+
+    def test_clear_absent_model_leaves_others(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        save_effort_for_model("openai:gpt-5.5", "high", config_path)
+
+        # Clearing a model that was never stored succeeds and touches nothing.
+        assert clear_effort_for_model("openai:gpt-5.6-luna", config_path)
+        assert load_effort_for_model("openai:gpt-5.5", config_path) == "high"
+
+    def test_load_ignores_non_table_by_model(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[effort]\nby_model = 3\n")
+
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
+
+    def test_load_ignores_non_string_effort(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[effort.by_model]\n"openai:gpt-5.5" = 3\n')
+
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
+
+    def test_load_treats_blank_effort_as_absent(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[effort.by_model]\n"openai:gpt-5.5" = "   "\n')
+
+        assert load_effort_for_model("openai:gpt-5.5", config_path) is None
 
 
 class TestModelPersistenceBetweenSessions:

@@ -176,6 +176,56 @@ class TestDebugConsoleScreen:
         ]
         assert visible_messages == messages
 
+    def test_custom_levels_share_fallback_retention_bucket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom levels must collectively obey the buffer's fallback bound."""
+        monkeypatch.setattr(debug_console_mod, "_RECORD_LIMIT", 3)
+        screen = DebugConsoleScreen(_snapshot())
+        screen._records = [
+            _log_record(
+                f"custom-{index}",
+                level=f"Level {25 + index}",
+                levelno=25 + index,
+            )
+            for index in range(5)
+        ]
+
+        assert screen._prune_records() is True
+        assert [record.message for record in screen._records] == [
+            "custom-2",
+            "custom-3",
+            "custom-4",
+        ]
+
+    def test_prune_keeps_newest_per_standard_level_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the oldest records of an over-capacity level are dropped.
+
+        Interleaves a DEBUG flood with sparse INFO/WARNING: the under-capacity
+        levels survive untouched, DEBUG is trimmed to its newest `_RECORD_LIMIT`,
+        and the surviving records stay in chronological order.
+        """
+        monkeypatch.setattr(debug_console_mod, "_RECORD_LIMIT", 2)
+        screen = DebugConsoleScreen(_snapshot())
+        info = _log_record("info", level="INFO", levelno=logging.INFO)
+        warning = _log_record("warning", level="WARNING", levelno=logging.WARNING)
+        debugs = [
+            _log_record(f"debug{index}", level="DEBUG", levelno=logging.DEBUG)
+            for index in range(4)
+        ]
+        # Chronological: info, debug0, debug1, warning, debug2, debug3.
+        screen._records = [info, debugs[0], debugs[1], warning, debugs[2], debugs[3]]
+
+        assert screen._prune_records() is True
+        assert [record.message for record in screen._records] == [
+            "info",
+            "warning",
+            "debug2",
+            "debug3",
+        ]
+
     async def test_poll_degrades_on_buffer_failure_without_crashing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -469,6 +519,49 @@ class TestDebugConsoleScreen:
                 "debug-console-filter-error-marker" in record.message
                 for record in log.records
             )
+
+    async def test_level_filter_finds_info_after_debug_flood(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A DEBUG flood must not hide earlier INFO records from the filter."""
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: True)
+        # Small per-level cap so a modest flood exercises pruning quickly; a flat
+        # cap would drop the INFO marker in favor of the newer DEBUG records.
+        monkeypatch.setattr(debug_console_mod, "_RECORD_LIMIT", 5)
+        package_logger = logging.getLogger("deepagents_code")
+        original_level = package_logger.level
+        package_logger.setLevel(logging.DEBUG)
+        try:
+            logger.info("debug-console-flood-info-marker")
+            for index in range(50):  # far more DEBUG than the per-level cap
+                logger.debug("debug-console-flood-debug-%d", index)
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = DebugConsoleScreen(_snapshot())
+                app.push_screen(screen)
+                await pilot.pause()
+                log = screen.query_one("#debug-log", _DebugLogView)
+                select = screen.query_one("#debug-level-filter", Select)
+
+                select.value = "min:INFO"
+                await pilot.pause()
+
+                assert any(
+                    "debug-console-flood-info-marker" in record.message
+                    for record in log.records
+                )
+                # The filter hides DEBUG from the view, so assert on the
+                # retained set that pruning actually bounded DEBUG to its own
+                # per-level cap (newest kept) rather than dropping nothing or
+                # evicting the rarer INFO marker.
+                retained = [record.message for record in screen._records]
+                debug_retained = [m for m in retained if "flood-debug" in m]
+                assert debug_retained == [
+                    f"debug-console-flood-debug-{index}" for index in range(45, 50)
+                ]
+                assert "debug-console-flood-info-marker" in retained
+        finally:
+            package_logger.setLevel(original_level)
 
     async def test_level_filter_hides_debug_when_runtime_level_excludes_it(
         self, monkeypatch: pytest.MonkeyPatch

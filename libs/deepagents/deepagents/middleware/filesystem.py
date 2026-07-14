@@ -613,7 +613,6 @@ def _truncate_paginated_read(
     content: str,
     file_path: str,
     read_result: ReadResult,
-    offset: int,
     token_limit: int | None,
 ) -> str:
     """Truncate a paginated read without skipping undisplayed source lines.
@@ -630,9 +629,8 @@ def _truncate_paginated_read(
         content: Line-numbered content produced by
             `format_content_with_line_numbers` (one gutter + tab per row).
         file_path: Path used to format the truncation message.
-        read_result: Backend read result carrying the window metadata.
-        offset: 0-indexed source-line offset the read started from; used to
-            derive the adjusted `next_offset` after trimming.
+        read_result: Backend read result carrying the window metadata; the
+            adjusted `next_offset` is derived from its 1-indexed line range.
         token_limit: Char budget is `NUM_CHARS_PER_TOKEN * token_limit`; when
             falsy, content is returned with its notice untouched.
 
@@ -655,14 +653,15 @@ def _truncate_paginated_read(
 
     truncation_msg = READ_FILE_TRUNCATION_MSG.format(file_path=file_path)
     threshold = NUM_CHARS_PER_TOKEN * token_limit
-    if read_result.start_line is not None and read_result.end_line is not None and read_result.next_offset is not None:
+    if read_result.start_line is not None and read_result.end_line is not None:
         # Build the safe places where the content can be truncated. A long source
         # line may span rendered rows numbered `12`, `12.1`, and so on, so cutting
         # at every newline could keep only part of that source line. `position`
         # tracks each rendered row's end in `content`; comparing the integer part
         # of adjacent row markers records a boundary only after the final row for
         # a source line. The loop below uses these boundaries to find the latest
-        # complete source line that fits alongside both notices.
+        # complete source line that fits alongside the truncation message and the
+        # pagination notice.
         rows = content.split("\n")
         position = 0
         boundaries: list[tuple[int, int]] = []
@@ -670,6 +669,16 @@ def _truncate_paginated_read(
             position += len(row)
             marker = row.partition("\t")[0].strip().partition(".")[0]
             source_line = int(marker)
+            # Rows numbered past the window's last source line are not file
+            # content: a byte-capped backend page appends its own truncation
+            # banner (preceded by a blank line), which `format_content_with_line_numbers`
+            # then numbers as `end_line + 1`, `end_line + 2`, .... Stop before
+            # them so a banner row is never chosen as a boundary — resuming from
+            # its inflated number would overshoot `total_lines` and skip real
+            # lines. Rows are numbered monotonically, so the first out-of-range
+            # row means the rest are banner too.
+            if source_line > read_result.end_line:
+                break
             next_source_line = None
             if index + 1 < len(rows):
                 next_marker = rows[index + 1].partition("\t")[0].strip().partition(".")[0]
@@ -680,14 +689,15 @@ def _truncate_paginated_read(
 
         # Only advertise source lines whose complete rendered rows fit. If the
         # byte cut landed partway through a row, resuming after that row would
-        # silently skip its undisplayed tail.
+        # silently skip its undisplayed tail. `next_offset` is the 0-indexed line
+        # after the last one shown, which for a 1-indexed `end_line` is exactly
+        # `end_line` (no reliance on how the request `offset` maps to `start_line`).
         for boundary, end_line in reversed(boundaries):
-            retained_count = end_line - read_result.start_line + 1
             adjusted_result = ReadResult(
                 total_lines=read_result.total_lines,
                 start_line=read_result.start_line,
                 end_line=end_line,
-                next_offset=offset + retained_count,
+                next_offset=end_line,
             )
             adjusted_notice = _remaining_lines_notice(adjusted_result)
             if boundary + len(truncation_msg) + len(adjusted_notice) <= threshold:
@@ -1720,7 +1730,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
             return ToolMessage(
-                content=_truncate_paginated_read(content, validated_path, read_result, offset, token_limit),
+                content=_truncate_paginated_read(content, validated_path, read_result, token_limit),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

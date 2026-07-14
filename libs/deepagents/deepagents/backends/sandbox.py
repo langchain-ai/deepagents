@@ -455,6 +455,14 @@ try:
             current_bytes += piece_bytes
             returned_lines += 1
 
+        # The page can fill (returned_lines == limit) exactly at EOF without the
+        # loop readline ever returning an empty string. Detect that via position:
+        # after reading whole lines from a UTF-8 handle the decoder state is clean
+        # at a line boundary, so tell() is the raw byte offset and equals st_size
+        # at EOF. Worst case if this ever misjudges is a surfaced offset-exceeds-
+        # length error on the next re-read (large files only, where total_lines
+        # stays None) -- never a silent skip, since a false at_eof of True cannot
+        # arise (a clean or packed tell() past EOF cannot equal st_size).
         if not at_eof:
             at_eof = f.tell() == st.st_size
 
@@ -520,7 +528,8 @@ Output: single-line JSON. On success (text): `{{"encoding", "content",
 "total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
 and `end_line` are 1-indexed and `next_offset` is the 0-indexed offset of the
 next unread line (`null` once the file is fully read). `total_lines` is `null`
-when counting the rest of a large file would exceed the bounded scan. On success
+when the file is large enough that a full re-scan to count its lines would be
+unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
 reminder>}}`, also without pagination keys. On failure: `{{"error": ...}}`.
@@ -596,16 +605,22 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {detail}")
     if "error" in data:
         return ReadResult(error=f"File '{file_path}': {data['error']}")
-    return ReadResult(
-        file_data=FileData(
-            content=data["content"],
-            encoding=data.get("encoding", "utf-8"),
-        ),
-        total_lines=data.get("total_lines"),
-        start_line=data.get("start_line"),
-        end_line=data.get("end_line"),
-        next_offset=data.get("next_offset"),
-    )
+    # A parseable-but-malformed payload (missing `content`, or a pagination-key
+    # combination `ReadResult.__post_init__` rejects) must degrade to the same
+    # clean error result as a decode failure, not escape as a raw traceback.
+    try:
+        return ReadResult(
+            file_data=FileData(
+                content=data["content"],
+                encoding=data.get("encoding", "utf-8"),
+            ),
+            total_lines=data.get("total_lines"),
+            start_line=data.get("start_line"),
+            end_line=data.get("end_line"),
+            next_offset=data.get("next_offset"),
+        )
+    except (KeyError, ValueError) as exc:
+        return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")
 
 
 def _build_write_preflight_cmd(file_path: str) -> str:

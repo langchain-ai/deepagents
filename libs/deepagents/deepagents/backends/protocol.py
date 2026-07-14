@@ -207,9 +207,14 @@ class ReadResult:
 
         The window fields are not independent: `start_line`/`end_line` are a
         pair, and neither `next_offset` nor `total_lines` describes anything
-        without the window it refers to. Fail loudly here to keep a backend
-        from emitting a `next_offset` that would silently skip unshown
-        source lines once it reaches the middleware.
+        without the window it refers to. Beyond co-presence, the values must
+        agree numerically: a window runs forward (`1 <= start_line <=
+        end_line`), the file is at least as long as the window
+        (`total_lines >= end_line`), and the resume point is the 0-indexed line
+        immediately after the last one shown (`next_offset == end_line`, since
+        `end_line` is 1-indexed). Fail loudly here to keep a backend from
+        emitting a `next_offset` that would silently skip unshown source lines
+        once it reaches the middleware.
         """
         if (self.start_line is None) != (self.end_line is None):
             msg = "ReadResult.start_line and end_line must be set together or both left unset"
@@ -220,6 +225,19 @@ class ReadResult:
         if self.total_lines is not None and self.start_line is None:
             msg = "ReadResult.total_lines requires start_line and end_line to be set"
             raise ValueError(msg)
+
+        # Numeric consistency of a present window. `start_line`/`end_line` are
+        # bound together above, so testing `start_line` covers both.
+        if self.start_line is not None and self.end_line is not None:
+            if self.start_line < 1 or self.end_line < self.start_line:
+                msg = f"ReadResult window must satisfy 1 <= start_line <= end_line, got start_line={self.start_line}, end_line={self.end_line}"
+                raise ValueError(msg)
+            if self.total_lines is not None and self.total_lines < self.end_line:
+                msg = f"ReadResult.total_lines ({self.total_lines}) cannot be less than end_line ({self.end_line})"
+                raise ValueError(msg)
+            if self.next_offset is not None and self.next_offset != self.end_line:
+                msg = f"ReadResult.next_offset ({self.next_offset}) must equal end_line ({self.end_line}), the 0-indexed line after the last shown"
+                raise ValueError(msg)
 
 
 class _Unset:

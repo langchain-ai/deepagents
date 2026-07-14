@@ -321,6 +321,29 @@ def test_parse_read_output_defaults_pagination_fields_to_none() -> None:
     assert result.next_offset is None
 
 
+def test_parse_read_output_missing_content_returns_error() -> None:
+    """A success payload lacking `content` degrades to an error, not a KeyError."""
+    output = json.dumps({"encoding": "utf-8", "total_lines": 3})
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+
+
+def test_parse_read_output_inconsistent_pagination_returns_error() -> None:
+    """A payload whose pagination keys violate the ReadResult invariants errors cleanly."""
+    # start_line without end_line trips ReadResult.__post_init__.
+    output = json.dumps({"encoding": "utf-8", "content": "a\nb", "start_line": 1})
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+
+
 # -- ls tests -----------------------------------------------------------------
 
 

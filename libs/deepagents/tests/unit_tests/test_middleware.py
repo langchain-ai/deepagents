@@ -1474,6 +1474,64 @@ class TestFilesystemMiddleware:
         assert last_displayed_line < 100
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
+    def test_read_file_truncation_adds_notice_when_backend_reached_eof(self):
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(
+                content="\n".join(f"line {line}: " + "x" * 80 for line in range(1, 101)),
+                encoding="utf-8",
+            ),
+            total_lines=100,
+            start_line=1,
+            end_line=100,
+            next_offset=None,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=500)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        numbered_lines = [line for line in result.content.splitlines() if "\t" in line]
+        last_displayed_line = int(numbered_lines[-1].split("\t", 1)[0])
+        assert last_displayed_line < 100
+        assert numbered_lines[-1].endswith("x" * 80)
+        assert f"remaining from offset {last_displayed_line}.]" in result.content
+
+    def test_read_file_truncation_never_splits_a_wrapped_source_line(self):
+        """When the budget cuts inside a wrapped line's rows, resume before that line.
+
+        Source line 3 is 15000 chars, so it renders as rows `3`, `3.1`, `3.2`.
+        The char budget fits lines 1-2 but not the full wrapped line, so the
+        notice must report line 2 and resume from offset 2 — never advertise an
+        offset that lands inside the undisplayed tail of line 3.
+        """
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(
+                content="aaa\nbbb\n" + ("c" * 15000) + "\nddd",
+                encoding="utf-8",
+            ),
+            total_lines=10,
+            start_line=1,
+            end_line=4,
+            next_offset=4,
+        )
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=400)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
+
+        assert isinstance(result, ToolMessage)
+        assert "Output was truncated due to size limits" in result.content
+        # Line 2 is the last complete source line that fits; the wrapped line 3
+        # is dropped whole and the resume offset points at it, not inside it.
+        assert "[Read 2 lines (lines 1-2 of 10 total). 8 lines remaining from offset 2.]" in result.content
+        # No partial rendering of the wrapped line leaked through.
+        assert "c" * 5000 not in result.content
+
     def test_intercept_short_toolmessage(self):
         """Test that small ToolMessages pass through unchanged."""
         backend, _ = _make_backend()

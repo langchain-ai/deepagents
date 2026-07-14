@@ -2222,7 +2222,8 @@ class TestThemeSelectorScreen:
         Leaves the picker open so the user can confirm and keep browsing.
         `[ui].theme` is intentionally untouched — pressing `t` is "save for
         this terminal", not "save as my global default". The shared
-        `_CONFIG_WRITE_LOCK` prevents racing the parent's Enter writer.
+        shared `model_config._config_write_lock` prevents racing the parent's
+        Enter writer.
         """
         import tomllib
 

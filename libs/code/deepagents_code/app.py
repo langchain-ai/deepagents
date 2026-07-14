@@ -149,10 +149,11 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     return parsed, None
 
 
-# Serializes process-local read-modify-write operations for `config.toml`.
-# Without this, overlapping global-theme and per-terminal-theme saves can each
-# read the same pre-mutation state and then clobber the other's keys.
-_CONFIG_WRITE_LOCK = threading.Lock()
+# Config `config.toml` writes are serialized by the single process-wide lock
+# `model_config._config_write_lock`, imported lazily at each write site (below).
+# It is shared with `model_config`'s writers so a theme/UI write here cannot
+# clobber, e.g., an effort or default-model write; a lock local to this module
+# would not mutually exclude against those. See that lock's docstring.
 
 _DEEPAGENTS_IMPORT_LOCK = threading.RLock()
 """Serializes process-local cold imports into the Deep Agents SDK graph.
@@ -538,6 +539,7 @@ if TYPE_CHECKING:
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
     from textual.widget import Widget
+    from textual.widgets import TextArea
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
@@ -932,10 +934,13 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1121,11 +1126,14 @@ def _save_terminal_theme_mapping_result(
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         repair_messages: list[str] = []
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1219,10 +1227,13 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -1278,10 +1289,13 @@ def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
     try:
         import tomli_w
 
-        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+        from deepagents_code.model_config import (
+            DEFAULT_CONFIG_PATH,
+            _config_write_lock,
+        )
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _CONFIG_WRITE_LOCK:
+        with _config_write_lock:
             if DEFAULT_CONFIG_PATH.exists():
                 with DEFAULT_CONFIG_PATH.open("rb") as f:
                     data = tomllib.load(f)
@@ -2747,8 +2761,10 @@ class DeepAgentsApp(App):
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
 
-        self._model_params_override: dict[str, Any] | None = None
-        """Per-turn model params override set via `/model --model-params`."""
+        self._model_params_override: dict[str, Any] | None = (
+            model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
+        )
+        """Per-turn model params override set via startup or `/model` params."""
 
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
@@ -3354,6 +3370,9 @@ class DeepAgentsApp(App):
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._goal_status_panel = self.query_one("#goal-status-panel", GoalStatusPanel)
         self._chat_input = self.query_one("#input-area", ChatInput)
+        model_spec = self._effective_model_spec()
+        if model_spec:
+            await self._restore_effort_override(model_spec)
         self._sync_status_connection()
         self._sync_status_queued()
         self._sync_status_model()
@@ -4282,6 +4301,7 @@ class DeepAgentsApp(App):
                 return
             result.apply_to_settings()
             resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
             save_recent_model(resolved_spec)
             touch_recent_model(resolved_spec)
             self._model_kwargs = None  # consumed
@@ -12311,6 +12331,58 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
+    async def _restore_effort_override(self, model_spec: str) -> None:
+        """Restore a persisted reasoning effort when valid for the model.
+
+        Explicit per-session or resumed-thread model params take precedence:
+        a saved effort only fills in when the active params do not already
+        specify one, so `/model ... --model-params` and adopted checkpoints
+        are never silently overridden.
+
+        Config reads (and the stale-entry write below) are offloaded to a
+        worker thread so a slow or locked `config.toml` cannot stall the UI
+        event loop, matching `_set_effort_override`.
+        """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            load_effort_for_model,
+        )
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            merge_effort_model_params,
+            model_params_for_effort,
+        )
+
+        if (
+            current_effort_from_model_params(model_spec, self._model_params_override)
+            is not None
+        ):
+            return
+        effort = await asyncio.to_thread(load_effort_for_model, model_spec)
+        if effort is None:
+            return
+        params = model_params_for_effort(model_spec, effort)
+        if params is None:
+            # Saved label is no longer valid for this model; drop the stale
+            # entry so the model default applies. The active params carry no
+            # effort here (checked above), so there is nothing to strip.
+            #
+            # Best-effort housekeeping: on failure we log rather than mounting a
+            # UI error, because the user did not request this clear. The
+            # interactive `/effort clear` path does surface failures, since
+            # there the clear is user-initiated.
+            if not await asyncio.to_thread(clear_effort_for_model, model_spec):
+                logger.warning(
+                    "Could not clear invalid reasoning effort %r for %s",
+                    effort,
+                    model_spec,
+                )
+            return
+        self._model_params_override = merge_effort_model_params(
+            self._model_params_override,
+            params,
+        )
+
     def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
         """Resolve the active model spec and its supported reasoning efforts.
 
@@ -12409,6 +12481,10 @@ class DeepAgentsApp(App):
         Args:
             effort: Effort label or clear/reset token.
         """
+        from deepagents_code.model_config import (
+            clear_effort_for_model,
+            save_effort_for_model,
+        )
         from deepagents_code.reasoning_effort import (
             merge_effort_model_params,
             model_params_for_effort,
@@ -12426,7 +12502,16 @@ class DeepAgentsApp(App):
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )
+            saved = await asyncio.to_thread(clear_effort_for_model, spec)
             self._sync_status_model()
+            if not saved:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Reasoning effort cleared for {spec} in this session, but "
+                        "the saved preference could not be removed."
+                    )
+                )
+                return
             message = (
                 f"Reasoning effort override cleared for {spec}."
                 if had_override
@@ -12449,7 +12534,16 @@ class DeepAgentsApp(App):
         self._model_params_override = merge_effort_model_params(
             self._model_params_override, params
         )
+        saved = await asyncio.to_thread(save_effort_for_model, spec, effort)
         self._sync_status_model()
+        if not saved:
+            await self._mount_message(
+                ErrorMessage(
+                    f"Reasoning effort for {spec} set to {effort} in this session, "
+                    "but the preference could not be saved."
+                )
+            )
+            return
         await self._mount_message(
             AppMessage(f"Reasoning effort for {spec} set to {effort}."),
         )
@@ -14324,14 +14418,60 @@ class DeepAgentsApp(App):
         )
         self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
+    def _ctrl_d_delete_target(self) -> TextArea | None:
+        """Return the focused text area Ctrl+D should edit instead of quitting.
+
+        Ctrl+D deletes forward — a non-empty selection or the content right of
+        the cursor — rather than quitting whenever the focused widget is an
+        editable prompt with something left to delete. This covers both the
+        primary chat input and the inline free-text prompts (ask-user, goal
+        review). Only at the true end of the text with no selection does Ctrl+D
+        fall through to quitting.
+
+        `self.focused` (the active screen's focused widget) is checked rather
+        than `has_focus`: a draft hidden behind a modal keeps focus but must not
+        be edited from under it, so Ctrl+D quits in that case.
+
+        Returns:
+            The focused text area when it has a non-empty selection or content
+            after the cursor, or `None` when Ctrl+D should quit the app.
+        """
+        from deepagents_code.tui.widgets._inline_prompt import InlinePromptTextArea
+
+        focused = self.focused
+        chat_input = self._chat_input
+        text_area: TextArea | None = None
+        if chat_input is not None:
+            input_widget = chat_input.input_widget
+            if (
+                input_widget is not None
+                and focused is input_widget
+                and chat_input.value
+            ):
+                text_area = input_widget
+        if (
+            text_area is None
+            and isinstance(focused, InlinePromptTextArea)
+            and focused.text
+        ):
+            text_area = focused
+
+        if text_area is None:
+            return None
+        has_content_to_delete = (
+            not text_area.selection.is_empty
+            or text_area.cursor_location != text_area.document.end
+        )
+        return text_area if has_content_to_delete else None
+
     def action_quit_app(self) -> None:
         """Handle the Ctrl+D binding.
 
         Delete-confirm screens and the auth/thread selectors keep their own
-        Ctrl+D behavior. Otherwise, when the chat input is focused, Ctrl+D
-        deletes a non-empty selection or the character right of the cursor.
-        Only at the end of the prompt with no active selection does it exit
-        the app.
+        Ctrl+D behavior. Otherwise, when an editable prompt (the chat input or
+        an inline free-text field) is focused, Ctrl+D deletes a non-empty
+        selection or the character right of the cursor. Only at the end of the
+        prompt with no active selection does it exit the app.
         """
         from deepagents_code.tui.widgets.auth import (
             AuthPromptScreen,
@@ -14358,24 +14498,10 @@ class DeepAgentsApp(App):
             self._arm_quit_pending("Ctrl+D")
             return
 
-        # Delegate Ctrl+D when delete-right can remove selected text or content
-        # after the cursor. Check `self.focused` (the active screen's focused
-        # widget), not `text_area.has_focus`: a draft hidden behind a modal keeps
-        # focus but must not be edited from under it, so Ctrl+D quits in that case.
-        chat_input = self._chat_input
-        if chat_input is not None:
-            text_area = chat_input.input_widget
-            if (
-                text_area is not None
-                and self.focused is text_area
-                and chat_input.value
-                and (
-                    not text_area.selection.is_empty
-                    or text_area.cursor_location != text_area.document.end
-                )
-            ):
-                text_area.action_delete_right()
-                return
+        text_area = self._ctrl_d_delete_target()
+        if text_area is not None:
+            text_area.action_delete_right()
+            return
 
         self.exit()
 
@@ -19218,6 +19344,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                await self._restore_effort_override(current)
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
@@ -19271,6 +19398,8 @@ class DeepAgentsApp(App):
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
 
@@ -19300,7 +19429,6 @@ class DeepAgentsApp(App):
                 # touch_recent_model always gets a valid "provider:model"
                 # string. Silent on failure — the debug log captures it when
                 # debug logging is enabled.
-                resolved_spec = f"{result.provider}:{result.model_name}"
                 await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",

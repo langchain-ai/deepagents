@@ -344,6 +344,24 @@ def test_parse_read_output_inconsistent_pagination_returns_error() -> None:
     assert "unexpected server response" in result.error
 
 
+def test_parse_read_output_invalid_pagination_type_returns_error() -> None:
+    """A nonnumeric pagination value degrades to an error, not a TypeError."""
+    output = json.dumps(
+        {
+            "content": "a",
+            "start_line": "1",
+            "end_line": "2",
+            "next_offset": 2,
+        }
+    )
+
+    result = _parse_read_output(output, "/test/file.txt")
+
+    assert result.file_data is None
+    assert result.error is not None
+    assert "unexpected server response" in result.error
+
+
 # -- ls tests -----------------------------------------------------------------
 
 

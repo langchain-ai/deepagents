@@ -619,7 +619,7 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
             end_line=data.get("end_line"),
             next_offset=data.get("next_offset"),
         )
-    except (KeyError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")
 
 

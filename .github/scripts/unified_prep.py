@@ -7,7 +7,7 @@ per-provider matrices to GITHUB_OUTPUT.
 
 Concurrency invariants:
   per model:  concurrency * shard_parallel <= 40
-  global:     num_providers * shard_parallel <= 64
+  global:     num_providers * shard_parallel <= 80
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import models  # noqa: E402  (models.py in same dir)
 import shard_matrix  # noqa: E402  (shard_matrix.py in same dir)
 
 MAX_TASKS_PER_MODEL = 40
-MAX_RUNNERS = 64
+MAX_RUNNERS = 80
 
 KNOWN_PROVIDERS = {
     "anthropic",
@@ -111,6 +111,23 @@ def clamp_shard_parallel(requested: int, num_providers: int, concurrency: int) -
         MAX_TASKS_PER_MODEL // max(concurrency, 1),
     )
     return max(sp, 1)
+
+
+def derive_pool(
+    concurrency: int, rollouts: int, n_shards: int, n_models: int
+) -> tuple[int, int]:
+    """Derive (max_parallel, model_parallel) from concurrency and rollouts.
+
+    per_shard is the peak concurrent trials in one 1-task shard, which a shard
+    can never exceed: min(concurrency, rollouts). max_parallel saturates the
+    per-model 40-trial budget; model_parallel bounds how many models run at once
+    so total runners stay within MAX_RUNNERS. Both hold the invariants by
+    construction, so no separate clamp/assert is needed.
+    """
+    per_shard = max(1, min(concurrency, rollouts))
+    max_parallel = max(1, min(MAX_TASKS_PER_MODEL // per_shard, n_shards))
+    model_parallel = max(1, min(MAX_RUNNERS // max_parallel, n_models))
+    return max_parallel, model_parallel
 
 
 def build_provider_matrices(

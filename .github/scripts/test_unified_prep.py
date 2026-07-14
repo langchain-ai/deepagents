@@ -23,19 +23,30 @@ def test_provider_of_uses_prefix_and_falls_back_to_other():
 
 
 def test_clamp_shard_parallel_enforces_both_invariants():
-    # per-model: conc*sp<=40 ; global: P*sp<=64
+    # per-model: conc*sp<=40 ; global: P*sp<=80
     assert (
         up.clamp_shard_parallel(10, num_providers=1, concurrency=4) == 10
-    )  # 4*10=40, 1*10=64-ok
+    )  # 4*10=40, 1*10=80-ok
     assert (
-        up.clamp_shard_parallel(10, num_providers=7, concurrency=4) == 9
-    )  # floor(64/7)=9
+        up.clamp_shard_parallel(10, num_providers=7, concurrency=4) == 10
+    )  # min(10, floor(80/7)=11, floor(40/4)=10)=10
     assert (
         up.clamp_shard_parallel(10, num_providers=2, concurrency=8) == 5
     )  # floor(40/8)=5
     assert (
         up.clamp_shard_parallel(10, num_providers=100, concurrency=4) == 1
-    )  # floor(64/100)=0 -> 1
+    )  # floor(80/100)=0 -> 1
+
+
+def test_derive_pool_from_concurrency_and_rollouts():
+    # concurrency 4, rollouts 3 -> per_shard=3 -> 40//3=13 ; 80//13=6
+    assert up.derive_pool(concurrency=4, rollouts=3, n_shards=34, n_models=1) == (13, 1)
+    # concurrency 1 -> per_shard=1 -> 40 ; 80//40=2
+    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=100, n_models=5) == (40, 2)
+    # rollouts < concurrency clamps per_shard to rollouts (the utilization win)
+    assert up.derive_pool(concurrency=4, rollouts=2, n_shards=100, n_models=1)[0] == 20
+    # clamp max_parallel to n_shards when few tasks; model_parallel clamps to n_models
+    assert up.derive_pool(concurrency=1, rollouts=3, n_shards=8, n_models=1) == (8, 1)
 
 
 def test_build_provider_matrices_cross_products_models_and_categories():
@@ -236,7 +247,7 @@ def test_main_accepts_large_shard_parallel_and_clamps_to_resource_limits(
             "anthropic:a,baseten:b,fireworks:c,google_genai:d,groq:e,"
             "nvidia:f,openai:g,xai:h",
             "1",
-            "8",
+            "10",
         ),
     ]
     for index, (models, concurrency, expected) in enumerate(cases):

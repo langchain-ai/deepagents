@@ -17,10 +17,10 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, settings
 from deepagents_code.model_config import ModelSpec
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
+from langchain.agents.middleware import SummarizationMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-from langchain_core.messages import ToolMessage
+from langchain_core.messages.utils import get_buffer_string
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -303,18 +303,22 @@ def make_minimal_graph(config: dict[str, object] | None = None) -> object:
     backend = LocalShellBackend(root_dir=workdir, inherit_env=False)
     manager = _ProcessManager(cwd=workdir, env=backend._env)  # noqa: SLF001  # reuse execute's scrubbed env
     tools = [_make_execute_tool(backend), *_make_background_tools(manager)]
-    # Context management, cheapest first: deterministic tool-output compaction shrinks
-    # each model-call payload every turn with no extra LLM calls (the main cost/latency
-    # driver is re-sending stale tool outputs); summarization is the LLM-based fallback
-    # once the whole conversation still crosses the token trigger; prompt caching is a
-    # billing/latency optimization that no-ops for non-Anthropic models.
+    # Context management: terminus-2-style retention summarization. It fires proactively
+    # at the token trigger and, rather than eliding tool outputs (which caused a re-fetch
+    # thrash loop), drafts a summary then critiques and answers what it is missing, so the
+    # file contents, errors, and reverse-engineering constants the agent needs survive the
+    # compaction. Prompt caching no-ops for non-Anthropic models.
     return create_agent(
         model=model,
         tools=tools,
         system_prompt=CODING_SYSTEM_PROMPT,
         middleware=[
-            _ToolOutputCompactionMiddleware(),
-            SummarizationMiddleware(model, trigger=("tokens", 80_000), summary_prompt=CODING_SUMMARY_PROMPT),
+            _TerminusSummarizationMiddleware(
+                model,
+                trigger=("tokens", 50_000),
+                keep=("messages", 20),
+                summary_prompt=CODING_SUMMARY_PROMPT,
+            ),
             AnthropicPromptCachingMiddleware(),
         ],
     )
@@ -395,46 +399,83 @@ Respond ONLY with the sections above.
 </messages>"""
 
 
-class _ToolOutputCompactionMiddleware(AgentMiddleware):
-    """Online, deterministic compaction of stale tool outputs.
+_SUMMARY_CRITIQUE_PROMPT = """A coding agent's full history will be replaced by the draft summary \
+below. List 5 to 10 specific questions about concrete details a coding agent needs to continue \
+WITHOUT redoing work that the draft may be missing: exact file paths and current contents, the \
+precise error from the last failing test, key constants or values discovered, the exact commands \
+that work, and the current build/verification state. Output only the numbered questions.
 
-    On every model call, replaces the string content of tool messages older than the
-    most recent ``keep_last`` with a short elision marker (keeping ids so tool
-    call/result pairing survives), while leaving all reasoning and recent tool
-    outputs intact. No LLM calls: it only shrinks the per-call payload, so it adds no
-    latency and does not mutate persisted state.
+DRAFT SUMMARY:
+{summary}"""
+
+
+_SUMMARY_ANSWER_PROMPT = """Answer each question below concisely and concretely using ONLY the \
+conversation history provided. Preserve exact paths, constants, commands, and error text. If the \
+history does not contain the answer, write "unknown".
+
+QUESTIONS:
+{questions}
+
+<messages>
+{messages}
+</messages>"""
+
+
+class _TerminusSummarizationMiddleware(SummarizationMiddleware):
+    """SummarizationMiddleware with a terminus-2-style retention handoff.
+
+    Instead of a single-pass extract, it (1) drafts the base summary, (2) asks the
+    model which concrete details the draft is missing, and (3) answers those questions
+    from the full history, appending the answers. This preserves the file contents,
+    error text, and reverse-engineering constants a coding agent needs so it does not
+    have to re-fetch them after a compaction. The extra passes degrade gracefully to
+    the draft on any error, and reuse the base trigger/keep/persistence machinery.
     """
 
-    def __init__(self, *, keep_last: int = 6, max_chars: int = 1200) -> None:
-        super().__init__()
-        self._keep_last = keep_last
-        self._max_chars = max_chars
+    _MAX_SUMMARY_CHARS = 12000
 
-    def _compact(self, messages: list[Any]) -> list[Any]:
-        tool_positions = [i for i, msg in enumerate(messages) if isinstance(msg, ToolMessage)]
-        if len(tool_positions) <= self._keep_last:
-            return messages
-        stale = set(tool_positions[: -self._keep_last])
-        compacted: list[Any] = []
-        for i, msg in enumerate(messages):
-            content = msg.content if isinstance(msg, ToolMessage) else None
-            if i in stale and isinstance(content, str) and len(content) > self._max_chars:
-                elided = (
-                    f"{content[:200]}\n"
-                    f"[... {len(content) - 200} chars elided by tool-output compaction ...]"
+    def _augment(self, draft: str, questions: str, answers: str) -> str:
+        return f"{draft}\n\n## ADDITIONAL DETAILS\n{answers}"[: self._MAX_SUMMARY_CHARS]
+
+    def _create_summary(self, messages_to_summarize: list[Any]) -> str:
+        draft = super()._create_summary(messages_to_summarize)
+        try:
+            questions = self.model.invoke(
+                _SUMMARY_CRITIQUE_PROMPT.format(summary=draft),
+                config={"metadata": {"lc_source": "summarization-critique"}},
+            ).text.strip()
+            formatted = get_buffer_string(
+                self._trim_messages_for_summary(messages_to_summarize), format="xml"
+            )
+            answers = self.model.invoke(
+                _SUMMARY_ANSWER_PROMPT.format(questions=questions, messages=formatted),
+                config={"metadata": {"lc_source": "summarization-answer"}},
+            ).text.strip()
+        except Exception:  # noqa: BLE001  # graceful degradation to the base draft
+            return draft
+        return self._augment(draft, questions, answers)
+
+    async def _acreate_summary(self, messages_to_summarize: list[Any]) -> str:
+        draft = await super()._acreate_summary(messages_to_summarize)
+        try:
+            questions = (
+                await self.model.ainvoke(
+                    _SUMMARY_CRITIQUE_PROMPT.format(summary=draft),
+                    config={"metadata": {"lc_source": "summarization-critique"}},
                 )
-                compacted.append(
-                    ToolMessage(content=elided, tool_call_id=msg.tool_call_id, name=msg.name, id=msg.id)
+            ).text.strip()
+            formatted = get_buffer_string(
+                self._trim_messages_for_summary(messages_to_summarize), format="xml"
+            )
+            answers = (
+                await self.model.ainvoke(
+                    _SUMMARY_ANSWER_PROMPT.format(questions=questions, messages=formatted),
+                    config={"metadata": {"lc_source": "summarization-answer"}},
                 )
-            else:
-                compacted.append(msg)
-        return compacted
-
-    def wrap_model_call(self, request, handler):  # noqa: ANN001, ANN201
-        return handler(request.override(messages=self._compact(request.messages)))
-
-    async def awrap_model_call(self, request, handler):  # noqa: ANN001, ANN201
-        return await handler(request.override(messages=self._compact(request.messages)))
+            ).text.strip()
+        except Exception:  # noqa: BLE001  # graceful degradation to the base draft
+            return draft
+        return self._augment(draft, questions, answers)
 
 
 class _ProcessManager:

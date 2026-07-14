@@ -11639,8 +11639,6 @@ class DeepAgentsApp(App):
 
             # Own the seeded tool-call id here so a failed run can clean up the
             # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
-            import uuid
-
             seed_tool_call_id = str(uuid.uuid4())
 
             try:
@@ -11764,10 +11762,23 @@ class DeepAgentsApp(App):
                 f"({pct}% decrease), {messages_kept} messages kept."
             )
             if archive_path:
+                from deepagents_code.offload import offload_storage_is_ephemeral
+
+                # In local mode the archive may have landed in a temp fallback
+                # directory (persistent `~/.deepagents` was unwritable). The
+                # write succeeded, so context was freed and history is readable
+                # now, but it may not survive a restart -- say so rather than
+                # imply durable storage.
+                caveat = (
+                    "\nNote: history was saved to temporary storage and may not "
+                    "survive a restart."
+                    if offload_storage_is_ephemeral()
+                    else ""
+                )
                 await self._mount_message(
                     AppMessage(
                         f"Offloaded {messages_offloaded} older messages, "
-                        f"freeing up context window space.\n{stats_line}",
+                        f"freeing up context window space.\n{stats_line}{caveat}",
                     ),
                 )
             else:
@@ -11830,8 +11841,6 @@ class DeepAgentsApp(App):
                 path, which has already mounted its own user-facing message
                 before returning.
         """
-        import uuid
-
         from langchain.agents.middleware.human_in_the_loop import (
             ApproveDecision,
             RejectDecision,
@@ -12026,6 +12035,12 @@ class DeepAgentsApp(App):
     ) -> None:
         """Restore state changed by a no-op `/offload` graph run.
 
+        Best-effort: a failed restoration is logged and swallowed rather than
+        raised. The no-op path answers the seed with a valid tool result, so the
+        committed seed/result pair left behind is harmless (unlike an unanswered
+        seed); letting the write raise here would misreport a working offload as
+        "Offload failed" via the caller's outer handler.
+
         Args:
             config: Config with `configurable.thread_id`.
             messages: Messages appended after the pre-run state snapshot.
@@ -12041,14 +12056,19 @@ class DeepAgentsApp(App):
             for message in messages
             if (message_id := _message_id(message)) is not None
         ]
-        await agent.aupdate_state(
-            config,
-            {
-                "messages": removals,
-                "_summarization_event": prior_event,
-            },
-            as_node="model",
-        )
+        try:
+            await agent.aupdate_state(
+                config,
+                {
+                    "messages": removals,
+                    "_summarization_event": prior_event,
+                },
+                as_node="model",
+            )
+        except Exception:  # best-effort restoration; keep the no-op report
+            logger.warning(
+                "Failed to restore state after a no-op offload run", exc_info=True
+            )
 
     async def _remove_unanswered_offload_seed(
         self, config: RunnableConfig, seed_tool_call_id: str

@@ -1048,10 +1048,15 @@ class TestOffloadFallbackRoot:
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
         assert probe.call_count == 2
 
-    def test_fallback_root_avoids_foreign_or_invalid_per_user_path(
+    def test_fallback_root_avoids_file_at_predictable_per_user_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An unusable predictable path falls back to a private unique one."""
+        """A non-directory at the predictable temp path falls back to a unique one.
+
+        A plain file where `deepagents-<uid>` is expected makes
+        `mkdir(exist_ok=True)` raise `FileExistsError` (an `OSError`), so the
+        resolver creates a private unique directory instead.
+        """
         home_root = tmp_path / "home" / ".deepagents"
         home_root.mkdir(parents=True)
         temp_dir = tmp_path / "tmp"
@@ -1059,7 +1064,7 @@ class TestOffloadFallbackRoot:
         getuid = getattr(os, "getuid", None)
         uid = getuid() if getuid is not None else os.getpid()
         reserved = temp_dir / f"deepagents-{uid}"
-        reserved.write_text("owned by another account")
+        reserved.write_text("not a directory")
         probe = MagicMock(
             side_effect=[PermissionError("read-only home"), nullcontext()]
         )
@@ -1073,6 +1078,225 @@ class TestOffloadFallbackRoot:
         assert root != reserved
         assert root.name.startswith(f"deepagents-{uid}-")
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+    def test_fallback_root_rejects_foreign_owned_per_user_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A predictable temp dir owned by another user is rejected for a unique one.
+
+        Exercises the `st_uid != getuid()` ownership guard: `lstat` is stubbed to
+        report a foreign owner for the predictable per-user dir only, so it is
+        rejected while the freshly-created unique dir (real ownership) passes.
+        """
+        from types import SimpleNamespace
+
+        getuid = getattr(os, "getuid", None)
+        if getuid is None:
+            pytest.skip("uid ownership check requires os.getuid")
+
+        home_root = tmp_path / "home" / ".deepagents"
+        home_root.mkdir(parents=True)
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        uid = getuid()
+        reserved = temp_dir / f"deepagents-{uid}"
+        reserved.mkdir()  # a real, us-owned directory; lstat is faked below
+        probe = MagicMock(
+            side_effect=[PermissionError("read-only home"), nullcontext()]
+        )
+
+        real_lstat = Path.lstat
+
+        def fake_lstat(self: Path) -> Any:  # noqa: ANN401
+            info = real_lstat(self)
+            if self == reserved:
+                # Report a foreign owner for the predictable dir only.
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+            return info
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
+        monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+        root = _offload_fallback_root()
+
+        assert root != reserved
+        assert root.name.startswith(f"deepagents-{uid}-")
+
+    def test_fallback_root_rejects_symlinked_archive_subdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `conversation_history` that is itself a symlink is rejected (S_ISDIR).
+
+        The `lstat`/`S_ISDIR` guard does not follow the link, so a symlinked
+        archive subdirectory (even one pointing at a real, us-owned directory)
+        makes the persistent path fail and offload falls back to temp storage.
+        """
+        home = tmp_path / "home"
+        base = home / ".deepagents"
+        base.mkdir(parents=True)
+        real_target = tmp_path / "elsewhere"
+        real_target.mkdir()
+        (base / "conversation_history").symlink_to(real_target)
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        getuid = getattr(os, "getuid", None)
+        uid = getuid() if getuid is not None else os.getpid()
+        # Only the temp fallback's write-probe should run; the symlinked archive
+        # subdir is rejected by S_ISDIR before the user dir is probed.
+        probe = MagicMock(return_value=nullcontext())
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", probe)
+
+        root = _offload_fallback_root()
+
+        assert root == temp_dir / f"deepagents-{uid}"
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        # The temp fallback is not persistent; the flag reflects that.
+        from deepagents_code.offload import offload_storage_is_ephemeral
+
+        assert offload_storage_is_ephemeral() is True
+
+    def test_fallback_root_tightens_preexisting_loose_archive_subdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An existing `conversation_history` with loose perms is tightened to 0o700.
+
+        `mkdir(mode=...)` does not tighten an existing directory, so the explicit
+        `chmod(0o700)` is what protects a pre-existing world-readable archive
+        dir. Removing that call would regress this test.
+        """
+        root = tmp_path / ".deepagents"
+        root.mkdir()
+        archive_dir = root / "conversation_history"
+        archive_dir.mkdir(mode=0o755)
+        archive_dir.chmod(0o755)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        assert _offload_fallback_root() == root
+        assert stat.S_IMODE(archive_dir.stat().st_mode) == 0o700
+        # The persistent per-user location is not ephemeral.
+        from deepagents_code.offload import offload_storage_is_ephemeral
+
+        assert offload_storage_is_ephemeral() is False
+
+
+class TestOffloadStorageCaveat:
+    """Surface the persistence caveat when offload uses ephemeral storage."""
+
+    async def test_ephemeral_storage_appends_caveat_to_success(self) -> None:
+        """A successful offload into temp storage warns it may not persist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(10))
+            after = _state_values(_make_dict_messages(12), _summary_event(6))
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.offload.offload_storage_is_ephemeral",
+                    return_value=True,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
+            assert any("may not survive a restart" in str(w._content) for w in msgs)
+
+    async def test_persistent_storage_omits_caveat(self) -> None:
+        """A successful offload into persistent storage adds no caveat."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(10))
+            after = _state_values(_make_dict_messages(12), _summary_event(6))
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.offload.offload_storage_is_ephemeral",
+                    return_value=False,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert any("Offloaded 6 older messages" in str(w._content) for w in msgs)
+            assert not any("may not survive a restart" in str(w._content) for w in msgs)
+
+
+class TestNoopArtifactCleanup:
+    """A failed no-op restoration must not be reported as an offload failure."""
+
+    async def test_cleanup_failure_keeps_noop_report(self) -> None:
+        """When restoration fails, still report the no-op — not "Offload failed"."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            agent = _setup_server_offload_app(app)
+            # The no-op branch restores state via aupdate_state; make it fail.
+            agent.aupdate_state = AsyncMock(side_effect=RuntimeError("write failed"))
+
+            before = _state_values(_make_dict_messages(4))
+            after = _state_values(_make_dict_messages(6))
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            assert any(
+                "the conversation is already compact" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+            assert not any(
+                "Offload failed" in str(w._content) for w in app.query(ErrorMessage)
+            )
 
 
 class TestOffloadRouting:

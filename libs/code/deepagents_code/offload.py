@@ -10,6 +10,27 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_EPHEMERAL_OFFLOAD_STORAGE = False
+"""Whether the most recent `_offload_fallback_root` fell back to temp storage."""
+
+
+def offload_storage_is_ephemeral() -> bool:
+    """Return whether offload history is routed to non-persistent storage.
+
+    `True` when the persistent `~/.deepagents` location was unwritable and the
+    most recent `_offload_fallback_root` fell back to a temporary directory that
+    may not survive a restart. Only meaningful in local mode, where
+    `_offload_fallback_root` runs in the same process as the UI; in
+    server/sandbox mode persistence is owned by the server backend and this flag
+    stays `False` client-side.
+
+    Returns:
+        `True` if the local offload root is a temporary, non-persistent
+        directory; `False` when it is the persistent per-user location (or was
+        never resolved in this process).
+    """
+    return _EPHEMERAL_OFFLOAD_STORAGE
+
 
 def _offload_fallback_root() -> Path:
     """Return a writable base directory for offloaded conversation history.
@@ -27,9 +48,15 @@ def _offload_fallback_root() -> Path:
     must not disturb. A temporary fallback root is created solely for offload,
     so the whole directory is hardened in that case.
 
-    Note: a symlinked `~/.deepagents` is rejected by the `S_ISDIR` check below
-    (which uses `lstat`, deliberately not following the link) and falls through
-    to temporary storage; the persistence benefit is lost for that setup.
+    Note: the `S_ISDIR` check below (which uses `lstat`, deliberately not
+    following the link) guards the paths it is applied to -- the
+    `conversation_history` subdirectory and, in the fallback case, the temp
+    root -- not `~/.deepagents` itself, which is created with a plain `mkdir`.
+    So a `conversation_history` (or temp root) that is itself a symlink is
+    rejected, whereas a symlinked `~/.deepagents` pointing at a directory the
+    current user owns is followed transparently and archives persist normally.
+    (A dangling `~/.deepagents` symlink still falls through to temporary
+    storage, but via `mkdir` raising, not via this check.)
 
     Returns:
         A directory whose `conversation_history` subdirectory is private and
@@ -88,27 +115,32 @@ def _offload_fallback_root() -> Path:
         _probe_writable(path)
         return path
 
+    global _EPHEMERAL_OFFLOAD_STORAGE  # noqa: PLW0603
     try:
-        return _prepare_user_dir()
+        root = _prepare_user_dir()
     except (RuntimeError, OSError):
         logger.warning(
             "User data directory is not writable; falling back to temporary "
             "offload storage, which may not persist across restarts",
             exc_info=True,
         )
-        getuid = getattr(os, "getuid", None)
-        suffix = str(getuid()) if getuid is not None else str(os.getpid())
-        temp_root = Path(tempfile.gettempdir())
-        path = temp_root / f"deepagents-{suffix}"
-        try:
-            return _prepare_temp_dir(path)
-        except (OSError, RuntimeError):
-            logger.warning(
-                "Per-user temporary offload directory is unavailable; creating "
-                "a private unique directory",
-                exc_info=True,
-            )
-            unique = Path(
-                tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root)
-            )
-            return _prepare_temp_dir(unique)
+    else:
+        _EPHEMERAL_OFFLOAD_STORAGE = False
+        return root
+    # Only reached on the fallback path: every root produced below is temporary
+    # and may not survive a restart.
+    _EPHEMERAL_OFFLOAD_STORAGE = True
+    getuid = getattr(os, "getuid", None)
+    suffix = str(getuid()) if getuid is not None else str(os.getpid())
+    temp_root = Path(tempfile.gettempdir())
+    path = temp_root / f"deepagents-{suffix}"
+    try:
+        return _prepare_temp_dir(path)
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Per-user temporary offload directory is unavailable; creating "
+            "a private unique directory",
+            exc_info=True,
+        )
+        unique = Path(tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root))
+        return _prepare_temp_dir(unique)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
@@ -23,7 +23,13 @@ from deepagents_code._cli_context import CLIContextSchema
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from deepagents.backends.protocol import BACKEND_TYPES
+    from deepagents.backends.protocol import (
+        BACKEND_TYPES,
+        BackendProtocol,
+        EditResult,
+        FileDownloadResponse,
+        WriteResult,
+    )
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -92,9 +98,11 @@ class RuntimeModelConfig(NamedTuple):
     """Active model configuration read from a tool runtime.
 
     A named tuple rather than a bare 4-tuple so the two structurally identical
-    `dict` slots (`model_params`, `profile_overrides`) cannot be silently
-    transposed at a construction or unpack site — a swap the type checker would
-    not catch.
+    `dict` slots (`model_params`, `profile_overrides`) are addressed by name at
+    both the construction sites (keyword args) and the read site (attribute
+    access) — a silent positional transposition the type checker would not catch
+    is thereby avoided. Positional construction/unpacking is still possible and
+    would defeat this, so call sites must keep using names.
     """
 
     model_spec: str | None
@@ -156,6 +164,131 @@ def _offload_tool_call_id(context: object) -> str | None:
         else None
     )
     return value if isinstance(value, str) and value else None
+
+
+class _ArchiveReadGuard:
+    """Prevent an archive write after its prerequisite read raises.
+
+    The SDK archive helper treats a raised read like a missing file and follows
+    it with a truncating `write`. This narrow backend adapter preserves the SDK
+    formatting and append behavior while making that fallback fail closed.
+    """
+
+    def __init__(self, backend: BackendProtocol) -> None:
+        self._backend = backend
+        self._read_failed = False
+
+    def _ensure_read_succeeded(self) -> None:
+        """Raise when a prior archive read failed in this operation.
+
+        Raises:
+            RuntimeError: If the prerequisite archive read raised.
+        """
+        if self._read_failed:
+            msg = "archive read failed; refusing to overwrite existing history"
+            raise RuntimeError(msg)
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Delegate a synchronous read while recording raised failures.
+
+        Args:
+            paths: Backend paths to read.
+
+        Returns:
+            The backend download responses.
+        """
+        try:
+            return self._backend.download_files(paths)
+        except Exception:
+            self._read_failed = True
+            raise
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Delegate an asynchronous read while recording raised failures.
+
+        Args:
+            paths: Backend paths to read.
+
+        Returns:
+            The backend download responses.
+        """
+        try:
+            return await self._backend.adownload_files(paths)
+        except Exception:
+            self._read_failed = True
+            raise
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        """Write only when the prerequisite archive read did not raise.
+
+        Args:
+            file_path: Backend path to write.
+            content: Complete archive content.
+
+        Returns:
+            The backend write result.
+        """
+        self._ensure_read_succeeded()
+        return self._backend.write(file_path, content)
+
+    async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """Asynchronously write only after a successful archive read.
+
+        Args:
+            file_path: Backend path to write.
+            content: Complete archive content.
+
+        Returns:
+            The backend write result.
+        """
+        self._ensure_read_succeeded()
+        return await self._backend.awrite(file_path, content)
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Edit only when the prerequisite archive read did not raise.
+
+        Args:
+            file_path: Backend path to edit.
+            old_string: Existing archive content.
+            new_string: Archive content with the new section appended.
+            replace_all: Whether to replace every match.
+
+        Returns:
+            The backend edit result.
+        """
+        self._ensure_read_succeeded()
+        return self._backend.edit(
+            file_path, old_string, new_string, replace_all=replace_all
+        )
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """Asynchronously edit only after a successful archive read.
+
+        Args:
+            file_path: Backend path to edit.
+            old_string: Existing archive content.
+            new_string: Archive content with the new section appended.
+            replace_all: Whether to replace every match.
+
+        Returns:
+            The backend edit result.
+        """
+        self._ensure_read_succeeded()
+        return await self._backend.aedit(
+            file_path, old_string, new_string, replace_all=replace_all
+        )
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
@@ -256,14 +389,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         middleware = self
 
         # `force` is annotated `InjectedToolArg` so it is stripped from the
-        # schema the model sees: the model can only reach the normal, gated
-        # path. `/offload` seeds the tool call with `force=True` directly, and
-        # an injected value supplied on the call still reaches the function.
+        # schema the model sees. ToolNode also strips the seeded value before
+        # invocation, so forced mode is selected from the trusted runtime
+        # context after `_offload_rejection` validates the raw tool call.
         def sync_compact(
             runtime: ToolRuntime,
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
-            if not force:
+            del force
+            if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
                 return middleware._run_compact(runtime)
             return middleware._run_forced_compact(runtime)
 
@@ -271,7 +405,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             runtime: ToolRuntime,
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command:
-            if not force:
+            del force
+            if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
                 return await middleware._arun_compact(runtime)
             return await middleware._arun_forced_compact(runtime)
 
@@ -286,6 +421,18 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             coroutine=async_compact,
         )
 
+    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
+        """Resolve the backend with fail-closed archive append behavior.
+
+        Args:
+            runtime: Runtime used to resolve backend factories.
+
+        Returns:
+            A backend adapter that refuses writes after raised archive reads.
+        """
+        backend = super()._resolve_backend(runtime)
+        return cast("BackendProtocol", _ArchiveReadGuard(backend))
+
     def _summarization_for_runtime(
         self, runtime: ToolRuntime
     ) -> SummarizationMiddleware:
@@ -298,19 +445,18 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The startup summarizer when no runtime model is selected, otherwise
                 a model-aware summarizer using the same resolved backend.
         """
-        model_spec, model_params, profile_overrides, context_limit = (
-            _runtime_model_config(runtime)
-        )
-        if not model_spec:
+        config = _runtime_model_config(runtime)
+        if not config.model_spec:
             return self._summarization
 
         from deepagents_code.config import create_model
 
         model = create_model(
-            model_spec,
-            extra_kwargs=model_params or None,
-            profile_overrides=profile_overrides or None,
+            config.model_spec,
+            extra_kwargs=config.model_params or None,
+            profile_overrides=config.profile_overrides or None,
         ).model
+        context_limit = config.context_limit
         if context_limit is not None:
             profile = getattr(model, "profile", None)
             native = (
@@ -344,7 +490,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         flow changes; the closest-fitting SDK-side fix (a `force=` seam on
         `_run_compact`) is out of scope for this PR, which is confined to
         Deep Agents Code. `test_forced_compact_matches_sdk_summarizer_calls`
-        guards the summarizer-method call set against drift.
+        guards the summarizer-method call set against drift, but only by
+        *existence*: it catches a renamed or removed dependency, not a changed
+        signature nor a new step added to `_run_compact` (e.g. if the SDK later
+        moved inline-media offload into the gated path). Two known consequences
+        of that today: this fork does not call `_offload_inline_media` (only the
+        auto `wrap_model_call` path does), so inline base64 media in compacted
+        messages is not offloaded to referenceable paths and is dropped from the
+        XML archive -- pre-existing SDK tool-path behavior, not introduced here.
 
         Returns:
             The compaction state update or an error tool message.

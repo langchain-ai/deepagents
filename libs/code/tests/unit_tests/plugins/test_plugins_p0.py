@@ -596,9 +596,9 @@ async def test_plugin_manager_confirms_marketplace_removal(
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         screen = PluginManagerScreen()
-        assert len(screen._state.marketplaces) == 1
         app.push_screen(screen)
         await pilot.pause()
+        assert len(screen._state.marketplaces) == 1
         await pilot.press("right")
         await pilot.pause()
         await pilot.press("right")

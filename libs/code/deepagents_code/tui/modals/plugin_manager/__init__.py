@@ -48,6 +48,7 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _plugin_details_content,
     _plugin_options,
 )
+from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 
@@ -62,7 +63,6 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         Binding("shift+tab", "previous_tab", "Previous tab", show=False, priority=True),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
-        Binding("d", "remove_marketplace", "Remove marketplace", show=False),
     ]
 
     CSS_PATH = "plugin_manager.tcss"
@@ -90,7 +90,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._tab: PluginTab = "discover"
         self._mode: PluginManagerView = "list"
         self._mcp_server_info = mcp_server_info
-        self._state = _load_manager_state(mcp_server_info)
+        self._state = _ManagerState((), (), (), ())
         self._status: str | None = None
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
@@ -140,13 +140,18 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             )
             yield Static("", id="plugin-manager-help", classes="plugin-manager-help")
 
-    def on_mount(self) -> None:
-        """Apply initial render and focus."""
+    async def on_mount(self) -> None:
+        """Apply initial render, then load plugin state off the UI thread."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
+        self._status = "Loading plugins..."
         self._refresh_view()
+        await self._refresh_state()
+        if self._status == "Loading plugins...":
+            self._status = None
+            self._refresh_view()
 
     def _tabs_text(self) -> str:
         labels = {
@@ -312,7 +317,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if self._tab == "marketplaces":
             help_text.update(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} select {glyphs.bullet} "
-                f"Enter add/view {glyphs.bullet} D remove {glyphs.bullet} "
+                f"Enter add/view {glyphs.bullet} "
                 f"Left/Right tabs {glyphs.bullet} Esc close"
             )
         elif self._tab in {"discover", "installed"}:
@@ -342,8 +347,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             return _confirm_marketplace_removal_options(self._selected_marketplace)
         return [Option("Back to plugin list", id="details-back")]
 
-    def _refresh_state(self) -> None:
-        self._state = _load_manager_state(self._mcp_server_info)
+    async def _refresh_state(self) -> None:
+        self._state = await asyncio.to_thread(
+            _load_manager_state, self._mcp_server_info
+        )
         if self._selected_plugin is not None:
             refreshed = self._find_installed_plugin(self._selected_plugin.plugin_id)
             if refreshed is None:
@@ -467,7 +474,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             await self._install_selected_plugin()
             return
         if option_id == "action:toggle-enabled":
-            self._toggle_selected_plugin_enabled()
+            await self._toggle_selected_plugin_enabled()
             return
         if option_id == "action:uninstall":
             await self._uninstall_selected_plugin()
@@ -533,9 +540,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._selected_plugin = None
         self._status = f"Installed {row.plugin_id}. Run /reload-plugins to activate."
         self._error = None
-        self._refresh_state()
+        await self._refresh_state()
 
-    def _toggle_selected_plugin_enabled(self) -> None:
+    async def _toggle_selected_plugin_enabled(self) -> None:
         row = self._selected_plugin
         if row is None:
             return
@@ -551,7 +558,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._tab = "installed"
             self._selected_plugin = None
         self._error = None
-        self._refresh_state()
+        await self._refresh_state()
 
     async def _uninstall_selected_plugin(self) -> None:
         row = self._selected_plugin
@@ -563,7 +570,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         reload_hint = " Run /reload-plugins to unload." if row.enabled else ""
         self._status = f"Uninstalled {row.plugin_id}.{reload_hint}"
         self._error = None
-        self._refresh_state()
+        await self._refresh_state()
 
     async def _remove_selected_marketplace(self) -> None:
         row = self._selected_marketplace
@@ -581,7 +588,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if not removed:
             self._status = None
             self._error = f"Marketplace {row.name} is no longer configured."
-            self._refresh_state()
+            await self._refresh_state()
             return
         plugin_label = "plugin" if row.installed_count == 1 else "plugins"
         self._mode = "list"
@@ -592,7 +599,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             f"{row.installed_count} {plugin_label}."
         )
         self._error = None
-        self._refresh_state()
+        await self._refresh_state()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Add a marketplace from the source input."""
@@ -620,26 +627,4 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             f"({len(marketplace.plugins)} plugin(s))."
         )
         self._error = None
-        self._refresh_state()
-
-    def action_remove_marketplace(self) -> None:
-        """Remove the highlighted marketplace from the Marketplaces tab."""
-        if self._mode != "list" or self._tab != "marketplaces":
-            return
-        options = self.query_one("#plugin-manager-options", OptionList)
-        highlighted = options.highlighted
-        if highlighted is None:
-            return
-        option = options.get_option_at_index(highlighted)
-        option_id = option.id
-        if option_id is None or not option_id.startswith("marketplace:"):
-            return
-        name = option_id.removeprefix("marketplace:")
-        row = self._find_marketplace(name)
-        if row is None:
-            return
-        self._selected_marketplace = row
-        self._mode = "confirm_remove_marketplace"
-        self._status = None
-        self._error = None
-        self._refresh_view()
+        await self._refresh_state()

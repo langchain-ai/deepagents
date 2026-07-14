@@ -4,14 +4,24 @@ The **unified evals** CI job ([`.github/workflows/unified_evals.yml`](../../.git
 
 This document explains the *decisions* behind that battery: which benchmarks we chose, what capability each one stands in for, and why we run the specific tasks we do. For how to operate the workflow (inputs, sandboxes, Harbor setup), see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Why this, not the pytest eval suite
+## Running it
 
-The SDK also has a pytest eval suite ([`tests/evals/`](tests/evals/), catalogued in [`EVAL_CATALOG.md`](EVAL_CATALOG.md)). It measures a **different thing**, and the two are complementary:
+Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
 
-- **The pytest evals measure specific agent *behaviors* in controlled scenarios.** Does the agent pick the right tool for an intent, prefer `edit` over a full rewrite, read and write files in parallel, recover from a truncated read, keep a todo list, use memory, summarize faithfully. Each eval asserts one narrow, known-correct behavior, grouped into capability areas (file operations, retrieval, tool use, memory, conversation, summarization, …). The signal is **diagnostic** — a failure tells you *which behavior* broke.
-- **The unified evals measure end-to-end task *success* on external benchmarks.** Can the agent actually finish a sandboxed autonomous task, resolve a multi-turn support conversation, or answer a multi-hop question over a large corpus — scored `pass@k` / `avg@k` and rolled up into a **cross-model comparison**. The signal is **holistic and comparative** — how capable the agent is end-to-end, and how models rank against each other, on tasks authored outside this repo.
+- **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
+- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run. The radar chart is produced only when all three run.
+- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous** and **context** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
+- **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
+  - **pass@K** — fraction of tasks that passed at least once within K rollouts.
+  - **avg@K** — passing trials (capped at K per task) ÷ expected trials (tasks × K); missing rollouts count as failures, so a partial run can't inflate the score.
+- **`concurrency`** *(default `4`)* — tasks in flight per model.
+- **`shard_parallel`** *(default `10`)* — parallel shards per `(model × category)`, auto-clamped to stay within the per-model and global concurrency caps.
+- **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
+- **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
+- **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
+- **`harbor_package_override`** *(required when `categories` includes `conversation`)* — set to `harbor[langsmith] @ git+https://github.com/harbor-framework/harbor.git@a7667a073b42b34aa552034df950f963756f79de`. The pinned Harbor `0.16.1` does not forward task-environment MCP servers to the LangGraph agent, so the `tau3` harness fails without this compatible build. Runs that omit `conversation` can leave the input empty and use the pinned release.
 
-Reach for the unified evals when the question is *"how good is model X, versus Y, as a deep agent?"* — model selection, a capability scorecard, or tracking progress against the external Harbor / τ³ / Context-Bench ecosystem. Reach for the pytest suite when the question is *"does the SDK still do the right thing in this specific case?"* — catching behavioral regressions as the code changes. An agent can top the pytest behaviors and still stall on end-to-end tasks (or the reverse), which is exactly why both exist.
+The `prep` job writes a **run-configuration summary** — every input plus the values it derived (resolved model list, effective `shard_parallel` after clamping) — to the run summary, so a dispatch's exact settings are visible for debugging. The run then publishes one cross-model comparison — a leaderboard and (for full runs) a radar chart — to the same run summary.
 
 ## The three categories
 
@@ -74,24 +84,14 @@ Within those domains the subset is a *difficulty probe* — a behavior spread ac
 
 Within that spread, each task earns its slot by the *role* its measured difficulty gives it. Tiers are empirical, from a calibration run on **Opus 4.8** via the **bare** `create_deep_agent` harness (3 rollouts/task; `pass@bare` = fraction solved): floors (`pass@bare` ≥ 0.90), an intermittent middle (`0.10 < pass@bare < 0.90`) that carries the most signal, and discriminators (`pass@bare` ≤ 0.10). The set is **5 easy · 9 medium · 16 hard**, weighted toward discriminators for headroom: Context-Bench is **bimodal** on a strong model (a task is solved ~1.0 or failed ~0.0), so intermittent tasks are rare — all ~9 that exist are kept, and the rest are hard so the set doesn't saturate. `pass@bare` is a *floor* (the bare default harness); a stronger harness like `dcode` is expected to solve some of the hard tier. Each task's own `pass@bare` and query type is listed in the [dataset README](datasets/context-retrieval-evals/README.md).
 
-## Running it
+## Why this, not the pytest eval suite
 
-Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
+The SDK also has a pytest eval suite ([`tests/evals/`](tests/evals/), catalogued in [`EVAL_CATALOG.md`](EVAL_CATALOG.md)). It measures a **different thing**, and the two are complementary:
 
-- **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
-- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run. The radar chart is produced only when all three run.
-- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous** and **context** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
-- **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
-  - **pass@K** — fraction of tasks that passed at least once within K rollouts.
-  - **avg@K** — passing trials (capped at K per task) ÷ expected trials (tasks × K); missing rollouts count as failures, so a partial run can't inflate the score.
-- **`concurrency`** *(default `4`)* — tasks in flight per model.
-- **`shard_parallel`** *(default `10`)* — parallel shards per `(model × category)`, auto-clamped to stay within the per-model and global concurrency caps.
-- **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
-- **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
-- **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
-- **`harbor_package_override`** *(required when `categories` includes `conversation`)* — set to `harbor[langsmith] @ git+https://github.com/harbor-framework/harbor.git@a7667a073b42b34aa552034df950f963756f79de`. The pinned Harbor `0.16.1` does not forward task-environment MCP servers to the LangGraph agent, so the `tau3` harness fails without this compatible build. Runs that omit `conversation` can leave the input empty and use the pinned release.
+- **The pytest evals measure specific agent *behaviors* in controlled scenarios.** Does the agent pick the right tool for an intent, prefer `edit` over a full rewrite, read and write files in parallel, recover from a truncated read, keep a todo list, use memory, summarize faithfully. Each eval asserts one narrow, known-correct behavior, grouped into capability areas (file operations, retrieval, tool use, memory, conversation, summarization, …). The signal is **diagnostic** — a failure tells you *which behavior* broke.
+- **The unified evals measure end-to-end task *success* on external benchmarks.** Can the agent actually finish a sandboxed autonomous task, resolve a multi-turn support conversation, or answer a multi-hop question over a large corpus — scored `pass@k` / `avg@k` and rolled up into a **cross-model comparison**. The signal is **holistic and comparative** — how capable the agent is end-to-end, and how models rank against each other, on tasks authored outside this repo.
 
-The `prep` job writes a **run-configuration summary** — every input plus the values it derived (resolved model list, effective `shard_parallel` after clamping) — to the run summary, so a dispatch's exact settings are visible for debugging. The run then publishes one cross-model comparison — a leaderboard and (for full runs) a radar chart — to the same run summary.
+Reach for the unified evals when the question is *"how good is model X, versus Y, as a deep agent?"* — model selection, a capability scorecard, or tracking progress against the external Harbor / τ³ / Context-Bench ecosystem. Reach for the pytest suite when the question is *"does the SDK still do the right thing in this specific case?"* — catching behavioral regressions as the code changes. An agent can top the pytest behaviors and still stall on end-to-end tasks (or the reverse), which is exactly why both exist.
 
 ## Changing the battery
 

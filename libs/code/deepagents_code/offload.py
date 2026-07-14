@@ -126,42 +126,89 @@ def format_offload_limit(
 
 
 def _offload_fallback_root() -> Path:
-    """Return a writable root directory for offload when no backend is given.
+    """Return a writable base directory for offloaded conversation history.
 
     Prefers the persistent per-user `~/.deepagents` directory so offloaded
     history survives across sessions and is easy to locate; falls back to a
-    temp directory when the home directory cannot be resolved or written.
+    private temporary directory when the home directory cannot be resolved or
+    written. This is the live root for the local-mode `conversation_history`
+    backend (see `agent.py`), not merely a `perform_offload` fallback.
+
+    Archives always live in the `conversation_history` subdirectory of the
+    returned root (both `agent.py` and `_fallback_offload_backend` write there).
+    The `0o700` hardening therefore targets that subdirectory, never the shared
+    `~/.deepagents` config root -- which also houses `config.toml`, `hooks.json`,
+    `.env`, and `.state/`, whose permissions this must not disturb. A temporary
+    fallback root is created solely for offload, so the whole directory is
+    hardened in that case.
+
+    Note: a symlinked `~/.deepagents` is rejected by the `S_ISDIR` check below
+    (which uses `lstat`, deliberately not following the link) and falls through
+    to temporary storage; the persistence benefit is lost for that setup.
 
     Returns:
-        A directory path suitable for use as a writable backend root.
+        A directory whose `conversation_history` subdirectory is private and
+        writable.
     """
 
-    def _prepare(path: Path, *, private: bool = False) -> Path:
-        path.mkdir(mode=0o700 if private else 0o777, parents=True, exist_ok=True)
-        if private:
-            info = path.lstat()
-            if not stat.S_ISDIR(info.st_mode):
-                msg = f"Temporary offload path is not a directory: {path}"
-                raise OSError(msg)
-            getuid = getattr(os, "getuid", None)
-            if getuid is not None and info.st_uid != getuid():
-                msg = f"Temporary offload directory is owned by another user: {path}"
-                raise PermissionError(msg)
-            # `mkdir(mode=...)` does not tighten an existing directory. Archives
-            # contain conversation data, so the per-user fallback must remain
-            # inaccessible to other local accounts regardless of the process umask.
-            path.chmod(0o700)
+    def _harden(path: Path) -> None:
+        """Create `path` if needed and restrict it to the current user.
+
+        Only ever called on directories owned by offload (a fresh temp dir or
+        the dedicated `conversation_history` subdirectory), never on the shared
+        `~/.deepagents` config root.
+
+        Raises:
+            OSError: If the path exists but is not a directory, or the
+                directory cannot be created or its mode changed (e.g. a
+                read-only mount).
+            PermissionError: If the existing directory is owned by another
+                local user.
+        """
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            msg = f"Offload path is not a directory: {path}"
+            raise OSError(msg)
+        getuid = getattr(os, "getuid", None)
+        if getuid is not None and info.st_uid != getuid():
+            msg = f"Offload directory is owned by another user: {path}"
+            raise PermissionError(msg)
+        # `mkdir(mode=...)` does not tighten an existing directory. Archives
+        # contain conversation data, so the offload directory must remain
+        # inaccessible to other local accounts regardless of the process umask.
+        path.chmod(0o700)
+
+    def _probe_writable(path: Path) -> None:
         # Creating the directory is insufficient when it already exists on a
         # read-only mount. A temporary file proves archive writes can succeed.
         with tempfile.NamedTemporaryFile(dir=path, prefix=".write-test-"):
             pass
+
+    def _prepare_user_dir() -> Path:
+        base = Path.home() / ".deepagents"
+        # Ensure the shared config root exists and is usable, but leave its
+        # permissions untouched -- hardening belongs on the archive subdir only.
+        base.mkdir(parents=True, exist_ok=True)
+        archive_dir = base / "conversation_history"
+        _harden(archive_dir)
+        _probe_writable(archive_dir)
+        return base
+
+    def _prepare_temp_dir(path: Path) -> Path:
+        # A temp dir is created solely for offload and is not shared config, so
+        # hardening the whole directory (which protects its archive subdir) is
+        # both safe and necessary in world-writable temp locations.
+        _harden(path)
+        _probe_writable(path)
         return path
 
     try:
-        return _prepare(Path.home() / ".deepagents", private=True)
+        return _prepare_user_dir()
     except (RuntimeError, OSError):
-        logger.debug(
-            "User data directory is not writable; using temporary offload storage",
+        logger.warning(
+            "User data directory is not writable; falling back to temporary "
+            "offload storage, which may not persist across restarts",
             exc_info=True,
         )
         getuid = getattr(os, "getuid", None)
@@ -169,9 +216,9 @@ def _offload_fallback_root() -> Path:
         temp_root = Path(tempfile.gettempdir())
         path = temp_root / f"deepagents-{suffix}"
         try:
-            return _prepare(path, private=True)
+            return _prepare_temp_dir(path)
         except (OSError, RuntimeError):
-            logger.debug(
+            logger.warning(
                 "Per-user temporary offload directory is unavailable; creating "
                 "a private unique directory",
                 exc_info=True,
@@ -179,11 +226,15 @@ def _offload_fallback_root() -> Path:
             unique = Path(
                 tempfile.mkdtemp(prefix=f"deepagents-{suffix}-", dir=temp_root)
             )
-            return _prepare(unique, private=True)
+            return _prepare_temp_dir(unique)
 
 
 def _fallback_offload_backend() -> FilesystemBackend:
     """Build a writable local backend for `perform_offload` when none is given.
+
+    Only reached through `perform_offload`, the retained standalone offload API
+    (the interactive `/offload` path persists through the agent's own backend
+    instead -- see that function's docstring).
 
     `perform_offload` accepts an optional backend and falls back to this when a
     caller supplies none. A non-virtual `FilesystemBackend` would resolve the
@@ -301,6 +352,15 @@ async def perform_offload(
     backend: BackendProtocol | None,
 ) -> OffloadResult | OffloadThresholdNotMet:
     """Execute the offload workflow: summarize old messages and free context.
+
+    Retained standalone/library API. The interactive `/offload` command no
+    longer calls this -- it drives compaction server-side through the agent's
+    own `compact_conversation` tool (see `app.DeepAgentsApp._handle_offload`
+    and `offload_middleware.CLICompactionMiddleware`) so the archive lands in
+    the agent's backend and is readable via `read_file`. This helper (and its
+    `_fallback_offload_backend`/`offload_messages_to_backend` collaborators and
+    `OffloadResult`/`OffloadThresholdNotMet` results) remains available for
+    programmatic/headless callers that want a client-side offload.
 
     Args:
         messages: Current conversation messages from agent state.

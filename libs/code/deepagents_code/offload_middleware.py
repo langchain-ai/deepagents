@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
@@ -21,9 +21,12 @@ from langgraph.types import Command
 from deepagents_code._cli_context import CLIContextSchema
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from deepagents.backends.protocol import BACKEND_TYPES
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
+    from langgraph.prebuilt.tool_node import ToolCallRequest
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +88,22 @@ def _without_offload_seed(messages: list[Any], tool_call_id: str) -> list[Any]:
     ]
 
 
-def _runtime_model_config(
-    runtime: ToolRuntime,
-) -> tuple[str | None, dict[str, Any], dict[str, Any], int | None]:
+class RuntimeModelConfig(NamedTuple):
+    """Active model configuration read from a tool runtime.
+
+    A named tuple rather than a bare 4-tuple so the two structurally identical
+    `dict` slots (`model_params`, `profile_overrides`) cannot be silently
+    transposed at a construction or unpack site — a swap the type checker would
+    not catch.
+    """
+
+    model_spec: str | None
+    model_params: dict[str, Any]
+    profile_overrides: dict[str, Any]
+    context_limit: int | None
+
+
+def _runtime_model_config(runtime: ToolRuntime) -> RuntimeModelConfig:
     """Read the active model configuration from a tool runtime.
 
     Args:
@@ -99,24 +115,47 @@ def _runtime_model_config(
     """
     context = runtime.context
     if isinstance(context, CLIContextSchema):
-        return (
-            context.model,
-            context.model_params,
-            context.profile_overrides,
-            context.model_context_limit,
+        return RuntimeModelConfig(
+            model_spec=context.model,
+            model_params=context.model_params,
+            profile_overrides=context.profile_overrides,
+            context_limit=context.model_context_limit,
         )
     if isinstance(context, dict):
         model = context.get("model")
         params = context.get("model_params")
         profile_overrides = context.get("profile_overrides")
         context_limit = context.get("model_context_limit")
-        return (
-            model if isinstance(model, str) else None,
-            dict(params) if isinstance(params, dict) else {},
-            dict(profile_overrides) if isinstance(profile_overrides, dict) else {},
-            context_limit if isinstance(context_limit, int) else None,
+        return RuntimeModelConfig(
+            model_spec=model if isinstance(model, str) else None,
+            model_params=dict(params) if isinstance(params, dict) else {},
+            profile_overrides=(
+                dict(profile_overrides) if isinstance(profile_overrides, dict) else {}
+            ),
+            context_limit=context_limit if isinstance(context_limit, int) else None,
         )
-    return None, {}, {}, None
+    return RuntimeModelConfig(
+        model_spec=None, model_params={}, profile_overrides={}, context_limit=None
+    )
+
+
+def _offload_tool_call_id(context: object) -> str | None:
+    """Read the sole tool-call ID authorized for an `/offload` run.
+
+    Args:
+        context: Runtime context supplied to the agent graph.
+
+    Returns:
+        The authorized tool-call ID, or `None` during an ordinary agent run.
+    """
+    value = (
+        context.offload_tool_call_id
+        if isinstance(context, CLIContextSchema)
+        else context.get("offload_tool_call_id")
+        if isinstance(context, dict)
+        else None
+    )
+    return value if isinstance(value, str) and value else None
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
@@ -127,6 +166,86 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     which must compact whenever messages exceed the retention window even when
     the conversation has not reached the SDK's proactive eligibility gate.
     """
+
+    @staticmethod
+    def _offload_rejection(request: ToolCallRequest) -> ToolMessage | None:
+        """Reject every tool except the exact call seeded by `/offload`.
+
+        Args:
+            request: Tool call about to be executed by the graph's tool node.
+
+        Returns:
+            An error result for an unauthorized `/offload` tool call, otherwise
+                `None` for an ordinary run or the exact seeded compaction call.
+        """
+        expected_id = _offload_tool_call_id(request.runtime.context)
+        if expected_id is None:
+            return None
+
+        tool_call = request.tool_call
+        args = tool_call.get("args")
+        messages = request.state.get("messages", [])
+        last_message = messages[-1] if messages else None
+        last_message_id = (
+            last_message.get("id")
+            if isinstance(last_message, dict)
+            else getattr(last_message, "id", None)
+        )
+        is_seeded_compaction = (
+            tool_call.get("id") == expected_id
+            and tool_call.get("name") == "compact_conversation"
+            and isinstance(args, dict)
+            and args.get("force") is True
+            and last_message_id == _offload_seed_message_id(expected_id)
+        )
+        if is_seeded_compaction:
+            return None
+
+        return ToolMessage(
+            content=(
+                "Not executed: /offload only authorizes its seeded "
+                "conversation compaction call."
+            ),
+            name=tool_call.get("name"),
+            tool_call_id=tool_call["id"],
+            status="error",
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the `/offload` per-run tool guard before synchronous tools.
+
+        Args:
+            request: Tool call about to be executed.
+            handler: The remaining middleware/tool execution chain.
+
+        Returns:
+            The guarded rejection or the downstream tool result.
+        """
+        if (rejection := self._offload_rejection(request)) is not None:
+            return rejection
+        return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the `/offload` per-run tool guard before asynchronous tools.
+
+        Args:
+            request: Tool call about to be executed.
+            handler: The remaining middleware/tool execution chain.
+
+        Returns:
+            The guarded rejection or the downstream tool result.
+        """
+        if (rejection := self._offload_rejection(request)) is not None:
+            return rejection
+        return await handler(request)
 
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.
@@ -217,6 +336,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronously compact without the SDK eligibility gate.
+
+        This deliberately mirrors the SDK's own `_run_compact` step sequence
+        (apply prior event, determine cutoff, partition, summarize, offload,
+        build result) minus the eligibility gate. Because it is a fork rather
+        than an override, it must be kept in parity when the SDK's compaction
+        flow changes; the closest-fitting SDK-side fix (a `force=` seam on
+        `_run_compact`) is out of scope for this PR, which is confined to
+        Deep Agents Code. `test_forced_compact_matches_sdk_summarizer_calls`
+        guards the summarizer-method call set against drift.
 
         Returns:
             The compaction state update or an error tool message.

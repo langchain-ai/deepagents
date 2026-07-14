@@ -418,3 +418,73 @@ class TestRuntimeModelConfig:
 
     def test_unknown_shape(self) -> None:
         assert _runtime_model_config(self._runtime(object())) == (None, {}, {}, None)
+
+    def test_named_fields_disambiguate_the_two_dict_slots(self) -> None:
+        """The two `dict` slots are addressable by name, not just position.
+
+        `model_params` and `profile_overrides` are structurally identical, so a
+        positional swap would be invisible; named-field access pins each to the
+        right source value.
+        """
+        ctx = CLIContextSchema(
+            model="p:m",
+            model_params={"temperature": 0},
+            profile_overrides={"max_input_tokens": 99},
+            model_context_limit=7,
+        )
+        config = _runtime_model_config(self._runtime(ctx))
+        assert config.model_params == {"temperature": 0}
+        assert config.profile_overrides == {"max_input_tokens": 99}
+        assert config.context_limit == 7
+
+
+class TestSdkContractGuards:
+    """Guard the SDK seams the forced-compaction fork depends on.
+
+    `CLICompactionMiddleware` forks the SDK's gated compaction flow and keys
+    failure detection on a shared message prefix. These tests fail loudly in CI
+    if a coordinated SDK bump renames a depended-on private method or changes
+    the failure wording, instead of the fork silently drifting out of parity.
+    """
+
+    def test_forced_compact_matches_sdk_summarizer_calls(self) -> None:
+        """Every SDK method the fork invokes must still exist."""
+        from deepagents.middleware.summarization import (
+            SummarizationMiddleware,
+            SummarizationToolMiddleware,
+        )
+
+        # Called on `self._summarization` (a SummarizationMiddleware).
+        for name in (
+            "_apply_event_to_messages",
+            "_determine_cutoff_index",
+            "_partition_messages",
+            "_create_summary",
+            "_acreate_summary",
+            "_offload_to_backend",
+            "_aoffload_to_backend",
+        ):
+            assert callable(getattr(SummarizationMiddleware, name, None)), name
+
+        # Called on the tool-middleware subclass itself.
+        for name in (
+            "_resolve_backend",
+            "_build_compact_result",
+            "_nothing_to_compact",
+        ):
+            assert callable(getattr(SummarizationToolMiddleware, name, None)), name
+
+    def test_failure_prefix_matches_sdk_failure_message(self) -> None:
+        """Dcode's prefix must match the SDK's own compaction-failure wording.
+
+        `/offload` detects failures from either path by this prefix, so the
+        SDK's `_compact_error` message must keep starting with it.
+        """
+        from deepagents.middleware.summarization import SummarizationToolMiddleware
+
+        command = SummarizationToolMiddleware._compact_error(
+            "call-1", RuntimeError("boom")
+        )
+        assert command.update is not None
+        (message,) = command.update["messages"]
+        assert message.content.startswith(COMPACTION_FAILURE_PREFIX)

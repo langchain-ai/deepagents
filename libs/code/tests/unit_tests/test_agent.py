@@ -346,6 +346,33 @@ def test_cli_context_field_parity() -> None:
     assert typed_dict_keys == dataclass_keys
 
 
+def test_get_context_preserves_compaction_fields_from_dict() -> None:
+    """`_get_context` must carry the compaction fields across the dict boundary.
+
+    On the RemoteGraph path the run context arrives as a dict and
+    `_get_context` reconstructs `CLIContextSchema` field-by-field. The field
+    parity test only guards the *declarations*; this guards the coercion, so
+    `profile_overrides`/`model_context_limit` (which `/offload` reads via the
+    compaction middleware) are not silently dropped on that path.
+    """
+    from deepagents_code.configurable_model import _get_context
+
+    ctx = {
+        "model": "anthropic:claude-haiku-4-5-20251001",
+        "model_params": {"temperature": 0.5},
+        "profile_overrides": {"max_input_tokens": 12345},
+        "model_context_limit": 4096,
+    }
+    request = cast("Any", SimpleNamespace(runtime=SimpleNamespace(context=ctx)))
+
+    resolved = _get_context(request)
+
+    assert resolved is not None
+    assert resolved.profile_overrides == {"max_input_tokens": 12345}
+    assert resolved.model_context_limit == 4096
+    assert resolved.model_params == {"temperature": 0.5}
+
+
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:
     """Agent display names with spaces must become valid message names."""
     assert _sanitize_agent_message_name("my agent") == "my_agent"

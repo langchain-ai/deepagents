@@ -287,6 +287,19 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     return discarded
 
 
+_OFFLOAD_WEDGE_WARNING = (
+    "Offload failed and the conversation may be left in an inconsistent state "
+    "(a compaction request could not be cleaned up). If your next message "
+    "errors, start a new thread."
+)
+"""Shown when a failed `/offload` could not remove its unanswered seed.
+
+A dangling `compact_conversation` tool call the model API later rejects would
+otherwise wedge the thread with only a log warning; surfacing this tells the
+user why an unrelated next turn might fail and how to recover.
+"""
+
+
 def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     """Return the absolute cutoff index of a `_summarization_event`.
 
@@ -11625,9 +11638,8 @@ class DeepAgentsApp(App):
                 )
             except Exception as stream_error:
                 # A server graph can checkpoint the tool-node update before a
-                # provider failure in the trailing model call reaches this
-                # stream. Reconcile the durable event before reporting the
-                # whole operation as failed.
+                # later stream transport failure reaches this client. Reconcile
+                # the durable event before reporting the operation as failed.
                 logger.warning(
                     "Offload stream failed; checking for committed compaction state",
                     exc_info=True,
@@ -11639,9 +11651,10 @@ class DeepAgentsApp(App):
                         "Failed to reconcile state after offload stream error",
                         exc_info=True,
                     )
-                    await self._remove_unanswered_offload_seed(
+                    if not await self._remove_unanswered_offload_seed(
                         config, seed_tool_call_id
-                    )
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
                 if _summarization_cutoff(reconciled_event) <= prior_cutoff:
@@ -11649,9 +11662,10 @@ class DeepAgentsApp(App):
                     # never answered. Remove it before re-raising so a failed
                     # `/offload` cannot wedge the thread with a dangling
                     # `tool_use` that the model API rejects on the next turn.
-                    await self._remove_unanswered_offload_seed(
+                    if not await self._remove_unanswered_offload_seed(
                         config, seed_tool_call_id
-                    )
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise
             else:
                 if tool_error is not None:
@@ -11676,9 +11690,18 @@ class DeepAgentsApp(App):
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
-                # `force=True` bypasses the eligibility gate, so the only no-op
-                # left is "cutoff == 0": nothing older than the retention window
-                # to summarize.
+                # A no-op still commits the synthetic assistant seed and its
+                # tool result. Restore the exact pre-run conversation so an
+                # operation reported as doing nothing truly changes nothing.
+                await self._remove_offload_artifacts(config, current_messages)
+                # `force=True` bypasses the eligibility gate, so this branch is
+                # reached when there is nothing older than the retention window
+                # to summarize (effective cutoff 0). It also absorbs the
+                # degenerate chained case where only the prior summary would be
+                # re-summarized (effective cutoff 1 -> new_cutoff == prior_cutoff
+                # via `_compute_state_cutoff`): a fresh event may commit but the
+                # absolute cutoff does not advance, so "nothing to offload" is
+                # the correct, if conservative, report.
                 await self._mount_message(
                     AppMessage(
                         "Nothing to offload \u2014 the conversation is already "
@@ -11692,15 +11715,6 @@ class DeepAgentsApp(App):
                 if isinstance(new_event, dict)
                 else getattr(new_event, "file_path", None)
             )
-            if not archive_path:
-                await self._mount_message(
-                    ErrorMessage(
-                        "Warning: conversation history could not be saved to "
-                        "storage. Older messages will not be recoverable. "
-                        "Check logs for details."
-                    )
-                )
-
             # Recompute the post-offload size from the ORIGINAL pre-seed
             # messages plus the new event. `_effective_conversation` yields
             # `[summary, *before_messages[new_cutoff:]]` — the compacted
@@ -11709,6 +11723,13 @@ class DeepAgentsApp(App):
             # land in `new_state["messages"]` at/after `new_cutoff`. Counting
             # `before_messages` keeps this token figure consistent with the
             # message counts below and avoids understating the reduction.
+            #
+            # This is a client-side approximation for the status bar and is
+            # deliberately not the persisted `_context_tokens` (refreshed from
+            # the trailing turn's real provider usage, which includes
+            # system/tool overhead and the machinery messages). The two can
+            # differ, and if the trailing turn failed `_context_tokens` keeps
+            # its pre-offload value.
             tokens_after = count_tokens_approximately(
                 _effective_conversation(before_messages, new_event)
             )
@@ -11725,15 +11746,30 @@ class DeepAgentsApp(App):
 
             before = format_token_count(tokens_before)
             after = format_token_count(tokens_after)
-            await self._mount_message(
-                AppMessage(
-                    f"Offloaded {messages_offloaded} older messages, "
-                    f"freeing up context window space.\n"
-                    f"Context: {before} \u2192 {after} tokens "
-                    f"({pct}% decrease), "
-                    f"{messages_kept} messages kept.",
-                ),
+            stats_line = (
+                f"Context: {before} → {after} tokens "
+                f"({pct}% decrease), {messages_kept} messages kept."
             )
+            if archive_path:
+                await self._mount_message(
+                    AppMessage(
+                        f"Offloaded {messages_offloaded} older messages, "
+                        f"freeing up context window space.\n{stats_line}",
+                    ),
+                )
+            else:
+                # Context was still freed (the summary is in-context), but the
+                # archive write failed, so the offloaded messages are not
+                # recoverable. Surface both facts in one message rather than a
+                # separate warning immediately followed by a success line.
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Offloaded {messages_offloaded} older messages and "
+                        "freed context, but the conversation history could not "
+                        "be saved to storage, so those messages are not "
+                        f"recoverable. Check logs for details.\n{stats_line}",
+                    )
+                )
 
             self._on_tokens_update(tokens_after)
 
@@ -11755,15 +11791,12 @@ class DeepAgentsApp(App):
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
         executes the tool. The tool is HITL-gated, so `astream(None)` surfaces
-        an approval interrupt; only the `compact_conversation` interrupt is
-        approved here (this is an explicit user-initiated `/offload`).
-
-        Compaction returns the graph to the model, so a trailing model turn
-        runs and may itself request gated tools. Those are NOT auto-approved —
-        approving tool calls the user never saw would be unsafe — they are
-        rejected so the run finishes cleanly with no side effects. The resume
-        drain loops until no interrupts remain (bounded, so a pathological
-        model that keeps requesting tools after rejection cannot spin forever).
+        an approval interrupt; only the first forced `compact_conversation`
+        request is approved here (this is an explicit user-initiated
+        `/offload`). The runtime context carries the seeded call ID so the
+        compaction middleware can reject every other tool independently of
+        HITL configuration, including tools requested by the trailing model
+        turn.
 
         A first-turn `Command(update=..., goto=...)` is intentionally avoided:
         the LangGraph API server rebuilds it with `goto=None` and crashes
@@ -11780,6 +11813,9 @@ class DeepAgentsApp(App):
             An error string when the tool reported a compaction failure, or
                 `None` when the run completed (whether it compacted or was a
                 no-op — the caller distinguishes those from persisted state).
+                Note the `None` return also covers the bounded-drain-exceeded
+                path, which has already mounted its own user-facing message
+                before returning.
         """
         import uuid
 
@@ -11827,13 +11863,14 @@ class DeepAgentsApp(App):
         # `None`, but the graph is built with `CLIContextSchema` at runtime.
         streaming_agent = cast("Any", agent)
 
+        seeded_compaction_approved = False
+
         def _decisions_for_interrupt(interrupt_obj: Any) -> list[Any]:  # noqa: ANN401
             """Approve the forced compaction; reject any other gated tool call.
 
-            The trailing model turn that runs after compaction can request its
-            own gated tools. Auto-approving those would execute actions the user
-            never saw, so only `compact_conversation` is approved; everything
-            else is rejected (safe — no side effects) so the run terminates.
+            HITL action requests do not expose tool-call IDs, so the seeded
+            request is identified by its exact forced arguments and approved
+            at most once. Any repeated compaction request fails closed.
 
             Args:
                 interrupt_obj: The interrupt surfaced by the HITL middleware.
@@ -11842,14 +11879,15 @@ class DeepAgentsApp(App):
                 One decision per `action_request`, in order, as the HITL
                     middleware requires.
             """
+            nonlocal seeded_compaction_approved
             value = getattr(interrupt_obj, "value", None)
             action_requests = (
                 value.get("action_requests") if isinstance(value, dict) else None
             )
             if not action_requests:
                 # Without an identifiable action, approving could execute a
-                # different gated tool requested by the trailing model turn.
-                # A singleton rejection safely answers the surfaced interrupt.
+                # different gated tool. A singleton rejection safely answers
+                # the surfaced interrupt.
                 return [
                     RejectDecision(
                         type="reject",
@@ -11862,8 +11900,16 @@ class DeepAgentsApp(App):
             decisions: list[Any] = []
             for req in action_requests:
                 name = req.get("name") if isinstance(req, dict) else None
-                if name == "compact_conversation":
+                args = req.get("args") if isinstance(req, dict) else None
+                is_seeded_request = (
+                    not seeded_compaction_approved
+                    and name == "compact_conversation"
+                    and isinstance(args, dict)
+                    and args.get("force") is True
+                )
+                if is_seeded_request:
                     decisions.append(ApproveDecision(type="approve"))
+                    seeded_compaction_approved = True
                 else:
                     decisions.append(
                         RejectDecision(
@@ -11902,6 +11948,7 @@ class DeepAgentsApp(App):
                     profile_overrides=self._profile_override or {},
                     model_context_limit=settings.model_context_limit,
                     thread_id=self._lc_thread_id,
+                    offload_tool_call_id=tool_call_id,
                 ),
                 durability="exit",
             ):
@@ -11923,8 +11970,8 @@ class DeepAgentsApp(App):
             return pending
 
         # Bound the resume loop: after compaction the model runs again, and a
-        # rejected tool call could in principle prompt another. This caps that
-        # so a misbehaving model cannot spin `/offload` indefinitely.
+        # rejected gated call could prompt another. The middleware blocks
+        # execution even when HITL is disabled; this bound handles HITL retries.
         max_resume_rounds = 10
         pending = await _drain(None)
         rounds = 0
@@ -11958,9 +12005,31 @@ class DeepAgentsApp(App):
 
         return tool_error
 
+    async def _remove_offload_artifacts(
+        self, config: RunnableConfig, messages: list[Any]
+    ) -> None:
+        """Remove messages appended by a no-op `/offload` graph run.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            messages: Messages appended after the pre-run state snapshot.
+        """
+        from langchain_core.messages import RemoveMessage
+
+        agent = self._agent
+        if agent is None:
+            return
+        removals = [
+            RemoveMessage(id=message_id)
+            for message in messages
+            if (message_id := _message_id(message)) is not None
+        ]
+        if removals:
+            await agent.aupdate_state(config, {"messages": removals}, as_node="model")
+
     async def _remove_unanswered_offload_seed(
         self, config: RunnableConfig, seed_tool_call_id: str
-    ) -> None:
+    ) -> bool:
         """Remove a committed `/offload` seed whose tool call was never answered.
 
         The seed `AIMessage` carrying the forced `compact_conversation` call is
@@ -11979,19 +12048,25 @@ class DeepAgentsApp(App):
         Args:
             config: Config with `configurable.thread_id`.
             seed_tool_call_id: The id of the seeded `compact_conversation` call.
+
+        Returns:
+            True if the thread is known to be free of a dangling seed (removed,
+                validly answered, or absent). False if a dangling seed may
+                remain because the state read or the removal write failed — the
+                caller should warn the user the thread may be inconsistent.
         """
         from langchain_core.messages import RemoveMessage
 
         agent = self._agent
         if agent is None or not self._lc_thread_id:
-            return
+            return True
         try:
             state = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:  # best-effort cleanup; keep the original error
             logger.warning(
                 "Could not read state to clean up offload seed", exc_info=True
             )
-            return
+            return False
 
         messages = state.get("messages", [])
         # An answering ToolMessage means the tool ran; the pair is valid.
@@ -11999,7 +12074,7 @@ class DeepAgentsApp(App):
             _is_tool_message(msg) and _message_tool_call_id(msg) == seed_tool_call_id
             for msg in messages
         ):
-            return
+            return True
 
         seed_id = next(
             (
@@ -12010,13 +12085,15 @@ class DeepAgentsApp(App):
             None,
         )
         if not seed_id:
-            return
+            return True
         try:
             await agent.aupdate_state(
                 config, {"messages": [RemoveMessage(id=seed_id)]}, as_node="model"
             )
         except Exception:  # best-effort cleanup; keep the original error
             logger.warning("Failed to remove dangling offload seed", exc_info=True)
+            return False
+        return True
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

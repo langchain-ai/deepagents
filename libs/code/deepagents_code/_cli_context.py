@@ -47,6 +47,8 @@ class CLIContextSchema:
 
     blocked_goal_retry_context: str | None = None
 
+    offload_tool_call_id: str | None = None
+
 
 class CLIContext(TypedDict, total=False):
     """Client-facing builder for the per-run graph context payload.
@@ -103,4 +105,11 @@ class CLIContext(TypedDict, total=False):
     This is intentionally carried in runtime context instead of the user
     message so it is not parsed as a file mention or checkpointed as human
     input.
+    """
+
+    offload_tool_call_id: str | None
+    """The sole tool-call ID authorized during a server-driven `/offload` run.
+
+    This is set by the client, not graph state, so model-generated calls cannot
+    grant themselves permission to execute during the hidden compaction turn.
     """

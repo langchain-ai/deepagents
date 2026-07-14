@@ -375,6 +375,41 @@ def test_grep_invalid_regex() -> None:
     assert "Invalid regex" in result.error
 
 
+def _grep_cap_backend() -> ContextHubBackend:
+    """Backend with three total matches across two files for cap tests."""
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="hit\nhit\n"),
+            "b.md": FileEntry(type="file", content="hit\n"),
+        }
+    )
+    return backend
+
+
+def test_grep_max_count_over_cap_truncates() -> None:
+    """More matches than `max_count` returns the cap flagged truncated."""
+    result = _grep_cap_backend().grep("hit", max_count=2)
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert result.truncated is True
+
+
+def test_grep_max_count_exact_cap_not_truncated() -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    result = _grep_cap_backend().grep("hit", max_count=3)
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
+
+
+def test_grep_max_count_none_returns_all() -> None:
+    """`max_count=None` returns every match, untruncated."""
+    result = _grep_cap_backend().grep("hit")
+    assert result.matches is not None
+    assert len(result.matches) == 3
+    assert result.truncated is False
+
+
 def test_glob_matches_pattern() -> None:
     backend, _ = _make_backend(
         **{

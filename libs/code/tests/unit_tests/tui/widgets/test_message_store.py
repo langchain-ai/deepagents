@@ -222,6 +222,7 @@ class TestMessageData:
         assert data.id.startswith("msg-")
         assert data.timestamp > 0
         assert data.tool_name is None
+        assert data.tool_duration is None
         assert data.is_streaming is False
         assert data.height_hint is None
 

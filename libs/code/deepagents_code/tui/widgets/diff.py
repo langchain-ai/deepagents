@@ -137,7 +137,7 @@ def _compose_diff_content(
             yield Static(
                 Content.assemble(
                     (f"{glyphs.box_vertical}{old_num:>{width}}", "dim"),
-                    f"  {content}",
+                    f" {content}",
                 ),
             )
             old_num += 1

@@ -522,3 +522,37 @@ class TestSliceReadResponse:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+
+class TestGrepMaxCount:
+    """`max_count` total-cap semantics for `grep_matches_from_files`.
+
+    Backs `StateBackend`/`StoreBackend`, which delegate their `grep` here.
+    """
+
+    @staticmethod
+    def _files() -> dict[str, Any]:
+        # Two files, three matching lines total.
+        return {
+            "/a.txt": {"content": "hit\nhit\n"},
+            "/b.txt": {"content": "hit\n"},
+        }
+
+    def test_over_cap_truncates(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=2)
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
+    def test_exact_cap_not_truncated(self) -> None:
+        """Exactly `max_count` matches with none dropped is reported complete."""
+        result = grep_matches_from_files(self._files(), "hit", "/", max_count=3)
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False
+
+    def test_no_cap_returns_all(self) -> None:
+        result = grep_matches_from_files(self._files(), "hit", "/")
+        assert result.matches is not None
+        assert len(result.matches) == 3
+        assert result.truncated is False

@@ -1,7 +1,7 @@
 """Tests for transient rubric grader transport retries."""
 
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -12,6 +12,19 @@ from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     _is_transient_grader_transport_error,
 )
+
+
+def _read_error() -> httpx.ReadError:
+    return httpx.ReadError(
+        "connection closed while reading",
+        request=httpx.Request("POST", "https://grader.test"),
+    )
+
+
+def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
+    """Build an exception whose type mimics an external library's error class."""
+    error_type = type(name, (Exception,), {"__module__": module})
+    return error_type(message)
 
 
 def _state() -> RubricState:
@@ -39,12 +52,38 @@ def _satisfied_result() -> dict[str, Any]:
 
 class TestTransientGraderTransportClassification:
     def test_read_error_is_transient(self) -> None:
-        error = httpx.ReadError(
-            "connection closed while reading",
-            request=httpx.Request("POST", "https://grader.test"),
+        assert _is_transient_grader_transport_error(_read_error()) is True
+
+    def test_remote_protocol_error_is_transient(self) -> None:
+        assert (
+            _is_transient_grader_transport_error(httpx.RemoteProtocolError("boom"))
+            is True
         )
 
+    def test_httpcore_read_error_is_transient(self) -> None:
+        # httpcore errors cannot be caught via a stable isinstance, so the
+        # classifier matches them by module/name; exercise that path directly.
+        error = _typed_error("httpcore", "ReadError")
+
         assert _is_transient_grader_transport_error(error) is True
+
+    def test_httpcore_remote_protocol_error_is_transient(self) -> None:
+        error = _typed_error("httpcore._exceptions", "RemoteProtocolError")
+
+        assert _is_transient_grader_transport_error(error) is True
+
+    def test_read_error_in_exception_group_is_transient(self) -> None:
+        group = ExceptionGroup(
+            "grading failed", [ValueError("unrelated"), _read_error()]
+        )
+
+        assert _is_transient_grader_transport_error(group) is True
+
+    def test_read_error_in_context_chain_is_transient(self) -> None:
+        wrapper = RuntimeError("grader request failed")
+        wrapper.__context__ = _read_error()
+
+        assert _is_transient_grader_transport_error(wrapper) is True
 
     def test_transfer_encoding_error_in_cause_chain_is_transient(self) -> None:
         error_type = type(
@@ -91,3 +130,38 @@ class TestReliableRubricMiddleware:
             await middleware._agrade(_state(), 0)
 
         grader.ainvoke.assert_awaited_once()
+
+    def test_sync_grade_retries_transient_transport_failure(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.invoke.side_effect = [_read_error(), _satisfied_result()]
+        middleware._grader = grader
+
+        result = middleware._grade(_state(), 0)
+
+        assert result.result == "satisfied"
+        assert grader.invoke.call_count == 2
+
+    async def test_second_transient_failure_propagates_async(self) -> None:
+        # The retry is bounded to one attempt: a second transient failure must
+        # surface so the base middleware can report it as a grader_error.
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = AsyncMock()
+        grader.ainvoke.side_effect = [_read_error(), _read_error()]
+        middleware._grader = grader
+
+        with pytest.raises(httpx.ReadError):
+            await middleware._agrade(_state(), 0)
+
+        assert grader.ainvoke.await_count == 2
+
+    def test_second_transient_failure_propagates_sync(self) -> None:
+        middleware = ReliableRubricMiddleware(model="fake-model")
+        grader = MagicMock()
+        grader.invoke.side_effect = [_read_error(), _read_error()]
+        middleware._grader = grader
+
+        with pytest.raises(httpx.ReadError):
+            middleware._grade(_state(), 0)
+
+        assert grader.invoke.call_count == 2

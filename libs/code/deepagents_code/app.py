@@ -2581,6 +2581,9 @@ class DeepAgentsApp(App):
         Reset on the next successful refresh so the warning is not repeated every
         turn while a transient read failure persists."""
 
+        self._completed_goal_migration_pending: bool = False
+        """Whether a completed legacy goal still needs checkpoint cleanup."""
+
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
 
@@ -8786,6 +8789,16 @@ class DeepAgentsApp(App):
             return False
         return True
 
+    async def _persist_completed_goal_migration(self) -> bool:
+        """Persist archival of a completed goal and retain retry state on failure.
+
+        Returns:
+            `True` when the completed-goal checkpoint cleanup was persisted.
+        """
+        persisted = await self._persist_goal_rubric_state()
+        self._completed_goal_migration_pending = not persisted
+        return persisted
+
     async def _mount_goal_rubric_result(
         self, message: str, *, persisted: bool, suppress_success: bool = False
     ) -> None:
@@ -8815,7 +8828,9 @@ class DeepAgentsApp(App):
         """Clear goal objective, status, note, and pending fields.
 
         Leaves the sticky and one-shot rubric untouched; used when a rubric is
-        being set directly (not via the goal workflow).
+        being set directly (not via the goal workflow). The `_completed_goal_*`
+        history trio is also intentionally preserved so a finished goal keeps
+        displaying as history after its active state is reset.
         """
         self._active_goal = None
         self._goal_status = None
@@ -8917,6 +8932,7 @@ class DeepAgentsApp(App):
 
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
         """Restore TUI-owned goal/rubric metadata from a thread payload."""
+        self._completed_goal_migration_pending = False
         completed_checkpoint = (
             payload.goal_objective is not None and payload.goal_status == "complete"
         )
@@ -8989,21 +9005,63 @@ class DeepAgentsApp(App):
         note: str,
         *,
         previous_status: str | None,
-    ) -> None:
-        """Mark a rubric-approved completion request complete."""
+    ) -> bool:
+        """Mark a rubric-approved completion request complete.
+
+        Returns:
+            `True` when archival was persisted, or `False` when it was rolled back.
+        """
+        active_goal = self._active_goal
+        goal_status = self._goal_status
+        goal_status_note = self._goal_status_note
+        active_rubric = self._active_rubric
+        completed_goal_objective = self._completed_goal_objective
+        completed_goal_rubric = self._completed_goal_rubric
+        completed_goal_status_note = self._completed_goal_status_note
+        pending_goal_completion_note = self._pending_goal_completion_note
+        pending_goal_objective = self._pending_goal_objective
+        pending_goal_rubric = self._pending_goal_rubric
+        next_rubric = self._next_rubric
+        last_consumed_next_rubric = self._last_consumed_next_rubric
+        last_consumed_next_previous_rubric = self._last_consumed_next_previous_rubric
+
         self._goal_status = "complete"
         self._goal_status_note = note
         self._pending_goal_completion_note = None
-        await self._announce_goal_status_transition(previous_status)
         self._archive_completed_goal()
         persisted = await self._persist_goal_rubric_state()
-        if not persisted:
-            await self._mount_message(
-                ErrorMessage(
-                    "Goal marked complete for this session, but it could not "
-                    "be saved to the thread."
-                )
+        if persisted:
+            if previous_status != "complete":
+                text = "Goal marked complete by the agent."
+                if note:
+                    text = f"{text}\n\n{note}"
+                await self._mount_message(AppMessage(text))
+            return True
+
+        # The checkpoint still contains the active goal and pending completion
+        # request. Restore that exact local state so the UI and next grading
+        # turn cannot diverge from it, and so a later sync can safely retry.
+        self._active_goal = active_goal
+        self._goal_status = goal_status
+        self._goal_status_note = goal_status_note
+        self._active_rubric = active_rubric
+        self._completed_goal_objective = completed_goal_objective
+        self._completed_goal_rubric = completed_goal_rubric
+        self._completed_goal_status_note = completed_goal_status_note
+        self._pending_goal_completion_note = pending_goal_completion_note or note
+        self._pending_goal_objective = pending_goal_objective
+        self._pending_goal_rubric = pending_goal_rubric
+        self._next_rubric = next_rubric
+        self._last_consumed_next_rubric = last_consumed_next_rubric
+        self._last_consumed_next_previous_rubric = last_consumed_next_previous_rubric
+        self._sync_status_rubric()
+        await self._mount_message(
+            ErrorMessage(
+                "Goal completion could not be saved, so the goal remains active "
+                "and its completion request is still pending for retry."
             )
+        )
+        return False
 
     async def _clear_pending_goal_completion(self, message: str) -> None:
         """Clear a completion request that did not become complete."""
@@ -9031,7 +9089,7 @@ class DeepAgentsApp(App):
                 ErrorMessage(
                     "Acceptance-criteria grading failed because of a grader or "
                     "infrastructure error. The goal remains active, and its completion "
-                    "request is still pending for a safe grading retry."
+                    "request is still pending; it will be re-graded on your next turn."
                 )
             )
             return False
@@ -9055,11 +9113,10 @@ class DeepAgentsApp(App):
             return False
 
         if self._session_state is not None and self._session_state.auto_approve:
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         action_requests = [
             {
@@ -9086,17 +9143,15 @@ class DeepAgentsApp(App):
         decision_type = decision.get("type") if isinstance(decision, dict) else None
         if decision_type == "auto_approve_all":
             await self._on_auto_approve_enabled()
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
         if decision_type == "approve":
-            await self._commit_pending_goal_completion(
+            return await self._commit_pending_goal_completion(
                 note,
                 previous_status=previous_status,
             )
-            return True
 
         reject_message = decision.get("message") if isinstance(decision, dict) else None
         if isinstance(reject_message, str) and reject_message.strip():
@@ -9127,6 +9182,7 @@ class DeepAgentsApp(App):
             or self._pending_goal_completion_note
             or self._pending_goal_objective
             or self._pending_goal_rubric
+            or self._completed_goal_migration_pending
             or self._last_consumed_next_rubric is not None
             or self._last_consumed_next_previous_rubric is not None
         ):
@@ -9177,6 +9233,7 @@ class DeepAgentsApp(App):
                 payload.pending_goal_rubric,
             )
         ):
+            self._completed_goal_migration_pending = False
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
             return
@@ -9207,7 +9264,9 @@ class DeepAgentsApp(App):
             )
             if not completion_committed:
                 await self._announce_goal_status_transition(previous_status)
-        if one_shot_rubric_consumed or completed_checkpoint:
+        if completed_checkpoint:
+            await self._persist_completed_goal_migration()
+        elif one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
         await self._remount_pending_goal_rubric_review()
         self._last_consumed_next_rubric = None
@@ -9612,10 +9671,16 @@ class DeepAgentsApp(App):
         self._active_goal = objective
         self._goal_status = "active"
         self._goal_status_note = None
+        self._pending_goal_completion_note = None
         self._active_rubric = rubric
         self._next_rubric = None
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
+        # A newly accepted goal supersedes any prior completed-goal history so it
+        # is not persisted (hidden) alongside the new active goal.
+        self._completed_goal_objective = None
+        self._completed_goal_rubric = None
+        self._completed_goal_status_note = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
         await self._mount_message(
@@ -11102,6 +11167,17 @@ class DeepAgentsApp(App):
 
         # Check if agent is available
         if self._agent and self._ui_adapter and self._session_state:
+            if self._completed_goal_migration_pending:
+                persisted = await self._persist_completed_goal_migration()
+                if not persisted:
+                    await self._mount_message(
+                        ErrorMessage(
+                            "This message was not sent because cleanup of the "
+                            "completed goal still could not be saved safely. "
+                            "Please retry."
+                        )
+                    )
+                    return
             self._agent_running = True
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
@@ -11936,7 +12012,7 @@ class DeepAgentsApp(App):
             )
             self._restore_goal_rubric_state(payload)
             if payload.goal_objective and payload.goal_status == "complete":
-                await self._persist_goal_rubric_state()
+                await self._persist_completed_goal_migration()
 
             # Adopt the resumed thread's model (session-only) so the session
             # continues on the model it was last using, not the global default.

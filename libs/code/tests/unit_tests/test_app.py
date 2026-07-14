@@ -6021,6 +6021,7 @@ class TestGoalCommand:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._pending_goal_completion_note = "evidence for the previous goal"
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
             request = AsyncMock(
@@ -6039,6 +6040,7 @@ class TestGoalCommand:
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_completion_note is None
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
@@ -6538,6 +6540,95 @@ class TestGoalCommand:
             assert "Status:\ncomplete" in rendered
             assert "Completion note:\nall acceptance tests pass" in rendered
 
+    async def test_failed_completion_persistence_restores_retryable_goal(self) -> None:
+        """A failed archival write must leave local state aligned for retry."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            app._pending_goal_completion_note = "all acceptance tests pass"
+
+            committed = await app._resolve_pending_goal_completion(
+                rubric_status="satisfied",
+                previous_status="active",
+            )
+            await pilot.pause()
+
+            assert committed is False
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "active"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_completion_note == "all acceptance tests pass"
+            assert app._completed_goal_objective is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked complete by the agent." not in rendered
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "goal remains active" in errors
+            assert "completion request is still pending" in errors
+
+    async def test_failed_completed_goal_migration_retries_before_next_turn(
+        self,
+    ) -> None:
+        """Unsafe legacy cleanup should block a turn until persistence succeeds."""
+        updater = SimpleNamespace(
+            aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+        )
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                rubric="- tests pass",
+                goal_objective="add refresh tokens",
+                goal_status="complete",
+                goal_rubric="- tests pass",
+                goal_status_note="all acceptance tests pass",
+            )
+
+            await app._load_thread_history(
+                thread_id="thread-1",
+                preloaded_payload=payload,
+            )
+
+            assert app._completed_goal_migration_pending is True
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._completed_goal_objective == "add refresh tokens"
+
+            with patch.object(app, "run_worker") as run_worker:
+                await app._send_to_agent("start another task")
+                await pilot.pause()
+
+            assert updater.aupdate_state.await_count == 2
+            run_worker.assert_not_called()
+            assert app._completed_goal_migration_pending is True
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "This message was not sent" in errors
+            assert "Please retry" in errors
+
+            updater.aupdate_state.side_effect = None
+            with patch.object(
+                app, "run_worker", return_value=MagicMock()
+            ) as run_worker:
+                await app._send_to_agent("start another task")
+
+            run_worker.assert_called_once()
+            task = run_worker.call_args.args[0]
+            task.close()
+            app._agent_running = False
+            assert updater.aupdate_state.await_count == 3
+            assert app._completed_goal_migration_pending is False
+
     async def test_grader_error_keeps_goal_and_completion_request_active(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
         async with app.run_test() as pilot:
@@ -6592,6 +6683,60 @@ class TestGoalCommand:
             )
             assert "Goal marked complete" not in rendered
             assert "Commands:\n/goal clear\n/goal show" in rendered
+
+    async def test_grader_failed_keeps_goal_active_with_evaluation_error(self) -> None:
+        """A `failed` grade must keep the goal active and blame the grader."""
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            app._pending_goal_completion_note = "tests pass"
+
+            committed = await app._resolve_pending_goal_completion(
+                rubric_status="failed",
+                previous_status="active",
+            )
+            await pilot.pause()
+
+            assert committed is False
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "active"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_completion_note is None
+            assert app._completed_goal_objective is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "grader could not evaluate the rubric" in rendered
+            assert "The goal remains active." in rendered
+            assert "Goal marked complete" not in rendered
+            assert "rubric was not satisfied" not in rendered
+
+    async def test_restore_reads_archived_completed_goal_fields(self) -> None:
+        """Restoring an already-archived checkpoint reads the completed trio."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective=None,
+                goal_status=None,
+                completed_goal_objective="add refresh tokens",
+                completed_goal_rubric="- tests pass",
+                completed_goal_status_note="all acceptance tests pass",
+            )
+
+            app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal is None
+            assert app._goal_status is None
+            assert app._active_rubric is None
+            assert app._pending_goal_completion_note is None
+            assert app._completed_goal_objective == "add refresh tokens"
+            assert app._completed_goal_rubric == "- tests pass"
+            assert app._completed_goal_status_note == "all acceptance tests pass"
 
     async def test_sync_goal_completion_rejects_when_rubric_not_satisfied(
         self,

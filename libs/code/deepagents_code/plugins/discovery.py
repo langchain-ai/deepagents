@@ -37,6 +37,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
+    plugin_data_dir,
     remove_marketplace_record,
     save_marketplace_record,
     set_plugin_enabled,
@@ -152,6 +153,8 @@ def set_installed_plugin_enabled(plugin_id: str, *, enabled: bool) -> None:
     """
     _require_installed_plugin(plugin_id)
     set_plugin_enabled(plugin_id, enabled)
+    if enabled:
+        ensure_plugin_data_dir(plugin_id)
 
 
 def uninstall_plugin(plugin_id: str) -> None:
@@ -235,6 +238,7 @@ def install_plugin(plugin_id: str) -> PluginInstance:
     )
 
     set_plugin_enabled(plugin_id, True)
+    ensure_plugin_data_dir(plugin_id)
 
     instance, warnings = _plugin_from_install_path(
         plugin_id=plugin_id,
@@ -289,7 +293,7 @@ def _plugin_from_install_path(
         marketplace=marketplace_name,
         version=manifest.version if manifest is not None else None,
         root=root,
-        data_dir=ensure_plugin_data_dir(plugin_id),
+        data_dir=plugin_data_dir(plugin_id),
         manifest=manifest,
         inventory=inventory,
     )

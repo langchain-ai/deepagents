@@ -44,9 +44,21 @@ def plugin_storage_root() -> Path:
     return DEFAULT_CONFIG_DIR / "plugins"
 
 
+def plugin_data_dir(plugin_id: str) -> Path:
+    """Return the data directory path for a plugin id without creating it.
+
+    Args:
+        plugin_id: Plugin id in `{name}@{marketplace}` form.
+
+    Returns:
+        Path under the plugin storage root's `data/` directory.
+    """
+    return plugin_storage_root() / "data" / sanitize_plugin_id(plugin_id)
+
+
 def ensure_plugin_data_dir(plugin_id: str) -> Path:
     """Return the lazily-created data directory for a plugin id."""
-    data_dir = plugin_storage_root() / "data" / sanitize_plugin_id(plugin_id)
+    data_dir = plugin_data_dir(plugin_id)
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 

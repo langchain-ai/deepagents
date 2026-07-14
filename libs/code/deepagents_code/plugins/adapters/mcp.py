@@ -156,6 +156,17 @@ def plugin_mcp_configs(
     """
     configs: list[JsonObject] = []
     for plugin in plugins:
+        # Create the writable data dir when MCP configs need it. Discovery itself
+        # only computes the path so it stays safe for blockbuster-guarded callers.
+        try:
+            plugin.data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "Could not create plugin data dir for %s: %s",
+                plugin.plugin_id,
+                plugin.data_dir,
+                exc_info=True,
+            )
         servers: JsonObject = {}
         for path in plugin.inventory.mcp_files:
             if path.suffix in {".mcpb", ".dxt"}:

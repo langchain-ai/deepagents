@@ -373,7 +373,11 @@ class TestServerGraph:
     async def test_build_tools_passes_project_dir_to_plugin_mcp_discovery(
         self,
     ) -> None:
-        """Server graph discovery should preserve project substitution context."""
+        """Server graph discovery should preserve project substitution context.
+
+        Plugin discovery must run off the event loop: it creates per-plugin
+        data dirs via `os.mkdir`, which `blockbuster` rejects on the loop.
+        """
         fetch_tool = object()
         thread_tool = object()
         project_root = object()
@@ -383,6 +387,15 @@ class TestServerGraph:
         )
         plugin_configs = ({"mcpServers": {"plugin": {}}},)
         resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+        loop_thread_id = threading.get_ident()
+        discover_thread_ids: list[int] = []
+
+        def discover_plugin_mcp_side_effect(
+            *, project_dir: object | None = None
+        ) -> tuple[dict[str, object], ...]:
+            discover_thread_ids.append(threading.get_ident())
+            assert project_dir is project_root
+            return plugin_configs
 
         config_module = _module_with_attrs(
             "deepagents_code.config",
@@ -415,7 +428,7 @@ class TestServerGraph:
             ),
             patch(
                 "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
-                return_value=plugin_configs,
+                side_effect=discover_plugin_mcp_side_effect,
             ) as discover_plugin_mcp,
         ):
             module = _import_fresh_server_graph()
@@ -427,6 +440,8 @@ class TestServerGraph:
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info == []
         discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
+        assert discover_thread_ids
+        assert discover_thread_ids[0] != loop_thread_id
         resolve_mcp_tools.assert_awaited_once()
         await_args = resolve_mcp_tools.await_args
         assert await_args is not None

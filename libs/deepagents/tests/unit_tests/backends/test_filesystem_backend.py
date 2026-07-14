@@ -3,6 +3,8 @@ import io
 import json
 import logging
 import shutil
+import subprocess
+import sys
 import threading
 import warnings
 from collections.abc import Iterator
@@ -1120,6 +1122,43 @@ def test_ripgrep_nonzero_returncode_discards_partial_output(
     assert result.error is None
     assert result.matches is not None
     assert len(result.matches) == 2
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_drains_stderr_while_streaming_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large stderr output cannot block ripgrep before it emits a match."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 1)
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+    child_code = f"import sys\nsys.stderr.write('x' * 1_000_000)\nsys.stderr.flush()\nsys.stdout.write({frame!r})\nsys.stdout.flush()\n"
+    real_popen = subprocess.Popen
+
+    def noisy_popen(
+        _cmd: list[str],
+        *,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        cwd: str | None,
+    ) -> subprocess.Popen[str]:
+        assert text
+        return real_popen(
+            [sys.executable, "-c", child_code],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+            cwd=cwd,
+        )
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", noisy_popen)
+    # The fallback cannot manufacture the synthetic ripgrep match.
+    (tmp_path / "a.txt").write_text("different text\n")
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = backend.grep("hello", path=str(tmp_path))
+
+    assert result.truncated is False
+    assert result.matches == [{"path": str(tmp_path / "a.txt"), "line": 1, "text": "hello"}]
 
 
 def _rg_match_frame(path: str, line_number: int, text: str) -> str:

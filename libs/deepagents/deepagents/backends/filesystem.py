@@ -57,6 +57,12 @@ returns partial results before that outer net abandons the call; the ordering is
 guarded by `test_glob_backend_budget_below_middleware_deadline`.
 """
 
+_RIPGREP_STDERR_CAPTURE_LIMIT = 500
+"""Maximum stderr characters retained for ripgrep error diagnostics."""
+
+_RIPGREP_STDERR_READ_SIZE = 8192
+"""Number of stderr characters read per chunk while draining ripgrep."""
+
 
 @functools.cache
 def _resolve_ripgrep_path() -> str | None:
@@ -752,6 +758,14 @@ class FilesystemBackend(BackendProtocol):
             _resolve_ripgrep_path.cache_clear()
             return None, False
 
+        stderr_chunks: list[str] = []
+        stderr_thread = threading.Thread(
+            target=self._drain_ripgrep_stderr,
+            args=(proc, stderr_chunks),
+            daemon=True,
+        )
+        stderr_thread.start()
+
         results: dict[str, list[tuple[int, str]]] = {}
         base_resolved = base_full.resolve()
         total = 0
@@ -789,7 +803,11 @@ class FilesystemBackend(BackendProtocol):
                 total += 1
         finally:
             timer.cancel()
-            stderr = self._drain_and_reap(proc)
+            self._reap_ripgrep(proc)
+            stderr_thread.join()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            stderr = "".join(stderr_chunks)
 
         if timed_out.is_set():
             if results:
@@ -878,35 +896,29 @@ class FilesystemBackend(BackendProtocol):
         return virt, int(ln), lt
 
     @staticmethod
-    def _drain_and_reap(proc: "subprocess.Popen[str]") -> str:
-        """Read any remaining stderr, close pipes, and reap `proc`.
+    def _drain_ripgrep_stderr(proc: "subprocess.Popen[str]", chunks: list[str]) -> None:
+        """Drain ripgrep stderr while retaining bounded error diagnostics."""
+        remaining = _RIPGREP_STDERR_CAPTURE_LIMIT
+        try:
+            assert proc.stderr is not None  # noqa: S101  # `stderr=PIPE` guarantees a stream
+            while chunk := proc.stderr.read(_RIPGREP_STDERR_READ_SIZE):
+                if remaining > 0:
+                    captured = chunk[:remaining]
+                    chunks.append(captured)
+                    remaining -= len(captured)
+        except (OSError, ValueError):
+            logger.debug("Failed to read ripgrep stderr", exc_info=True)
 
-        Returns the captured stderr so callers can log hard-error diagnostics.
-        Reaping avoids leaking a zombie/handle after the stdout loop stops
-        (whether via EOF, the match cap, or the timeout watchdog).
-        """
-        # Close stdout first: on the cap path we stopped reading it, so a child
-        # still writing gets EPIPE and can exit. Draining stderr before that
-        # could otherwise block on a child wedged on a full stdout pipe.
+    @staticmethod
+    def _reap_ripgrep(proc: "subprocess.Popen[str]") -> None:
+        """Close stdout and reap ripgrep after EOF, termination, or timeout."""
         if proc.stdout is not None:
             proc.stdout.close()
-        stderr = ""
-        try:
-            if proc.stderr is not None:
-                stderr = proc.stderr.read() or ""
-        except (OSError, ValueError):
-            # Losing the stderr text only costs diagnostics, but log why so a
-            # missing hard-error message in the caller isn't a dead end.
-            logger.debug("Failed to read ripgrep stderr during cleanup", exc_info=True)
-            stderr = ""
-        if proc.stderr is not None:
-            proc.stderr.close()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-        return stderr
 
     def _python_search(  # noqa: C901, PLR0912, PLR0915
         self,

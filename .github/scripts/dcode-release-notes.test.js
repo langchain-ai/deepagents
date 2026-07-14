@@ -105,11 +105,13 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
     getByUsername: [],
     getCommit: [],
     getContent: [],
+    getRef: [],
     updateComment: [],
     updatePr: [],
     updateRef: [],
   };
   let livePr = structuredClone(pr);
+  let liveBranchHead = pr.head.sha;
   let getPrCount = 0;
   let listCommentsCount = 0;
   const github = {
@@ -164,6 +166,10 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
           calls.getCommit.push(params);
           return { data: { tree: { sha: 'tree-base' } } };
         },
+        getRef: async params => {
+          calls.getRef.push(params);
+          return { data: { object: { sha: liveBranchHead } } };
+        },
         createBlob: async params => {
           calls.createBlob.push(params);
           return { data: { sha: 'blob-curated' } };
@@ -178,6 +184,7 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
         },
         updateRef: async params => {
           calls.updateRef.push(params);
+          liveBranchHead = params.sha;
           livePr.head.sha = params.sha;
           return { data: { object: { sha: params.sha } } };
         },
@@ -191,7 +198,13 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
     },
     paginate: async (method, params) => (await method(params)).data,
   };
-  return { github, calls, getPr: () => livePr, setPr: value => { livePr = structuredClone(value); } };
+  return {
+    github,
+    calls,
+    getPr: () => livePr,
+    setBranchHead: value => { liveBranchHead = value; },
+    setPr: value => { livePr = structuredClone(value); },
+  };
 }
 
 function tempWorkspace(section = GENERATED_SECTION) {
@@ -724,6 +737,203 @@ test('required check fails when curated draft or applied metadata is missing', a
   assert.match(core.failed, /draft and then/);
 });
 
+test('required check waits for the first automatic draft before validating', async () => {
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 1,
+    sleep: async () => {},
+  });
+  assert.equal(result.status, 'unapplied');
+  assert.match(core.failed, /Review the curated release-note draft.*apply/);
+  assert.ok(core.infos.some(message => /Waiting for the automatic/.test(message)));
+  assert.equal(run.calls.getContent.length, 1);
+});
+
+test('required check honors draft and bypass state added while polling', async () => {
+  for (const exemption of ['draft', 'bypass']) {
+    const run = makeGithub({
+      comments: [],
+      onGetPr: ({ count, pr }) => {
+        if (count !== 2) return;
+        if (exemption === 'draft') pr.draft = true;
+        else pr.labels = [{ name: releaseNotes.BYPASS_LABEL }];
+      },
+    });
+    const core = makeCore();
+    const result = await releaseNotes.checkCuratedState({
+      github: run.github,
+      context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+      core,
+      number: 123,
+      ...BOT_AUTH,
+      initialDraftPollAttempts: 1,
+      sleep: async () => {},
+    });
+    assert.equal(result.status, exemption === 'draft' ? 'draft' : 'bypassed');
+    assert.equal(core.failed, null);
+    assert.equal(run.calls.getContent.length, 0);
+  }
+});
+
+test('required check requires a fresh draft when heading or release ancestry drifted', async () => {
+  const changedHeading = HEADING.replace('(2026-07-09)', '(2026-07-10)');
+  const headingSection = GENERATED_SECTION.replace(HEADING, changedHeading);
+  const headingPr = releasePr({
+    body: `Release notes preview\n\n${headingSection}\n_End release notes preview._\n`,
+  });
+  const headingFiles = new Map([[HEAD, changelog(headingSection)]]);
+  const headingRun = makeGithub({ pr: headingPr, comments: [overrideComment()], files: headingFiles });
+  const headingCore = makeCore();
+  const headingResult = await releaseNotes.checkCuratedState({
+    github: headingRun.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: headingCore,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(headingResult.status, 'missing');
+  assert.match(headingCore.failed, /draft and then.*apply/);
+
+  const rewrittenHead = 'd'.repeat(40);
+  const rewrittenPr = releasePr({ head: { ...releasePr().head, sha: rewrittenHead } });
+  const rewrittenFiles = new Map([[rewrittenHead, changelog()]]);
+  const rewrittenRun = makeGithub({
+    pr: rewrittenPr,
+    comments: [overrideComment()],
+    files: rewrittenFiles,
+    comparison: 'diverged',
+  });
+  const rewrittenCore = makeCore();
+  const rewrittenResult = await releaseNotes.checkCuratedState({
+    github: rewrittenRun.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: rewrittenCore,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(rewrittenResult.status, 'missing');
+  assert.match(rewrittenCore.failed, /draft and then.*apply/);
+});
+
+test('required check gives up and reports missing when the draft never arrives', async () => {
+  let sleeps = 0;
+  const run = makeGithub({ comments: [] }); // override never appears
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 3,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then/);
+  assert.equal(sleeps, 3); // polled to exhaustion, not short-circuited early
+  assert.equal(run.calls.getContent.length, 0); // returned before fetching the changelog
+});
+
+test('required check keeps polling through a transient read failure', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) throw new Error('transient 502');
+      if (count === 3) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'unapplied'); // recovered after the blip; draft found
+  assert.equal(sleeps, 2); // one failed poll, one that found the draft
+  assert.ok(core.warnings.some(message => /Polling for the curated release-note draft failed/.test(message)));
+});
+
+test('required check retries when the initial comments read fails', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 1) throw new Error('transient 502');
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'unapplied');
+  assert.equal(sleeps, 1);
+  assert.ok(core.warnings.some(message => /Reading comments before polling.*transient 502/.test(message)));
+});
+
+test('required check stops polling as soon as the draft appears', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(sleeps, 1); // exited on the first successful poll, not all 5 attempts
+});
+
+test('required check does not poll when polling is disabled', async () => {
+  const run = makeGithub({ comments: [] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 0,
+    sleep: async () => { throw new Error('sleep must not be called when polling is disabled'); },
+  });
+  assert.equal(result.status, 'missing');
+  assert.ok(!core.infos.some(message => /Waiting for the automatic/.test(message)));
+});
+
 test('required check fails when applied metadata references an older override', async () => {
   const pr = releasePr({
     head: { ...releasePr().head, sha: APPLIED_HEAD },
@@ -838,6 +1048,61 @@ test('apply uses an exact-parent commit and a non-force branch update', async t 
   assert.ok(parsed, 'applied comment should parse');
   assert.equal(parsed.metadata['override-content-hash'], releaseNotes.sha256(CURATED_SECTION));
   assert.equal(parsed.metadata['applied-head'], APPLIED_HEAD);
+  assert.deepEqual(calls.getRef, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${releaseNotes.RELEASE_BRANCH}`,
+  }]);
+});
+
+test('apply publishes when the PR head has not caught up with the release branch', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  run.setPr(releasePr());
+
+  await releaseNotes.publishAppliedState({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+  });
+
+  assert.equal(run.calls.updatePr.length, 1);
+  assert.equal(run.calls.createComment.length, 1);
+});
+
+test('apply refuses a concurrent branch move before publishing metadata', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  run.setBranchHead('f'.repeat(40));
+
+  await assert.rejects(
+    releaseNotes.publishAppliedState({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+    }),
+    /Release branch changed while apply was preparing/,
+  );
+  assert.equal(run.calls.updatePr.length, 0);
+  assert.equal(run.calls.createComment.length, 0);
 });
 
 test('apply refuses a concurrent branch move before updating the ref', async t => {

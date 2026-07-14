@@ -627,12 +627,12 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
 }
 
-async function validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead }) {
+async function validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead, checkPrHead = true }) {
   const pr = await getPr(github, owner, repo, state.number);
   if (
     !isReleasePr(pr) ||
     pr.draft ||
-    pr.head.sha !== expectedHead ||
+    (checkPrHead && pr.head.sha !== expectedHead) ||
     exactSha256(pr.body ?? '') !== state.originalBodyHash
   ) {
     throw new Error('Release PR changed while apply was preparing; refusing to publish stale metadata');
@@ -648,6 +648,13 @@ async function validateApplySnapshot({ github, owner, repo, state, login, id, ex
     throw new Error('Curated release-note draft changed while apply was preparing; re-run apply');
   }
   return comments;
+}
+
+async function validateReleaseBranchHead({ github, owner, repo, expectedHead }) {
+  const ref = await github.rest.git.getRef({ owner, repo, ref: `heads/${RELEASE_BRANCH}` });
+  if (ref.data.object.sha !== expectedHead) {
+    throw new Error('Release branch changed while apply was preparing; refusing to publish stale metadata');
+  }
 }
 
 async function createApplyCommit({ github, owner, repo, stateFile, changelogFile, appSlug, login, id }) {
@@ -697,7 +704,17 @@ async function createApplyCommit({ github, owner, repo, stateFile, changelogFile
 async function publishAppliedState({ github, owner, repo, stateFile, appliedHead, appSlug, login, id }) {
   await authenticatedBot(github, appSlug, login, id);
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-  const comments = await validateApplySnapshot({ github, owner, repo, state, login, id, expectedHead: appliedHead });
+  const comments = await validateApplySnapshot({
+    github,
+    owner,
+    repo,
+    state,
+    login,
+    id,
+    expectedHead: appliedHead,
+    checkPrHead: false,
+  });
+  await validateReleaseBranchHead({ github, owner, repo, expectedHead: appliedHead });
   await github.rest.pulls.update({ owner, repo, pull_number: state.number, body: state.body });
   return upsertOwnMarkedComment({
     github,
@@ -768,7 +785,18 @@ function warnUnparsableMarkedComments({ core, comments, login, id }) {
   }
 }
 
-async function checkCuratedState({ github, context, core, number, login, id, expectedHead = null }) {
+async function checkCuratedState({
+  github,
+  context,
+  core,
+  number,
+  login,
+  id,
+  expectedHead = null,
+  initialDraftPollAttempts = 0,
+  initialDraftPollIntervalMs = 10_000,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+}) {
   const { owner, repo } = context.repo;
   const pr = await getPr(github, owner, repo, number);
   if (expectedHead !== null && pr.head.sha !== expectedHead) {
@@ -813,8 +841,41 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
     return { status: 'bypassed' };
   }
 
-  const comments = await listComments(github, owner, repo, number);
-  const override = latestOverride(comments, login, id, version);
+  let comments = await listComments(github, owner, repo, number);
+  let override = latestOverride(comments, login, id, version);
+  if (!override && initialDraftPollAttempts > 0) {
+    core.info('Waiting for the automatic curated release-note draft to be published');
+    for (let attempt = 0; attempt < initialDraftPollAttempts && !override; attempt += 1) {
+      await sleep(initialDraftPollIntervalMs);
+      // A transient read failure must not abort the wait the loop exists to
+      // provide: warn and keep polling. If reads never recover, `override` stays
+      // falsy and control falls through to the fail-closed `missing` return below.
+      try {
+        comments = await listComments(github, owner, repo, number);
+        override = latestOverride(comments, login, id, version);
+      } catch (error) {
+        core.warning(`Polling for the curated release-note draft failed (attempt ${attempt + 1}/${initialDraftPollAttempts}); retrying: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    // Polling can outlive the state that made curated notes mandatory. Honor a
+    // newly-drafted PR or bypass label, while still failing closed for any other
+    // snapshot change before using comments collected during the wait.
+    const live = await getPr(github, owner, repo, number);
+    const liveLabels = labelNames(live);
+    if (live.draft) {
+      core.info('Draft release PR; curated release notes are not required yet');
+      return { status: 'draft' };
+    }
+    if (liveLabels.includes(BYPASS_LABEL)) {
+      core.warning(`Bypassing curated release notes because ${BYPASS_LABEL} is set`);
+      return { status: 'bypassed' };
+    }
+    if (prSnapshotChanged(live)) {
+      core.setFailed('The release PR changed while waiting for the automatic curated release-note draft');
+      return { status: 'changed' };
+    }
+  }
   const applied = latestApplied(comments, login, id, version);
   warnUnparsableMarkedComments({ core, comments, login, id });
   if (!override) {
@@ -825,11 +886,17 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha);
   const currentSection = extractVersionSection(changelog, version);
   const currentFingerprint = changelogFingerprint(currentSection);
+  // True when the generated changelog has drifted from the curated override.
+  // Reused for the new-entries warning below and for the missing-vs-unapplied
+  // split in the !applied branch.
+  const generatedEntriesChanged =
+    currentSection !== override.section &&
+    currentFingerprint !== override.metadata['changelog-fingerprint'];
   // Warn (idempotently; deduped by head+fingerprint) when the changelog has moved
-  // away from the curated override. Same condition and args at both call sites: the
-  // pre-applied miss and the post-applied mismatch below.
+  // away from the curated override. Invoked at both the pre-applied miss and the
+  // post-applied mismatch below.
   const maybeWarnNewEntries = async () => {
-    if (currentSection !== override.section && currentFingerprint !== override.metadata['changelog-fingerprint']) {
+    if (generatedEntriesChanged) {
       // Best-effort courtesy comment: if posting it fails (rate limit, transient
       // 5xx) it must not throw, or the raw API error would replace the specific,
       // actionable gate reason (the setFailed message / failures list) reported
@@ -843,8 +910,27 @@ async function checkCuratedState({ github, context, core, number, login, id, exp
   };
   if (!applied) {
     await maybeWarnNewEntries();
-    core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
-    return { status: 'missing' };
+    let draftMetadataChanged = false;
+    if (!generatedEntriesChanged) {
+      const currentHeading = currentSection.split('\n')[0];
+      const overrideHeading = override.section.split('\n')[0];
+      const headingChanged =
+        sha256(overrideHeading) !== override.metadata['release-heading-hash'] ||
+        (currentSection !== override.section && overrideHeading !== currentHeading);
+      draftMetadataChanged = headingChanged || !(await isDescendant(
+        github,
+        owner,
+        repo,
+        override.metadata['release-pr-head'],
+        pr.head.sha,
+      ));
+    }
+    if (generatedEntriesChanged || draftMetadataChanged) {
+      core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
+      return { status: 'missing' };
+    }
+    core.setFailed(`Review the curated release-note draft, then run ${COMMAND_MENTION} apply before merging`);
+    return { status: 'unapplied' };
   }
 
   const appliedMetadata = applied.metadata;

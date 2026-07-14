@@ -713,6 +713,25 @@ class TestLoadMcpConfigLenient:
         path = write_config({"mcpServers": {"fs": {"args": []}}})
         assert load_mcp_config_lenient(Path(path)) is None
 
+    def test_lenient_removes_disabled_server_before_validation(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """A disabled name is dropped before validation.
+
+        A bad disabled entry can neither block loading nor surface to the caller.
+        """
+        path = write_config(
+            {
+                "mcpServers": {
+                    "keep": {"command": "echo", "args": ["ok"]},
+                    # Invalid (no command/url): would fail validation if kept.
+                    "drop": {"args": []},
+                }
+            }
+        )
+        config = load_mcp_config_lenient(Path(path), disabled_servers={"drop"})
+        assert config == {"mcpServers": {"keep": {"command": "echo", "args": ["ok"]}}}
+
     def test_merged_loader_validates_after_precedence_resolution(
         self, tmp_path: Path
     ) -> None:
@@ -743,6 +762,21 @@ class TestLoadMcpConfigLenient:
                 "repaired": {"command": "echo", "args": ["higher"]},
             }
         }
+
+    def test_merged_loader_drops_only_malformed_winning_entry(
+        self, tmp_path: Path
+    ) -> None:
+        """One malformed project entry cannot hide a valid sibling file."""
+        lower = tmp_path / "lower.json"
+        lower.write_text(
+            json.dumps({"mcpServers": {"docs": {"type": "http", "url": "https://x"}}})
+        )
+        higher = tmp_path / "higher.json"
+        higher.write_text(json.dumps({"mcpServers": {"broken": {"args": []}}}))
+
+        config = load_merged_mcp_configs_lenient([lower, higher])
+
+        assert config == {"mcpServers": {"docs": {"type": "http", "url": "https://x"}}}
 
     def test_saved_approval_rematches_through_runtime_merge_path(
         self, tmp_path: Path
@@ -4386,6 +4420,29 @@ class TestSelectiveProjectMcpTrust:
         )
         user_config = tmp_path / "config.toml"
         user_config.write_text('[mcp]\ndisabled_project_servers = ["blocked"]\n')
+
+        merged = await self._resolve_merged(
+            project, monkeypatch, user_config=user_config, trust_project_mcp=True
+        )
+
+        assert merged is not None
+        assert set(merged["mcpServers"]) == {"docs"}
+
+    async def test_invalid_server_dropped_without_blocking_trusted_sibling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whole-config trust retains valid servers beside a malformed entry."""
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(
+            project,
+            {
+                "docs": self._stdio(),
+                "broken": {"args": []},
+            },
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text("[mcp]\n")
 
         merged = await self._resolve_merged(
             project, monkeypatch, user_config=user_config, trust_project_mcp=True

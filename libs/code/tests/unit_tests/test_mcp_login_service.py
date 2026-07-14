@@ -138,6 +138,28 @@ class TestResolveMcpConfigAutodiscover:
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
         assert result.untrusted_project_paths == (project_cfg,)
 
+    def test_session_trust_allows_project_server_for_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An in-app login inherits the session's allow-once decision."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert result.used_paths == (project_cfg,)
+        assert set(result.config["mcpServers"]) == {"notion"}
+
     def test_legacy_enabled_project_servers_is_surfaced(
         self,
         tmp_path: Path,
@@ -200,7 +222,7 @@ class TestResolveMcpConfigAutodiscover:
             "deepagents_code.mcp_tools.discover_mcp_configs",
             return_value=[project_cfg],
         ):
-            result = resolve_mcp_config(None)
+            result = resolve_mcp_config(None, trust_project_mcp=True)
 
         assert isinstance(result, ConfigResolutionError)
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
@@ -476,6 +498,28 @@ class TestResolveMcpConfigAutodiscover:
         assert set(result.config["mcpServers"]) == {"slack"}
         assert result.untrusted_project_paths == (project_cfg,)
 
+    def test_invalid_session_trusted_sibling_does_not_block_login(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed entry cannot hide a valid allow-once login target."""
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"},'
+            '"broken":{"args":[]}}}'
+        )
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[project_cfg],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert set(result.config["mcpServers"]) == {"notion"}
+
     def test_symlinked_project_config_uses_containing_project_scope(
         self,
         tmp_path: Path,
@@ -538,6 +582,36 @@ class TestResolveMcpConfigAutodiscover:
         assert isinstance(result, ConfigResolutionError)
         assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
         assert result.untrusted_project_paths == (project_cfg,)
+
+    def test_partial_success_reports_load_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dropped unparseable config is carried on a successful resolution.
+
+        Regression: `load_errors` was only used to build the no-usable-config
+        message, so a broken file was silently discarded whenever another config
+        still loaded.
+        """
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+        good = tmp_path / "good" / ".mcp.json"
+        good.parent.mkdir()
+        good.write_text(
+            '{"mcpServers":{"notion":{"type":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json")
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_configs",
+            return_value=[good, broken],
+        ):
+            result = resolve_mcp_config(None, trust_project_mcp=True)
+
+        assert isinstance(result, ConfigResolution)
+        assert set(result.config["mcpServers"]) == {"notion"}
+        assert broken in [path for path, _error in result.load_errors]
 
 
 class TestSelectServer:
@@ -683,3 +757,28 @@ class TestFormatLegacyEnvIgnoredNotice:
         notice = format_legacy_env_ignored_notice(True)
         assert "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS" in notice
         assert "DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS" in notice
+
+
+class TestFormatLoadErrorsNotice:
+    """`format_load_errors_notice` rendering."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No load errors means no notice."""
+        from deepagents_code.mcp_login_service import format_load_errors_notice
+
+        assert format_load_errors_notice(()) == ""
+
+    def test_one_line_per_failure(self) -> None:
+        """Each `(path, error)` pair becomes its own reported line."""
+        from deepagents_code.mcp_login_service import format_load_errors_notice
+
+        notice = format_load_errors_notice(
+            (
+                (Path("/a/.mcp.json"), "bad json"),
+                (Path("/b/.mcp.json"), "missing command"),
+            )
+        )
+        lines = notice.splitlines()
+        assert len(lines) == 2
+        assert "Ignoring MCP config /a/.mcp.json: bad json" in lines[0]
+        assert "Ignoring MCP config /b/.mcp.json: missing command" in lines[1]

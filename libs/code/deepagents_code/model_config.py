@@ -3363,6 +3363,13 @@ class McpProjectServerApproval:
     never the raw constructor, so every path normalizes the root and computes the
     fingerprint identically. `order=True` exists only so `sorted()` yields
     deterministic TOML output.
+
+    The raw constructor only enforces non-emptiness (`__post_init__`), not that
+    `project_root` is normalized or that `fingerprint` is a real digest. A
+    hand-built instance is therefore *safe but useless*: with a mismatched root
+    or fingerprint it simply never equals a `create`/`from_toml` peer, so it
+    fails closed (nothing is trusted) rather than granting stray access — but it
+    also won't authorize anything. Always go through the factories.
     """
 
     project_root: str

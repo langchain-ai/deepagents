@@ -137,6 +137,17 @@ class ConfigResolution:
     success because the requested server may load while a corrupt sibling
     approval does not. See `ConfigResolutionError.malformed_approvals`."""
 
+    load_errors: tuple[tuple[Path, str], ...] = ()
+    """Discovered config files that failed to parse or validate, `(path, error)`.
+
+    Surfaced even on success: a broken project `.mcp.json` (or an approved
+    server that fails per-server validation) can be dropped while another
+    discovered config still loads. Reporting it here matches
+    `resolve_and_load_mcp_tools`, which emits the same failures as
+    `status="error"` rows rather than swallowing them. On `ConfigResolutionError`
+    the reason is already embedded in `message`, so the field lives only here.
+    See `format_load_errors_notice`."""
+
     def __post_init__(self) -> None:
         """Enforce the non-empty `used_paths` invariant.
 
@@ -179,21 +190,25 @@ class ServerSelection:
 
 def resolve_mcp_config(
     config_path: str | None,
+    *,
+    trust_project_mcp: bool | None = None,
 ) -> ConfigResolution | ConfigResolutionError:
     """Resolve an MCP config dict for login without printing anything.
 
     Args:
         config_path: Explicit `--mcp-config` path, or `None` for auto-discovery.
+        trust_project_mcp: Whether project configs have whole-config trust for
+            the current session. Persisted approvals and denials still apply.
 
     Returns:
         A `ConfigResolution` on success, or a `ConfigResolutionError`
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
         _resolve_project_config_base,
-        _validate_mcp_config_servers,
         classify_discovered_configs,
         discover_mcp_configs,
         filter_trusted_project_servers,
@@ -262,6 +277,7 @@ def resolve_mcp_config(
             # trust-list loader has already discarded scoped approvals while
             # retaining names explicitly enabled through the readable env var.
             policy_error = trust_lists.read_error
+        config_trusted = trust_project_mcp is True and not trust_lists.load_failed
         loaded_projects: list[tuple[Path, dict[str, Any]]] = []
         for path in project_paths:
             loaded, error = _load_mcp_config_top_level_with_error(path)
@@ -283,19 +299,23 @@ def resolve_mcp_config(
                 )
                 kept.update(
                     filter_trusted_project_servers(
-                        {name: server}, trust_lists, project_root=project_root
+                        {name: server},
+                        trust_lists,
+                        project_root=project_root,
+                        config_trusted=config_trusted,
                     )
                 )
 
             if kept:
                 filtered = {**project_config, "mcpServers": kept}
-                try:
-                    _validate_mcp_config_servers(filtered)
-                except (ValueError, TypeError, RuntimeError) as exc:
-                    load_errors.append((loaded_projects[-1][0], str(exc)))
-                else:
-                    configs.append(filtered)
-                    kept_sources = {server_sources[name] for name in kept}
+                valid, errors = _drop_invalid_mcp_config_servers(filtered)
+                for name, error in errors.items():
+                    load_errors.append((server_sources[name], error))
+                if valid["mcpServers"]:
+                    configs.append(valid)
+                    kept_sources = {
+                        server_sources[name] for name in valid["mcpServers"]
+                    }
                     used_paths.extend(
                         path for path in project_paths if path in kept_sources
                     )
@@ -335,6 +355,7 @@ def resolve_mcp_config(
         policy_error=policy_error,
         legacy_env_ignored=legacy_env_ignored,
         malformed_approvals=malformed_approvals,
+        load_errors=tuple(load_errors),
     )
 
 
@@ -495,6 +516,29 @@ def format_malformed_approvals_notice(count: int) -> str:
     )
 
 
+def format_load_errors_notice(load_errors: tuple[tuple[Path, str], ...]) -> str:
+    """Build the CLI-style hint for discovered configs that failed to load.
+
+    Surfaced by `dcode mcp login` on a partially successful resolution so a
+    broken `.mcp.json` is reported instead of silently dropped while another
+    config still loads — matching the runtime loader
+    (`resolve_and_load_mcp_tools`), which emits the same failures as error rows.
+
+    Args:
+        load_errors: `(path, error)` pairs for configs that failed to parse or
+            validate.
+
+    Returns:
+        A user-facing string, one line per failure. Empty when `load_errors` is
+            empty.
+    """
+    if not load_errors:
+        return ""
+    return "\n".join(
+        f"Ignoring MCP config {path}: {error}" for path, error in load_errors
+    )
+
+
 __all__ = [
     "ConfigErrorKind",
     "ConfigResolution",
@@ -502,6 +546,7 @@ __all__ = [
     "ServerSelection",
     "format_legacy_env_ignored_notice",
     "format_legacy_ignored_notice",
+    "format_load_errors_notice",
     "format_malformed_approvals_notice",
     "format_policy_error_notice",
     "format_untrusted_project_notice",

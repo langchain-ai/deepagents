@@ -21551,7 +21551,7 @@ class TestMCPLoginCommand:
             app._mcp_preload_kwargs = {
                 "mcp_config_path": None,
                 "no_mcp": False,
-                "trust_project_mcp": None,
+                "trust_project_mcp": True,
             }
             with patch(
                 "deepagents_code.mcp_login_service.resolve_mcp_config",
@@ -21559,9 +21559,10 @@ class TestMCPLoginCommand:
                     kind=ConfigErrorKind.NO_CONFIG_FOUND,
                     message="No MCP config file found",
                 ),
-            ):
+            ) as resolve:
                 await app._run_mcp_login_worker("notion")
                 await pilot.pause()
+            resolve.assert_called_once_with(None, trust_project_mcp=True)
             assert any(
                 "No MCP config file found" in str(w._content)
                 for w in app.query(ErrorMessage)

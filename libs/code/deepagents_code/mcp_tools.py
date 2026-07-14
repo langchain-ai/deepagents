@@ -806,6 +806,34 @@ def _validate_mcp_config_servers(config: dict[str, Any]) -> None:
         _validate_server_config(server_name, server_config)
 
 
+def _drop_invalid_mcp_config_servers(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Remove invalid server entries without rejecting valid siblings.
+
+    Callers use this only after config precedence has been resolved, so an
+    invalid winning definition is dropped instead of revealing a shadowed
+    lower-precedence server with the same name.
+
+    Args:
+        config: Parsed MCP config with a top-level `mcpServers` mapping.
+
+    Returns:
+        A tuple containing the config with only valid servers and a mapping of
+            dropped server names to validation errors.
+    """
+    valid: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for name, server in config["mcpServers"].items():
+        try:
+            _validate_server_config(name, server)
+        except (ValueError, TypeError, RuntimeError) as exc:
+            errors[name] = str(exc)
+        else:
+            valid[name] = server
+    return {**config, "mcpServers": valid}, errors
+
+
 def _load_mcp_config_top_level(config_path: Path) -> dict[str, Any]:
     """Load an MCP config file and validate only its top-level shape.
 
@@ -1041,7 +1069,11 @@ class ProjectServerSummary(NamedTuple):
     """MCP server name."""
 
     kind: str
-    """Transport kind: `"stdio"`, `"http"`, `"sse"`, or `"unknown"`."""
+    """Transport kind from `_resolve_server_type`: `"stdio"`, `"http"`, or
+    `"sse"` for a well-formed entry. Typed `str`, not a `Literal`, because these
+    summaries are built from *unvalidated* configs (the trust prompt inspects
+    raw merged servers before validation), so a malformed `type`/`transport`
+    passes through verbatim (e.g. `{"type": "banana"}` yields `"banana"`)."""
 
     summary: str
     """`"<command> <args>"` for stdio entries, the URL for remote entries."""
@@ -1181,8 +1213,8 @@ def load_merged_mcp_configs_lenient(
         disabled_servers: Server names to remove before validation.
 
     Returns:
-        The merged, filtered config, or `None` when no config is usable or the
-            post-merge server definitions fail validation.
+        The merged, filtered config, or `None` when no config is usable. Invalid
+            winning server definitions are dropped without hiding valid siblings.
     """
     configs: list[dict[str, Any]] = []
     for path in config_paths:
@@ -1202,12 +1234,12 @@ def load_merged_mcp_configs_lenient(
             if name not in disabled_servers
         },
     }
-    try:
-        _validate_mcp_config_servers(filtered)
-    except (ValueError, TypeError, RuntimeError) as exc:
-        logger.warning("Skipping invalid merged MCP project config: %s", exc)
+    valid, errors = _drop_invalid_mcp_config_servers(filtered)
+    for name, error in errors.items():
+        logger.warning("Skipping invalid merged MCP server %r: %s", name, error)
+    if errors and not valid["mcpServers"]:
         return None
-    return filtered
+    return valid
 
 
 def load_mcp_config_with_error(
@@ -2520,19 +2552,16 @@ async def resolve_and_load_mcp_tools(
 
         if kept:
             filtered = {**project_config, "mcpServers": kept}
-            try:
-                _validate_mcp_config_servers(filtered)
-            except (ValueError, TypeError, RuntimeError) as exc:
+            valid, errors = _drop_invalid_mcp_config_servers(filtered)
+            for name, error in errors.items():
                 logger.warning(
-                    "Skipping invalid merged project MCP config after trust "
-                    "filtering; these trusted/allowlisted servers will not "
-                    "load: %s (%s)",
-                    ", ".join(kept),
-                    exc,
+                    "Skipping invalid trusted project MCP server %r: %s",
+                    name,
+                    error,
                 )
-                config_load_errors.append((loaded_project_configs[-1][0], str(exc)))
-            else:
-                configs.append(filtered)
+                config_load_errors.append((server_sources[name], error))
+            if valid["mcpServers"]:
+                configs.append(valid)
         elif not project_servers:
             # Nothing was trusted and no dict server produced a summary, so
             # every entry is malformed. Re-validate the merged config (no second

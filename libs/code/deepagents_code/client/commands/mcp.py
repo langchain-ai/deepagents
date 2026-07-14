@@ -114,6 +114,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigResolutionError,
         format_legacy_env_ignored_notice,
         format_legacy_ignored_notice,
+        format_load_errors_notice,
         format_malformed_approvals_notice,
         format_policy_error_notice,
         format_untrusted_project_notice,
@@ -154,6 +155,12 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     malformed_notice = format_malformed_approvals_notice(resolution.malformed_approvals)
     if malformed_notice:
         print(malformed_notice, file=sys.stderr)  # noqa: T201
+    # Report configs that failed to parse/validate but were dropped while
+    # another config still loaded — otherwise a broken .mcp.json is invisible on
+    # this surface (the runtime loader reports the same failures as error rows).
+    load_errors_notice = format_load_errors_notice(resolution.load_errors)
+    if load_errors_notice:
+        print(load_errors_notice, file=sys.stderr)  # noqa: T201
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -259,10 +266,13 @@ def run_mcp_config() -> int:
 
 
 def _print_resolution_error(error: ConfigResolutionError) -> None:
-    """Print the untrusted-paths and legacy-migration notices then the message.
+    """Print the trust/migration notices, then `error.message`.
 
-    Note: both notices are also surfaced independently for successful
-    resolutions in `run_mcp_login`.
+    Prints the untrusted-paths notice (suppressed when `policy_error` already
+    explains the drop), then the legacy-key, legacy-env, and malformed-approval
+    notices. Per-path load errors are not printed here because `error.message`
+    already embeds them for `NO_USABLE_CONFIG`. These notices are also surfaced
+    independently for successful resolutions in `run_mcp_login`.
     """
     from deepagents_code.mcp_login_service import (
         format_legacy_env_ignored_notice,

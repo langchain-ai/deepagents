@@ -17516,7 +17516,11 @@ class DeepAgentsApp(App):
         if self._mcp_preload_kwargs is None:
             return
         config_path = self._mcp_preload_kwargs.get("mcp_config_path")
-        resolution = resolve_mcp_config(config_path)
+        trust_project_mcp = self._mcp_preload_kwargs.get("trust_project_mcp")
+        resolution = resolve_mcp_config(
+            config_path,
+            trust_project_mcp=trust_project_mcp,
+        )
         if isinstance(resolution, ConfigResolutionError):
             await self._mount_message(
                 ErrorMessage(f"MCP login failed: {resolution.message}"),

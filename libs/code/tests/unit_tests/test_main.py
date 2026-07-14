@@ -3872,6 +3872,98 @@ class TestSelectProjectServersToPersist:
 
         assert result is _ProjectMcpTrustPromptOutcome.INTERRUPTED
 
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_eof_cancels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl+D (EOF) in the checkbox picker cancels rather than confirming."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _ProjectMcpTrustPromptOutcome,
+            _run_project_mcp_server_checkbox_picker,
+        )
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> list[str]:
+                raise EOFError
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_falls_back_when_app_run_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A runtime failure launching the checkbox UI falls back to text input."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> list[str]:
+                msg = "no tty"
+                raise RuntimeError(msg)
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        # None signals the caller to use the number-based text fallback rather
+        # than treating the failure as a trust decision.
+        assert result is None
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_falls_back_when_app_run_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A runtime failure launching the action picker falls back to text input."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_trust_action_picker
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> object:
+                raise OSError
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        result = _run_project_mcp_trust_action_picker(3, Console(stderr=True))
+
+        assert result is None
+
     def test_checkbox_selection_returns_selected_names(self) -> None:
         """The checkbox picker decides which prompted servers are remembered."""
         from rich.console import Console

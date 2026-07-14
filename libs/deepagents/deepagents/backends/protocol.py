@@ -182,31 +182,33 @@ class FileData(TypedDict):
 
 @dataclass
 class ReadResult:
-    """Result from backend read operations.
-
-    Attributes:
-        error: Error message on failure, None on success.
-        file_data: FileData dict on success, None on failure.
-        total_lines: Total number of source lines when the backend can determine it.
-        start_line: 1-indexed first source line returned in `file_data`.
-        end_line: 1-indexed last source line returned in `file_data`.
-        next_offset: 0-indexed offset for the next unread source line.
-    """
+    """Result from backend read operations."""
 
     error: str | None = None
+    """Error message on failure, `None` on success."""
+
     file_data: FileData | None = None
+    """File data on success, `None` on failure."""
+
     total_lines: int | None = None
+    """Total number of source lines when the backend can determine it."""
+
     start_line: int | None = None
+    """1-indexed first source line returned in `file_data`."""
+
     end_line: int | None = None
+    """1-indexed last source line returned in `file_data`."""
+
     next_offset: int | None = None
+    """0-indexed offset for the next unread source line."""
 
     def __post_init__(self) -> None:
         """Reject malformed pagination-field combinations at construction.
 
         The window fields are not independent: `start_line`/`end_line` are a
         pair, and neither `next_offset` nor `total_lines` describes anything
-        without the window it refers to. Failing loudly here keeps a buggy
-        backend from emitting a `next_offset` that would silently skip unshown
+        without the window it refers to. Fail loudly here to keep a backend
+        from emitting a `next_offset` that would silently skip unshown
         source lines once it reaches the middleware.
         """
         if (self.start_line is None) != (self.end_line is None):

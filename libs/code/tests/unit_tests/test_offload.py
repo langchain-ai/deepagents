@@ -538,9 +538,11 @@ class TestAgentRunningGuard:
             _setup_offload_app(app)
 
             running_during_offload: list[bool] = []
+            quiescent_during_offload: list[bool] = []
 
             def capture_running(**_kwargs: Any) -> OffloadResult:
                 running_during_offload.append(app._agent_running)
+                quiescent_during_offload.append(app._agent_quiescent.is_set())
                 return _make_offload_result()
 
             with patch(
@@ -553,8 +555,10 @@ class TestAgentRunningGuard:
 
             # _agent_running should have been True during perform_offload
             assert running_during_offload == [True]
+            assert quiescent_during_offload == [False]
             # And reset after completion
             assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
 
     async def test_agent_running_reset_after_failure(self) -> None:
         """Should reset _agent_running=False even when offload fails."""

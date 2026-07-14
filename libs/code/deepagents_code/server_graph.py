@@ -150,6 +150,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
     from deepagents_code.config import (
         configure_langsmith_secret_redaction,
         create_model,
+        is_memory_auto_save_enabled,
         settings,
     )
 
@@ -246,6 +247,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             shell_allow_list=config.shell_allow_list,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
+            memory_auto_save=is_memory_auto_save_enabled(),
             enable_skills=config.enable_skills,
             enable_shell=config.enable_shell,
             enable_interpreter=config.enable_interpreter,

@@ -23,7 +23,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
-| `/goal` |  | Set a persistent objective by drafting acceptance criteria |
+| `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |

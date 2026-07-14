@@ -206,6 +206,15 @@ LOG_LEVEL = "DEEPAGENTS_CODE_LOG_LEVEL"
 Accepted values are DEBUG, INFO, WARNING, ERROR, and CRITICAL.
 """
 
+MEMORY_AUTO_SAVE = "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE"
+"""Toggle automatic memory saving (defaults to on).
+
+When enabled, the memory prompt tells the agent to proactively persist
+learnings to the `AGENTS.md` memory files. Set to a falsy value (`0`, `false`,
+`no`, `off`, or empty) to keep loading memory into context while disabling the
+auto-save guidance; explicit saves (e.g. the `remember` skill) still work.
+"""
+
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"
 """Disable all terminal escape/control sequence output when enabled."""
 

@@ -79,6 +79,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
 )
@@ -224,10 +225,13 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 
 
 def _format_rubric_event(data: dict[str, Any]) -> str | None:
-    """Format a rubric custom-stream event for the chat transcript.
+    """Format a concise rubric custom-stream event for the transcript.
+
+    Args:
+        data: Custom-stream rubric event payload.
 
     Returns:
-        A user-visible message for rubric events, or `None` for custom-stream
+        A user-visible summary for rubric events, or `None` for custom-stream
         events that are not rubric events.
     """
     glyphs = get_glyphs()
@@ -247,40 +251,75 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
         return None
 
     result = data.get("result")
-    explanation = str(data.get("explanation") or "").strip()
     if result is None:
         return None
     if result == "satisfied":
         return f"{glyphs.checkmark} Acceptance criteria satisfied"
     if result == "needs_revision":
-        lines = [
-            f"{glyphs.retry} Changes need revision"
-            + (f": {explanation}" if explanation else ""),
-        ]
-        for criterion in data.get("criteria", []):
-            if isinstance(criterion, dict) and criterion.get("passed") is False:
-                name = str(criterion.get("name", "criterion"))
-                gap = str(criterion.get("gap", "")).strip()
-                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
-        return "\n".join(lines)
+        return f"{glyphs.retry} Acceptance criteria not yet satisfied"
     if result == "max_iterations_reached":
         return (
-            f"{glyphs.warning} Acceptance criteria not satisfied "
+            f"{glyphs.warning} Acceptance criteria not yet satisfied "
             "(iteration limit reached)"
         )
-    if result in {"failed", "grader_error"}:
-        label = "grader failed" if result == "failed" else "grader error"
-        return (
-            f"{glyphs.warning} Rubric "
-            + label
-            + (f": {explanation}" if explanation else "")
-        )
+    if result == "failed":
+        return f"{glyphs.warning} Rubric is invalid or cannot be evaluated"
+    if result == "grader_error":
+        return f"{glyphs.warning} Acceptance criteria check failed"
     # A `rubric_evaluation_end` with an unrecognized result is still a terminal
     # grading event; surface it rather than silently dropping it (e.g. if the
     # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
-    return f"{glyphs.warning} Rubric grading ended" + (
-        f": {explanation}" if explanation else ""
-    )
+    return f"{glyphs.warning} Acceptance criteria check ended"
+
+
+def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -> str:
+    """Format complete grader details without serializing or truncating payloads.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
+
+    Returns:
+        Plain text containing the full explanation, unmet criteria, and next step.
+    """
+    result = data.get("result")
+    if result in {None, "satisfied"}:
+        return ""
+
+    sections: list[str] = []
+    explanation = str(data.get("explanation") or "").strip()
+    if explanation:
+        sections.append(f"Explanation\n{explanation}")
+
+    criteria = data.get("criteria")
+    failing: list[tuple[str, str]] = []
+    if isinstance(criteria, list):
+        for criterion in criteria:
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name") or "Unnamed criterion").strip()
+                gap = str(criterion.get("gap") or "").strip()
+                failing.append((name, gap))
+    if failing:
+        lines = ["Unmet criteria"]
+        for name, gap in failing:
+            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
+        sections.append("\n".join(lines))
+
+    if result == "max_iterations_reached" and goal_active:
+        next_step = (
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"}:
+        next_step = "Address every unmet criterion, then retry the check."
+    elif result == "failed":
+        next_step = "Review or replace the rubric before grading again."
+    elif result == "grader_error":
+        next_step = "Retry the check, or choose a different grader model."
+    else:
+        next_step = "Review the grader details before continuing."
+    sections.append(f"Next step\n{next_step}")
+    return "\n\n".join(sections)
 
 
 class TextualUIAdapter:
@@ -513,6 +552,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     rubric: str | None = None,
+    goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -541,6 +581,7 @@ async def execute_task_textual(
             in the checkpoint).
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
@@ -804,8 +845,25 @@ async def execute_task_textual(
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
                     )
-                    if formatted_rubric_event is not None and is_main_agent:
-                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                    if (
+                        formatted_rubric_event is not None
+                        and rubric_message is not None
+                        and is_main_agent
+                    ):
+                        details = (
+                            _format_rubric_details(
+                                rubric_message,
+                                goal_active=goal_active,
+                            )
+                            if rubric_message.get("type") == "rubric_evaluation_end"
+                            else ""
+                        )
+                        message = (
+                            RubricResultMessage(formatted_rubric_event, details)
+                            if details
+                            else AppMessage(formatted_rubric_event)
+                        )
+                        await adapter._mount_message(message)
                         continue
                     if formatted_rubric_event is not None:
                         # Rubric events come from the main agent today; a
@@ -1114,7 +1172,11 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 await adapter._mount_message(
-                                    DiffMessage(record.diff, record.display_path)
+                                    DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                    )
                                 )
 
                         # Reshow spinner only when all in-flight tools have

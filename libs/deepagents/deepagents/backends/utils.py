@@ -391,15 +391,41 @@ def update_file_data(file_data: FileData, content: str) -> FileData:
     return result
 
 
+def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
+    """Clone `file_data` with replaced content, preserving timestamps when present.
+
+    Unlike `update_file_data`, this carries `created_at`/`modified_at` through
+    verbatim rather than restamping `modified_at`, since slicing a read window
+    does not mutate the underlying file.
+
+    Args:
+        file_data: Source `FileData` whose encoding and timestamps are copied.
+        content: Replacement content for the returned copy.
+
+    Returns:
+        A new `FileData` with `content` set and metadata carried over.
+    """
+    sliced_fd = FileData(
+        content=content,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        sliced_fd["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        sliced_fd["modified_at"] = file_data["modified_at"]
+    return sliced_fd
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
     limit: int,
-) -> str | ReadResult:
+) -> ReadResult:
     """Slice file data to the requested line range without formatting.
 
-    Returns raw text for the requested window. Line-number formatting
-    is applied downstream by the middleware layer.
+    The returned `ReadResult` carries the raw (unformatted) window in
+    `file_data`; line-number formatting is applied downstream by the
+    middleware layer.
 
     Args:
         file_data: `FileData` dict.
@@ -407,13 +433,16 @@ def slice_read_response(
         limit: Maximum number of lines.
 
     Returns:
-        Raw sliced content string on success, or `ReadResult` with
-            `error` set when the offset exceeds the file length.
+        `ReadResult` with the sliced raw content and pagination metadata
+            (`total_lines`, `start_line`, `end_line`, `next_offset`). The
+            pagination fields are left unset for empty or whitespace-only
+            content. `error` is set instead when the offset exceeds the file
+            length.
     """
     content = file_data_to_string(file_data)
 
     if not content or content.strip() == "":
-        return content
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore
@@ -424,14 +453,23 @@ def slice_read_response(
     lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
+    total_lines = len(lines)
 
-    if start_idx >= len(lines):
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+    if start_idx >= total_lines:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    next_offset = end_idx if end_idx < total_lines else None
+    return ReadResult(
+        file_data=_copy_file_data_with_content(file_data, sliced),
+        total_lines=total_lines,
+        start_line=start_idx + 1,
+        end_line=end_idx,
+        next_offset=next_offset,
+    )
 
 
 def perform_string_replacement(

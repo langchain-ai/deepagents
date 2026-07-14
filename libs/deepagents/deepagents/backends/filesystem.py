@@ -468,6 +468,10 @@ class FilesystemBackend(BackendProtocol):
                 if fd >= 0:
                     os.close(fd)
 
+            total_lines: int | None = None
+            start_line: int | None = None
+            end_line: int | None = None
+            next_offset: int | None = None
             if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
@@ -480,13 +484,23 @@ class FilesystemBackend(BackendProtocol):
                     lines = content.splitlines(keepends=True)
                     start_idx = offset
                     end_idx = min(start_idx + limit, len(lines))
+                    total_lines = len(lines)
 
-                    if start_idx >= len(lines):
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
+                    if start_idx >= total_lines:
+                        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
 
                     file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
+                    start_line = start_idx + 1
+                    end_line = end_idx
+                    next_offset = end_idx if end_idx < total_lines else None
 
-            return ReadResult(file_data=file_data)
+            return ReadResult(
+                file_data=file_data,
+                total_lines=total_lines,
+                start_line=start_line,
+                end_line=end_line,
+                next_offset=next_offset,
+            )
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

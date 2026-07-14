@@ -277,6 +277,58 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert "chinese.txt" in result.error
 
 
+def test_filesystem_backend_read_populates_pagination_metadata(tmp_path: Path) -> None:
+    """`FilesystemBackend.read` reports source-line range and next offset for text reads."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    partial = be.read(str(target), offset=1, limit=2)
+    assert partial.error is None
+    assert partial.total_lines == 5
+    assert partial.start_line == 2
+    assert partial.end_line == 3
+    assert partial.next_offset == 3
+
+    final = be.read(str(target), offset=3, limit=10)
+    assert final.error is None
+    assert final.total_lines == 5
+    assert final.start_line == 4
+    assert final.end_line == 5
+    assert final.next_offset is None
+
+
+def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: Path) -> None:
+    """An offset past EOF reports the file's line count and leaves metadata unset."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=99, limit=10)
+
+    assert result.error == "Line offset 99 exceeds file length (5 lines)"
+    assert result.file_data is None
+    assert result.total_lines is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Path) -> None:
+    """An empty file returns the empty-content warning with no pagination metadata."""
+    target = tmp_path / "empty.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=10)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
 def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
     """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
     target = tmp_path / "clip.mkv"

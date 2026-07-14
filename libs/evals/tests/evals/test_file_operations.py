@@ -739,16 +739,10 @@ Clues: about programming readability; software craftsmanship.
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
-def test_read_file_truncation_recovery_with_pagination(
+def test_read_file_remaining_lines_notice_enables_tail_jump(
     model: BaseChatModel,
 ) -> None:
-    """Requires paging to retrieve a value that is only present at the end of a long file.
-
-    Note: This could be made more efficient in the future if `read_file` returned
-    file metadata (e.g., total line count / size) so the agent could jump directly
-    to the tail in a single call. With the current tool surface, the agent has to
-    iteratively page to discover where the end is.
-    """
+    """Uses pagination metadata to jump directly from the first page to the file's tail."""
     agent = create_deep_agent(model=model)
     last_line = "opal-fox-91"
     initial = "x\n" * 300
@@ -758,16 +752,16 @@ def test_read_file_truncation_recovery_with_pagination(
         model=model,
         initial_files=initial_files,
         query=(
-            "Read /big.txt and tell me the exact contents of the last non-empty line. Reply with that line only."
+            "Use read_file yourself to read /big.txt and tell me the exact contents of the "
+            "last non-empty line. Do not delegate this task. Reply with that line only."
         ),
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps=4,
-            tool_call_requests=3,
+            agent_steps=3,
+            tool_call_requests=2,
             tool_calls=[
                 tool_call(step=1, name="read_file", args_contains={"file_path": "/big.txt"}),
                 tool_call(step=2, name="read_file", args_contains={"file_path": "/big.txt"}),
-                tool_call(step=3, name="read_file", args_contains={"file_path": "/big.txt"}),
             ],
         )
         .success(final_text_contains(last_line)),

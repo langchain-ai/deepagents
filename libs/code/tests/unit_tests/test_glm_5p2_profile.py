@@ -706,6 +706,76 @@ def test_terminal_stall_recovery_ignores_near_misses(
 
 
 @pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            ModelResponse(
+                result=[
+                    AIMessage(
+                        content="",
+                        response_metadata={"finish_reason": "length"},
+                    )
+                ],
+                structured_response={"answer": "done"},
+            ),
+            id="structured-response",
+        ),
+        pytest.param(ModelResponse(result=[]), id="zero-results"),
+        pytest.param(
+            ModelResponse(
+                result=[
+                    AIMessage(
+                        content="",
+                        response_metadata={"finish_reason": "length"},
+                    ),
+                    AIMessage(
+                        content="",
+                        response_metadata={"finish_reason": "length"},
+                    ),
+                ]
+            ),
+            id="multiple-results",
+        ),
+        pytest.param(
+            ModelResponse(
+                result=[
+                    ToolMessage(
+                        content="tool output",
+                        name="write_file",
+                        tool_call_id="call-write",
+                    )
+                ]
+            ),
+            id="non-ai-first-result",
+        ),
+    ],
+)
+def test_terminal_stall_recovery_ignores_non_stall_response_shapes(
+    response: ModelResponse[Any],
+) -> None:
+    """A length-capped but non-stall response shape must not trigger recovery.
+
+    Covers the `_is_terminal_stall` guards beyond `finish_reason`/`tool_calls`:
+    a structured response, a result list that is not exactly one message, and a
+    first result that is not an `AIMessage`.
+    """
+    middleware = _GlmTerminalStallRecovery()
+    calls = 0
+
+    def handler(_request: ModelRequest) -> ModelResponse[Any]:
+        nonlocal calls
+        calls += 1
+        return response
+
+    middleware.wrap_model_call(
+        _model_request("accounts/fireworks/models/glm-5p2"),
+        handler,
+    )
+
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
     "active",
     [
         pytest.param(_MISSING, id="missing"),
@@ -822,6 +892,25 @@ def test_media_guard_fails_closed_on_malformed_content_blocks() -> None:
     )
 
     result = middleware.wrap_tool_call(_request(), lambda _request: malformed)
+
+    _assert_generic_media_error(result)
+
+
+def test_media_guard_fails_closed_on_empty_list_content() -> None:
+    """An empty content list is not positively text, so it is replaced.
+
+    Guards the asymmetry with an empty string (which passes as text): an empty
+    list falls through `_has_only_text_content` and must fail closed.
+    """
+    middleware = _GlmReadFileMediaGuard(_FIREWORKS_GLM)
+    empty = ToolMessage(
+        content=[],
+        name="read_file",
+        tool_call_id="call-media",
+        status="success",
+    )
+
+    result = middleware.wrap_tool_call(_request(), lambda _request: empty)
 
     _assert_generic_media_error(result)
 

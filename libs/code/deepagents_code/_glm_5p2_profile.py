@@ -1,10 +1,19 @@
-"""Concise GLM-5.2 harness profile for Deep Agents Code."""
+"""GLM-5.2 harness profile for Deep Agents Code.
+
+Bundles the execution-focused prompt suffix with the two per-stack middlewares
+that support it: a text-only `read_file` media guard and headless terminal-stall
+recovery. The prompt suffix itself is deliberately concise (see the anti-bloat
+word-count guard in the unit tests).
+"""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
+# Private import: the SDK exposes no public helper to derive a model's
+# provider-native identifier, which the guards need to classify the runtime model.
 from deepagents._models import get_model_identifier  # noqa: PLC2701
 from deepagents.profiles import HarnessProfile, register_harness_profile
 from langchain.agents.middleware.types import (
@@ -25,8 +34,16 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
 
+logger = logging.getLogger(__name__)
+
+
+_FIREWORKS_GLM_5P2_SPEC = "fireworks:accounts/fireworks/models/glm-5p2"
+"""Fireworks GLM-5.2 spec. Terminal-stall recovery is scoped to this one spec
+because the output cap that produces a tool-free `finish_reason "length"` turn
+was measured only here; the other providers are intentionally excluded."""
+
 _GLM_5P2_MODEL_SPECS: tuple[str, ...] = (
-    "fireworks:accounts/fireworks/models/glm-5p2",
+    _FIREWORKS_GLM_5P2_SPEC,
     "openrouter:z-ai/glm-5.2",
     "baseten:zai-org/GLM-5.2",
 )
@@ -42,8 +59,23 @@ _SPEC_BY_IDENTIFIER: dict[str, str] = {
 }
 """Provider-native identifier to full registry spec, for ownership lookups."""
 
-_FIREWORKS_GLM_5P2_IDENTIFIER = _GLM_5P2_MODEL_SPECS[0].partition(":")[2]
+_FIREWORKS_GLM_5P2_IDENTIFIER = _FIREWORKS_GLM_5P2_SPEC.partition(":")[2]
 """Fireworks model identifier whose terminal output cap was measured."""
+
+# Enforce the latent invariants the derived structures above rely on, at import
+# time rather than by luck of the current literals: every spec is `provider:id`
+# (so `partition` yields a real identifier), identifiers are unique across specs
+# (so the frozenset/dict cannot silently collapse two specs onto one entry), and
+# the measured Fireworks spec is actually one of the registered specs.
+if not all(":" in spec for spec in _GLM_5P2_MODEL_SPECS):
+    msg = "every GLM-5.2 spec must be in `provider:identifier` form"
+    raise ValueError(msg)
+if len(_GLM_5P2_MODEL_IDENTIFIERS) != len(_GLM_5P2_MODEL_SPECS):
+    msg = "GLM-5.2 specs must have distinct provider-native identifiers"
+    raise ValueError(msg)
+if _FIREWORKS_GLM_5P2_SPEC not in _GLM_5P2_MODEL_SPECS:
+    msg = "the measured Fireworks spec must be a registered GLM-5.2 spec"
+    raise ValueError(msg)
 
 _SYSTEM_PROMPT_SUFFIX = """\
 <execution>
@@ -152,6 +184,8 @@ def _dcode_owns_suffix(model: str | BaseChatModel) -> bool:
     spec = _SPEC_BY_IDENTIFIER.get(identifier) if identifier is not None else None
     if spec is None:
         return False
+    # Private import: no public accessor exposes the live registry we must read
+    # to tell whether the dcode suffix or an override currently owns this spec.
     from deepagents.profiles.harness.harness_profiles import (
         _HARNESS_PROFILES,  # noqa: PLC2701
     )
@@ -353,15 +387,24 @@ class _GlmReadFileMediaGuard(AgentMiddleware[_GlmReadFileMediaState]):
 
 
 class _GlmTerminalStallRecovery(AgentMiddleware):
-    """Recover a headless GLM-5.2 turn that hit the output cap without acting.
+    """Recover a headless Fireworks GLM-5.2 turn that hit the output cap.
 
     A tool-free GLM response truncated by the output cap (`finish_reason
     "length"`) has stalled: the empty turn would otherwise end a headless run
     with no deliverable. This retries such a turn once with a trusted recovery
     instruction, reasoning disabled, and a forced tool call, which by
-    construction cannot itself re-stall. It is scoped to headless runs by only
-    being registered on the profile there; interactive turns may legitimately be
-    tool-free, so they must not be forced into an action.
+    construction cannot itself re-stall.
+
+    Two scoping constraints, neither expressed on `_GLM_5P2_PROFILE`:
+
+    - Headless-only. This middleware is not part of the harness profile; it is
+      added to the stack by `create_cli_agent` only in non-interactive mode.
+      Interactive turns may legitimately be tool-free, so they must not be
+      forced into an action.
+    - Fireworks-only. `_should_recover` gates on `_is_fireworks_glm_5p2_model`,
+      so only `_FIREWORKS_GLM_5P2_SPEC` recovers. The output cap that produces
+      the stall was measured only there; the OpenRouter and Baseten GLM-5.2
+      specs are intentionally excluded even though the media guard covers them.
     """
 
     @staticmethod
@@ -420,7 +463,9 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
         """
         response = handler(request)
         if self._should_recover(response, model=request.model):
+            logger.info("GLM-5.2 headless turn stalled at output cap; retrying once")
             response = handler(self._recovery_request(request))
+            self._log_if_still_stalled(response)
         return response
 
     async def awrap_model_call(
@@ -435,8 +480,24 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
         """
         response = await handler(request)
         if self._should_recover(response, model=request.model):
+            logger.info("GLM-5.2 headless turn stalled at output cap; retrying once")
             response = await handler(self._recovery_request(request))
+            self._log_if_still_stalled(response)
         return response
+
+    @classmethod
+    def _log_if_still_stalled(cls, response: ModelResponse) -> None:
+        """Warn when the forced-tool recovery retry still returned a stalled turn.
+
+        The retry cannot loop (it is issued at most once), so this is only an
+        observability signal: it means the provider did not honor the forced
+        tool call, and the headless run may end with no deliverable.
+        """
+        if cls._is_terminal_stall(response):
+            logger.warning(
+                "GLM-5.2 stall recovery retry still produced no tool call; "
+                "the headless run may end without a deliverable"
+            )
 
 
 _GLM_5P2_PROFILE = HarnessProfile(
@@ -457,15 +518,25 @@ _glm_5p2_profile_registered = False
 def _ensure_glm_5p2_profile_registered() -> None:
     """Register the GLM-5.2 harness profile once per process, per provider spec.
 
-    Registration is additive with the incoming profile winning on scalar
-    conflicts, so a spec that already carries a suffix profile (a user override
-    or a built-in) is skipped rather than silently replaced. In the common case
-    no GLM profile exists yet, so the dcode profile is registered for each spec.
+    Because `register_harness_profile` merges with the incoming profile winning
+    on scalar conflicts, a spec that already carries a suffix profile (a user
+    override or a built-in) would have its suffix clobbered; the explicit skip
+    below is a deliberate countermeasure so an existing suffix is left alone
+    rather than silently replaced. In the common case no GLM profile exists yet,
+    so the dcode profile is registered for each spec.
+
+    This mutates the process-global harness registry without a lock. Concurrent
+    first-calls are benign: `register_harness_profile` is additive/idempotent and
+    the profile is identical, so a redundant merge is the worst case.
     """
+    # PLW0603: intentional module-level flag toggled once to keep registration
+    # idempotent for the process; the concurrent-write case is benign (docstring).
     global _glm_5p2_profile_registered  # noqa: PLW0603
     if _glm_5p2_profile_registered:
         return
 
+    # Private imports: the harness registry and its lazy-load hook expose no
+    # public accessor, and this profile must reach into it to register/skip per spec.
     from deepagents.profiles.harness.harness_profiles import (
         _HARNESS_PROFILES,  # noqa: PLC2701
         _ensure_harness_profiles_loaded,  # noqa: PLC2701

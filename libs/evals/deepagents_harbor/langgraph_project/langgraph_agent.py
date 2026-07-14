@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import uuid
@@ -20,6 +21,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_WORKDIR = Path("/app")
 _MAX_ASSISTANT_ID_LENGTH = 64
@@ -198,6 +201,15 @@ def _apply_model_identity(model_spec: str, model: object) -> None:
     # Mirror create_model: pull context window + unsupported input modalities
     # from the model profile when the provider exposes one.
     profile = getattr(model, "profile", None)
+    if not isinstance(profile, dict):
+        # No usable profile: the identity section renders with no context window
+        # and no modality restrictions. Log it so an eval running with a degraded
+        # identity is attributable rather than silently mysterious.
+        logger.debug(
+            "Model %r exposes no profile dict; Model Identity will omit the "
+            "context limit and unsupported modalities",
+            name,
+        )
     if isinstance(profile, dict):
         max_input = profile.get("max_input_tokens")
         settings.model_context_limit = max_input if isinstance(max_input, int) else None

@@ -1468,8 +1468,9 @@ def create_cli_agent(
                 prompt. Only pass an explicit prompt when you intend to take
                 full ownership of the system prompt's content.
         interactive: When `False`, the auto-generated system prompt is
-            tailored for headless non-interactive execution, and GLM-5.2 stacks
-            add terminal-stall recovery middleware. Only the system-prompt
+            tailored for headless non-interactive execution, and every stack
+            gains terminal-stall recovery middleware (a runtime no-op unless the
+            resolved model is Fireworks GLM-5.2). Only the system-prompt
             tailoring is ignored when `system_prompt` is provided explicitly;
             the recovery wiring still applies.
         auto_approve: If `True`, no tools trigger human-in-the-loop
@@ -1636,10 +1637,13 @@ def create_cli_agent(
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         # Both guards self-gate on the runtime model, so a stack built for a
-        # non-GLM model still applies once a `/model` switch resolves to GLM.
-        # Recovery is headless-only: interactive turns may legitimately be
-        # tool-free, so they must not be forced into an action. It sits inner to
-        # the media guard so its retry keeps the guard's transitioned prompt.
+        # non-GLM model still activates once a `/model` switch resolves to GLM-5.2
+        # — but their scopes differ: the media guard covers all GLM-5.2 specs,
+        # while recovery activates only for Fireworks GLM-5.2 (see
+        # `_GlmTerminalStallRecovery`). Recovery is also headless-only: interactive
+        # turns may legitimately be tool-free, so they must not be forced into an
+        # action. It sits inner to the media guard so its retry keeps the guard's
+        # transitioned prompt.
         middleware.append(_GlmReadFileMediaGuard(construction_model))
         if not interactive:
             middleware.append(_GlmTerminalStallRecovery())

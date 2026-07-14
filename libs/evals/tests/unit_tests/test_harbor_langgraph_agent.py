@@ -291,6 +291,47 @@ def test_make_graph_resets_model_identity_for_model_without_profile(
 
 
 @pytest.mark.parametrize(
+    ("model_spec", "expected_name", "expected_provider"),
+    [
+        ("claude-sonnet-4-5", "claude-sonnet-4-5", "anthropic"),
+        ("totally-unknown-xyz", "totally-unknown-xyz", ""),
+    ],
+)
+def test_make_graph_derives_identity_for_bare_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    model_spec: str,
+    expected_name: str,
+    expected_provider: str,
+) -> None:
+    """A bare (provider-less) model spec falls back to `detect_provider`.
+
+    Exercises the `_apply_model_identity` else-branch: `ModelSpec.try_parse`
+    returns None for a colon-less spec, so the name is taken verbatim and the
+    provider is inferred by `detect_provider` (empty string when unknown).
+    """
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_cli_agent",
+        lambda **_kwargs: (object(), object()),
+    )
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph(
+        {
+            "configurable": {
+                "model": model_spec,
+                "cwd": str(tmp_path),
+            }
+        }
+    )
+
+    assert settings.model_name == expected_name
+    assert settings.model_provider == expected_provider
+
+
+@pytest.mark.parametrize(
     "model_spec",
     [
         "fireworks:accounts/fireworks/models/glm-5p2",

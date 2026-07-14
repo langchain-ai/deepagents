@@ -713,17 +713,20 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
+          experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it
           # can't be clobbered.
           HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
-          # Include the run id + attempt so all shards of this dispatch share one
-          # experiment name (Harbor's LangSmith plugin uses an explicit name
-          # verbatim and create-or-reuses it, converging the shards) while a
-          # later dispatch or re-run gets its own experiment. HARBOR_LANGSMITH_DATASET
+          # Scope the experiment name by category so each category's dataset gets
+          # its own experiment: one model spans three datasets, and a single
+          # experiment name shared across them double-counts runs in LangSmith.
+          # Shards within a category still share this name, so Harbor's LangSmith
+          # plugin reuses one session per category and converges them; the run id +
+          # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
           # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"

@@ -9,11 +9,15 @@ front of it. This mirrors `test_langchain_middleware_todo.py`, which probes
 `langchain`'s `TodoListMiddleware` the same way.
 
 The failure mode under test: models over-eagerly call `get_rubric` / `get_goal`
-even when *no goal or rubric was ever set* earlier in the conversation. When
-nothing is set those tools return an inactive snapshot and add nothing, so a
-well-behaved agent should not touch them. The baseline tests here are the
-regression gate for that behavior; the hillclimb test confirms the guidance
-does not over-correct into never consulting the tools when a rubric *is* active.
+/ `update_goal` even when *no goal or rubric was ever set* earlier in the
+conversation. When nothing is set those tools return an inactive snapshot (or,
+for `update_goal`, refuse) and add nothing, so a well-behaved agent should not
+touch them. `GoalToolsMiddleware` now injects an authoritative persisted-state
+summary ("Goal actionable: no / Rubric active: no") into every request, so the
+gate is grounded in state rather than conversation history. The baseline tests
+here are the regression gate for that behavior; the hillclimb test confirms the
+guidance does not over-correct into never consulting the tools when a rubric
+*is* active.
 
 Seeding note: the goal channels (`_goal_objective`, ...) are `PrivateStateAttr`
 and are not part of the public graph input in this isolated `create_agent`
@@ -35,6 +39,7 @@ from langchain_core.tools import tool
 from tests.evals.utils import (
     TrajectoryScorer,
     final_text_contains,
+    final_text_contains_any,
     final_text_min_length,
     run_agent,
     tool_call,
@@ -102,11 +107,12 @@ def test_no_goal_trivial_task_skips_goal_tools(model: BaseChatModel) -> None:
     """Trivial one-shot task with no goal/rubric must not touch the goal tools.
 
     No goal or rubric is set, so `get_rubric` / `get_goal` would only report an
-    inactive snapshot. The pre-rewrite prompt told the model to inspect
-    acceptance criteria before finishing, which drove reflexive `get_rubric` /
-    `get_goal` calls even when nothing was set; this test is the regression gate
-    ensuring the precondition-gated prompt does not slide back into that
-    behavior.
+    inactive snapshot and `update_goal` would refuse. The pre-rewrite prompt
+    told the model to inspect acceptance criteria before finishing, which drove
+    reflexive `get_rubric` / `get_goal` calls even when nothing was set; this
+    test is the regression gate ensuring the state-gated prompt does not slide
+    back into that behavior. A correct answer to pure arithmetic should touch
+    none of the three goal tools, so all three are gated.
     """
     agent = _make_agent(model)
     run_agent(
@@ -119,6 +125,7 @@ def test_no_goal_trivial_task_skips_goal_tools(model: BaseChatModel) -> None:
             final_text_contains("48"),
             tool_not_called("get_rubric"),
             tool_not_called("get_goal"),
+            tool_not_called("update_goal"),
         ),
     )
 
@@ -130,10 +137,16 @@ def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
 
     Over-eagerness is not just a trivial-task artifact: even when the agent
     legitimately calls domain tools, it should not reach for `get_rubric` /
-    `get_goal` when nothing was ever set. The population lookup gives the agent
-    genuine multi-step work; the `tool_not_called` gates are the assertion under
-    test. The final-text check is a light on-topic guard (both cities are named
-    in the query, so it is not a correctness gate on which city is larger).
+    `get_goal` / `update_goal` when nothing was ever set. The `tool_not_called`
+    gates are the assertion under test.
+
+    The "and by how much" phrasing forces genuine multi-step work: the reported
+    difference (Delhi 32,900,000 - Tokyo 13,960,000 = 18,940,000) is not a
+    memorable figure, so a model cannot produce it from parametric knowledge —
+    it must actually run the lookups. Without that forcing function this test
+    would silently degenerate into a copy of the trivial-task gate if a model
+    shortcut the lookups. Mirrors `test_langchain_middleware_todo.py`'s
+    `test_population_compare_lands_in_final_message`.
     """
     agent = _make_agent(model, tools=[lookup_population])
     run_agent(
@@ -141,14 +154,23 @@ def test_no_goal_multistep_task_skips_goal_tools(model: BaseChatModel) -> None:
         model=model,
         query=(
             "Which has more people, Tokyo or Delhi? Look up the population for "
-            "each and tell me which is larger."
+            "each and tell me which has more and by how much."
         ),
         scorer=TrajectoryScorer()
         .expect(tool_calls=[tool_call(name="lookup_population")])
         .success(
             final_text_contains("delhi", case_insensitive=True),
+            final_text_contains_any(
+                "18,940,000",
+                "18940000",
+                "18.94 million",
+                "18.9 million",
+                "19 million",
+                case_insensitive=True,
+            ),
             tool_not_called("get_rubric"),
             tool_not_called("get_goal"),
+            tool_not_called("update_goal"),
         ),
     )
 
@@ -165,13 +187,19 @@ def test_active_rubric_may_be_consulted(model: BaseChatModel) -> None:
 
     This guards against the rewrite over-correcting into "never call these
     tools." A rubric is seeded via the public `rubric` input (the channel
-    `RubricMiddleware` reads in the full `dcode` stack), so `get_rubric` returns
-    active criteria. The hard requirement is only that a substantive ranking
-    lands — the three city names plus a floor on answer length, mirroring
+    `RubricMiddleware` reads in the full `dcode` stack), so the injected state
+    summary reports "Rubric active: yes" and `get_rubric` returns real criteria.
+
+    The hard requirement is only that a substantive ranking lands — the three
+    city names plus a floor on answer length, mirroring
     `test_langchain_middleware_todo.py`'s guard against a terse wrap-up that
-    omits the ranking. Whether the model consults `get_rubric` is logged as an
-    efficiency signal, since "should use" is inherently noisier than "should
-    not."
+    omits the ranking. The `get_rubric` expectation is deliberately in
+    `.expect()` (efficiency tier), so it never fails the test: "should use" is
+    inherently noisier than "should not," and the harness does not log or check
+    per-tool `ToolCall` expectations individually (only the aggregate
+    `tool_call_requests` count). So this test cannot fail on rubric consultation
+    itself; it verifies that seeding a rubric does not suppress a substantive
+    answer, and the `tool_call` entry documents the intended behavior.
     """
     agent = _make_agent(model, tools=[lookup_population, lookup_area_km2])
     run_agent(

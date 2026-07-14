@@ -43,16 +43,18 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
-A goal or rubric is only present if one was set earlier in this conversation.
-If none was set, do not call these tools — they only report that nothing is
+Use the current persisted-state summary below, not conversation history, to
+decide whether these tools apply. If it says the goal is not actionable and the
+rubric is inactive, do not call these tools — they only report that nothing is
 active, and you should judge for yourself when the work is done.
 
 When a rubric is active, use `get_rubric` to inspect the acceptance criteria
 before deciding whether the work is complete.
-When a goal is active, use `get_goal` to inspect its objective and current status.
+When a goal is actionable, use `get_goal` to inspect its objective and current
+status.
 A paused goal is persisted for later but must not drive work until the user resumes it.
-Use `update_goal` only when a goal is active and you have evidence it is complete
-or blocked."""
+Use `update_goal` only when a goal is actionable and you have evidence it is
+complete or blocked."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
@@ -228,6 +230,28 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
         "criteria": criteria,
         "note": note,
     }
+
+
+def _goal_tool_state_context(state: dict[str, Any]) -> str:
+    """Build the authoritative goal/rubric activity summary for the model.
+
+    Args:
+        state: Current graph state, including private persisted channels.
+
+    Returns:
+        Model-visible summary used to gate goal-tool calls.
+    """
+    goal = _goal_snapshot(state)
+    rubric = _rubric_snapshot(state)
+    status = goal["status"] or "not set"
+    actionable = "yes" if goal["active"] else "no"
+    rubric_active = "yes" if rubric["active"] else "no"
+    return (
+        "### Current Persisted Goal/Rubric State\n\n"
+        f"- Goal status: `{status}`\n"
+        f"- Goal actionable: `{actionable}`\n"
+        f"- Rubric active: `{rubric_active}`"
+    )
 
 
 def _update_goal_command(
@@ -411,13 +435,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def _request_with_goal_system_context(
         request: ModelRequest[ContextT],
     ) -> ModelRequest[ContextT]:
-        """Inject goal guidance and any one-turn retry context.
+        """Inject goal guidance, current state, and any one-turn retry context.
 
         Returns:
             Model request with goal context appended to the system prompt.
         """
         retry_context = _runtime_blocked_goal_retry_context(request.runtime.context)
-        prompt_parts = [GOAL_TOOLS_SYSTEM_PROMPT]
+        state = cast("dict[str, Any]", request.state)
+        prompt_parts = [GOAL_TOOLS_SYSTEM_PROMPT, _goal_tool_state_context(state)]
         if retry_context is not None:
             prompt_parts.append(retry_context)
         prompt = "\n\n".join(prompt_parts)

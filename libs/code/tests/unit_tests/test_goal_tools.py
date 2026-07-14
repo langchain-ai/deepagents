@@ -14,6 +14,7 @@ from deepagents_code.goal_tools import (
     GoalToolsMiddleware,
     GoalToolState,
     _goal_snapshot,
+    _goal_tool_state_context,
     _rubric_snapshot,
     _update_goal_command,
 )
@@ -174,6 +175,21 @@ def test_goal_snapshot_objective_without_status_defaults_active() -> None:
     snapshot = _goal_snapshot({"_goal_objective": "add refresh tokens"})
     assert snapshot["active"] is True
     assert snapshot["status"] == "active"
+
+
+def test_goal_tool_state_context_exposes_private_active_state() -> None:
+    """The model should see persisted activity even when chat history does not."""
+    context = _goal_tool_state_context(
+        {
+            "_goal_objective": "add refresh tokens",
+            "_goal_status": "active",
+            "_goal_rubric": "- tests pass",
+        }
+    )
+
+    assert "Goal status: `active`" in context
+    assert "Goal actionable: `yes`" in context
+    assert "Rubric active: `yes`" in context
 
 
 def test_update_goal_without_active_goal_returns_tool_message_only() -> None:
@@ -360,11 +376,13 @@ def _fake_request(
     system_message: SystemMessage | None,
     *,
     context: object | None = None,
+    state: dict[str, object] | None = None,
 ) -> SimpleNamespace:
     """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
     return SimpleNamespace(
         system_message=system_message,
         runtime=SimpleNamespace(context=context or {}),
+        state=state or {},
         override=lambda **kw: SimpleNamespace(**kw),
     )
 
@@ -384,7 +402,8 @@ def test_wrap_model_call_appends_guidance_to_existing_prompt() -> None:
     assert isinstance(new_system, SystemMessage)
     blocks = new_system.content
     assert blocks[0]["text"] == "base instructions"
-    assert blocks[-1]["text"].strip() == GOAL_TOOLS_SYSTEM_PROMPT
+    assert blocks[-1]["text"].strip().startswith(GOAL_TOOLS_SYSTEM_PROMPT)
+    assert "Goal status: `not set`" in blocks[-1]["text"]
 
 
 def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
@@ -398,7 +417,33 @@ def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
     )
 
     new_system = captured["request"].system_message
-    assert new_system.content == [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
+    text = new_system.content[0]["text"]
+    assert text.startswith(GOAL_TOOLS_SYSTEM_PROMPT)
+    assert "Goal actionable: `no`" in text
+    assert "Rubric active: `no`" in text
+
+
+def test_wrap_model_call_exposes_active_private_state() -> None:
+    """Private goal channels should control model-visible tool gating."""
+    captured: dict[str, SimpleNamespace] = {}
+    request = _fake_request(
+        None,
+        state={
+            "_goal_objective": "ship it",
+            "_goal_status": "blocked",
+            "_goal_rubric": "- tests pass",
+        },
+    )
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    text = captured["request"].system_message.content[0]["text"]
+    assert "Goal status: `blocked`" in text
+    assert "Goal actionable: `yes`" in text
+    assert "Rubric active: `yes`" in text
 
 
 def test_wrap_model_call_appends_blocked_goal_retry_context() -> None:
@@ -438,7 +483,7 @@ async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:
     assert result == "response"
     blocks = captured["request"].system_message.content
     assert blocks[0]["text"] == "base instructions"
-    assert blocks[-1]["text"].strip() == GOAL_TOOLS_SYSTEM_PROMPT
+    assert blocks[-1]["text"].strip().startswith(GOAL_TOOLS_SYSTEM_PROMPT)
 
 
 def test_goal_tool_state_marks_goal_fields_private() -> None:

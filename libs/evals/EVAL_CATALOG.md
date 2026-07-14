@@ -52,9 +52,9 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
-- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L101) — `tests/evals/test_goal_tools.py:101`
-- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L128) — `tests/evals/test_goal_tools.py:128`
-- [`test_active_rubric_may_be_consulted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L163) — `tests/evals/test_goal_tools.py:163`
+- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L106) — `tests/evals/test_goal_tools.py:106`
+- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L135) — `tests/evals/test_goal_tools.py:135`
+- [`test_active_rubric_may_be_consulted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L185) — `tests/evals/test_goal_tools.py:185`
 - [`test_write_todos_sequential_updates_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L27) — `tests/evals/test_todos.py:27`
 - [`test_write_todos_three_steps_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L53) — `tests/evals/test_todos.py:53`
 - [`test_direct_request_slack_dm`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L117) — `tests/evals/test_tool_selection.py:117`

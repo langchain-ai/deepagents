@@ -566,12 +566,18 @@ def _validate_tool_call_selector(
 ) -> None:
     """Validate a tool-call selector at construction time (fail fast).
 
-    Guards the invariants that both `ToolCall` and `ToolNotCalled` depend on. A
-    non-positive `step` would silently index the wrong step (the matcher uses
+    Guards the two *construction-time* footguns both `ToolCall` and
+    `ToolNotCalled` depend on. This cannot catch every vacuous selector: an
+    unknown `name` or an out-of-range `step` still match nothing and are only
+    knowable against a concrete trajectory — see `ToolNotCalled` for that
+    caveat.
+
+    A non-positive `step` would silently index the wrong step (the matcher uses
     `step - 1`, so `step=0` wraps to the last step). Setting both
-    `args_contains` and `args_equals` can express an unsatisfiable filter — a
-    footgun for the hard-fail `ToolNotCalled`, where a filter that never matches
-    makes the assertion vacuously pass and masquerade as coverage.
+    `args_contains` and `args_equals` is rejected as ambiguous intent: the two
+    filters can conflict (an unsatisfiable match) and, even when they agree, one
+    is redundant. Either way, for the hard-fail `ToolNotCalled` a never-matching
+    filter would make the assertion vacuously pass and masquerade as coverage.
 
     Args:
         step: Optional 1-indexed step selector.
@@ -614,7 +620,7 @@ def _tool_call_matches(
         args = tc.get("args")
         if not isinstance(args, dict):
             return False
-        if not all(args.get(k) == v for k, v in args_contains.items()):
+        if not all(k in args and args[k] == v for k, v in args_contains.items()):
             return False
     return args_equals is None or tc.get("args") == args_equals
 
@@ -668,6 +674,15 @@ class ToolNotCalled(SuccessAssertion):
     steps are searched; `args_contains` / `args_equals` narrow the match to
     specific args and are mutually exclusive.
 
+    Vacuous-pass caveat: the check passes whenever nothing matches, so a
+    selector that *can never* match passes without asserting anything — a
+    `name` no registered tool emits, or a `step` past the end of the trajectory
+    (out of range → no match → pass). These depend on the trajectory / tool
+    registry and so cannot be rejected at construction. Pair this assertion
+    with a positive check on the same literal (or a unit test pinning the tool
+    name to the middleware that exposes it) so a typo or rename fails loudly
+    instead of silently disabling the gate.
+
     Attributes:
         name: Tool name that must be absent.
         step: Optional 1-indexed step to restrict the search to.
@@ -683,7 +698,7 @@ class ToolNotCalled(SuccessAssertion):
     args_equals: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
-        """Reject selectors that would make the absence check vacuous."""
+        """Reject wrong-index or ambiguous selectors at construction time."""
         _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
 
     def check(self, trajectory: AgentTrajectory) -> bool:
@@ -858,7 +873,7 @@ class ToolCall(EfficiencyAssertion):
     args_equals: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
-        """Reject selectors that can never match a tool call."""
+        """Reject wrong-index or ambiguous selectors at construction time."""
         _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
 
     def check(self, trajectory: AgentTrajectory) -> bool:

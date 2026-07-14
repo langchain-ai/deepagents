@@ -85,8 +85,52 @@ class TestToolNotCalled:
             is False
         )
 
+    def test_args_contains_none_requires_the_key(self) -> None:
+        """A missing arg must not match an arg explicitly set to `None`."""
+        missing = _traj(_step(1, _tc("write_file")))
+        explicit = _traj(_step(1, _tc("write_file", reason=None)))
+
+        assertion = tool_not_called("write_file", args_contains={"reason": None})
+        assert assertion.check(missing)
+        assert not assertion.check(explicit)
+
+    def test_args_equals_requires_exact_args(self) -> None:
+        """`args_equals` matches only on a whole-dict exact match."""
+        traj = _traj(_step(1, _tc("write_file", file_path="/a.md", mode="w")))
+        # Exact match → the forbidden call is present → fails.
+        assert (
+            tool_not_called("write_file", args_equals={"file_path": "/a.md", "mode": "w"}).check(
+                traj
+            )
+            is False
+        )
+        # A subset is not an exact match → not forbidden → passes. This is the
+        # branch that distinguishes `args_equals` from `args_contains`.
+        assert tool_not_called("write_file", args_equals={"file_path": "/a.md"}).check(traj) is True
+
+    def test_describe_failure_names_the_scoped_step(self) -> None:
+        """A step-scoped failure surfaces the step in its description."""
+        traj = _traj(_step(1, _tc("lookup_population")), _step(2, _tc("get_rubric")))
+        msg = tool_not_called("get_rubric", step=2).describe_failure(traj)
+        assert "step 2" in msg
+
     def test_factory_equals_class(self) -> None:
         assert tool_not_called("get_goal", step=2) == ToolNotCalled(name="get_goal", step=2)
+
+
+# ---------------------------------------------------------------------------
+# ToolCall — the presence counterpart, sharing the same matcher
+# ---------------------------------------------------------------------------
+
+
+class TestToolCall:
+    def test_present_true(self) -> None:
+        traj = _traj(_step(1, _tc("get_rubric")))
+        assert tool_call(name="get_rubric").check(traj) is True
+
+    def test_absent_false(self) -> None:
+        traj = _traj(_step(1, _tc("lookup_population")))
+        assert tool_call(name="get_rubric").check(traj) is False
 
 
 # ---------------------------------------------------------------------------

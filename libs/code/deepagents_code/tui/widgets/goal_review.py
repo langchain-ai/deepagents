@@ -273,6 +273,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "edit"
         if self._edit_input is not None:
             self._edit_input.text = self._criteria
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
@@ -284,6 +285,7 @@ class GoalReviewMenu(Container):
         self._input_mode = "reject"
         if self._edit_input is not None:
             self._edit_input.text = ""
+            self._edit_input.reset_paste_state()
             self._edit_input.display = True
             self._edit_input.focus()
         self._update_options()
@@ -331,7 +333,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as revised criteria."""
         if self._edit_input is None:
             return
-        criteria = self._edit_input.text.strip()
+        criteria = self._edit_input.submitted_value.strip()
         if not criteria:
             self._hint_empty_submission("criteria")
             return
@@ -341,7 +343,7 @@ class GoalReviewMenu(Container):
         """Submit the current editor text as regeneration feedback."""
         if self._edit_input is None:
             return
-        message = self._edit_input.text.strip()
+        message = self._edit_input.submitted_value.strip()
         if not message:
             self._hint_empty_submission("feedback")
             return

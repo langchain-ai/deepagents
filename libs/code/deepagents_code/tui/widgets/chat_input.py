@@ -38,6 +38,10 @@ from deepagents_code.paste_collapse import (
     format_paste_ref,
     should_collapse_paste,
 )
+from deepagents_code.tui.widgets._paste_textarea import (
+    PasteBurstTextArea,
+    _collapse_pastes_enabled,
+)
 from deepagents_code.tui.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
@@ -74,30 +78,6 @@ reference and neutralizes every shape at the parser. See the kitty keyboard
 protocol spec (functional key definitions) for background.
 """
 
-_PASTE_BURST_CHAR_GAP_SECONDS = 0.03
-"""Maximum time between chars to treat input as a paste-like burst."""
-
-_PASTE_BURST_FLUSH_DELAY_SECONDS = 0.08
-"""Idle timeout before flushing buffered burst text."""
-
-_PASTE_BURST_START_CHARS = {"'", '"'}
-"""Characters that can start dropped-path payloads."""
-
-_PASTE_BURST_MIN_CHARS = 3
-"""Consecutive fast keystrokes before a stream is treated as a paste burst.
-
-Terminals that lack bracketed paste replay a paste as individual key events.
-Counting a short run of rapid chars distinguishes that from human typing,
-which has much larger inter-key gaps.
-"""
-
-_PASTE_ENTER_SUPPRESS_WINDOW_SECONDS = 0.12
-"""Window after recent burst activity during which `enter` inserts a newline.
-
-Keeps multi-line pastes grouped as one input even when newlines arrive as
-`enter` key events slightly after the surrounding characters (e.g. across
-terminal read boundaries), instead of submitting mid-paste.
-"""
 
 _FILE_CACHE_WORKER_GROUP = "file-cache"
 """Textual worker group for all `@` file-completion cache warmers."""
@@ -141,7 +121,6 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
-    from textual.timer import Timer
 
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
@@ -150,33 +129,6 @@ if TYPE_CHECKING:
 def _should_collapse_chat_paste(text: str) -> bool:
     """Return whether pasted chat text should be collapsed."""
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
-
-
-def _load_collapse_pastes() -> bool:
-    """Resolve whether large chat-input pastes are collapsed into placeholders.
-
-    Reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then `[ui].collapse_pastes` in
-    `~/.deepagents/config.toml`, defaulting to enabled.
-
-    Returns:
-        The resolved preference (defaults to `True`).
-    """
-    from deepagents_code.config_manifest import (
-        get_option,
-        load_config_toml,
-        resolve_scalar,
-    )
-
-    option = get_option("display.collapse_pastes")
-    if option is None:
-        # Unreachable unless the manifest key is renamed without updating this
-        # literal; log so that mismatch surfaces instead of silently defaulting.
-        logger.warning(
-            "Unknown config option %r; defaulting to enabled", "display.collapse_pastes"
-        )
-        return True
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
-    return bool(value)
 
 
 class CompletionOption(Static):
@@ -495,7 +447,7 @@ class CompletionPopup(VerticalScroll):
         self.styles.display = "block"
 
 
-class ChatTextArea(TextArea):
+class ChatTextArea(PasteBurstTextArea):
     """TextArea subclass with custom key handling for chat input."""
 
     BINDINGS: ClassVar[list[Binding]] = [
@@ -596,19 +548,7 @@ class ChatTextArea(TextArea):
         self._chat_input_owner: ChatInput | None = None
         self._skip_history_change_events = 0
         self._completion_active = False
-        # Buffer high-frequency key bursts from terminals that emulate paste via
-        # rapid key events instead of dispatching a paste event.
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time: float | None = None
-        self._paste_burst_timer: Timer | None = None
-        # Counts consecutive rapid keystrokes so a paste-like stream can be
-        # detected even when it doesn't begin with a quote.
-        self._paste_burst_run = 0
-        self._paste_burst_last_key_time: float | None = None
-        self._paste_burst_last_suppressed_enter_time: float | None = None
-        # Deadline until which `enter` inserts a newline rather than submitting,
-        # keeping multi-line pastes grouped across read boundaries.
-        self._paste_burst_window_until: float | None = None
+        # Paste-burst state is initialized by PasteBurstTextArea.__init__.
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
         # Tracks terminal focus so a click that re-focuses the window only
@@ -939,52 +879,6 @@ class ChatTextArea(TextArea):
             return
         super().action_cursor_down(select)
 
-    def _cancel_paste_burst_timer(self) -> None:
-        """Cancel any scheduled paste-burst flush timer."""
-        if self._paste_burst_timer is None:
-            return
-        self._paste_burst_timer.stop()
-        self._paste_burst_timer = None
-
-    def _schedule_paste_burst_flush(self) -> None:
-        """Schedule idle-time flush for buffered paste-burst text."""
-        self._cancel_paste_burst_timer()
-        self._paste_burst_timer = self.set_timer(
-            _PASTE_BURST_FLUSH_DELAY_SECONDS, self._flush_paste_burst
-        )
-
-    def _start_paste_burst(self, char: str, now: float) -> None:
-        """Start buffering a paste-like keystroke burst."""
-        self._paste_burst_buffer = char
-        self._paste_burst_last_char_time = now
-        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
-        self._schedule_paste_burst_flush()
-
-    def _append_paste_burst(self, text: str, now: float) -> None:
-        """Append text to an active paste-burst buffer."""
-        if not self._paste_burst_buffer:
-            self._start_paste_burst(text, now)
-            return
-        self._paste_burst_buffer += text
-        self._paste_burst_last_char_time = now
-        self._paste_burst_window_until = now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
-        self._schedule_paste_burst_flush()
-
-    def _note_paste_burst_keystroke(self, now: float) -> None:
-        """Track inter-key timing to count consecutive rapid keystrokes."""
-        last = self._paste_burst_last_key_time
-        if last is not None and (now - last) <= _PASTE_BURST_CHAR_GAP_SECONDS:
-            self._paste_burst_run += 1
-        else:
-            self._paste_burst_run = 1
-        self._paste_burst_last_key_time = now
-
-    def _reset_paste_burst_run(self) -> None:
-        """Clear consecutive-keystroke tracking after non-burst input."""
-        self._paste_burst_run = 0
-        self._paste_burst_last_key_time = None
-        self._paste_burst_last_suppressed_enter_time = None
-
     def _reset_paste_burst_state(self) -> None:
         """Reset all paste-burst and backslash tracking to a clean slate.
 
@@ -992,40 +886,8 @@ class ChatTextArea(TextArea):
         `clear_text`, `discard_text`) so a wholesale text swap never leaves
         stale burst/backslash timing that would misclassify the next keystroke.
         """
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
+        super()._reset_paste_burst_state()
         self._backslash_pending_time = None
-
-    def _enter_inserts_newline_during_burst(self, now: float) -> bool:
-        """Return whether `enter` should insert a newline rather than submit.
-
-        True when the preceding keystroke was part of a rapid run or the
-        previous `enter` was already suppressed, and the suppression window is
-        still open. The char-gap check keeps a deliberate `enter` pressed after
-        a burst settles from being swallowed; the window bounds how long a
-        replayed paste's newlines stay grouped. Slash-command context always
-        keeps `enter`'s submit/dispatch semantics.
-        """
-        if self._in_slash_command_context():
-            return False
-        # Defensive: the plain-Enter caller appends-and-returns or flushes any
-        # active buffer before this helper runs, so this branch is unreachable
-        # today. It keeps the helper's contract self-contained.
-        if self._paste_burst_buffer:
-            return True
-        until = self._paste_burst_window_until
-        if until is None or now > until:
-            return False
-        last_enter = self._paste_burst_last_suppressed_enter_time
-        if last_enter is not None:
-            return True
-        last_key = self._paste_burst_last_key_time
-        return (
-            last_key is not None and (now - last_key) <= _PASTE_BURST_CHAR_GAP_SECONDS
-        )
 
     def _in_slash_command_context(self) -> bool:
         """Return whether the current input is composing a slash command."""
@@ -1043,34 +905,12 @@ class ChatTextArea(TextArea):
         owner = self._chat_input_owner
         return owner is None or owner._collapse_pastes
 
-    def _should_start_paste_burst(self, char: str) -> bool:
-        """Return whether a keypress should start paste-burst buffering.
-
-        Restricting to quote-prefixed input at an empty cursor reduces false
-        positives for normal typing and slash-command entry. General multi-line
-        pastes are handled by the Enter-suppression window instead, which keeps
-        their newlines from submitting without rerouting text insertion.
-        """
-        if char not in _PASTE_BURST_START_CHARS:
-            return False
-        if self.text or not self.selection.is_empty:
-            return False
-        row, col = self.cursor_location
-        return row == 0 and col == 0
-
-    async def _flush_paste_burst(self) -> None:
-        """Flush buffered burst text through dropped-path and large-paste checks.
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Route a flushed burst through dropped-path and large-paste checks.
 
         When parsing fails, the buffered text is inserted unchanged so regular
         typing behavior is preserved.
         """
-        payload = self._paste_burst_buffer
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._cancel_paste_burst_timer()
-        if not payload:
-            return
-
         from deepagents_code.input import parse_pasted_path_payload
 
         try:
@@ -1079,8 +919,9 @@ class ChatTextArea(TextArea):
             # The parser absorbs OSError/RuntimeError internally, so reaching
             # here signals an unexpected regression.  Leave a breadcrumb (never
             # the paste content) instead of swallowing it, then fall through to
-            # normal text handling.
-            logger.debug(
+            # normal text handling.  Logged at warning (not debug) so the
+            # regression actually surfaces in production.
+            logger.warning(
                 "Path-payload parsing failed; treating burst as text",
                 exc_info=True,
             )
@@ -1160,52 +1001,22 @@ class ChatTextArea(TextArea):
         if event.is_printable or event.key == "backspace":
             self.post_message(self.Typing())
 
-        if self._paste_burst_buffer:
-            if event.key == "enter":
-                self._append_paste_burst("\n", now)
-                event.prevent_default()
-                event.stop()
-                return
-
-            if event.is_printable and event.character is not None:
-                last_time = self._paste_burst_last_char_time
-                if (
-                    last_time is not None
-                    and (now - last_time) <= _PASTE_BURST_CHAR_GAP_SECONDS
-                ):
-                    self._append_paste_burst(event.character, now)
-                    event.prevent_default()
-                    event.stop()
-                    return
-
-            await self._flush_paste_burst()
-
-        if (
-            event.is_printable
-            and event.character is not None
-            and self._should_start_paste_burst(event.character)
-        ):
-            self._start_paste_burst(event.character, now)
+        if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
-        # Track rapid keystroke runs so a terminal replaying a paste as key
-        # events (no bracketed paste) arms the Enter-suppression window, keeping
-        # the paste's newlines from submitting mid-stream. `enter` is exempt so
-        # newlines within a paste don't break the run.
-        if event.is_printable and event.character is not None:
-            self._paste_burst_last_suppressed_enter_time = None
-            self._note_paste_burst_keystroke(now)
-            if (
-                self._paste_burst_run >= _PASTE_BURST_MIN_CHARS
-                and not self._in_slash_command_context()
-            ):
-                self._paste_burst_window_until = (
-                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
-                )
-        elif event.key != "enter":
-            self._reset_paste_burst_run()
+        if self._maybe_start_burst(event, now):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Promote rapid keystroke runs into the paste buffer so terminals without
+        # bracketed paste still get newline grouping and large-paste collapsing.
+        if self._track_burst_run(event, now):
+            event.prevent_default()
+            event.stop()
+            return
 
         # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
         # unselected input switches modes. Handle it before TextArea inserts the
@@ -1280,14 +1091,8 @@ class ChatTextArea(TextArea):
         if event.key == "enter":
             event.prevent_default()
             event.stop()
-            if self._enter_inserts_newline_during_burst(now):
-                self._paste_burst_window_until = (
-                    now + _PASTE_ENTER_SUPPRESS_WINDOW_SECONDS
-                )
-                self._paste_burst_last_suppressed_enter_time = now
-                self.action_insert_newline()
+            if self._consume_enter_as_burst_newline(now):
                 return
-            self._paste_burst_last_suppressed_enter_time = None
             if (
                 self._chat_input_owner is not None
                 and self._chat_input_owner._handle_stale_slash_enter()
@@ -1304,6 +1109,11 @@ class ChatTextArea(TextArea):
         """Delete a bound placeholder atomically or the next character."""
         if not self._delete_placeholder_token(backwards=False):
             super().action_delete_right()
+
+    def action_delete_word_left(self) -> None:
+        """Delete a bound placeholder atomically or the previous word."""
+        if not self._delete_placeholder_token(backwards=True):
+            super().action_delete_word_left()
 
     def _delete_placeholder_token(self, *, backwards: bool) -> bool:
         """Delete a full placeholder token (image, video, or paste) in one keypress.
@@ -1746,7 +1556,7 @@ class ChatInput(Vertical):
         # placeholders.
         # Gated by `display.collapse_pastes` (env / `[ui].collapse_pastes`);
         # when disabled, pasted text is inserted verbatim.
-        self._collapse_pastes = _load_collapse_pastes()
+        self._collapse_pastes = _collapse_pastes_enabled()
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not

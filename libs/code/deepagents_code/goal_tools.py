@@ -112,7 +112,7 @@ class GoalSnapshot(TypedDict):
     """
 
     criteria: str | None
-    """Accepted criteria (from the shared rubric snapshot)."""
+    """Persisted goal criteria, or shared rubric criteria when no goal rubric exists."""
 
     note: str | None
     """Latest evidence or blocker note recorded by `update_goal`."""
@@ -157,22 +157,25 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     goal_rubric = _clean_state_text(state, "_goal_rubric")
     sticky_rubric = _clean_state_text(state, "_sticky_rubric")
     objective = _clean_state_text(state, "_goal_objective")
+    status = coerce_goal_status(state.get("_goal_status")) or "active"
+    goal_is_actionable = objective is not None and status in {"active", "blocked"}
+    sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
 
     source: RubricSource | None = None
     if criteria is not None:
-        if objective is not None and goal_rubric == criteria:
+        if goal_is_actionable and goal_rubric == criteria:
             source = "goal"
-        elif sticky_rubric == criteria:
+        elif sticky_rubric == criteria and not sticky_is_goal_rubric:
             source = "sticky"
         else:
             source = "invocation"
     # Fallback branches below run only when there is no public `rubric` input,
     # so `invocation` is unreachable here by construction — the criteria can
-    # only be attributed to a `goal` or a `sticky` rubric.
-    elif objective is not None and goal_rubric is not None:
+    # only be attributed to an actionable `goal` or a standalone `sticky` rubric.
+    elif goal_is_actionable and goal_rubric is not None:
         criteria = goal_rubric
         source = "goal"
-    elif sticky_rubric is not None:
+    elif sticky_rubric is not None and not sticky_is_goal_rubric:
         criteria = sticky_rubric
         source = "sticky"
 
@@ -209,6 +212,7 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     # A set-but-unlabeled or unrecognized status defaults to "active"; an
     # unknown persisted value never leaks to the model as a bogus status.
     status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
+    criteria = _clean_state_text(state, "_goal_rubric") or rubric["criteria"]
     note = _clean_state_text(state, "_goal_status_note")
     return {
         # Blocked goals remain actionable, while paused and complete goals do not
@@ -216,7 +220,7 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
         "active": status in {"active", "blocked"},
         "objective": objective,
         "status": status,
-        "criteria": rubric["criteria"],
+        "criteria": criteria,
         "note": note,
     }
 

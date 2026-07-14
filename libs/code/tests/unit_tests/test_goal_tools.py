@@ -63,6 +63,41 @@ def test_rubric_snapshot_identifies_goal_rubric() -> None:
     }
 
 
+@pytest.mark.parametrize("status", ["paused", "complete"])
+def test_rubric_snapshot_suppresses_inactive_goal_rubric(status: str) -> None:
+    """Paused and completed goal criteria must not drive later work."""
+    assert _rubric_snapshot(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": status,
+            "_goal_rubric": "- tests pass",
+            "_sticky_rubric": "- tests pass",
+        }
+    ) == {
+        "active": False,
+        "criteria": None,
+        "source": None,
+        "grading_status": None,
+    }
+
+
+def test_rubric_snapshot_keeps_standalone_sticky_rubric_for_paused_goal() -> None:
+    """An unrelated sticky rubric remains active while a goal is paused."""
+    assert _rubric_snapshot(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "paused",
+            "_goal_rubric": "- goal criteria",
+            "_sticky_rubric": "- standalone criteria",
+        }
+    ) == {
+        "active": True,
+        "criteria": "- standalone criteria",
+        "source": "sticky",
+        "grading_status": None,
+    }
+
+
 def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
     """Persisted sticky rubric should be visible outside an active turn."""
     assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {

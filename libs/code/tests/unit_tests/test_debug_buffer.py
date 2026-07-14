@@ -155,6 +155,58 @@ class TestInMemoryLogBuffer:
         assert len(_lines(buffer, 0)) == 2
         assert _lines(buffer, 4) == [_lines(buffer, 0)[-1]]
 
+    def test_debug_flood_does_not_evict_other_levels(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=3)
+        buffer.emit(_record("deepagents_code", "keep-info", level=logging.INFO))
+        buffer.emit(_record("deepagents_code", "keep-warning", level=logging.WARNING))
+        for i in range(10):  # flood DEBUG well past the per-level capacity
+            buffer.emit(_record("deepagents_code", f"debug{i}", level=logging.DEBUG))
+
+        records, total = buffer.snapshot_records_since(0)
+        messages = [record.message for record in records]
+
+        # The rarer, higher-severity records survive the DEBUG flood ...
+        assert "keep-info" in messages
+        assert "keep-warning" in messages
+        # ... while DEBUG stays bounded to its own capacity (last 3).
+        assert [m for m in messages if m.startswith("debug")] == [
+            "debug7",
+            "debug8",
+            "debug9",
+        ]
+        # Merged output stays chronological via the emission sequence.
+        assert messages == ["keep-info", "keep-warning", "debug7", "debug8", "debug9"]
+        assert total == 12
+
+    def test_per_level_bound_is_independent(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=2)
+        for i in range(5):
+            buffer.emit(_record("deepagents_code", f"info{i}", level=logging.INFO))
+        for i in range(5):
+            buffer.emit(_record("deepagents_code", f"err{i}", level=logging.ERROR))
+
+        records, _total = buffer.snapshot_records_since(0)
+
+        # Each level keeps only its own last `capacity` records.
+        assert [record.message for record in records] == [
+            "info3",
+            "info4",
+            "err3",
+            "err4",
+        ]
+
+    def test_unknown_level_names_share_one_bounded_bucket(self) -> None:
+        buffer = InMemoryLogBuffer(capacity=2)
+        # Custom numeric levels have level names like "Level 25"; none are in
+        # LOG_LEVELS, so they must share the fallback bucket rather than each
+        # getting its own unbounded deque.
+        for i in range(4):
+            buffer.emit(_record("deepagents_code", f"custom{i}", level=25 + i))
+
+        records, _total = buffer.snapshot_records_since(0)
+
+        assert [record.message for record in records] == ["custom2", "custom3"]
+
     def test_snapshot_since_returns_records_and_next_index(self) -> None:
         buffer = InMemoryLogBuffer(capacity=10)
         for i in range(3):

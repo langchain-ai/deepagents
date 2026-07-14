@@ -470,6 +470,39 @@ class TestDebugConsoleScreen:
                 for record in log.records
             )
 
+    async def test_level_filter_finds_info_after_debug_flood(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A DEBUG flood must not hide earlier INFO records from the filter."""
+        monkeypatch.setattr(debug_console_mod, "_debug_records_enabled", lambda: True)
+        # Small per-level cap so a modest flood exercises pruning quickly; a flat
+        # cap would drop the INFO marker in favor of the newer DEBUG records.
+        monkeypatch.setattr(debug_console_mod, "_RECORD_LIMIT", 5)
+        package_logger = logging.getLogger("deepagents_code")
+        original_level = package_logger.level
+        package_logger.setLevel(logging.DEBUG)
+        try:
+            logger.info("debug-console-flood-info-marker")
+            for index in range(50):  # far more DEBUG than the per-level cap
+                logger.debug("debug-console-flood-debug-%d", index)
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = DebugConsoleScreen(_snapshot())
+                app.push_screen(screen)
+                await pilot.pause()
+                log = screen.query_one("#debug-log", _DebugLogView)
+                select = screen.query_one("#debug-level-filter", Select)
+
+                select.value = "min:INFO"
+                await pilot.pause()
+
+                assert any(
+                    "debug-console-flood-info-marker" in record.message
+                    for record in log.records
+                )
+        finally:
+            package_logger.setLevel(original_level)
+
     async def test_level_filter_hides_debug_when_runtime_level_excludes_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

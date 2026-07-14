@@ -65,7 +65,10 @@ _REFRESH_INTERVAL = 0.5
 """Seconds between log-tail refresh ticks."""
 
 _RECORD_LIMIT = DEFAULT_CAPACITY
-"""Maximum records retained by an open debug console view."""
+"""Maximum records retained per level by an open debug console view.
+
+Matches the buffer's per-level `deque` bound so the console mirrors the buffer's
+level-partitioned retention instead of re-flattening it into a single window."""
 
 _FILTER_SELECT_ID = "debug-level-filter"
 FilterValue = Literal[
@@ -786,15 +789,34 @@ class DebugConsoleScreen(ModalScreen[None]):
         log.append_records(self._visible_records(records))
 
     def _prune_records(self) -> bool:
-        """Trim retained records to the in-memory ring buffer capacity.
+        """Trim retained records to the ring buffer capacity, per level.
+
+        Mirrors the buffer's level-partitioned retention: each level keeps at
+        most `_RECORD_LIMIT` records, so a `DEBUG` flood cannot evict the rarer
+        higher-severity records the level filter needs. Only the oldest entries
+        of an over-capacity level are dropped; chronological order is preserved.
 
         Returns:
             `True` when records were pruned.
         """
-        overflow = len(self._records) - _RECORD_LIMIT
-        if overflow <= 0:
+        counts: dict[str, int] = {}
+        for record in self._records:
+            counts[record.level] = counts.get(record.level, 0) + 1
+        overflow = {
+            level: count - _RECORD_LIMIT
+            for level, count in counts.items()
+            if count > _RECORD_LIMIT
+        }
+        if not overflow:
             return False
-        del self._records[:overflow]
+        kept: list[InMemoryLogRecord] = []
+        for record in self._records:
+            remaining = overflow.get(record.level, 0)
+            if remaining > 0:
+                overflow[record.level] = remaining - 1
+                continue
+            kept.append(record)
+        self._records = kept
         return True
 
     def _visible_records(

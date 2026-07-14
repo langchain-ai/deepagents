@@ -1,10 +1,12 @@
 r"""In-memory ring buffer of recent log records for the in-app Debug Console.
 
-A lightweight `logging.Handler` keeps the most recent structured log records in a
-bounded `deque` so the Debug Console (`Ctrl+\`) can show a live tail without
-requiring the opt-in file logging from `_debug.configure_debug_logging`. The
-handler is installed once on the `deepagents_code` package logger (see
-`__init__.py`); child module loggers reach it via propagation.
+A lightweight `logging.Handler` keeps the most recent structured log records in
+bounded per-level `deque`s so the Debug Console (`Ctrl+\`) can show a live tail
+without requiring the opt-in file logging from `_debug.configure_debug_logging`.
+Partitioning retention by level means a burst of `DEBUG` output cannot evict the
+rarer `INFO`/`WARNING`/`ERROR` records the level filter needs. The handler is
+installed once on the `deepagents_code` package logger (see `__init__.py`); child
+module loggers reach it via propagation.
 
 Installation is negligible, and each emitted record only appends a structured
 record to a bounded `deque`, so the buffer is cheap enough to keep always on.
@@ -12,16 +14,23 @@ record to a bounded `deque`, so the buffer is cheap enough to keep always on.
 
 from __future__ import annotations
 
-import itertools
 import logging
+import operator
 import os
 from collections import deque
 from dataclasses import dataclass
 
+from deepagents_code._debug import LOG_LEVELS
 from deepagents_code._env_vars import LOG_LEVEL
 
 DEFAULT_CAPACITY = 1000
-"""Maximum number of records retained in the ring buffer."""
+"""Maximum number of records retained per level in the ring buffer."""
+
+_FALLBACK_LEVEL_BUCKET = "_other"
+"""Retention bucket for records whose level name is not in `LOG_LEVELS`.
+
+A single shared bucket keeps the number of per-level deques bounded even if
+non-standard level names are emitted, so nothing is silently dropped."""
 
 _DATE_FORMAT = "%H:%M:%S"
 _FORMATTER = logging.Formatter(datefmt=_DATE_FORMAT)
@@ -44,13 +53,22 @@ class InMemoryLogRecord:
 
 
 class InMemoryLogBuffer(logging.Handler):
-    """Logging handler retaining the most recent structured records in memory."""
+    """Logging handler retaining the most recent structured records in memory.
+
+    Retention is partitioned by level: each level name keeps its own bounded
+    `deque` of *capacity* records. A burst of high-volume records at one level
+    (typically `DEBUG`) therefore cannot evict the rarer, higher-severity
+    records at other levels, so the Debug Console's level filter can still
+    surface them. Each retained record is tagged with its monotonic emission
+    sequence number so snapshots stay chronologically ordered across levels.
+    """
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
-        """Create the handler with a bounded backing `deque`.
+        """Create the handler with a bounded backing `deque` per level.
 
         Args:
-            capacity: Maximum records to retain; oldest are dropped first.
+            capacity: Maximum records to retain per level; oldest are dropped
+                first.
 
         Raises:
             ValueError: If *capacity* is less than 1. A zero-capacity buffer
@@ -61,19 +79,31 @@ class InMemoryLogBuffer(logging.Handler):
             msg = f"capacity must be >= 1, got {capacity}"
             raise ValueError(msg)
         super().__init__()
-        self._records: deque[InMemoryLogRecord] = deque(maxlen=capacity)
+        self._capacity = capacity
+        self._levels: dict[str, deque[tuple[int, InMemoryLogRecord]]] = {}
         self._total = 0
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Append the structured *record* to the ring buffer."""
+        """Append the structured *record* to its level's ring buffer."""
         self.acquire()
         try:
-            self._records.append(self._make_record(record))
+            structured = self._make_record(record)
+            bucket = self._level_bucket(structured.level)
+            bucket.append((self._total, structured))
             self._total += 1
         except Exception:  # noqa: BLE001  # never let logging crash the app
             self.handleError(record)
         finally:
             self.release()
+
+    def _level_bucket(self, level: str) -> deque[tuple[int, InMemoryLogRecord]]:
+        """Return the retention deque for *level*, creating it on first use."""
+        key = level if level in LOG_LEVELS else _FALLBACK_LEVEL_BUCKET
+        bucket = self._levels.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=self._capacity)
+            self._levels[key] = bucket
+        return bucket
 
     @property
     def total_emitted(self) -> int:
@@ -107,15 +137,20 @@ class InMemoryLogBuffer(logging.Handler):
             self.release()
 
     def _records_since_unlocked(self, index: int) -> list[InMemoryLogRecord]:
-        """Return retained records from *index* while the handler lock is held."""
-        start_abs = self._total - len(self._records)
-        offset = index - start_abs
-        if offset <= 0:
-            return list(self._records)
-        if offset >= len(self._records):
-            return []
-        # islice avoids materializing the full deque just to slice off the tail.
-        return list(itertools.islice(self._records, offset, None))
+        """Return retained records from *index* while the handler lock is held.
+
+        Merges the per-level deques and restores chronological order using each
+        record's emission sequence number, so callers see one ordered tail even
+        though retention is partitioned by level.
+        """
+        tagged = [
+            entry
+            for bucket in self._levels.values()
+            for entry in bucket
+            if entry[0] >= index
+        ]
+        tagged.sort(key=operator.itemgetter(0))
+        return [record for _seq, record in tagged]
 
     @staticmethod
     def _make_record(record: logging.LogRecord) -> InMemoryLogRecord:

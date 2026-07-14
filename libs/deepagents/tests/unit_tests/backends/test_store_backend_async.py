@@ -45,6 +45,21 @@ async def test_store_backend_async_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
+async def test_store_backend_aread_surfaces_pagination_metadata():
+    """`StoreBackend.aread` propagates the pagination metadata from `slice_read_response`."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "one\ntwo\nthree\nfour\nfive")
+
+    result = await be.aread("/notes.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
 async def test_store_backend_als_nested_directories():
     """Test async ls with nested directories."""
     mem_store = InMemoryStore()

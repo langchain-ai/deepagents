@@ -746,11 +746,18 @@ def _process_rubric_event(
                 detail = f" — {gap}" if gap else ""
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            "[yellow]⚠ Acceptance criteria not satisfied "
-            "(iteration limit reached)[/yellow]",
+            "[yellow]⚠ Acceptance criteria not yet satisfied "
+            f"(iteration limit reached){suffix}[/yellow]",
             highlight=False,
         )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result in {"failed", "grader_error"}:
         label = (
             "Rubric is invalid or cannot be evaluated"

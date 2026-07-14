@@ -227,6 +227,9 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
 def _format_rubric_event(data: dict[str, Any]) -> str | None:
     """Format a concise rubric custom-stream event for the transcript.
 
+    Args:
+        data: Custom-stream rubric event payload.
+
     Returns:
         A user-visible summary for rubric events, or `None` for custom-stream
         events that are not rubric events.
@@ -269,8 +272,12 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     return f"{glyphs.warning} Acceptance criteria check ended"
 
 
-def _format_rubric_details(data: dict[str, Any]) -> str:
+def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -> str:
     """Format complete grader details without serializing or truncating payloads.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
 
     Returns:
         Plain text containing the full explanation, unmet criteria, and next step.
@@ -298,7 +305,12 @@ def _format_rubric_details(data: dict[str, Any]) -> str:
             lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
         sections.append("\n".join(lines))
 
-    if result in {"needs_revision", "max_iterations_reached"}:
+    if result == "max_iterations_reached" and goal_active:
+        next_step = (
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"}:
         next_step = "Address every unmet criterion, then retry the check."
     elif result == "failed":
         next_step = "Review or replace the rubric before grading again."
@@ -540,6 +552,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     rubric: str | None = None,
+    goal_active: bool = False,
     blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
@@ -568,6 +581,7 @@ async def execute_task_textual(
             in the checkpoint).
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
         blocked_goal_retry_context: One-turn model context for retrying a
             previously blocked goal. This is carried via runtime context so it
             is not parsed for file mentions or checkpointed as human input.
@@ -837,7 +851,10 @@ async def execute_task_textual(
                         and is_main_agent
                     ):
                         details = (
-                            _format_rubric_details(rubric_message)
+                            _format_rubric_details(
+                                rubric_message,
+                                goal_active=goal_active,
+                            )
                             if rubric_message.get("type") == "rubric_evaluation_end"
                             else ""
                         )
@@ -1155,7 +1172,11 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             if record.diff:
                                 await adapter._mount_message(
-                                    DiffMessage(record.diff, record.display_path)
+                                    DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                    )
                                 )
 
                         # Reshow spinner only when all in-flight tools have

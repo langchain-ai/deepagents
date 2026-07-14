@@ -308,7 +308,7 @@ class TestProcessRubricEvent:
         out = _render_event(
             {"type": "rubric_evaluation_end", "result": "max_iterations_reached"}
         )
-        assert "iteration limit reached" in out
+        assert "Acceptance criteria not yet satisfied (iteration limit reached)" in out
 
     def test_failed(self) -> None:
         out = _render_event(

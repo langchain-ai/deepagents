@@ -3631,7 +3631,9 @@ def load_mcp_server_trust_lists(
     # are scoped to the project root and server fingerprint; a set env var
     # replaces those TOML approvals to preserve env-beats-config semantics.
     enabled = frozenset(env_enabled or ())
-    approvals = frozenset(() if env_enabled is not None else toml_approvals)
+    approvals = frozenset(
+        () if env_enabled is not None or read_error is not None else toml_approvals
+    )
     disabled = frozenset(toml_disabled) | frozenset(env_disabled or ())
     # Reject precedence is enforced by `McpServerTrustLists.__post_init__`, so no
     # subtraction here.

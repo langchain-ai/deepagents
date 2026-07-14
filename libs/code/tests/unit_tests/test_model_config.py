@@ -6108,18 +6108,29 @@ class TestLoadMcpServerTrustLists:
     def test_wrong_typed_disabled_fails_closed_with_read_error(
         self, tmp_path: Path
     ) -> None:
-        """A wrong-typed deny list sets `read_error` instead of silently emptying.
+        """A wrong-typed deny list blocks TOML approvals and sets `read_error`.
 
-        Emptying the deny on a malformed value would be a fail-open (the user's
-        rejection stops being enforced). Surfacing `read_error` lets callers fail
-        closed, matching the corrupt-file path.
+        Preserving a saved approval when the deny list cannot be read would let
+        that server load despite an unenforced rejection policy. Only explicit
+        environment approvals may survive this config read failure.
         """
         config_path = tmp_path / "config.toml"
-        config_path.write_text("[mcp]\ndisabled_project_servers = 123\n")
+        project_root = tmp_path / "project"
+        server = {"command": "echo", "args": []}
+        fingerprint = fingerprint_mcp_server_config(server)
+        config_path.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+            "disabled_project_servers = 123\n"
+        )
 
         result = load_mcp_server_trust_lists(config_path)
 
         assert result.disabled == frozenset()
+        assert result.approvals == frozenset()
+        assert not result.is_enabled("docs", project_root=project_root, server=server)
         assert result.load_failed
         assert "disabled_project_servers" in (result.read_error or "")
 

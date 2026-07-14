@@ -132,6 +132,8 @@ class GoalReviewMenu(Container):
         self,
         objective: str,
         criteria: str,
+        *,
+        amendment: bool = False,
         id: str | None = None,  # noqa: A002
     ) -> None:
         """Initialize the goal review menu."""
@@ -141,6 +143,9 @@ class GoalReviewMenu(Container):
 
         self._criteria = criteria
         """Generated acceptance criteria proposed for the goal."""
+
+        self._amendment = amendment
+        """Whether this review updates an existing goal."""
 
         self._selected = 0
         """Index of the currently highlighted action option."""
@@ -174,18 +179,22 @@ class GoalReviewMenu(Container):
             Widgets for the title, criteria preview, actions, editor, and help text.
         """
         glyphs = get_glyphs()
+        title = "Review goal amendment" if self._amendment else "Review goal criteria"
         yield Static(
-            Content.from_markup("$cursor Review goal criteria", cursor=glyphs.cursor),
+            Content.from_markup("$cursor $title", cursor=glyphs.cursor, title=title),
             classes="goal-review-title",
         )
         with (
             VerticalScroll(classes="goal-review-content"),
             Vertical(classes="goal-review-body"),
         ):
-            yield Markdown(
-                f"**Proposed criteria**\n\n{self._criteria}",
-                classes="goal-review-markdown",
-            )
+            source = f"**Proposed criteria**\n\n{self._criteria}"
+            if self._amendment:
+                source = (
+                    f"**Proposed objective**\n\n{self._objective}\n\n"
+                    f"**Proposed criteria**\n\n{self._criteria}"
+                )
+            yield Markdown(source, classes="goal-review-markdown")
         with Container(classes="goal-review-options-container"):
             for _ in _OPTIONS:
                 widget = Static("", classes="goal-review-option")

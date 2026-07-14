@@ -21,6 +21,18 @@ class _GoalReviewTestApp(App[None]):
         yield GoalReviewMenu("add refresh tokens", "- tests pass", id="goal-review")
 
 
+class _GoalAmendmentReviewTestApp(App[None]):
+    CSS_PATH = Path(deepagents_code.__file__).resolve().parent / "app.tcss"
+
+    def compose(self) -> ComposeResult:
+        yield GoalReviewMenu(
+            "add refresh tokens with rotation",
+            "- tests pass\n- rotation works",
+            amendment=True,
+            id="goal-review",
+        )
+
+
 class TestGoalReviewMenu:
     """Tests for goal criteria review interactions."""
 
@@ -35,6 +47,20 @@ class TestGoalReviewMenu:
             assert "add refresh tokens" not in markdown.source
             assert "- tests pass" in markdown.source
             assert "Proposed criteria" in markdown.source
+
+    async def test_amendment_review_shows_objective_and_criteria(self) -> None:
+        """Amendment review should expose both canonical fields before approval."""
+        app = _GoalAmendmentReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            markdown = app.query_one(".goal-review-markdown", Markdown)
+            title = app.query_one(".goal-review-title", Static)
+
+            assert "Proposed objective" in markdown.source
+            assert "add refresh tokens with rotation" in markdown.source
+            assert "rotation works" in markdown.source
+            assert "amendment" in str(title.content).lower()
 
     async def test_accept_resolves_accepted(self) -> None:
         """Accept should resolve with the accepted result."""

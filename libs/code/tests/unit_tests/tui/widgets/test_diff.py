@@ -120,6 +120,16 @@ class TestComposeDiffLines:
         assert "diff-line-removed" in removed
         assert context == set()
 
+    def test_content_columns_align_across_line_types(self) -> None:
+        """Context/added/removed rows start their content at the same column."""
+        texts = _texts(_rendered(_SAMPLE_DIFF))
+        ctx = next(t for t in texts if "ctx" in t)
+        removed = next(t for t in texts if "removed" in t)
+        added1 = next(t for t in texts if "added1" in t)
+        # The gutter glyph, right-aligned line number, and separator must be
+        # the same width on every row so the diff body lines up vertically.
+        assert ctx.index("ctx") == removed.index("removed") == added1.index("added1")
+
     def test_max_lines_truncates_with_marker(self) -> None:
         """Beyond `max_lines`, a truncation marker replaces remaining rows."""
         diff = "\n".join(["@@ -1,5 +1,5 @@", *(f"+line{i}" for i in range(5))])

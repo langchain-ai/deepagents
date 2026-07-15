@@ -25,6 +25,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import (
     AIMessage,
+    AnyMessage,
     BaseMessage,
     HumanMessage,
     ToolCall,
@@ -64,6 +65,7 @@ _CONVERSATION_CONTEXT_MESSAGE_LIMIT = 8
 _CONVERSATION_CONTEXT_MESSAGE_TEXT_LIMIT = 1_600
 _CONVERSATION_CONTEXT_TOTAL_TEXT_LIMIT = 6_000
 _CONVERSATION_CONTEXT_SERIALIZED_LIMIT = 12_000
+_CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT = 32_000
 _CRITERIA_OBJECTIVE_DISPLAY_LIMIT = 160
 _CRITERIA_RESULT_LOG_LIMIT = 500
 _REPOSITORY_PATH_RESULT_PREFIX = "__DEEPAGENTS_REPOSITORY_PATH__"
@@ -181,7 +183,7 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Retry model failures with only the structured response tool.
+        """Retry model failures from the original goal message alone.
 
         Returns:
             The context-enabled response or goal-only fallback response.
@@ -194,7 +196,12 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
                 exc_info=True,
             )
             try:
-                return handler(request.override(tools=[]))
+                return handler(
+                    request.override(
+                        messages=_goal_only_messages(request.messages),
+                        tools=[],
+                    )
+                )
             except Exception:
                 # Removing tools cannot fix an auth/config/rate-limit failure, and
                 # the retry's error is usually less actionable than the original.
@@ -208,7 +215,7 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Asynchronously retry model failures without context tools.
+        """Asynchronously retry model failures from the goal message alone.
 
         Returns:
             The context-enabled response or goal-only fallback response.
@@ -221,13 +228,109 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
                 exc_info=True,
             )
             try:
-                return await handler(request.override(tools=[]))
+                return await handler(
+                    request.override(
+                        messages=_goal_only_messages(request.messages),
+                        tools=[],
+                    )
+                )
             except Exception:
                 # Removing tools cannot fix an auth/config/rate-limit failure, and
                 # the retry's error is usually less actionable than the original.
                 # Surface the first error (root cause) rather than the second.
                 logger.warning("Criteria goal-only fallback also failed", exc_info=True)
                 raise first_error from None
+
+
+def _goal_only_messages(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+    """Return only the original user prompt from a criteria-agent transcript.
+
+    Returns:
+        A single initial human message, or an empty list when none is present.
+    """
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            return [message]
+    return []
+
+
+class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
+    """Bound all tool-result text accumulated by a criteria operation."""
+
+    def __init__(self) -> None:
+        """Initialize bounded per-operation context counters."""
+        super().__init__()
+        self._remaining: OrderedDict[str, int] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _take(self, request: ToolCallRequest, size: int) -> int:
+        """Reserve up to `size` characters for one tool result.
+
+        Returns:
+            The number of characters still available for this result.
+        """
+        key = _RepositoryToolBudgetMiddleware._operation_key(request)
+        with self._lock:
+            remaining = self._remaining.get(key, _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT)
+            allowed = min(size, remaining)
+            self._remaining[key] = remaining - allowed
+            self._remaining.move_to_end(key)
+            while len(self._remaining) > _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT:
+                self._remaining.popitem(last=False)
+        return allowed
+
+    def _bound_result(
+        self,
+        request: ToolCallRequest,
+        result: ToolMessage | Command[Any],
+    ) -> ToolMessage | Command[Any]:
+        """Project a tool response to bounded text for the model transcript.
+
+        Returns:
+            A size-bounded text tool message, or an unchanged graph command.
+        """
+        if not isinstance(result, ToolMessage):
+            return result
+
+        content = str(result.text)
+        allowed = self._take(request, len(content))
+        if allowed == len(content):
+            bounded = content
+        elif allowed == 0:
+            bounded = ""
+        else:
+            marker = "\n[Criteria context limit reached; additional content omitted.]"
+            if allowed <= len(marker):
+                bounded = marker[:allowed]
+            else:
+                bounded = content[: allowed - len(marker)] + marker
+        return result.model_copy(update={"content": bounded})
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the shared context budget to a synchronous tool result.
+
+        Returns:
+            The bounded result.
+        """
+        return self._bound_result(request, handler(request))
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Apply the shared context budget to an asynchronous tool result.
+
+        Returns:
+            The bounded result.
+        """
+        return self._bound_result(request, await handler(request))
 
 
 class _RepositoryToolBudgetMiddleware(AgentMiddleware[FilesystemState, None]):
@@ -1293,6 +1396,7 @@ def create_goal_criteria_agent(
         ConfigurableModelMiddleware(persist_model_state=False),
         _GoalContextFallbackMiddleware(),
         _WebSearchBudgetMiddleware(),
+        _CriteriaContextBudgetMiddleware(),
     ]
     if repository_backend is not None:
         middleware.extend(

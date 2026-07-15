@@ -29,6 +29,7 @@ from deepagents_code._testing_models import GoalCriteriaIntegrationChatModel
 from deepagents_code.goal_rubric import (
     _CONVERSATION_CONTEXT_MESSAGE_LIMIT,
     _CONVERSATION_CONTEXT_SERIALIZED_LIMIT,
+    _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT,
     _CRITERIA_OBJECTIVE_DISPLAY_LIMIT,
     _CRITERIA_RESULT_LOG_LIMIT,
     _REPOSITORY_DIRECTORY_ENTRY_LIMIT,
@@ -47,6 +48,7 @@ from deepagents_code.goal_rubric import (
     _coerce_goal_proposal,
     _conversation_context,
     _criteria_interrupt_on,
+    _CriteriaContextBudgetMiddleware,
     _goal_amendment_human_prompt,
     _goal_criteria_request,
     _goal_proposal_from_text,
@@ -220,6 +222,15 @@ class TestGoalContextFallbackMiddleware:
     def test_sync_failure_retries_without_context_tools(self) -> None:
         middleware = _GoalContextFallbackMiddleware()
         request = MagicMock()
+        goal = HumanMessage(content="ship login")
+        request.messages = [
+            goal,
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "fetch_url", "args": {}, "id": "call"}],
+            ),
+            ToolMessage(content="oversized context", tool_call_id="call"),
+        ]
         fallback = MagicMock()
         request.override.return_value = fallback
         handler = MagicMock(side_effect=[RuntimeError("context failed"), "response"])
@@ -227,12 +238,21 @@ class TestGoalContextFallbackMiddleware:
         result = middleware.wrap_model_call(request, handler)
 
         assert result == "response"
-        request.override.assert_called_once_with(tools=[])
+        request.override.assert_called_once_with(messages=[goal], tools=[])
         assert handler.call_args_list == [call(request), call(fallback)]
 
     async def test_async_failure_retries_without_context_tools(self) -> None:
         middleware = _GoalContextFallbackMiddleware()
         request = MagicMock()
+        goal = HumanMessage(content="ship login")
+        request.messages = [
+            goal,
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "docs_search", "args": {}, "id": "call"}],
+            ),
+            ToolMessage(content="malformed context", tool_call_id="call"),
+        ]
         fallback = MagicMock()
         request.override.return_value = fallback
         handler = AsyncMock(side_effect=[RuntimeError("context failed"), "response"])
@@ -240,8 +260,66 @@ class TestGoalContextFallbackMiddleware:
         result = await middleware.awrap_model_call(request, handler)
 
         assert result == "response"
-        request.override.assert_called_once_with(tools=[])
+        request.override.assert_called_once_with(messages=[goal], tools=[])
         assert handler.await_args_list == [call(request), call(fallback)]
+
+
+class TestCriteriaContextBudgetMiddleware:
+    """All gathered tool context shares one bounded operation budget."""
+
+    def test_sync_results_share_budget_across_context_tools(self) -> None:
+        middleware = _CriteriaContextBudgetMiddleware()
+        first = TestRepositoryToolBudgetMiddleware._request(
+            call_id="fetch",
+            name="fetch_url",
+        )
+        second = TestRepositoryToolBudgetMiddleware._request(
+            call_id="mcp",
+            name="docs_search",
+        )
+
+        fetch_result = middleware.wrap_tool_call(
+            first,
+            lambda _: ToolMessage(
+                content="f" * (_CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT - 100),
+                tool_call_id="fetch",
+            ),
+        )
+        mcp_result = middleware.wrap_tool_call(
+            second,
+            lambda _: ToolMessage(content="m" * 1_000, tool_call_id="mcp"),
+        )
+
+        assert isinstance(fetch_result, ToolMessage)
+        assert isinstance(mcp_result, ToolMessage)
+        assert len(fetch_result.text) + len(mcp_result.text) == (
+            _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT
+        )
+        assert "Criteria context limit reached" in mcp_result.text
+
+    async def test_async_single_result_is_bounded_and_text_only(self) -> None:
+        middleware = _CriteriaContextBudgetMiddleware()
+        request = TestRepositoryToolBudgetMiddleware._request(
+            call_id="mcp",
+            name="docs_search",
+        )
+        result = await middleware.awrap_tool_call(
+            request,
+            AsyncMock(
+                return_value=ToolMessage(
+                    content=[
+                        {"type": "text", "text": "x" * 40_000},
+                        {"type": "image", "base64": "y" * 40_000},
+                    ],
+                    tool_call_id="mcp",
+                )
+            ),
+        )
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, str)
+        assert len(result.text) == _CRITERIA_CONTEXT_TOTAL_TEXT_LIMIT
+        assert "Criteria context limit reached" in result.text
 
 
 class TestWebSearchBudgetMiddleware:
@@ -830,6 +908,10 @@ class TestCreateGoalCriteriaAgent:
             if isinstance(item, _RepositoryToolBudgetMiddleware)
         )
         assert budget._root == "/workspace"
+        assert any(
+            isinstance(item, _CriteriaContextBudgetMiddleware)
+            for item in kwargs["middleware"]
+        )
 
     def test_client_generation_symbols_are_removed(self) -> None:
         import deepagents_code.goal_rubric as module

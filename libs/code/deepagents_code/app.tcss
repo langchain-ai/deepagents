@@ -399,9 +399,8 @@ ChatTextArea {
 /* Toast notifications.
    Textual's default Toast uses `padding: 1 1`, which leaves a single row below
    the last line of text. Because toasts dock at the bottom and sit directly on
-   top of the chat input box, that lone row reads as cramped (the final line
-   looks flush against the box edge). Add an extra row of bottom padding so the
-   last line always has clear breathing room. */
+   top of the chat input box, that lone row reads as cramped. Add an extra row
+   of bottom padding so the last line always has clear breathing room. */
 Toast {
     padding: 1 1 2 1;
 }

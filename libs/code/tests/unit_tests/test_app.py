@@ -26154,14 +26154,10 @@ class TestToastPadding:
     """The toast stylesheet gives the last line clear bottom breathing room."""
 
     async def test_toast_has_extra_bottom_padding(self) -> None:
-        """`app.tcss` overrides Textual's default cramped `padding: 1 1`.
+        """Assert the `Toast` override sets more bottom padding than the default.
 
-        Toasts dock at the bottom and sit on top of the chat input box, so the
-        default single row of bottom padding reads as flush against the box edge.
-        The override adds a second row so the final line is not cramped.
+        See the `Toast` rule in `app.tcss` for the layout rationale.
         """
-        from textual.widgets._toast import Toast
-
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-toast")
         app._load_thread_history = AsyncMock()  # ty: ignore
         async with app.run_test(notifications=True) as pilot:
@@ -26173,11 +26169,17 @@ class TestToastPadding:
                 timeout=60,
                 markup=False,
             )
-            for _ in range(6):
-                await pilot.pause(0.05)
+            toasts = list(app.query("Toast"))
+            for _ in range(10):
+                if toasts:
+                    break
+                await pilot.pause()
+                toasts = list(app.query("Toast"))
 
-            toasts = list(app.query(Toast))
             assert toasts, "expected the notification to render a Toast widget"
             padding = toasts[0].styles.padding
+            # Full `1 1 2 1` shorthand: extra bottom row, other insets preserved.
             assert padding.bottom == 2
-            assert padding.bottom > padding.top
+            assert padding.top == 1
+            assert padding.left == 1
+            assert padding.right == 1

@@ -34,6 +34,10 @@ def _widget_text(widget: Static) -> str:
     return str(widget.render())
 
 
+def _snapshot_dict(fields: list[SnapshotField]) -> dict[str, str]:
+    return {field.label: field.value for field in fields}
+
+
 def _log_record(
     message: str, *, level: str = "INFO", levelno: int = logging.INFO
 ) -> InMemoryLogRecord:
@@ -745,6 +749,125 @@ class TestDebugConsoleScreen:
 
         assert "debug-console-click-copy-marker" in captured["text"]
 
+    async def test_thread_field_click_copies_thread_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._copy_snapshot_value("thread-abc")
+            await pilot.pause()
+
+        assert captured["text"] == "thread-abc"
+        latest = list(app._notifications)[-1]
+        assert latest.severity == "information"
+        assert latest.message == "Thread ID copied"
+
+    async def test_langsmith_link_renders_after_resolution(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            assert "(langsmith)" not in _widget_text(snapshot_widget)
+
+            screen._langsmith_urls["thread-abc"] = (
+                "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+            )
+            screen._refresh_snapshot()
+            await pilot.pause()
+
+            assert "(langsmith)" in _widget_text(snapshot_widget)
+
+    async def test_clicking_thread_value_copies_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            # Row renders as "Thread  thread-abc"; the value starts at column 8,
+            # so an x offset of 10 lands inside the copyable span.
+            await pilot.click(snapshot_widget, offset=(10, 0))
+            await pilot.pause()
+
+        assert captured["text"] == "thread-abc"
+
+    async def test_copyable_value_carries_copy_meta_span(self) -> None:
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            content = screen._render_snapshot()
+            copy_spans = [
+                span
+                for span in content.spans
+                if isinstance(span.style, debug_console_mod.TStyle)
+                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
+                == "thread-abc"
+            ]
+            assert any(
+                content.plain[span.start : span.end] == "thread-abc"
+                for span in copy_spans
+            )
+
+    async def test_fetch_langsmith_link_stores_resolved_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
+        monkeypatch.setattr(
+            config_mod, "build_langsmith_thread_url", lambda _thread_id: url
+        )
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await screen._fetch_langsmith_link("thread-abc")
+            await pilot.pause()
+
+        assert screen._langsmith_urls["thread-abc"] == url
+
     async def test_copy_failure_notifies_warning(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -919,12 +1042,24 @@ class TestDebugConsoleToggle:
     async def test_build_snapshot_contains_core_fields(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz", cwd="/tmp/work")
         async with app.run_test():
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["Thread"] == "thread-xyz"
             assert snapshot["CWD"] == "/tmp/work"
             assert "Version" in snapshot
             assert "Auto-approve" in snapshot
             assert snapshot["MCP servers"] == "none"
+
+    async def test_build_snapshot_thread_field_is_copyable_and_linkable(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-xyz")
+        async with app.run_test():
+            thread_field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Thread"
+            )
+            assert thread_field.value == "thread-xyz"
+            assert thread_field.copyable is True
+            assert thread_field.thread_id == "thread-xyz"
 
     async def test_build_snapshot_formats_mcp_servers(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -934,7 +1069,7 @@ class TestDebugConsoleToggle:
                 SimpleNamespace(name="web", status="error"),
             ]
             app._mcp_server_info = servers  # ty: ignore[invalid-assignment]  # stub servers expose .name/.status
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             assert snapshot["MCP servers"] == "fs (connected), web (error)"
 
     async def test_build_snapshot_degrades_on_field_error(
@@ -948,7 +1083,7 @@ class TestDebugConsoleToggle:
                 raise RuntimeError(msg)
 
             monkeypatch.setattr(app, "_effective_model_spec", boom)
-            snapshot = dict(app._build_debug_snapshot())
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
             # The failing field degrades; the rest of the snapshot still builds.
             assert snapshot["Model"].startswith("(unavailable")
             assert "Version" in snapshot

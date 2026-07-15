@@ -8,6 +8,7 @@ point-in-time session/runtime snapshot plus a live tail of recent
 
 from __future__ import annotations
 
+import asyncio
 import bisect
 import logging
 from typing import TYPE_CHECKING, ClassVar, Literal, NamedTuple, cast, get_args
@@ -22,6 +23,7 @@ from textual.geometry import Size
 from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
+from textual.style import Style as TStyle
 from textual.widgets import Select, Static
 from textual.widgets._select import (  # noqa: PLC2701  # needed to keep Tab navigation inside the open Select overlay
     SelectCurrent,
@@ -37,6 +39,7 @@ from deepagents_code._debug_buffer import (
     retention_bucket_for_level,
 )
 from deepagents_code.clipboard import copy_text_to_clipboard
+from deepagents_code.tui.widgets._links import open_style_link
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
@@ -55,11 +58,22 @@ class SnapshotField(NamedTuple):
     """A single `label`/`value` row in the console's session snapshot.
 
     A named pair (rather than a bare ``tuple[str, str]``) so the two display-only
-    string slots cannot be silently transposed at the construction site.
+    string slots cannot be silently transposed at the construction site. The
+    optional flags let a row opt into click-to-copy and, for the thread row, a
+    resolvable ``(langsmith)`` trace link.
     """
 
     label: str
     value: str
+    copyable: bool = False
+    """Whether `value` can be clicked to copy it to the clipboard."""
+    thread_id: str | None = None
+    """A LangSmith thread id whose ``(langsmith)`` trace link is appended to the
+    row once the URL resolves. `None` disables the link."""
+
+
+_SNAPSHOT_COPY_META = "snapshot_copy"
+"""Meta key marking a snapshot span whose text is copied on click."""
 
 
 _REFRESH_INTERVAL = 0.5
@@ -554,6 +568,63 @@ class _DebugLogView(ScrollView, can_focus=True):
         self._on_copy_record(record)
 
 
+def _snapshot_copy_text(style: object) -> str | None:
+    """Return the copy payload from a snapshot span style, if any.
+
+    Args:
+        style: The Textual event style under the pointer/click.
+
+    Returns:
+        The text to copy when the span carries a copy marker, else `None`.
+    """
+    meta = getattr(style, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    text = meta.get(_SNAPSHOT_COPY_META)
+    return text if isinstance(text, str) and text else None
+
+
+class _SnapshotView(Static):
+    """Snapshot header that copies marked spans and opens link spans on click."""
+
+    # Match WelcomeBanner: disabling auto_links avoids a hover-refresh flicker
+    # loop caused by link styles getting a fresh random id on every render.
+    auto_links = False
+
+    def __init__(
+        self, on_copy: Callable[[str], None], *, classes: str | None = None
+    ) -> None:
+        """Initialize with a callback used to copy a clicked span's text.
+
+        Args:
+            on_copy: Called with the span text when a copyable span is clicked.
+            classes: Optional space-separated CSS classes.
+        """
+        super().__init__(classes=classes)
+        self._on_copy = on_copy
+
+    def on_click(self, event: events.Click) -> None:
+        """Copy a marked span or open a link span under the click."""
+        if getattr(event.style, "link", None):
+            open_style_link(event)
+            return
+        text = _snapshot_copy_text(event.style)
+        if text is not None:
+            event.stop()
+            self._on_copy(text)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Show a hand pointer over clickable spans and reset it elsewhere."""
+        clickable = bool(getattr(event.style, "link", None)) or (
+            _snapshot_copy_text(event.style) is not None
+        )
+        self.styles.pointer = "pointer" if clickable else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the snapshot."""
+        self.styles.pointer = "default"
+
+
 class DebugConsoleScreen(ModalScreen[None]):
     """Modal showing a session snapshot and a live tail of recent log records."""
 
@@ -650,6 +721,9 @@ class DebugConsoleScreen(ModalScreen[None]):
         # One-shot guard so the "buffer unavailable" notice is written only once.
         self._missing_notice_shown = False
         self._level_filter: FilterValue = "all"
+        # Resolved LangSmith thread URLs keyed by thread id, filled in by a
+        # background worker after mount (network I/O must not block open).
+        self._langsmith_urls: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         """Lay out the title, snapshot, filter, log tail, and key-hint footer.
@@ -659,7 +733,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         with Vertical():
             yield Static("Debug Console", classes="debug-console-title")
-            yield Static(self._render_snapshot(), classes="debug-console-snapshot")
+            snapshot_view = _SnapshotView(
+                self._copy_snapshot_value, classes="debug-console-snapshot"
+            )
+            snapshot_view.update(self._render_snapshot())
+            yield snapshot_view
             with Horizontal(classes="debug-console-toolbar"):
                 yield Static("Level", classes="debug-console-filter-label")
                 yield _LogLevelSelect(
@@ -680,7 +758,56 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Start the refresh timer and render the current buffer contents."""
         self.set_interval(_REFRESH_INTERVAL, self._poll_logs)
         self._poll_logs()
+        self._resolve_langsmith_links()
         self.call_after_refresh(self.query_one("#debug-log", _DebugLogView).focus)
+
+    def _resolve_langsmith_links(self) -> None:
+        """Kick off background resolution of `(langsmith)` links for the snapshot."""
+        thread_ids = {field.thread_id for field in self._snapshot if field.thread_id}
+        for thread_id in thread_ids:
+            self.run_worker(
+                self._fetch_langsmith_link(thread_id),
+                exclusive=False,
+                group="debug-console-langsmith",
+            )
+
+    async def _fetch_langsmith_link(self, thread_id: str) -> None:
+        """Resolve a thread's LangSmith URL and re-render the snapshot.
+
+        Mirrors the welcome banner: the lookup runs in a thread with a short
+        timeout so an unreachable LangSmith never blocks the console, and any
+        failure degrades to no link rather than surfacing an error in a
+        diagnostic overlay.
+        """
+        from deepagents_code.config import build_langsmith_thread_url
+
+        # A diagnostic overlay must not crash on a lookup failure, so every
+        # error degrades to no link.
+        try:
+            url = await asyncio.wait_for(
+                asyncio.to_thread(build_langsmith_thread_url, thread_id),
+                timeout=2.0,
+            )
+        except (TimeoutError, Exception):
+            logger.debug(
+                "LangSmith thread URL lookup failed for %r", thread_id, exc_info=True
+            )
+            return
+        if url:
+            self._langsmith_urls[thread_id] = url
+            self._refresh_snapshot()
+
+    def _refresh_snapshot(self) -> None:
+        """Re-render the snapshot header in place (e.g. after a link resolves)."""
+        from textual.css.query import NoMatches
+
+        try:
+            self.query_one(".debug-console-snapshot", _SnapshotView).update(
+                self._render_snapshot()
+            )
+        except NoMatches:
+            # The console was dismissed before the worker returned.
+            logger.debug("Debug console snapshot refresh skipped (widget unavailable)")
 
     def key_tab(self, event: events.Key) -> None:
         """Cycle focus between the level filter and log lines."""
@@ -722,12 +849,33 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         if not self._snapshot:
             return Content.styled("(no session data)", "dim italic")
-        width = max(len(label) for label, _ in self._snapshot)
-        lines = [
-            Content.assemble((f"{label:>{width}}  ", "bold"), value)
-            for label, value in self._snapshot
-        ]
+        width = max(len(field.label) for field in self._snapshot)
+        lines = [self._render_snapshot_row(field, width) for field in self._snapshot]
         return Content("\n").join(lines)
+
+    def _render_snapshot_row(self, field: SnapshotField, width: int) -> Content:
+        """Render a single snapshot row, wiring up copy and link spans.
+
+        Args:
+            field: The snapshot field to render.
+            width: Column width the labels are right-aligned to.
+
+        Returns:
+            The formatted row content.
+        """
+        parts: list[str | tuple[str, str | TStyle]] = [
+            (f"{field.label:>{width}}  ", "bold")
+        ]
+        if field.copyable and field.value:
+            parts.append(
+                (field.value, TStyle.from_meta({_SNAPSHOT_COPY_META: field.value}))
+            )
+        else:
+            parts.append(field.value)
+        url = self._langsmith_urls.get(field.thread_id) if field.thread_id else None
+        if url:
+            parts.extend(("  ", ("(langsmith)", TStyle(link=url))))
+        return Content.assemble(*parts)
 
     @staticmethod
     def _render_help() -> Content:
@@ -737,7 +885,8 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            "Esc close · Ctrl+L clear view · c copy visible logs · click copy line",
+            "Esc close · Ctrl+L clear view · c copy visible logs · "
+            "click copy line/thread",
             "dim italic",
         )
 
@@ -855,13 +1004,27 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Copy a clicked logical log record to the clipboard."""
         self._copy_lines([record.plain_line], empty_message="No log line to copy")
 
+    def _copy_snapshot_value(self, text: str) -> None:
+        """Copy a clicked snapshot value (e.g. the thread ID) to the clipboard."""
+        self._copy_lines(
+            [text],
+            empty_message="Nothing to copy",
+            success_message="Thread ID copied",
+        )
+
     def _level_select(self) -> Select[FilterValue]:
         """Return the level-filter dropdown."""
         return cast(
             "Select[FilterValue]", self.query_one("#debug-level-filter", Select)
         )
 
-    def _copy_lines(self, lines: Sequence[str], *, empty_message: str) -> None:
+    def _copy_lines(
+        self,
+        lines: Sequence[str],
+        *,
+        empty_message: str,
+        success_message: str = "Debug log copied",
+    ) -> None:
         """Copy lines to clipboard with user-visible feedback."""
         text = "\n".join(lines)
         if not text:
@@ -872,12 +1035,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         success, error = copy_text_to_clipboard(self.app, text)
         if success:
             self.app.notify(
-                "Debug log copied", severity="information", timeout=2, markup=False
+                success_message, severity="information", timeout=2, markup=False
             )
             return
         suffix = f": {error}" if error else ""
         self.app.notify(
-            f"Failed to copy debug log{suffix}",
+            f"Failed to copy{suffix}",
             severity="warning",
             timeout=3,
             markup=False,

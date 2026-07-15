@@ -13,7 +13,7 @@ from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Set
+    from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
 
@@ -77,7 +77,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self,
         *,
         mcp_server_info: Sequence[MCPServerInfo] = (),
-        loaded_plugin_ids: Set[str] | None = None,
+        loaded_plugin_ids: AbstractSet[str] | None = None,
     ) -> None:
         """Initialize the plugin manager.
 

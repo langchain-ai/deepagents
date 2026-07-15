@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence, Set
+    from collections.abc import Sequence, Set as AbstractSet
 
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.plugins.models import (
@@ -191,7 +191,7 @@ def _row_from_instance(
     is_enabled: bool,
     instance: PluginInstance | None,
     mcp_server_info: Sequence[MCPServerInfo],
-    loaded_plugin_ids: Set[str],
+    loaded_plugin_ids: AbstractSet[str],
     load_error: str | None = None,
 ) -> _PluginRow:
     skill_names = _list_plugin_skill_names(instance) if instance else ()
@@ -218,7 +218,7 @@ def _row_from_instance(
 def _load_manager_state(
     mcp_server_info: Sequence[MCPServerInfo] = (),
     *,
-    loaded_plugin_ids: Set[str] = frozenset(),
+    loaded_plugin_ids: AbstractSet[str] = frozenset(),
 ) -> _ManagerState:
     records = load_marketplace_records()
     enabled = load_enabled_plugin_ids()

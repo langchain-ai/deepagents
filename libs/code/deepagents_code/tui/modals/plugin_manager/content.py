@@ -109,7 +109,10 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
         ]
     if row.skill_count is None:
         return [
-            "Skills and MCP servers if present (agents/, commands/, and hooks/ are not loaded)."
+            (
+                "Skills and MCP servers if present "
+                "(agents/, commands/, and hooks/ are not loaded)."
+            )
         ]
     return [
         "No supported components (skills/MCP).",

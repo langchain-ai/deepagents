@@ -362,6 +362,10 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+          # TEST (langchain PR #38860): stage the prebuilt langchain-openai wheel
+          # so the sandbox installs it from a local file (langgraph.json references
+          # it via file://). A git+ ref fails in the sandbox (no github egress).
+          cp deepagents_harbor/langgraph_project/_pr_wheels/*.whl "$local_deps_dir/"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then

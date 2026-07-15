@@ -10,7 +10,7 @@
     "langchain-groq>=1.1.3,<1.2.0",
     "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0",
     "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai @ git+https://github.com/langchain-ai/langchain.git@6ef662a43aec31e306b206ffd9198f4d2cc6ec5c#subdirectory=libs/partners/openai",
+    "langchain-openai @ file:///installed-agent/langgraph-project/.local_deps/langchain_openai-1.3.5-py3-none-any.whl",
     "langchain-openrouter>=0.2.3,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     "langchain-mcp-adapters>=0.3.0,<0.4.0",

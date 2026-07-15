@@ -178,7 +178,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     )
 
 
-def make_bare_ci_graph(config: dict[str, object] | None = None) -> object:
+def make_bare_code_interpreter_graph(config: dict[str, object] | None = None) -> object:
     """``make_bare_graph`` with the code interpreter (``eval``) tool enabled.
 
     Identical to the bare graph — same generic system prompt and local shell

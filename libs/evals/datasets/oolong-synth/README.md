@@ -63,13 +63,13 @@ The task is agent-agnostic, so the arm is a `harbor run` choice, not task conten
 Both arms use the same generic Deep Agent; they differ only by the code interpreter:
 
 - **Baseline** — the `bare_deepagent` graph. Select it with `agent_impl=bare`.
-- **Code interpreter** — the `bare_ci_deepagent` graph: identical to `bare` plus
-  the `CodeInterpreterMiddleware` (a QuickJS `eval` tool). Nothing is tailored to
-  OOLONG, so `bare` vs `bare-ci` isolates the code interpreter's effect. Select it
-  with `agent_impl=bare-ci`.
+- **Code interpreter** — the `bare_code_interpreter_deepagent` graph: identical to
+  `bare` plus the `CodeInterpreterMiddleware` (a QuickJS `eval` tool). Nothing is
+  tailored to OOLONG, so `bare` vs `bare-code-interpreter` isolates the code
+  interpreter's effect. Select it with `agent_impl=bare-code-interpreter`.
 
 Both dispatch with `dataset_path=datasets/oolong-synth`. Locally, after
 `make stage-harbor-local-deps` + `python -m harbor_adapters.oolong.main --populate
 datasets/oolong-synth`, run either graph with
-`harbor run --agent langgraph --ak graph=bare_ci_deepagent` (or
+`harbor run --agent langgraph --ak graph=bare_code_interpreter_deepagent` (or
 `graph=bare_deepagent`) against `--path datasets/oolong-synth`.

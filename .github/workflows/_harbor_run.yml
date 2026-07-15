@@ -532,10 +532,10 @@ jobs:
               HARBOR_AGENT_GRAPH=tau3_deepagent
               HARBOR_AGENT_LABEL="tau3 conversational deepagent"
               ;;
-            bare-ci)
+            bare-code-interpreter)
               # Generic bare Deep Agent with the code interpreter (`eval`) enabled;
               # differs from `bare` only by the CodeInterpreterMiddleware.
-              HARBOR_AGENT_GRAPH=bare_ci_deepagent
+              HARBOR_AGENT_GRAPH=bare_code_interpreter_deepagent
               HARBOR_AGENT_LABEL="bare create_deep_agent + code interpreter"
               ;;
             *)

@@ -60,16 +60,22 @@ The adapter source (HF loader, official scorer, task generator) lives in
 ## Arms
 
 The task is agent-agnostic, so the arm is a `harbor run` choice, not task content.
-Both arms use the same generic Deep Agent; they differ only by the code interpreter:
+Three generic Deep Agent arms form an ablation ladder — each adds one thing:
 
-- **Baseline** — the `bare_deepagent` graph. Select it with `agent_impl=bare`.
-- **Code interpreter** — the `bare_code_interpreter_deepagent` graph: identical to
-  `bare` plus the `CodeInterpreterMiddleware` (a QuickJS `eval` tool). Nothing is
-  tailored to OOLONG, so `bare` vs `bare-code-interpreter` isolates the code
-  interpreter's effect. Select it with `agent_impl=bare-code-interpreter`.
+- **Baseline** (`agent_impl=bare`, graph `bare_deepagent`) — no code interpreter.
+- **Code interpreter** (`agent_impl=bare-code-interpreter`, graph
+  `bare_code_interpreter_deepagent`) — `bare` plus the `CodeInterpreterMiddleware`
+  (a QuickJS `eval` tool), with no prescribed strategy. `bare` vs this isolates the
+  code interpreter's effect.
+- **RLM** (`agent_impl=rlm`, graph `rlm_deepagent`) — the code-interpreter arm plus
+  a Recursive Language Model strategy prompt (decompose the input into chunks, fan
+  out a `general-purpose` `task(...)` subagent per chunk from inside an `eval`
+  program, aggregate in code) and the subagent it delegates to. `bare-code-interpreter`
+  vs this isolates the strategy. The subagent model defaults to the root model;
+  override with `configurable.sub_model` or `RLM_SUB_MODEL`.
 
-Both dispatch with `dataset_path=datasets/oolong-synth`. Locally, after
+Nothing in any arm is tailored to OOLONG (the task instruction supplies the I/O
+contract). All dispatch with `dataset_path=datasets/oolong-synth`. Locally, after
 `make stage-harbor-local-deps` + `python -m harbor_adapters.oolong.main --populate
-datasets/oolong-synth`, run either graph with
-`harbor run --agent langgraph --ak graph=bare_code_interpreter_deepagent` (or
-`graph=bare_deepagent`) against `--path datasets/oolong-synth`.
+datasets/oolong-synth`, run a graph with
+`harbor run --agent langgraph --ak graph=<graph> --path datasets/oolong-synth`.

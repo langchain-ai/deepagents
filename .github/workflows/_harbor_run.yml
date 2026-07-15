@@ -538,6 +538,12 @@ jobs:
               HARBOR_AGENT_GRAPH=bare_code_interpreter_deepagent
               HARBOR_AGENT_LABEL="bare create_deep_agent + code interpreter"
               ;;
+            rlm)
+              # Recursive Language Model: bare-code-interpreter plus a recursive
+              # decompose/fan-out/aggregate strategy prompt and a general-purpose subagent.
+              HARBOR_AGENT_GRAPH=rlm_deepagent
+              HARBOR_AGENT_LABEL="recursive language model (code interpreter + subagent fan-out)"
+              ;;
             *)
               echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
               exit 1

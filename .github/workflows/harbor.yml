@@ -135,6 +135,7 @@ on:
           - bare
           - tau3
           - bare-code-interpreter
+          - rlm
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true

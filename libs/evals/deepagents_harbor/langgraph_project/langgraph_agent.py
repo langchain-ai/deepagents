@@ -17,6 +17,8 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from deepagents.middleware.subagents import SubAgent
+
 _DEFAULT_WORKDIR = Path("/app")
 
 _SHELL_ENV_DENYLIST = frozenset(
@@ -211,6 +213,82 @@ def make_bare_code_interpreter_graph(config: dict[str, object] | None = None) ->
         model=model,
         backend=backend,
         system_prompt=_SYSTEM_PROMPT,
+        middleware=middleware,
+    )
+
+
+_RLM_SYSTEM_PROMPT = """You are running in a Harbor benchmark sandbox with a code \
+interpreter (an `eval` tool) and the ability to spawn `general-purpose` subagents \
+via `task(...)` from inside your code.
+
+Use the Recursive Language Model strategy for inputs too large to reason over
+directly: from a single `eval` program, split the input into contiguous chunks and
+dispatch one `task(...)` subagent per chunk in parallel (`Promise.all([...])`),
+each processing its own chunk, then aggregate their results in JavaScript to
+compute the answer. Complete the task exactly as its instructions specify.
+"""
+
+_RLM_SUBAGENT_SYSTEM_PROMPT = (
+    "You process one assigned chunk of the input, as directed by the orchestrator. "
+    "Return the requested result for that chunk only — do not aggregate across "
+    "chunks and do not delegate further."
+)
+
+
+def _sub_model_id(configurable: dict[str, object], default: str) -> str:
+    """Resolve the subagent model id (configurable.sub_model / RLM_SUB_MODEL / root)."""
+    value = configurable.get("sub_model") or os.environ.get("RLM_SUB_MODEL")
+    if isinstance(value, str) and value.strip():
+        return value
+    return default
+
+
+def make_rlm_graph(config: dict[str, object] | None = None) -> object:
+    """Recursive Language Model arm: bare + code interpreter + a recursive strategy.
+
+    Extends the bare code-interpreter arm with a system prompt that drives the RLM
+    strategy — decompose a large input into chunks, fan out a `general-purpose`
+    `task(...)` subagent per chunk from inside an `eval` program, then aggregate the
+    results in code — plus the `general-purpose` subagent it delegates to. The
+    subagent model defaults to the root model; override with `configurable.sub_model`
+    or the `RLM_SUB_MODEL` env var (an asymmetric root/sub setup). `langchain_quickjs`
+    is imported lazily so loading this module never requires QuickJS.
+
+    Args:
+        config: LangGraph runtime config. Harbor passes the root model in
+            `configurable.model` (or `HARBOR_MODEL`) and optional provider kwargs in
+            `configurable.model_kwargs`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+
+    Raises:
+        TypeError: If configurable values have unexpected types.
+        ValueError: If no model name is provided.
+    """
+    from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
+
+    configurable = _configurable(config)
+    root_model_id = _model_name(configurable)
+    model = init_chat_model(root_model_id, **_model_kwargs(configurable))
+    sub_model = init_chat_model(_sub_model_id(configurable, root_model_id))
+    backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
+    # Bound the interpreter's resource use (per-eval timeout + a ceiling on eval
+    # calls) so a retry-spiral can't run away.
+    middleware: list[Any] = [CodeInterpreterMiddleware(timeout=300.0, max_ptc_calls=12)]
+    subagents: list[SubAgent] = [
+        {
+            "name": "general-purpose",
+            "description": "Processes one chunk of the input and returns per-chunk results.",
+            "system_prompt": _RLM_SUBAGENT_SYSTEM_PROMPT,
+            "model": sub_model,
+        }
+    ]
+    return create_deep_agent(
+        model=model,
+        backend=backend,
+        system_prompt=_RLM_SYSTEM_PROMPT,
+        subagents=subagents,
         middleware=middleware,
     )
 

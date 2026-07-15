@@ -203,6 +203,17 @@ def _disable_app_startup_update_checks(
 
 
 @pytest.fixture(autouse=True)
+def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent developer behavior overrides from changing default-path tests."""
+    for key in (
+        "DEEPAGENTS_CODE_CURSOR_STYLE",
+        "DEEPAGENTS_CODE_EXPERIMENTAL",
+        "DEEPAGENTS_CODE_MEMORY_AUTO_SAVE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local alpha event-listener env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET", raising=False)

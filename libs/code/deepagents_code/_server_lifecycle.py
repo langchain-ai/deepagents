@@ -4,60 +4,56 @@ from __future__ import annotations
 
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from starlette.applications import Starlette
 
 CleanupCallback = Callable[[], Awaitable[None]]
 
-_cleanup_lock = threading.Lock()
-_browser_cleanup: CleanupCallback | None = None
 
+class ServerResources:
+    """Own asynchronous cleanup callbacks for process-lifetime server resources.
 
-def register_browser_cleanup(callback: CleanupCallback) -> None:
-    """Register the browser cleanup callback exactly once for this process.
-
-    Graph construction runs in ``asyncio.to_thread``, while the lifespan runs on
-    the server event loop, so registry access is protected by a thread lock.
-
-    Args:
-        callback: Async cleanup callback owned by the browser middleware.
-
-    Raises:
-        RuntimeError: If a browser cleanup callback is already registered.
+    Resource construction can run in worker threads while shutdown runs on the
+    server event loop. Registrations are therefore protected by a thread lock and
+    atomically transferred to an ``AsyncExitStack`` during cleanup.
     """
-    global _browser_cleanup  # noqa: PLW0603
 
-    with _cleanup_lock:
-        if _browser_cleanup is not None:
-            msg = "Browser cleanup is already registered"
-            raise RuntimeError(msg)
-        _browser_cleanup = callback
+    def __init__(self) -> None:
+        """Create an empty resource registry."""
+        self._lock = threading.Lock()
+        self._cleanups: list[CleanupCallback] = []
+
+    def add_cleanup(self, callback: CleanupCallback) -> None:
+        """Register an asynchronous callback for reverse-order cleanup.
+
+        Args:
+            callback: Zero-argument asynchronous cleanup callback.
+        """
+        with self._lock:
+            self._cleanups.append(callback)
+
+    async def aclose(self) -> None:
+        """Consume and await every registered cleanup callback."""
+        with self._lock:
+            cleanups = self._cleanups
+            self._cleanups = []
+
+        async with AsyncExitStack() as stack:
+            for cleanup in cleanups:
+                stack.push_async_callback(cleanup)
 
 
-def _consume_browser_cleanup() -> CleanupCallback | None:
-    """Atomically remove and return the registered browser cleanup callback.
-
-    Returns:
-        The registered callback, or ``None`` when no callback is registered.
-    """
-    global _browser_cleanup  # noqa: PLW0603
-
-    with _cleanup_lock:
-        callback = _browser_cleanup
-        _browser_cleanup = None
-        return callback
+server_resources = ServerResources()
 
 
 @asynccontextmanager
 async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
-    """Await browser cleanup on server shutdown without suppressing failures."""
+    """Close process-lifetime resources when the LangGraph server shuts down."""
     try:
         yield
     finally:
-        callback = _consume_browser_cleanup()
-        if callback is not None:
-            await callback()
+        await server_resources.aclose()
 
 
 app = Starlette(lifespan=_lifespan)

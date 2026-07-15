@@ -1,28 +1,24 @@
-"""Tests for server-owned browser resource cleanup."""
+"""Tests for server-owned asynchronous resource cleanup."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 from deepagents_code import _server_lifecycle
 
 
 @pytest.fixture(autouse=True)
-def _reset_cleanup_registry() -> Iterator[None]:
-    _server_lifecycle._consume_browser_cleanup()
+async def _reset_server_resources() -> None:
+    await _server_lifecycle.server_resources.aclose()
     yield
-    _server_lifecycle._consume_browser_cleanup()
+    await _server_lifecycle.server_resources.aclose()
 
 
-async def test_lifespan_awaits_registered_browser_cleanup() -> None:
+async def test_lifespan_awaits_registered_cleanup() -> None:
     cleanup = AsyncMock()
-    _server_lifecycle.register_browser_cleanup(cleanup)
+    _server_lifecycle.server_resources.add_cleanup(cleanup)
 
     async with _server_lifecycle.app.router.lifespan_context(_server_lifecycle.app):
         cleanup.assert_not_awaited()
@@ -30,21 +26,39 @@ async def test_lifespan_awaits_registered_browser_cleanup() -> None:
     cleanup.assert_awaited_once_with()
 
 
-def test_duplicate_browser_cleanup_registration_is_rejected() -> None:
-    _server_lifecycle.register_browser_cleanup(AsyncMock())
+async def test_server_resources_close_callbacks_in_reverse_order() -> None:
+    resources = _server_lifecycle.ServerResources()
+    calls: list[str] = []
+    cleanup = AsyncMock(side_effect=lambda name: calls.append(name))
 
-    with pytest.raises(RuntimeError, match="already registered"):
-        _server_lifecycle.register_browser_cleanup(AsyncMock())
+    resources.add_cleanup(lambda: cleanup("first"))
+    resources.add_cleanup(lambda: cleanup("second"))
+
+    await resources.aclose()
+
+    assert calls == ["second", "first"]
 
 
-async def test_cleanup_failure_propagates_and_is_not_retried() -> None:
-    cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
-    _server_lifecycle.register_browser_cleanup(cleanup)
+async def test_cleanup_failure_does_not_skip_earlier_resources() -> None:
+    resources = _server_lifecycle.ServerResources()
+    earlier_cleanup = AsyncMock()
+    failing_cleanup = AsyncMock(side_effect=RuntimeError("cleanup failed"))
+    resources.add_cleanup(earlier_cleanup)
+    resources.add_cleanup(failing_cleanup)
 
     with pytest.raises(RuntimeError, match="cleanup failed"):
-        async with _server_lifecycle.app.router.lifespan_context(_server_lifecycle.app):
-            pass
+        await resources.aclose()
 
-    async with _server_lifecycle.app.router.lifespan_context(_server_lifecycle.app):
-        pass
+    failing_cleanup.assert_awaited_once_with()
+    earlier_cleanup.assert_awaited_once_with()
+
+
+async def test_consumed_cleanups_are_not_retried() -> None:
+    resources = _server_lifecycle.ServerResources()
+    cleanup = AsyncMock()
+    resources.add_cleanup(cleanup)
+
+    await resources.aclose()
+    await resources.aclose()
+
     cleanup.assert_awaited_once_with()

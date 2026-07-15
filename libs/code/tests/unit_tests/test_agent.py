@@ -4173,7 +4173,7 @@ class TestCreateCliAgentBrowserWiring:
             is _should_interrupt_browser_tabs
         )
 
-    def test_registers_browser_cleanup_callback(self, tmp_path: Path) -> None:
+    def test_registers_browser_with_server_cleanup(self, tmp_path: Path) -> None:
         module, browser_type = self._browser_module()
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4194,7 +4194,7 @@ class TestCreateCliAgentBrowserWiring:
                 enable_skills=False,
                 enable_shell=False,
                 enable_browser=True,
-                _register_browser_cleanup=registrar,
+                _register_cleanup=registrar,
             )
 
         registered = registrar.call_args.args[0]

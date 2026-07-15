@@ -42,6 +42,15 @@ PluginManagerScreen .plugin-manager-error {
     margin-bottom: 1;
 }
 
+PluginManagerScreen #plugin-manager-search {
+    margin-bottom: 1;
+    border: solid $primary-lighten-2;
+}
+
+PluginManagerScreen #plugin-manager-search:focus {
+    border: solid $primary;
+}
+
 PluginManagerScreen #plugin-manager-options {
     height: 1fr;
     min-height: 5;

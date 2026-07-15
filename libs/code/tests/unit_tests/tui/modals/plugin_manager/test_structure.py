@@ -5,12 +5,12 @@ import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from textual.widgets import Static
+from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
 from deepagents_code.tui.modals.plugin_manager.content import _plugin_options
-from deepagents_code.tui.modals.plugin_manager.models import _PluginRow
+from deepagents_code.tui.modals.plugin_manager.models import _ManagerState, _PluginRow
 
 
 def test_plugin_manager_css_is_colocated_with_screen() -> None:
@@ -34,6 +34,45 @@ def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
         "detail:second@source",
     ]
     assert options[1].disabled
+
+
+async def test_plugin_search_filters_and_clears() -> None:
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    screen = PluginManagerScreen()
+    state = _ManagerState(
+        (
+            _PluginRow("docs@official", "Search documentation", False, None, None),
+            _PluginRow("tests@official", "Run the test suite", False, None, None),
+        ),
+        (),
+        (MagicMock(),),
+        (),
+    )
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        screen._state = state
+        screen._refresh_view()
+        search = screen.query_one("#plugin-manager-search", Input)
+        options = screen.query_one("#plugin-manager-options", OptionList)
+
+        await pilot.press("/")
+        assert search.has_focus
+        await pilot.press("d", "o", "c", "s")
+        assert options.option_count == 1
+        assert options.get_option_at_index(0).id == "detail:docs@official"
+
+        await pilot.press("ctrl+a", "x")
+        assert options.option_count == 1
+        assert options.get_option_at_index(0).prompt == "No plugins match your search."
+
+        await pilot.press("escape")
+        assert search.value == ""
+        assert search.has_focus
+        assert options.option_count == 3
+        await pilot.press("escape")
+        assert options.has_focus
 
 
 async def test_plugin_manager_overlays_underlying_content() -> None:

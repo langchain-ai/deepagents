@@ -62,6 +62,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         Binding("shift+tab", "previous_tab", "Previous tab", show=False, priority=True),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("/", "focus_search", "Search", show=False, priority=True),
     ]
 
     CSS_PATH = "plugin_manager.tcss"
@@ -94,6 +95,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
         self._selected_marketplace: _MarketplaceRow | None = None
+        self._search_query = ""
 
     def compose(self) -> ComposeResult:
         """Compose the manager screen.
@@ -122,6 +124,10 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 id="plugin-manager-error",
                 classes="plugin-manager-error",
                 markup=False,
+            )
+            yield Input(
+                placeholder="Search plugins...",
+                id="plugin-manager-search",
             )
             yield OptionList(id="plugin-manager-options")
             yield Input(
@@ -156,6 +162,16 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             parts.append(f"> {label} <" if tab == self._tab else f"  {label}  ")
         return " ".join(parts)
 
+    def _filtered_plugins(self, rows: Sequence[_PluginRow]) -> tuple[_PluginRow, ...]:
+        query = self._search_query.strip().casefold()
+        if not query:
+            return tuple(rows)
+        return tuple(
+            row
+            for row in rows
+            if query in row.plugin_id.casefold() or query in row.description.casefold()
+        )
+
     def _current_options(self) -> list[Option]:
         glyphs = get_glyphs()
         if self._tab == "discover":
@@ -168,19 +184,17 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 ]
             if not self._state.available_plugins:
                 return [Option("All available plugins are installed.", id="empty")]
-            return _plugin_options(
-                self._state.available_plugins,
-                action="detail",
-                status=None,
-            )
+            rows = self._filtered_plugins(self._state.available_plugins)
+            if not rows:
+                return [Option("No plugins match your search.", id="empty")]
+            return _plugin_options(rows, action="detail", status=None)
         if self._tab == "installed":
             if not self._state.installed_plugins:
                 return [Option("No plugins installed.", id="empty")]
-            return _plugin_options(
-                self._state.installed_plugins,
-                action="installed",
-                status=None,
-            )
+            rows = self._filtered_plugins(self._state.installed_plugins)
+            if not rows:
+                return [Option("No installed plugins match your search.", id="empty")]
+            return _plugin_options(rows, action="installed", status=None)
         if self._tab == "marketplaces":
             options = [Option("+ Add Marketplace", id="add-marketplace")]
             options.extend(
@@ -264,6 +278,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self.query_one("#plugin-manager-error", Static).update(error)
 
         options = self.query_one("#plugin-manager-options", OptionList)
+        search_input = self.query_one("#plugin-manager-search", Input)
         source_input = self.query_one("#plugin-marketplace-source", Input)
         help_text = self.query_one("#plugin-manager-help", Static)
         glyphs = get_glyphs()
@@ -283,6 +298,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                     f"  {glyphs.bullet} ./path/to/marketplace"
                 )
             options.display = False
+            search_input.display = False
             source_input.display = True
             source_input.focus()
             help_text.update(f"Enter to add {glyphs.bullet} Esc to cancel")
@@ -293,6 +309,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         divider.display = True
 
         if self._details_mode_active():
+            search_input.display = False
             source_input.display = False
             options.display = True
             options.clear_options()
@@ -310,6 +327,9 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
 
         source_input.display = False
         options.display = True
+        search_input.display = self._tab in {"discover", "installed"}
+        if search_input.display:
+            search_input.value = self._search_query
         highlighted = options.highlighted
         options.clear_options()
         for option in self._current_options():
@@ -319,7 +339,8 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
                 0 if highlighted is None else min(highlighted, options.option_count - 1)
             )
             options.highlighted = self._nearest_enabled_index(options, candidate)
-        options.focus()
+        if not search_input.has_focus:
+            options.focus()
 
         if self._tab == "marketplaces":
             help_text.update(
@@ -370,7 +391,17 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._refresh_view()
 
     def action_cancel(self) -> None:
-        """Close or leave the add-marketplace / details prompt."""
+        """Clear search, close, or leave the active prompt."""
+        search_input = self.query_one("#plugin-manager-search", Input)
+        if search_input.has_focus:
+            if self._search_query:
+                self._search_query = ""
+                search_input.value = ""
+                self._refresh_view()
+                search_input.focus()
+            else:
+                self.query_one("#plugin-manager-options", OptionList).focus()
+            return
         if self._mode == "add_marketplace":
             self._mode = "list"
             self._error = None
@@ -389,6 +420,11 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             self._refresh_view()
             return
         self.dismiss(None)
+
+    def action_focus_search(self) -> None:
+        """Focus the plugin filter on searchable tabs."""
+        if self._mode == "list" and self._tab in {"discover", "installed"}:
+            self.query_one("#plugin-manager-search", Input).focus()
 
     def action_next_tab(self) -> None:
         """Switch to the next tab."""
@@ -620,8 +656,19 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         self._error = None
         await self._refresh_state()
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter the current plugin list as the search query changes."""
+        if event.input.id != "plugin-manager-search":
+            return
+        self._search_query = event.value
+        self._refresh_view()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Add a marketplace from the source input."""
+        """Leave search or add a marketplace from its source input."""
+        if event.input.id == "plugin-manager-search":
+            event.stop()
+            self.query_one("#plugin-manager-options", OptionList).focus()
+            return
         if event.input.id != "plugin-marketplace-source":
             return
         source = event.value.strip()

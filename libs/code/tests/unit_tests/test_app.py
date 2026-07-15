@@ -26148,3 +26148,36 @@ class TestToolGroupCollapse:
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command, read 1 file" in rendered.plain
+
+
+class TestToastPadding:
+    """The toast stylesheet gives the last line clear bottom breathing room."""
+
+    async def test_toast_has_extra_bottom_padding(self) -> None:
+        """`app.tcss` overrides Textual's default cramped `padding: 1 1`.
+
+        Toasts dock at the bottom and sit on top of the chat input box, so the
+        default single row of bottom padding reads as flush against the box edge.
+        The override adds a second row so the final line is not cramped.
+        """
+        from textual.widgets._toast import Toast
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-toast")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            app.clear_notifications()
+            await pilot.pause()
+            app.notify(
+                "Large paste collapsed. Paste again to expand it inline.",
+                timeout=60,
+                markup=False,
+            )
+            for _ in range(6):
+                await pilot.pause(0.05)
+
+            toasts = list(app.query(Toast))
+            assert toasts, "expected the notification to render a Toast widget"
+            padding = toasts[0].styles.padding
+            assert padding.bottom == 2
+            assert padding.bottom > padding.top

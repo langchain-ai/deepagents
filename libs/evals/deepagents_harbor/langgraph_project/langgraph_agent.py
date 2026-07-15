@@ -103,19 +103,14 @@ def _model_name(configurable: dict[str, object]) -> str:
 
 
 def _build_model(configurable: dict[str, object]) -> BaseChatModel:
-    """Build the chat model, defaulting OpenAI to the Responses API.
+    """Build the chat model from the configured name + kwargs.
 
-    OpenAI gates ``reasoning_effort`` + function tools to ``/v1/responses`` for
-    gpt-5.x, and its model profile defaults ``reasoning_effort``. The model is
-    built here directly via ``init_chat_model``, which bypasses the Deep Agents
-    OpenAI provider profile that would set ``use_responses_api=True``, so set it
-    explicitly for ``openai:`` models. A caller-supplied ``model_kwargs`` value
-    still wins.
+    TEST (langchain PR #38860): the OpenAI ``use_responses_api=True`` workaround
+    is intentionally dropped here to verify that langchain-openai auto-routes
+    ``reasoning_effort`` + function tool calls to ``/v1/responses`` on its own.
     """
     name = _model_name(configurable)
     kwargs = _model_kwargs(configurable)
-    if name.startswith("openai:") and "use_responses_api" not in kwargs:
-        kwargs["use_responses_api"] = True
     return init_chat_model(name, **kwargs)
 
 

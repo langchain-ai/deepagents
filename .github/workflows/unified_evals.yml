@@ -46,6 +46,10 @@ on:
       sandbox_env:
         type: string
         default: "langsmith"
+      include_tasks:
+        description: "Space-separated harbor --include-task-name filter(s). When set, overrides per-category selection (target one task, e.g. harbor-index/usaco-assign-cows-to-barns). Empty = normal selection."
+        type: string
+        default: ""
       force_build:
         description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         type: boolean
@@ -200,7 +204,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-baseten:
     needs: prep
@@ -225,7 +229,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-fireworks:
     needs: prep
@@ -250,7 +254,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-google_genai:
     needs: prep
@@ -275,7 +279,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-groq:
     needs: prep
@@ -300,7 +304,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-nvidia:
     needs: prep
@@ -325,7 +329,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-ollama:
     needs: prep
@@ -350,7 +354,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-openai:
     needs: prep
@@ -375,7 +379,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-openrouter:
     needs: prep
@@ -400,7 +404,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-xai:
     needs: prep
@@ -425,7 +429,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   eval-other:
     needs: prep
@@ -450,7 +454,7 @@ jobs:
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
-      include_tasks: ${{ matrix.include_tasks }}
+      include_tasks: ${{ inputs.include_tasks != '' && inputs.include_tasks || matrix.include_tasks }}
 
   combine:
     name: "📊 Combine cross-model results"

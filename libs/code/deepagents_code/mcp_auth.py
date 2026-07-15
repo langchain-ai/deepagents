@@ -284,6 +284,9 @@ class FileTokenStorage(TokenStorage):
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return the stored `OAuthToken`, or `None` if none is persisted."""
+        return await asyncio.to_thread(self._get_tokens_sync)
+
+    def _get_tokens_sync(self) -> OAuthToken | None:
         data = self._read()
         if data is None:
             return None
@@ -300,6 +303,9 @@ class FileTokenStorage(TokenStorage):
         the SDK's `refresh_token` grant instead of a full browser re-auth.
         Cleared when `expires_in` is absent so the sidecar can't go stale.
         """
+        await asyncio.to_thread(self._set_tokens_sync, tokens)
+
+    def _set_tokens_sync(self, tokens: OAuthToken) -> None:
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
@@ -311,6 +317,9 @@ class FileTokenStorage(TokenStorage):
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
         """Return the stored client registration, or `None` if none is persisted."""
+        return await asyncio.to_thread(self._get_client_info_sync)
+
+    def _get_client_info_sync(self) -> OAuthClientInformationFull | None:
         data = self._read()
         if data is None:
             return None
@@ -321,6 +330,9 @@ class FileTokenStorage(TokenStorage):
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         """Persist `client_info` to disk, preserving any stored tokens."""
+        await asyncio.to_thread(self._set_client_info_sync, client_info)
+
+    def _set_client_info_sync(self, client_info: OAuthClientInformationFull) -> None:
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
@@ -328,6 +340,9 @@ class FileTokenStorage(TokenStorage):
 
     async def get_oauth_metadata(self) -> OAuthMetadata | None:
         """Return stored public OAuth authorization metadata, if available."""
+        return await asyncio.to_thread(self._get_oauth_metadata_sync)
+
+    def _get_oauth_metadata_sync(self) -> OAuthMetadata | None:
         data = self._read()
         if data is None:
             return None
@@ -338,6 +353,9 @@ class FileTokenStorage(TokenStorage):
 
     async def set_oauth_metadata(self, metadata: OAuthMetadata) -> None:
         """Persist public OAuth authorization metadata beside the token state."""
+        await asyncio.to_thread(self._set_oauth_metadata_sync, metadata)
+
+    def _set_oauth_metadata_sync(self, metadata: OAuthMetadata) -> None:
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["oauth_metadata"] = json.loads(metadata.model_dump_json(exclude_none=True))
@@ -353,6 +371,15 @@ class FileTokenStorage(TokenStorage):
         Prevents the state where one call succeeds and the other fails,
         leaving an orphan on disk.
         """
+        await asyncio.to_thread(
+            self._set_tokens_and_client_info_sync, tokens, client_info
+        )
+
+    def _set_tokens_and_client_info_sync(
+        self,
+        tokens: OAuthToken,
+        client_info: OAuthClientInformationFull,
+    ) -> None:
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
@@ -371,6 +398,9 @@ class FileTokenStorage(TokenStorage):
         value fails to coerce to `float`. Callers should treat `None` as
         "expiry unknown" and decide policy (skip, assume-expired, etc.).
         """
+        return await asyncio.to_thread(self._get_expires_at_sync)
+
+    def _get_expires_at_sync(self) -> float | None:
         data = self._read()
         if data is None:
             return None

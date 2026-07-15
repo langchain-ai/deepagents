@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -320,6 +321,66 @@ class TestFileTokenStorage:
         stored = await storage.get_oauth_metadata()
         assert stored is not None
         assert str(stored.token_endpoint) == "https://auth.example/token"
+
+    async def test_set_tokens_persists_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refreshed-token persistence must not block the event-loop thread.
+
+        `set_tokens` is awaited from the MCP SDK's async OAuth refresh flow.
+        Its synchronous read-modify-write (including `path.parent.mkdir`)
+        must run in a worker thread; otherwise BlockBuster under
+        `langgraph dev` raises `BlockingError`, which cancels the transport
+        task group and crashes the tool node. Regression for the MCP OAuth
+        refresh failure.
+        """
+        storage = FileTokenStorage("notion")
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+
+        real_write = storage._write
+
+        def _spy_write(data: dict) -> None:
+            write_threads.append(threading.get_ident())
+            real_write(data)
+
+        monkeypatch.setattr(storage, "_write", _spy_write)
+
+        await storage.set_tokens(_make_tokens())
+
+        assert write_threads, "_write should have run"
+        assert all(thread_id != loop_thread for thread_id in write_threads), (
+            "token persistence must run off the event-loop thread"
+        )
+        # The expected state is still written despite the offload.
+        got = await storage.get_tokens()
+        assert got is not None
+        assert got.access_token == "at"
+        assert await storage.get_expires_at() is not None
+
+    async def test_reads_run_off_event_loop_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Async reads must offload their blocking `_read` off the loop thread."""
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        real_read = storage._read
+
+        def _spy_read() -> dict | None:
+            read_threads.append(threading.get_ident())
+            return real_read()
+
+        monkeypatch.setattr(storage, "_read", _spy_read)
+
+        assert await storage.get_tokens() is not None
+
+        assert read_threads, "_read should have run"
+        assert all(thread_id != loop_thread for thread_id in read_threads), (
+            "token reads must run off the event-loop thread"
+        )
 
 
 @pytest.mark.usefixtures("fake_home")

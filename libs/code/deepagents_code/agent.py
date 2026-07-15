@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import tomllib
 import warnings
 from pathlib import Path, PurePosixPath
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from deepagents import SystemPromptConfig
+    from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -76,7 +76,11 @@ from deepagents_code.local_context import (
     _AsyncExecutableBackend,
     _ExecutableBackend,
 )
-from deepagents_code.offload import _offload_fallback_root
+from deepagents_code.offload import (
+    _FALLBACK_ARTIFACTS_ROOT,
+    _artifacts_root,
+    _offload_fallback_root,
+)
 from deepagents_code.offload_middleware import _create_cli_compaction_middleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
@@ -191,20 +195,48 @@ def _todo_list_middleware_override() -> list[AgentMiddleware]:
     return [stand_in]
 
 
-_RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
-_RUBRIC_GRADER_SYSTEM_PROMPT = (
-    GRADER_SYSTEM_PROMPT
-    + "\n\nWhen the transcript says a tool result was saved under "
-    + f"`{_RUBRIC_GRADER_READ_FILE_PREFIX}`, use the `read_file` tool to inspect "
-    + "the referenced evidence before deciding that a criterion lacks support. "
-    + "Only read paths that are explicitly present in the transcript."
-)
+def _rubric_grader_read_file_prefix(backend: CompositeBackend) -> str:
+    """Return the offloaded-results directory the rubric grader is allowed to read.
+
+    Mirrors how `FilesystemMiddleware` derives its large-tool-results prefix from
+    the backend's `artifacts_root`, so the grader's read allow-list tracks wherever
+    offloaded results actually land (a real per-session `/tmp` dir in local mode,
+    or `/large_tool_results/` when `artifacts_root` is the default `/`).
+
+    Args:
+        backend: The composite backend the agent uses.
+
+    Returns:
+        The large-tool-results prefix, always ending with a trailing slash.
+    """
+    root = backend.artifacts_root.rstrip("/")
+    return f"{root}/large_tool_results/"
 
 
-def _validate_rubric_grader_read_path(file_path: str) -> str | None:
+def _rubric_grader_system_prompt(read_file_prefix: str) -> str:
+    """Build the rubric grader system prompt for a given offload prefix.
+
+    Args:
+        read_file_prefix: The directory under which offloaded tool results live.
+
+    Returns:
+        The grader system prompt naming that prefix as the readable evidence dir.
+    """
+    return (
+        GRADER_SYSTEM_PROMPT
+        + "\n\nWhen the transcript says a tool result was saved under "
+        + f"`{read_file_prefix}`, use the `read_file` tool to inspect "
+        + "the referenced evidence before deciding that a criterion lacks support. "
+        + "Only read paths that are explicitly present in the transcript."
+    )
+
+
+def _validate_rubric_grader_read_path(
+    file_path: str, read_file_prefix: str
+) -> str | None:
     normalized = file_path.replace("\\", "/")
-    if not normalized.startswith(_RUBRIC_GRADER_READ_FILE_PREFIX):
-        return "Rubric grader can only read files under /large_tool_results/."
+    if not normalized.startswith(read_file_prefix):
+        return f"Rubric grader can only read files under {read_file_prefix}."
     parts = PurePosixPath(normalized).parts
     if ".." in parts or "~" in parts:
         return "Invalid path."
@@ -212,6 +244,7 @@ def _validate_rubric_grader_read_path(file_path: str) -> str | None:
 
 
 def _create_rubric_grader_tools(backend: CompositeBackend) -> list[BaseTool]:
+    read_file_prefix = _rubric_grader_read_file_prefix(backend)
     filesystem = FilesystemMiddleware(backend=backend)
     sdk_read_file: StructuredTool | None = None
     for candidate in filesystem.tools:
@@ -240,7 +273,7 @@ def _create_rubric_grader_tools(backend: CompositeBackend) -> list[BaseTool]:
             The SDK `read_file` tool result, or an error message when the path is
             outside the grader evidence directory.
         """
-        if error := _validate_rubric_grader_read_path(file_path):
+        if error := _validate_rubric_grader_read_path(file_path, read_file_prefix):
             return error
         return sdk_read_file_func(
             file_path=file_path,
@@ -1920,25 +1953,38 @@ def create_cli_agent(
         # Full HITL for destructive operations
         interrupt_on = _add_interrupt_on()  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
 
-    # Set up composite backend with routing
-    # For local FilesystemBackend, route large tool results to /tmp to avoid polluting
-    # the working directory. For sandbox backends, no special routing is needed.
+    # Set up composite backend with routing.
     if sandbox is None:
-        # Local mode: Route large results to a unique temp directory
-        large_results_backend = FilesystemBackend(
-            root_dir=tempfile.mkdtemp(prefix="deepagents_large_results_"),
-            virtual_mode=True,
-        )
+        # Local mode normally lets large results fall through to the default
+        # backend at the real, hardened `artifacts_root`, so filesystem tools and
+        # `execute` receive the same host path. If that predictable directory is
+        # unusable, `_artifacts_root` supplies a stable virtual root plus private
+        # temporary storage, and `large_tool_results` is routed there explicitly.
+        # Conversation history always has a dedicated route to persistent storage.
+        # The fallback alias remains installed even after the predictable directory
+        # recovers, so archive paths saved during fallback stay resolvable.
+        artifacts_storage = _artifacts_root()
+        artifacts_root = artifacts_storage.root
         conversation_history_backend = FilesystemBackend(
             root_dir=_offload_fallback_root() / "conversation_history",
             virtual_mode=True,
         )
+        fallback_history_root = f"{_FALLBACK_ARTIFACTS_ROOT}/conversation_history/"
+        artifact_routes: dict[str, BackendProtocol] = {
+            f"{artifacts_root}/conversation_history/": conversation_history_backend,
+            fallback_history_root: conversation_history_backend,
+        }
+        if artifacts_storage.large_results_dir is not None:
+            artifact_routes[f"{artifacts_root}/large_tool_results/"] = (
+                FilesystemBackend(
+                    root_dir=artifacts_storage.large_results_dir,
+                    virtual_mode=True,
+                )
+            )
         composite_backend = CompositeBackend(
             default=backend,
-            routes={
-                "/large_tool_results/": large_results_backend,
-                "/conversation_history/": conversation_history_backend,
-            },
+            routes=artifact_routes,
+            artifacts_root=artifacts_root,
         )
     else:
         # Sandbox mode: No special routing needed
@@ -1959,7 +2005,9 @@ def create_cli_agent(
         )
         rubric_kwargs: dict[str, Any] = {
             "model": rubric_model if rubric_model is not None else model,
-            "system_prompt": _RUBRIC_GRADER_SYSTEM_PROMPT,
+            "system_prompt": _rubric_grader_system_prompt(
+                _rubric_grader_read_file_prefix(composite_backend)
+            ),
             "tools": _create_rubric_grader_tools(composite_backend),
         }
         if rubric_max_iterations is not None:

@@ -6,16 +6,21 @@ import os
 import stat
 import tempfile
 from contextlib import nullcontext
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents.backends.utils import validate_path
 
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
-from deepagents_code.offload import _offload_fallback_root
+from deepagents_code.offload import (
+    _artifacts_root,
+    _filesystem_tool_path,
+    _offload_fallback_root,
+)
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -1182,6 +1187,82 @@ class TestOffloadFallbackRoot:
         from deepagents_code.offload import offload_storage_is_ephemeral
 
         assert offload_storage_is_ephemeral() is False
+
+
+class TestArtifactsRoot:
+    """Cover the real-filesystem artifacts root for offloaded tool results."""
+
+    def test_artifacts_root_is_stable_and_hardened(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-user artifacts dir is predictable, private, and reused."""
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        getuid = getattr(os, "getuid", None)
+        uid = getuid() if getuid is not None else os.getpid()
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+
+        storage = _artifacts_root()
+        root_path = Path(storage.root)
+
+        assert storage.large_results_dir is None
+        assert root_path.samefile(temp_dir / f"dcode-artifacts-{uid}")
+        assert stat.S_IMODE(root_path.stat().st_mode) == 0o700
+        # Stable across calls (paths embedded in resumed threads stay resolvable).
+        assert _artifacts_root() == storage
+
+    def test_windows_artifacts_root_is_accepted_by_filesystem_tools(self) -> None:
+        """A Windows temp path retains its drive without a rejected drive prefix."""
+        disk_root = PureWindowsPath(
+            "C:/Users/test/AppData/Local/Temp/dcode-artifacts-123"
+        )
+
+        root = _filesystem_tool_path(disk_root)
+        result_path = f"{root}/large_tool_results/tool-call-id"
+
+        assert root == "//?/C:/Users/test/AppData/Local/Temp/dcode-artifacts-123"
+        assert PureWindowsPath(root).is_absolute()
+        assert validate_path(result_path) == result_path
+
+    def test_artifacts_root_falls_back_when_predictable_path_foreign_owned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A predictable dir owned by another user is rejected for a unique one."""
+        from types import SimpleNamespace
+
+        getuid = getattr(os, "getuid", None)
+        if getuid is None:
+            pytest.skip("uid ownership check requires os.getuid")
+
+        temp_dir = tmp_path / "tmp"
+        temp_dir.mkdir()
+        uid = getuid()
+        reserved = temp_dir / f"dcode-artifacts-{uid}"
+        reserved.mkdir()  # a real, us-owned directory; lstat is faked below
+
+        real_lstat = Path.lstat
+
+        def fake_lstat(self: Path) -> Any:  # noqa: ANN401
+            info = real_lstat(self)
+            if self == reserved:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=info.st_uid + 1)
+            return info
+
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+        monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+        storage = _artifacts_root()
+        next_storage = _artifacts_root()
+
+        assert storage.root == "/dcode-artifacts-fallback"
+        assert next_storage.root == storage.root
+        assert storage.large_results_dir is not None
+        assert next_storage.large_results_dir is not None
+        assert not storage.large_results_dir.samefile(reserved)
+        assert storage.large_results_dir.name.startswith(f"dcode-artifacts-{uid}-")
+        assert stat.S_IMODE(storage.large_results_dir.stat().st_mode) == 0o700
+        assert next_storage.large_results_dir != storage.large_results_dir
 
 
 class TestOffloadStorageCaveat:

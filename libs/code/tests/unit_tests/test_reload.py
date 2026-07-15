@@ -1087,7 +1087,7 @@ class TestReloadPluginsViaReload:
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.tui.widgets.messages import AppMessage
 
-        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        monkeypatch.setenv(EXPERIMENTAL, "0")
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:

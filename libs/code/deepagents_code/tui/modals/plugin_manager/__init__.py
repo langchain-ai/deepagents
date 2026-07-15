@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Rule, Static
 from textual.widgets.option_list import Option
@@ -70,6 +71,11 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
     ]
 
     CSS_PATH = "plugin_manager.tcss"
+
+    # Divider width used before the options list has been laid out (e.g. in unit
+    # tests that build options off-screen). At render time the divider is sized to
+    # the measured options width instead so it never wraps on a narrower modal.
+    _DIVIDER_FALLBACK_WIDTH: ClassVar[int] = 72
 
     _tabs: ClassVar[tuple[PluginTab, ...]] = (
         "discover",
@@ -148,6 +154,20 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             self._status = None
             self._refresh_view()
 
+    def on_resize(self) -> None:
+        """Refit the width-sized marketplaces divider when the modal resizes.
+
+        The divider is the only content sized to the options width, so restrict the
+        rebuild to the marketplaces list view to avoid needless focus/highlight churn
+        on unrelated tabs and while the add-marketplace input is focused.
+        """
+        if (
+            self._mode == "list"
+            and self._tab == "marketplaces"
+            and self._state.marketplaces
+        ):
+            self._refresh_view()
+
     def _tabs_text(self) -> str:
         labels = {
             "discover": "Plugins",
@@ -193,7 +213,9 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
             if self._state.marketplaces:
                 options.append(
                     Option(
-                        Content.styled(glyphs.box_horizontal * 72, "dim"),
+                        Content.styled(
+                            glyphs.box_horizontal * self._divider_width(), "dim"
+                        ),
                         id="marketplace-divider",
                         disabled=True,
                     )
@@ -209,6 +231,25 @@ class PluginManagerScreen(ModalScreen[tuple[str, bool] | None]):  # noqa: RUF067
         if not self._state.errors:
             return [Option("No plugin errors.", id="empty")]
         return [Option(Content(error), id="empty") for error in self._state.errors]
+
+    def _divider_width(self) -> int:
+        """Width for the marketplaces divider, sized to the options list.
+
+        The options list respects the modal's `max-width`, so a fixed width wraps on
+        terminals narrower than the full modal. Measure the laid-out content width when
+        available and fall back to a constant before the first layout (e.g. in tests).
+
+        Returns:
+            The measured options content width, or `_DIVIDER_FALLBACK_WIDTH` if the
+            options list is not mounted or has not been laid out yet.
+        """
+        try:
+            width = self.query_one(
+                "#plugin-manager-options", OptionList
+            ).content_size.width
+        except NoMatches:
+            return self._DIVIDER_FALLBACK_WIDTH
+        return width if width > 0 else self._DIVIDER_FALLBACK_WIDTH
 
     @staticmethod
     def _nearest_enabled_index(options: OptionList, candidate: int) -> int | None:

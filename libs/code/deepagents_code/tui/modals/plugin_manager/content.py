@@ -172,9 +172,7 @@ def _confirm_marketplace_removal_options(row: _MarketplaceRow) -> list[Option]:
 
 
 def _marketplace_details_content(row: _MarketplaceRow) -> Content:
-    available = (
-        "Unavailable" if row.plugin_count is None else f"{row.plugin_count} available"
-    )
+    available = "Unavailable" if row.has_error else f"{row.plugin_count} available"
     return Content.assemble(
         Content.styled(row.name, "bold"),
         "\n",

@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import _list_skills as list_sdk_skills
-from textual.widgets import OptionList
+from textual.widgets import Input, OptionList
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.app import DeepAgentsApp
@@ -647,6 +647,55 @@ async def test_plugin_manager_confirms_marketplace_removal(
     assert "company-tools" not in load_marketplace_records()
     assert not load_installed_plugins()
     assert marketplace_root.is_dir()
+
+
+async def test_plugin_manager_opens_add_marketplace_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert options.option_count == 2
+        assert options.get_option_at_index(0).disabled
+        assert "No marketplaces installed" in str(options.get_option_at_index(0).prompt)
+        assert options.get_option_at_index(1).id == "add-marketplace"
+        assert options.highlighted == 1
+        help_text = str(screen.query_one("#plugin-manager-help").render())
+        assert "add marketplace" in help_text
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        source_input = screen.query_one("#plugin-marketplace-source", Input)
+        assert source_input.display is True
+        assert source_input.has_focus
+        assert (
+            str(screen.query_one("#plugin-manager-title").render()) == "Add Marketplace"
+        )
+        assert screen.query_one("#plugin-manager-tabs").display is False
+        tip = str(screen.query_one("#plugin-manager-status").render())
+        assert "Enter marketplace source:" in tip
+        assert "Examples:" in tip
+        assert "owner/repo (GitHub)" in tip
+        assert "git@github.com:owner/repo.git (SSH)" in tip
+        assert "https://example.com/marketplace.json" in tip
+        assert "./path/to/marketplace" in tip
+        help_text = str(screen.query_one("#plugin-manager-help").render())
+        assert "Enter to add" in help_text
+        assert "Esc to cancel" in help_text
 
 
 def test_plugin_mcp_config_namespaces_and_substitutes(

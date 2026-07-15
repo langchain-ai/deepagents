@@ -2,10 +2,22 @@
 
 import inspect
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from textual.widgets import OptionList
+
+from deepagents_code.app import DeepAgentsApp
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
-from deepagents_code.tui.modals.plugin_manager.content import _plugin_options
-from deepagents_code.tui.modals.plugin_manager.models import _PluginRow
+from deepagents_code.tui.modals.plugin_manager.content import (
+    _marketplace_label,
+    _plugin_options,
+)
+from deepagents_code.tui.modals.plugin_manager.models import (
+    _ManagerState,
+    _MarketplaceRow,
+    _PluginRow,
+)
 
 
 def test_plugin_manager_css_is_colocated_with_screen() -> None:
@@ -44,3 +56,59 @@ def test_plugin_row_label_prefers_display_name() -> None:
     )
     assert row.label == "Convex"
     assert _PluginRow("linear@tools", "", False, None, None).label == "linear"
+
+
+def test_marketplace_options_omit_divider_when_empty() -> None:
+    screen = PluginManagerScreen()
+    screen._tab = "marketplaces"
+    screen._state = _ManagerState(
+        available_plugins=(),
+        installed_plugins=(),
+        marketplaces=(),
+        errors=(),
+    )
+
+    options = screen._current_options()
+
+    assert [option.id for option in options] == ["add-marketplace"]
+
+
+def test_healthy_marketplace_label_shows_available_plugins() -> None:
+    row = _MarketplaceRow("healthy", "owner/healthy", 3, 0)
+
+    label = _marketplace_label(row)
+
+    assert not row.has_error
+    assert "3 available" in label.plain
+    assert get_glyphs().error not in label.plain
+
+
+async def test_marketplace_divider_refits_on_resize() -> None:
+    """The width-sized divider shrinks with the modal on a narrower terminal."""
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = PluginManagerScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+
+        screen._tab = "marketplaces"
+        screen._state = _ManagerState(
+            available_plugins=(),
+            installed_plugins=(),
+            marketplaces=(_MarketplaceRow("tools", "owner/repo", 2, 0),),
+            errors=(),
+        )
+        screen._refresh_view()
+        await pilot.pause()
+
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert options.get_option_at_index(1).id == "marketplace-divider"
+        box = get_glyphs().box_horizontal
+        wide_width = str(options.get_option_at_index(1).prompt).count(box)
+        assert wide_width > 0
+
+        await pilot.resize_terminal(60, 40)
+        await pilot.pause()
+
+        narrow_width = str(options.get_option_at_index(1).prompt).count(box)
+        assert 0 < narrow_width < wide_width

@@ -181,7 +181,11 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              ;; # Uses LANGSMITH_API_KEY (already required above)
+              # The sandbox authenticates with its own dedicated key (passed via
+              # --environment-kwarg below); tracing/datasets/results use
+              # LANGSMITH_API_KEY (required above).
+              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
+              ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1

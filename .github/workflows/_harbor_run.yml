@@ -277,7 +277,9 @@ jobs:
         # Each local dataset's per-task corpus is single-sourced (git-ignored) and
         # regenerated before Harbor builds the task images. Context-Bench copies a
         # vendored corpus; OOLONG fetches its bucket from the HuggingFace
-        # datasets-server. Dispatch to the dataset's populate adapter by path.
+        # datasets-server. Dispatch to the dataset's populate adapter by path — the
+        # `oolong-synth*` glob covers every OOLONG bucket dir, so adding a bucket
+        # needs no change here.
         run: |
           if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
@@ -285,7 +287,7 @@ jobs:
           case "${HARBOR_DATASET_PATH%/}" in
             datasets/context-retrieval-evals)
               uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH" ;;
-            datasets/oolong-synth)
+            datasets/oolong-synth*)
               uv run python -m harbor_adapters.oolong.main --populate "$HARBOR_DATASET_PATH" ;;
             *)
               echo "::error::No populate adapter for local dataset path: $HARBOR_DATASET_PATH (add a case in _harbor_run.yml)"; exit 1 ;;

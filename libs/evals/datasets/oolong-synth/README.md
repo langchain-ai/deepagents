@@ -33,20 +33,17 @@ which reads `bucket.toml` and fetches the matching rows.
 
 Each dataset directory is one `(subset, context_len)` bucket. To add another:
 
-1. Copy this directory to `libs/evals/datasets/oolong-synth-<name>/`. Keep
-   `metric.py` and `.gitignore` as-is (the task dirs are git-ignored, so there is
-   nothing else to copy), and edit `dataset.toml`'s `name` so it is distinct.
+1. Copy this directory to `libs/evals/datasets/oolong-synth-<name>/` — the name
+   must keep the `oolong-synth` prefix (see below). Keep `metric.py` and
+   `.gitignore` as-is (the task dirs are git-ignored, so there is nothing else to
+   copy), and edit `dataset.toml`'s `name` so it is distinct.
 2. Edit `bucket.toml` to the new `subset` / `context_len` / `n_examples`.
-3. Add a dispatch case for the new path to the "Populate local dataset corpus"
-   step in `.github/workflows/_harbor_run.yml` (the case matches the exact path):
 
-   ```yaml
-   datasets/oolong-synth-<name>)
-     uv run python -m harbor_adapters.oolong.main --populate "$HARBOR_DATASET_PATH" ;;
-   ```
-
-Then run it with `dataset_path=datasets/oolong-synth-<name>`. Each directory is
-its own reproducible dataset (Harbor/LangSmith names it from the path).
+That's it — run it with `dataset_path=datasets/oolong-synth-<name>`. No workflow
+change is needed: the "Populate local dataset corpus" step in
+`.github/workflows/_harbor_run.yml` dispatches every `datasets/oolong-synth*` path
+to the OOLONG populate adapter, which reads that directory's `bucket.toml`. Each
+directory is its own reproducible dataset (Harbor/LangSmith names it from the path).
 
 ## Run it locally
 

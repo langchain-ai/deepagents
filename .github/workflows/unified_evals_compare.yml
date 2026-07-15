@@ -1,0 +1,424 @@
+name: "📊 Evals - Unified Compare"
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_1_branch:
+        description: "Repository branch evaluated as Version 1"
+        type: string
+        required: true
+      version_2_branch:
+        description: "Repository branch evaluated as Version 2"
+        type: string
+        required: true
+      models:
+        description: "Comma-separated provider:model specs"
+        type: string
+        required: true
+      categories:
+        description: "Comma list"
+        type: string
+        default: "autonomous,conversation,context"
+      agent_impl:
+        description: "Harness for autonomous/context; conversation always uses tau3"
+        type: choice
+        default: "dcode"
+        options:
+          - dcode
+          - bare
+      profile:
+        description: "Task scope: full or the frozen high-signal lite subset"
+        type: choice
+        default: "full"
+        options:
+          - full
+          - lite
+      include_tasks:
+        description: "Optional space-separated exact task names from the selected profile"
+        type: string
+        default: ""
+      rollouts:
+        type: string
+        default: "3"
+      concurrency:
+        type: string
+        default: "4"
+      sandbox_env:
+        type: string
+        default: "langsmith"
+      force_build:
+        description: "Force task environment snapshots to rebuild"
+        type: boolean
+        default: false
+      harbor_package_override:
+        description: "Required immutable Harbor build that consolidates shards into explicit LangSmith experiments"
+        type: string
+        default: |-
+          harbor @ git+https://github.com/harbor-framework/harbor.git@af2e8629e95c2e9f487f7a2ba87c1e25b531a55b
+          harbor-langsmith @ git+https://github.com/harbor-framework/harbor.git@af2e8629e95c2e9f487f7a2ba87c1e25b531a55b#subdirectory=packages/harbor-langsmith
+  workflow_call:
+    inputs:
+      version_1_branch:
+        type: string
+        required: true
+      version_2_branch:
+        type: string
+        required: true
+      models:
+        type: string
+        required: true
+      categories:
+        type: string
+        default: "autonomous,conversation,context"
+      agent_impl:
+        type: string
+        default: "dcode"
+      profile:
+        type: string
+        default: "full"
+      include_tasks:
+        type: string
+        default: ""
+      rollouts:
+        type: string
+        default: "3"
+      concurrency:
+        type: string
+        default: "4"
+      sandbox_env:
+        type: string
+        default: "langsmith"
+      force_build:
+        type: boolean
+        default: false
+      harbor_package_override:
+        type: string
+        default: |-
+          harbor @ git+https://github.com/harbor-framework/harbor.git@af2e8629e95c2e9f487f7a2ba87c1e25b531a55b
+          harbor-langsmith @ git+https://github.com/harbor-framework/harbor.git@af2e8629e95c2e9f487f7a2ba87c1e25b531a55b#subdirectory=packages/harbor-langsmith
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: unified-evals-compare-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: "🔧 Prepare Version 1 vs Version 2"
+    runs-on: ubuntu-latest
+    environment: evals
+    outputs:
+      eval_matrix: ${{ steps.matrix.outputs.eval_matrix }}
+      max_parallel: ${{ steps.matrix.outputs.max_parallel }}
+      subject_parallel: ${{ steps.matrix.outputs.subject_parallel }}
+      models: ${{ steps.matrix.outputs.models }}
+      categories: ${{ steps.matrix.outputs.categories }}
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+      - name: "📋 Checkout comparison controller"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🔖 Resolve branches to immutable commits"
+        id: refs
+        env:
+          VERSION_1_BRANCH: ${{ inputs.version_1_branch }}
+          VERSION_2_BRANCH: ${{ inputs.version_2_branch }}
+        run: |
+          for branch in "$VERSION_1_BRANCH" "$VERSION_2_BRANCH"; do
+            if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+              echo "::error::Invalid comparison branch name."
+              exit 1
+            fi
+          done
+          v1_sha=$(git ls-remote --exit-code origin "refs/heads/$VERSION_1_BRANCH" | awk 'NR == 1 {print $1}')
+          v2_sha=$(git ls-remote --exit-code origin "refs/heads/$VERSION_2_BRANCH" | awk 'NR == 1 {print $1}')
+          if ! [[ "$v1_sha" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$v2_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Both comparison branches must exist in this repository."
+            exit 1
+          fi
+          if [ "$v1_sha" = "$v2_sha" ]; then
+            echo "::error::Version 1 and Version 2 resolve to the same commit."
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin \
+            "refs/heads/$VERSION_1_BRANCH:refs/remotes/origin/compare-v1" \
+            "refs/heads/$VERSION_2_BRANCH:refs/remotes/origin/compare-v2"
+          versions=$(V1_SHA="$v1_sha" V2_SHA="$v2_sha" python3 -c 'import json, os; print(json.dumps([
+              {"version_id": "v1", "branch": os.environ["VERSION_1_BRANCH"], "sha": os.environ["V1_SHA"]},
+              {"version_id": "v2", "branch": os.environ["VERSION_2_BRANCH"], "sha": os.environ["V2_SHA"]},
+          ], separators=(",", ":")))')
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+      - name: "🐍 Set up Python + UV"
+        if: ${{ inputs.profile == 'full' }}
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-compare-enumerate
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        if: ${{ inputs.profile == 'full' }}
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🔢 Enumerate one shared full-profile task set"
+        if: ${{ inputs.profile == 'full' }}
+        working-directory: libs/evals
+        env:
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
+          from unified_prep import CATEGORY_MAP
+
+          categories = list(dict.fromkeys(
+              item.strip() for item in os.environ["UNIFIED_CATEGORIES"].split(",") if item.strip()
+          ))
+          unknown = [category for category in categories if category not in CATEGORY_MAP]
+          if not categories or unknown:
+              sys.exit(f"::error::Invalid comparison categories: {unknown or categories!r}")
+          enumerate_script = os.path.join(
+              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "enumerate_tasks.py"
+          )
+          tasks = {}
+          for category in categories:
+              config = CATEGORY_MAP[category]
+              env = os.environ.copy()
+              if config["dataset_path"]:
+                  subprocess.run(
+                      ["uv", "run", "python", "-m", "harbor_adapters.contextbench.main", "--populate", config["dataset_path"]],
+                      check=True,
+                  )
+                  env["ENUM_DATASET_PATH"] = config["dataset_path"]
+                  env.pop("ENUM_DATASET", None)
+              else:
+                  env["ENUM_DATASET"] = config["dataset"]
+                  env.pop("ENUM_DATASET_PATH", None)
+              result = subprocess.run(
+                  ["uv", "run", "python", enumerate_script],
+                  env=env,
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              names = [line for line in result.stdout.splitlines() if line.strip()]
+              if not names:
+                  sys.exit(f"::error::Enumerated 0 tasks for {category!r}")
+              tasks[category] = names
+          path = os.path.join(os.environ["RUNNER_TEMP"], "comparison-tasks.json")
+          with open(path, "w") as file:
+              json.dump(tasks, file)
+          with open(os.environ["GITHUB_ENV"], "a") as file:
+              file.write(f"UNIFIED_TASKS_JSON={path}\n")
+          PY
+
+      - name: "🧮 Build the shared Version × Model matrix"
+        id: matrix
+        env:
+          UNIFIED_VERSIONS_JSON: ${{ steps.refs.outputs.versions }}
+          UNIFIED_MODELS: ${{ inputs.models }}
+          UNIFIED_CATEGORIES: ${{ inputs.categories }}
+          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
+          UNIFIED_PROFILE: ${{ inputs.profile }}
+          UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+          UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
+          UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
+          UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
+          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
+        run: |
+          if ! grep -q '[^[:space:]]' <<< "$HARBOR_PACKAGE_OVERRIDE"; then
+            echo "::error::Branch comparisons require a Harbor override with consolidated LangSmith experiment support."
+            exit 1
+          fi
+          python .github/scripts/unified_compare_prep.py
+
+      - name: "📝 Summarize comparison sources"
+        env:
+          VERSIONS: ${{ steps.matrix.outputs.versions }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+          print("## Unified eval comparison")
+          print()
+          print("| Version | Branch | Commit |")
+          print("|---|---|---|")
+          for version in json.loads(os.environ["VERSIONS"]):
+              label = "Version 1" if version["version_id"] == "v1" else "Version 2"
+              print(f'| {label} | `{version["branch"]}` | `{version["sha"][:12]}` |')
+          PY
+          {
+            echo
+            echo "<details><summary>Changed-file coverage</summary>"
+            echo
+            echo "Product changes evaluated from each branch:"
+            git diff --name-only refs/remotes/origin/compare-v1 refs/remotes/origin/compare-v2 -- \
+              libs/deepagents libs/code libs/partners/quickjs | sed 's/^/- `&`/'
+            echo
+            echo "Changes outside the evaluated product roots:"
+            git diff --name-only refs/remotes/origin/compare-v1 refs/remotes/origin/compare-v2 -- \
+              . ':(exclude)libs/deepagents' ':(exclude)libs/code' ':(exclude)libs/partners/quickjs' | sed 's/^/- `&`/'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  eval:
+    name: "🚀 ${{ matrix.version_id }} / ${{ matrix.source_branch }} / ${{ matrix.model }}"
+    needs: prep
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.prep.outputs.subject_parallel) }}
+      matrix: ${{ fromJson(needs.prep.outputs.eval_matrix) }}
+    uses: ./.github/workflows/_harbor_run.yml
+    secrets: inherit
+    with:
+      model: ${{ matrix.model }}
+      flat_matrix: ${{ matrix.flat_matrix }}
+      max_parallel: ${{ needs.prep.outputs.max_parallel }}
+      category: ""
+      dataset: ""
+      dataset_path: ""
+      agent_impl: ${{ inputs.agent_impl }}
+      rollouts: ${{ inputs.rollouts }}
+      concurrency: ${{ inputs.concurrency }}
+      sandbox_env: ${{ inputs.sandbox_env }}
+      force_build: ${{ inputs.force_build }}
+      harbor_package_override: ${{ inputs.harbor_package_override }}
+      version_id: ${{ matrix.version_id }}
+      source_branch: ${{ matrix.source_branch }}
+      source_sha: ${{ matrix.source_sha }}
+
+  compare:
+    name: "📊 Compare Version 1 vs Version 2"
+    needs: [prep, eval]
+    if: ${{ always() && needs.prep.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      ROLLOUTS: ${{ inputs.rollouts }}
+      VERSIONS: ${{ needs.prep.outputs.versions }}
+      MODELS: ${{ needs.prep.outputs.models }}
+      CATEGORIES: ${{ needs.prep.outputs.categories }}
+    steps:
+      - name: "📋 Checkout comparison controller"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-compare
+          working-directory: libs/evals
+
+      - name: "⬇️ Download version summaries"
+        run: gh run download "$RUN_ID" --repo "$REPO" --pattern 'harbor-combined-compare-*' --dir _leaves
+
+      - name: "📊 Calculate Version 2 − Version 1"
+        run: |
+          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+            --rollouts "$ROLLOUTS" \
+            --versions-json "$VERSIONS" \
+            --models-json "$MODELS" \
+            --categories-json "$CATEGORIES" \
+            --out-dir _comparison
+
+      - name: "📈 Generate comparison radar charts"
+        if: ${{ hashFiles('_comparison/radar-inputs/*.json') != '' }}
+        working-directory: libs/evals
+        run: |
+          uv sync --extra charts
+          mkdir -p ../../_comparison/charts
+          for source in ../../_comparison/radar-inputs/*.json; do
+            slug=$(basename "$source" .json)
+            model=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+              ../../_comparison/chart_manifest.json "$slug")
+            uv run --extra charts python scripts/generate_radar.py \
+              --results "$source" \
+              -o "../../_comparison/charts/${slug}.png" \
+              --title "Deep Agents Version Comparison — $model"
+          done
+
+      - name: "📤 Upload comparison results"
+        if: ${{ always() && hashFiles('_comparison/comparison_summary.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-version-comparison
+          path: _comparison/
+
+      - name: "🖼️ Publish comparison charts"
+        id: publish
+        if: ${{ hashFiles('_comparison/charts/*.png') != '' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          asset_dir="runs/${RUN_ID}/comparison"
+          tmp=$(mktemp -d)
+          cd "$tmp"
+          git init -q
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+          if git ls-remote --exit-code origin eval-assets >/dev/null 2>&1; then
+            git fetch --depth=1 origin eval-assets
+            git checkout eval-assets
+          else
+            git checkout --orphan eval-assets
+            git rm -rf . 2>/dev/null || true
+            echo "Auto-managed branch for eval chart assets. Do not merge." > README.md
+            git add README.md
+          fi
+          rm -rf "$asset_dir"
+          mkdir -p "$asset_dir"
+          cp "$GITHUB_WORKSPACE"/_comparison/charts/*.png "$asset_dir/"
+          git add "$asset_dir"
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "evals: add comparison charts for run ${RUN_ID}" --allow-empty
+          git push origin eval-assets
+          echo "base_url=https://raw.githubusercontent.com/${REPO}/eval-assets/${asset_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: "🖼️ Append comparison charts to summary"
+        if: steps.publish.outcome == 'success'
+        env:
+          BASE_URL: ${{ steps.publish.outputs.base_url }}
+        run: |
+          {
+            echo "## Version comparison radar charts"
+            echo
+            for chart in _comparison/charts/*.png; do
+              name=$(basename "$chart")
+              case "$name" in *-dark.png) continue ;; esac
+              slug=${name%.png}
+              model=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+                _comparison/chart_manifest.json "$slug")
+              echo "### \`$model\`"
+              echo
+              dark="${name%.png}-dark.png"
+              if [ -f "_comparison/charts/$dark" ]; then
+                echo '<picture>'
+                echo "  <source media=\"(prefers-color-scheme: dark)\" srcset=\"${BASE_URL}/${dark}\">"
+                echo "  <img alt=\"Version comparison radar\" src=\"${BASE_URL}/${name}\" width=\"500\">"
+                echo '</picture>'
+              else
+                echo "<img alt=\"Version comparison radar\" src=\"${BASE_URL}/${name}\" width=\"500\">"
+              fi
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

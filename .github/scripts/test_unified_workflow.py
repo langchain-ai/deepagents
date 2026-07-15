@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UNIFIED_WORKFLOW = ROOT / ".github/workflows/unified_evals.yml"
+COMPARE_WORKFLOW = ROOT / ".github/workflows/unified_evals_compare.yml"
+COMPARE_SMOKE_WORKFLOW = ROOT / ".github/workflows/unified_evals_compare_smoke.yml"
 HARBOR_WORKFLOW = ROOT / ".github/workflows/_harbor_run.yml"
 HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
@@ -380,6 +382,77 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     assert '"${expected_shards_args[@]}"' in compute
 
 
+def test_harbor_artifacts_are_archived_and_extracted_for_aggregation() -> None:
+    """Keep sandbox-native paths inside an archive until after download."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    package = _indented_block(workflow, '      - name: "📦 Package Harbor artifacts"')
+    upload = _indented_block(workflow, '      - name: "📤 Upload Harbor artifacts"')
+    extract = _indented_block(workflow, '      - name: "📦 Extract shard results"')
+    compute = _indented_block(workflow, '      - name: "📊 Compute pass@k / avg@k"')
+
+    assert "tar --zstd -cf libs/evals/harbor-shard.tar.zst" in package
+    assert "path: libs/evals/harbor-shard.tar.zst" in upload
+    assert "compression-level: 0" in upload
+    assert "tar --zstd -xf" in extract
+    assert "aggregate_shards.py _results" in compute
+
+
+def test_unified_compare_is_additive_and_reuses_harbor_workflow() -> None:
+    """Keep ordinary unified evals stable while adding the two-version surface."""
+    workflow = COMPARE_WORKFLOW.read_text()
+    dispatch = _indented_block(workflow, "  workflow_dispatch:")
+    for input_name in (
+        "models",
+        "categories",
+        "agent_impl",
+        "profile",
+        "include_tasks",
+        "rollouts",
+        "concurrency",
+        "sandbox_env",
+        "force_build",
+        "harbor_package_override",
+    ):
+        assert f"      {input_name}:" in dispatch
+    assert "      version_1_branch:" in dispatch
+    assert "      version_2_branch:" in dispatch
+    assert "af2e8629e95c2e9f487f7a2ba87c1e25b531a55b" in dispatch
+    assert "  workflow_call:" in workflow
+    eval_job = _indented_block(workflow, "  eval:")
+    assert "uses: ./.github/workflows/_harbor_run.yml" in eval_job
+    assert "version_id: ${{ matrix.version_id }}" in eval_job
+    assert "source_sha: ${{ matrix.source_sha }}" in eval_job
+
+
+def test_unified_compare_smoke_calls_real_workflow_with_bare_two_task_run() -> None:
+    """Keep the temporary pre-merge smoke run narrow and branch-scoped."""
+    workflow = COMPARE_SMOKE_WORKFLOW.read_text()
+    assert "uses: ./.github/workflows/unified_evals_compare.yml" in workflow
+    assert "version_1_branch: ss/benchmark-unified-evals-no-todos" in workflow
+    assert "version_2_branch: nh/benchmark-unified-evals" in workflow
+    assert "models: openai:gpt-5.6-luna" in workflow
+    assert "agent_impl: bare" in workflow
+    assert "categories: autonomous" in workflow
+    assert 'rollouts: "2"' in workflow
+    assert 'concurrency: "2"' in workflow
+    assert workflow.count("harbor-index/") == 2
+
+
+def test_harbor_comparison_mode_checks_out_only_product_packages() -> None:
+    """Use immutable product sources without replacing the fixed evaluator."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(workflow, "  harbor:")
+    checkout = _indented_block(harbor, '      - name: "📋 Checkout evaluated product"')
+    assert "ref: ${{ inputs.source_sha }}" in checkout
+    assert "path: _comparison_source" in checkout
+    for path in ("libs/deepagents", "libs/code", "libs/partners/quickjs"):
+        assert path in checkout
+    assert "libs/evals" not in checkout
+    assert 'product_libs="$GITHUB_WORKSPACE/_comparison_source/libs"' in harbor
+    assert "deepagents-compare-${COMPARISON_VERSION}" in harbor
+    assert "HARBOR_ARTIFACT_PREFIX=compare-${VERSION_ID}-" in harbor
+
+
 def test_aggregate_runs_per_category() -> None:
     """Aggregate matrixes over categories instead of hardcoding a single one."""
     text = HARBOR_WORKFLOW.read_text()
@@ -411,11 +484,9 @@ def test_aggregate_runs_per_category() -> None:
     assert "--category" in compute
 
     upload = _indented_block(aggregate_job, '      - name: "📤 Upload combined results"')
-    assert "format('harbor-combined-{0}', steps.slug.outputs.slug)" in upload
-    assert (
-        "format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug)"
-        in upload
-    )
+    assert "steps.comparison-prefix.outputs.value" in upload
+    assert "matrix.category" in upload
+    assert "steps.slug.outputs.slug" in upload
 
 
 def test_chart_publishers_are_serialized_and_replace_rerun_assets() -> None:
@@ -620,6 +691,7 @@ def test_evals_ci_filter_includes_unified_workflows() -> None:
     expected_paths = [
         ".github/workflows/_harbor_run.yml",
         ".github/workflows/unified_evals.yml",
+        ".github/workflows/unified_evals_compare.yml",
     ]
     for path in expected_paths:
         assert evals_filter.count(f"              - '{path}'") == 1

@@ -1,0 +1,31 @@
+name: "📊 Evals - Unified Compare Smoke"
+
+on:
+  push:
+    branches:
+      - ss/multiple-branch-comparison-for-evals
+    paths:
+      - .github/workflows/unified_evals_compare_smoke.yml
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  compare:
+    uses: ./.github/workflows/unified_evals_compare.yml
+    secrets: inherit
+    with:
+      version_1_branch: ss/benchmark-unified-evals-no-todos
+      version_2_branch: nh/benchmark-unified-evals
+      models: openai:gpt-5.6-luna
+      categories: autonomous
+      agent_impl: bare
+      profile: lite
+      include_tasks: >-
+        harbor-index/gso-speedup-pydantic-enum
+        harbor-index/swebenchpro-fix-file-suffix-chooser
+      rollouts: "2"
+      concurrency: "2"
+      sandbox_env: langsmith
+      force_build: false

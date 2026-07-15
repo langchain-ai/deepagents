@@ -91,6 +91,19 @@ on:
         # not the model under test, to avoid self-grading bias.
         type: string
         default: "gpt-5.6-luna"
+      version_id:
+        # Optional comparison identity. Empty preserves the ordinary unified-eval
+        # path; comparison calls use exactly `v1` or `v2`.
+        type: string
+        default: ""
+      source_branch:
+        # Human-readable branch paired with source_sha for summaries/naming.
+        type: string
+        default: ""
+      source_sha:
+        # Immutable product commit. The evaluator checkout remains the caller ref.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -348,6 +361,38 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: "🔎 Validate comparison source"
+        if: ${{ inputs.version_id != '' || inputs.source_branch != '' || inputs.source_sha != '' }}
+        env:
+          VERSION_ID: ${{ inputs.version_id }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [[ "$VERSION_ID" != "v1" && "$VERSION_ID" != "v2" ]]; then
+            echo "::error::Comparison version_id must be v1 or v2."
+            exit 1
+          fi
+          if [ -z "$SOURCE_BRANCH" ] || ! git check-ref-format --branch "$SOURCE_BRANCH" >/dev/null 2>&1; then
+            echo "::error::Invalid comparison source branch."
+            exit 1
+          fi
+          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Comparison source_sha must be a full commit SHA."
+            exit 1
+          fi
+
+      - name: "📋 Checkout evaluated product"
+        if: ${{ inputs.source_sha != '' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: _comparison_source
+          persist-credentials: false
+          sparse-checkout: |
+            libs/deepagents
+            libs/code
+            libs/partners/quickjs
+
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
@@ -461,9 +506,22 @@ jobs:
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          COMPARISON_VERSION: ${{ inputs.version_id }}
+          COMPARISON_SOURCE_BRANCH: ${{ inputs.source_branch }}
+          COMPARISON_SOURCE_SHA: ${{ inputs.source_sha }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
+          product_libs="$GITHUB_WORKSPACE/libs"
+          if [ -n "$COMPARISON_SOURCE_SHA" ]; then
+            product_libs="$GITHUB_WORKSPACE/_comparison_source/libs"
+          fi
+          for package_dir in deepagents code partners/quickjs; do
+            if [ ! -f "$product_libs/$package_dir/pyproject.toml" ]; then
+              echo "::error::Evaluated product is missing libs/$package_dir/pyproject.toml"
+              exit 1
+            fi
+          done
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
           # partners/ must pre-exist: rsync only creates the final path component.
           mkdir -p "$local_deps_dir/partners"
@@ -474,7 +532,7 @@ jobs:
             --exclude 'build' \
             --exclude 'dist' \
             --exclude '*.egg-info' \
-            ../deepagents/ "$local_deps_dir/deepagents/"
+            "$product_libs/deepagents/" "$local_deps_dir/deepagents/"
           rsync -a --delete \
             --exclude '.venv' \
             --exclude '__pycache__' \
@@ -482,7 +540,7 @@ jobs:
             --exclude 'build' \
             --exclude 'dist' \
             --exclude '*.egg-info' \
-            ../code/ "$local_deps_dir/deepagents-code/"
+            "$product_libs/code/" "$local_deps_dir/deepagents-code/"
           # deepagents-code pins langchain-quickjs via a path source
           # (../partners/quickjs); stage it so the editable install resolves.
           rsync -a --delete \
@@ -492,7 +550,7 @@ jobs:
             --exclude 'build' \
             --exclude 'dist' \
             --exclude '*.egg-info' \
-            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+            "$product_libs/partners/quickjs/" "$local_deps_dir/partners/quickjs/"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -726,7 +784,14 @@ jobs:
           # plugin reuses one session per category and converges them; the run id +
           # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
           # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ -n "$COMPARISON_VERSION" ]; then
+            branch_safe=$(printf '%s' "$COMPARISON_SOURCE_BRANCH" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-48)
+            [ -n "$branch_safe" ] || branch_safe="branch"
+            branch_hash=$(printf '%s' "$COMPARISON_SOURCE_BRANCH" | sha256sum | cut -c1-8)
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-compare-${COMPARISON_VERSION}-${branch_safe}-${branch_hash}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          else
+            HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -868,6 +933,7 @@ jobs:
         env:
           MODEL: ${{ inputs.model }}
           CATEGORY: ${{ inputs.category }}
+          VERSION_ID: ${{ inputs.version_id }}
         run: |
           raw=$(printf '%s|%s' "$MODEL" "$CATEGORY")
           slug=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')
@@ -885,6 +951,21 @@ jobs:
           # collide in aggregate_matrix's per-category shard glob.
           category_safe="${category_safe}-$(printf '%s' "$HARBOR_CATEGORY" | sha256sum | cut -c1-8)"
           echo "HARBOR_CATEGORY_SAFE=$category_safe" >> "$GITHUB_ENV"
+          if [ -n "$VERSION_ID" ]; then
+            echo "HARBOR_ARTIFACT_PREFIX=compare-${VERSION_ID}-" >> "$GITHUB_ENV"
+          else
+            echo "HARBOR_ARTIFACT_PREFIX=" >> "$GITHUB_ENV"
+          fi
+
+      - name: "📦 Package Harbor artifacts"
+        if: always()
+        # Sandbox outputs may contain Linux-valid paths (for example `memory:`)
+        # that upload-artifact rejects for cross-platform compatibility. Preserve
+        # the tree byte-for-byte inside one safely named archive.
+        run: |
+          mkdir -p libs/evals/harbor-jobs/terminal-bench
+          tar --zstd -cf libs/evals/harbor-shard.tar.zst \
+            -C libs/evals/harbor-jobs terminal-bench
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
@@ -892,10 +973,10 @@ jobs:
         with:
           # Category- and slug-scoped so the aggregate job globs only this run's
           # own shards, grouped per category.
-          name: shard-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
-          path: |
-            libs/evals/harbor-jobs/terminal-bench
-          if-no-files-found: warn
+          name: ${{ env.HARBOR_ARTIFACT_PREFIX }}shard-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
+          path: libs/evals/harbor-shard.tar.zst
+          compression-level: 0
+          if-no-files-found: error
 
   aggregate:
     name: "📊 Aggregate shards (pass@k / avg@k)"
@@ -962,13 +1043,24 @@ jobs:
           category_safe="${category_safe}-$(printf '%s' "$CATEGORY" | sha256sum | cut -c1-8)"
           echo "slug=$category_safe" >> "$GITHUB_OUTPUT"
 
+      - name: "🔖 Compute comparison artifact prefix"
+        id: comparison-prefix
+        env:
+          VERSION_ID: ${{ inputs.version_id }}
+        run: |
+          case "$VERSION_ID" in
+            "") echo "value=" >> "$GITHUB_OUTPUT" ;;
+            v1|v2) echo "value=compare-${VERSION_ID}-" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Invalid comparison version_id: $VERSION_ID"; exit 1 ;;
+          esac
+
       - name: "⬇️ Download shard results"
         # Distinguish "no artifacts" (a legitimate task-filtered run) from a real
         # download failure (auth / network / rate-limit). Only the former aggregates
         # an empty set; anything else fails the step, so a transient failure is never
         # mistaken for a complete, zero-result run. Transient errors are retried.
         env:
-          SHARD_PATTERN: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
+          SHARD_PATTERN: ${{ steps.comparison-prefix.outputs.value }}shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-*
         run: |
           attempt=1
           while :; do
@@ -994,6 +1086,22 @@ jobs:
           echo "Contents of _shards:"
           ls -1 _shards || true
 
+      - name: "📦 Extract shard results"
+        # Leave the downloaded archives in _shards so the combined artifact
+        # retains every raw run. The existing aggregator reads extracted copies.
+        run: |
+          mkdir -p _results
+          found=0
+          while IFS= read -r -d '' archive; do
+            found=1
+            shard=$(basename "$(dirname "$archive")")
+            mkdir -p "_results/$shard"
+            tar --zstd -xf "$archive" -C "_results/$shard"
+          done < <(find _shards -type f -name 'harbor-shard.tar.zst' -print0)
+          if [ "$found" -eq 0 ]; then
+            echo "::warning::No packaged shard results found; aggregating an empty set."
+          fi
+
       - name: "📊 Compute pass@k / avg@k"
         # Inputs are passed via quoted env (not ${{ }} shell interpolation) to
         # avoid workflow-input injection; argparse int-parses --rollouts. Dataset,
@@ -1017,7 +1125,7 @@ jobs:
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
-          python3 .github/scripts/aggregate_shards.py _shards \
+          python3 .github/scripts/aggregate_shards.py _results \
             --rollouts "$ROLLOUTS" \
             "${expected_shards_args[@]}" \
             --dataset "$DATASET" \
@@ -1035,7 +1143,7 @@ jobs:
         # ran earlier in this job; don't reorder past it.
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}', steps.slug.outputs.slug) || format('harbor-combined-{0}-{1}', matrix.category, steps.slug.outputs.slug) }}
+          name: ${{ inputs.flat_matrix == '' && format('harbor-combined-{0}{1}', steps.comparison-prefix.outputs.value, steps.slug.outputs.slug) || format('harbor-combined-{0}{1}-{2}', steps.comparison-prefix.outputs.value, matrix.category, steps.slug.outputs.slug) }}
           path: _shards
           if-no-files-found: warn
 
@@ -1048,7 +1156,7 @@ jobs:
           # so the sanitized (a-z0-9- only) prefix is interpolated directly into
           # the jq string literal below — safe since the slug charset excludes
           # quotes/backslashes and can't break out of the jq string.
-          SHARD_PREFIX: shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
+          SHARD_PREFIX: ${{ steps.comparison-prefix.outputs.value }}shard-${{ steps.cat-slug.outputs.slug }}-${{ steps.slug.outputs.slug }}-
         run: |
           ids=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
             --jq ".artifacts[] | select(.name | startswith(\"${SHARD_PREFIX}\")) | .id")

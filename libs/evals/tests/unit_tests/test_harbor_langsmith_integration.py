@@ -246,7 +246,6 @@ def test_harbor_workflow_wires_tau3_subset() -> None:
     assert 'if [ "$task_count" -ne 30 ]; then' in leaf
     # tau3's verifier/user simulator needs OpenAI even when the agent model is
     # hosted by another provider, so missing credentials should fail preflight.
-    assert "contains(inputs.dataset, 'tau3')" in leaf
     assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in leaf
     assert '[ "$model_provider" != "openai" ]' in leaf
 

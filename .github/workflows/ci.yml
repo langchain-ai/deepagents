@@ -100,6 +100,7 @@ jobs:
               - '.github/workflows/harbor.yml'
               - '.github/workflows/_harbor_run.yml'
               - '.github/workflows/unified_evals.yml'
+              - '.github/workflows/unified_evals_compare.yml'
               - '.github/workflows/clbench.yml'
               - '.github/workflows/evals_trials.yml'
               - '.github/workflows/_eval.yml'

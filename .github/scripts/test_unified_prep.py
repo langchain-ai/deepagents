@@ -128,11 +128,16 @@ def test_total_job_guard_allows_within_budget():
     up.total_job_guard(total_jobs=360)  # <= 400, no raise
 
 
+def test_total_job_guard_allows_at_budget():
+    # Boundary is `> TOTAL_JOB_BUDGET`, so exactly at the budget must not raise.
+    up.total_job_guard(total_jobs=up.TOTAL_JOB_BUDGET)
+
+
 def test_total_job_guard_rejects_over_budget():
     import pytest
 
-    with pytest.raises(SystemExit):
-        up.total_job_guard(total_jobs=401)
+    with pytest.raises(SystemExit, match=r"TOTAL_JOB_BUDGET"):
+        up.total_job_guard(total_jobs=up.TOTAL_JOB_BUDGET + 1)
 
 
 def test_build_flat_matrix_expands_code_categories_over_configs():
@@ -264,7 +269,15 @@ def test_main_rejects_unknown_agent_impl(tmp_path, monkeypatch):
 
 def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
     import json as _j
+    from collections import Counter
 
+    import lite_tasks
+
+    # `autonomous` has >1 lite task, so build_flat_matrix emits one entry per
+    # task (many entries sharing the same (model, config, category) triple).
+    # main's `seen_leaves` set must collapse each config's many entries to a
+    # single leaf; this test fails if that dedup is removed.
+    assert len(lite_tasks.LITE_TASKS["autonomous"]) > 1
     monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt-5.6-luna")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare,dcode")
@@ -277,3 +290,13 @@ def test_main_emits_expected_leaves_per_config(tmp_path, monkeypatch):
     leaves = _j.loads(line.split("=", 1)[1])
     configs = {leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"}
     assert configs == {"bare", "dcode"}
+    # No duplicate (model, config, category) triples: dedup collapses the many
+    # per-task shard entries to exactly one leaf each.
+    triples = [(leaf["model"], leaf["config"], leaf["category"]) for leaf in leaves]
+    assert len(triples) == len(set(triples))
+    # Each config for the multi-task `autonomous` category appears exactly once
+    # (would be len(LITE_TASKS["autonomous"]) per config if dedup were removed).
+    autonomous_config_counts = Counter(
+        leaf["config"] for leaf in leaves if leaf["category"] == "autonomous"
+    )
+    assert autonomous_config_counts == Counter({"bare": 1, "dcode": 1})

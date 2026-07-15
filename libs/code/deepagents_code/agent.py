@@ -1433,6 +1433,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1542,6 +1543,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        goal_criteria_tools: External read-only context tools available to server-side
+            goal criteria generation. `None` disables goal criteria requests.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1934,6 +1937,28 @@ def create_cli_agent(
             default=backend,
             routes={},
         )
+
+    if goal_criteria_tools is not None:
+        from deepagents_code.goal_rubric import (
+            GoalCriteriaMiddleware,
+            create_goal_criteria_agent,
+        )
+
+        if sandbox is not None:
+            criteria_backend = sandbox
+        elif project_context is not None and project_context.project_root is not None:
+            criteria_backend = FilesystemBackend(
+                root_dir=project_context.project_root,
+                virtual_mode=True,
+            )
+        else:
+            criteria_backend = None
+        criteria_agent = create_goal_criteria_agent(
+            model=model,
+            repository_backend=criteria_backend,
+            context_tools=goal_criteria_tools,
+        )
+        agent_middleware.append(GoalCriteriaMiddleware(criteria_agent))
 
     agent_middleware.append(_create_cli_compaction_middleware(model, composite_backend))
 

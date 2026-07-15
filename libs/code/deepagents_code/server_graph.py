@@ -69,7 +69,7 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
 async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
-) -> tuple[list[Any], list[Any] | None]:
+) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -89,7 +89,7 @@ async def _build_tools(
         project_context: Resolved project context for MCP discovery.
 
     Returns:
-        Tuple of `(tools, mcp_server_info)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools)`.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
@@ -103,6 +103,7 @@ async def _build_tools(
         tools.append(web_search)
 
     mcp_server_info: list[Any] | None = None
+    mcp_tools: list[Any] = []
     if not config.no_mcp:
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
 
@@ -128,7 +129,27 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info
+    return tools, mcp_server_info, mcp_tools
+
+
+def _criteria_context_tools(
+    tools: list[Any],
+    mcp_tools: list[Any],
+) -> list[Any]:
+    """Select external context tools from the normal agent tool list.
+
+    Args:
+        tools: Main agent tools in execution order.
+        mcp_tools: Exact tool objects returned by MCP discovery.
+
+    Returns:
+        External context tools available to criteria generation.
+    """
+    from deepagents_code.tools import fetch_url, web_search
+
+    allowed_ids = {id(fetch_url), id(web_search)}
+    allowed_ids.update(id(tool) for tool in mcp_tools)
+    return [tool for tool in tools if id(tool) in allowed_ids]
 
 
 async def _make_graph() -> Any:  # noqa: ANN401
@@ -161,11 +182,14 @@ async def _make_graph() -> Any:  # noqa: ANN401
     # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`
     # rejects on the server event loop.
     result = await asyncio.to_thread(
-        create_model, config.model, extra_kwargs=config.model_params
+        create_model,
+        config.model,
+        extra_kwargs=config.model_params,
+        profile_overrides=config.profile_overrides,
     )
     result.apply_to_settings()
 
-    tools, mcp_server_info = await _build_tools(config, project_context)
+    tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -232,7 +256,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
         if config.enable_interpreter:
             settings.enable_interpreter = True
 
-        agent, _ = create_cli_agent(
+        agent, _composite_backend = create_cli_agent(
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
@@ -255,19 +279,25 @@ async def _make_graph() -> Any:  # noqa: ANN401
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
             project_context=project_context,
             async_subagents=async_subagents,
+            goal_criteria_tools=_criteria_context_tools(tools, mcp_tools),
         )
         return agent
 
     return await asyncio.to_thread(_create_cli_agent_sync)
 
 
-def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
+def _build_graph_factory(
+    builder: Callable[[], Awaitable[Any]] | None = None,
+) -> Callable[[], Awaitable[Any]]:
     """Build the cached async graph factory exposed to `langgraph dev`.
 
     The returned coroutine function is what `langgraph.json` references. It keeps
     its cache and lock in this closure rather than in module-level globals, so
     importing the module (e.g. for import-only checks) introduces no shared
     mutable state.
+
+    Args:
+        builder: Optional alternate graph builder.
 
     Returns:
         A zero-arg async factory that builds the graph once and returns the
@@ -298,7 +328,7 @@ def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
         async with lock:
             if graph is missing:
                 try:
-                    graph = await _make_graph()
+                    graph = await (builder or _make_graph)()
                 except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
                     emit_startup_failure(exc)
                     sys.exit(1)

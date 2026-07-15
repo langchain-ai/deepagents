@@ -548,6 +548,7 @@ if TYPE_CHECKING:
     from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
+    from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
@@ -1741,7 +1742,9 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
             ") or see the provider reference: ",
             (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
         )
-    return f"Failed to switch model: {exc}"
+    from deepagents_code.client.remote_client import format_agent_exception
+
+    return f"Failed to switch model: {format_agent_exception(exc)}"
 
 
 _GATEWAY_DOCS_URL = (
@@ -8975,7 +8978,7 @@ class DeepAgentsApp(App):
         return Content.assemble(*parts)
 
     def _goal_state_update(self) -> dict[str, Any]:
-        """Build checkpoint state for TUI-owned goal/rubric metadata.
+        """Build checkpoint state for goal/rubric metadata managed by the TUI.
 
         Returns:
             State update dict for the current goal/rubric metadata.
@@ -9039,7 +9042,7 @@ class DeepAgentsApp(App):
                 self._goal_state_mutating = False
 
     async def _persist_goal_rubric_state(self) -> bool:
-        """Persist TUI-owned goal/rubric metadata to the current thread.
+        """Persist goal/rubric metadata managed by the TUI to the current thread.
 
         Returns:
             `True` when the state was written or there is no thread to write to
@@ -9194,7 +9197,7 @@ class DeepAgentsApp(App):
         *,
         preserve_queued_application: bool = False,
     ) -> None:
-        """Restore TUI-owned goal/rubric metadata from a thread payload.
+        """Restore goal/rubric metadata from a thread payload.
 
         Args:
             payload: Goal and rubric metadata read from a thread checkpoint.
@@ -9405,8 +9408,12 @@ class DeepAgentsApp(App):
         await self._clear_pending_goal_completion(message)
         return False
 
-    async def _sync_goal_rubric_state_from_thread(self) -> None:
-        """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
+    async def _sync_goal_rubric_state_from_thread(self, *, force: bool = False) -> None:
+        """Refresh goal/rubric metadata from the active checkpoint.
+
+        Args:
+            force: Read the checkpoint even when no goal fields are set locally.
+        """
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
@@ -9418,7 +9425,7 @@ class DeepAgentsApp(App):
         # skip the per-turn `aget_state` round-trip (and full message-history
         # deserialization). Resume populates these locals before any turn runs,
         # so a thread with persisted state never reaches this fast path empty.
-        if not (
+        if not force and not (
             self._active_goal
             or self._active_rubric
             or self._next_rubric
@@ -9447,6 +9454,12 @@ class DeepAgentsApp(App):
                     "displayed goal state may be stale.",
                     severity="warning",
                 )
+            # A forced sync follows a criteria turn, whose proposal is surfaced
+            # only by remounting the review. If the checkpoint read also fails,
+            # restore the review from local pending state (idempotent) so a
+            # double fault does not leave the user with no actionable widget.
+            if force:
+                await self._remount_pending_goal_rubric_review()
             return
         self._goal_rubric_sync_warned = False
         if _warn_discarded_goal_channels(state_values):
@@ -9749,6 +9762,44 @@ class DeepAgentsApp(App):
             AppMessage("No goal set.\n\n" + self._goal_usage_text())
         )
 
+    async def _run_goal_criteria_request(
+        self,
+        request: GoalCriteriaRequest,
+    ) -> None:
+        """Submit one typed criteria request through the normal agent stream."""
+        if not self._agent or not self._ui_adapter or not self._session_state:
+            await self._mount_message(
+                ErrorMessage(
+                    "Goal criteria generation requires the Deep Agents Code server."
+                )
+            )
+            return
+        if self._remote_agent() is None:
+            channels = getattr(self._agent, "channels", None)
+            if (
+                not isinstance(channels, dict)
+                or "goal_criteria_request" not in channels
+            ):
+                await self._mount_message(
+                    ErrorMessage(
+                        "The configured agent does not support goal criteria "
+                        "generation. Create it with `goal_criteria_tools` enabled "
+                        "before using `/goal`."
+                    )
+                )
+                return
+        self._set_agent_running(True)
+        self._active_turn_visible_output_started = False
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=False)
+        await self._run_agent_task(
+            "",
+            graph_input={
+                "messages": [],
+                "goal_criteria_request": request,
+            },
+        )
+
     async def _propose_goal_amendment(
         self,
         feedback: str,
@@ -9762,9 +9813,6 @@ class DeepAgentsApp(App):
             feedback: User-requested changes to the goal.
             objective: Base objective for a rejection retry.
             criteria: Base criteria for a rejection retry.
-
-        Raises:
-            CancelledError: If amendment drafting is interrupted.
         """
         base_objective = objective or self._active_goal
         base_criteria = criteria or self._active_rubric
@@ -9775,71 +9823,15 @@ class DeepAgentsApp(App):
                 )
             )
             return
-        await self._set_spinner("Drafting acceptance criteria")
-        try:
-            amended_objective, amended_criteria = await asyncio.to_thread(
-                self._generate_goal_amendment,
-                base_objective,
-                base_criteria,
-                feedback,
-            )
-        except asyncio.CancelledError:
-            self._clear_pending_goal_rubric()
-            raise
-        except Exception as exc:
-            logger.exception("Failed to propose goal amendment")
-            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
-            await self._remount_pending_goal_rubric_review()
-            return
-        finally:
-            await self._set_spinner(None)
-        if not amended_objective or not amended_criteria:
-            await self._mount_message(
-                ErrorMessage("The model returned an incomplete goal amendment.")
-            )
-            await self._remount_pending_goal_rubric_review()
-            return
-        async with self._goal_state_mutation_boundary():
-            self._pending_goal_objective = amended_objective
-            self._pending_goal_rubric = amended_criteria
-            self._pending_goal_kind = "amend"
-            persisted = await self._persist_goal_rubric_state()
-        await self._mount_goal_rubric_result(
-            "Proposed goal amendment is ready.",
-            persisted=persisted,
-            suppress_success=True,
+        await self._run_goal_criteria_request(
+            {
+                "request_id": uuid.uuid4().hex,
+                "kind": "amend",
+                "objective": base_objective,
+                "criteria": base_criteria,
+                "feedback": feedback,
+            }
         )
-        await self._start_pending_goal_rubric_review()
-        if self._pending_messages and not self._agent_running:
-            await self._process_next_from_queue()
-
-    def _generate_goal_amendment(
-        self,
-        objective: str,
-        criteria: str,
-        feedback: str,
-    ) -> tuple[str, str]:
-        """Generate an amended objective and criteria with the current model.
-
-        Args:
-            objective: Current or previously proposed objective.
-            criteria: Current or previously proposed criteria.
-            feedback: User-requested changes.
-
-        Returns:
-            Proposed objective and criteria.
-        """
-        from deepagents_code.goal_rubric import generate_goal_amendment
-
-        amendment = generate_goal_amendment(
-            objective,
-            criteria,
-            feedback,
-            model_spec=self._effective_model_spec(),
-            model_params=self._model_params_override,
-            profile_override=self._profile_override,
-        )
-        return amendment["objective"], amendment["criteria"]
 
     async def _propose_goal_rubric(
         self,
@@ -9854,93 +9846,20 @@ class DeepAgentsApp(App):
             objective: Goal objective to turn into criteria.
             feedback: Optional user feedback for regenerating criteria.
             previous_criteria: Optional criteria the user rejected.
-
-        Raises:
-            CancelledError: If the proposal worker is interrupted.
         """
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
             return
-        await self._set_spinner("Drafting acceptance criteria")
-        try:
-            rubric = await asyncio.to_thread(
-                self._generate_goal_rubric,
-                objective,
-                feedback=feedback,
-                previous_criteria=previous_criteria,
-            )
-        except asyncio.CancelledError:
-            self._clear_pending_goal_rubric()
-            raise
-        except Exception as exc:
-            logger.exception("Failed to propose rubric for goal")
-            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
-            await self._remount_pending_goal_rubric_review()
-            return
-        finally:
-            await self._set_spinner(None)
-        rubric = rubric.strip()
-        if not rubric:
-            await self._mount_message(
-                ErrorMessage("The model returned an empty rubric.")
-            )
-            await self._remount_pending_goal_rubric_review()
-            return
-        async with self._goal_state_mutation_boundary():
-            self._pending_goal_objective = objective
-            self._pending_goal_rubric = rubric
-            self._pending_goal_kind = "create"
-            persisted = await self._persist_goal_rubric_state()
-        # On a revision the remounted review widget already shows the updated
-        # criteria, so re-announcing readiness is redundant and would duplicate
-        # the message from the first proposal. The unsaved-state warning still
-        # surfaces regardless (see `_mount_goal_rubric_result`).
-        await self._mount_goal_rubric_result(
-            "Proposed acceptance criteria are ready.",
-            persisted=persisted,
-            suppress_success=feedback is not None,
-        )
-        await self._start_pending_goal_rubric_review()
-        if self._pending_messages and not self._agent_running:
-            await self._process_next_from_queue()
-
-    def _generate_goal_rubric(
-        self,
-        objective: str,
-        *,
-        feedback: str | None = None,
-        previous_criteria: str | None = None,
-    ) -> str:
-        """Generate acceptance criteria for `objective` with the current chat model.
-
-        Args:
-            objective: Goal objective to turn into criteria.
-            feedback: Optional user feedback for regenerating criteria.
-            previous_criteria: Optional criteria the user rejected.
-
-        Returns:
-            Proposed acceptance criteria text.
-        """
-        from deepagents_code.goal_rubric import generate_goal_rubric
-        from deepagents_code.project_utils import ProjectContext
-
-        try:
-            repository_root = ProjectContext.from_user_cwd(self._cwd).project_root
-        except (OSError, RuntimeError) as exc:  # repository context is optional
-            logger.warning(
-                "Could not resolve repository context for goal criteria: %s", exc
-            )
-            repository_root = None
-
-        return generate_goal_rubric(
-            objective,
-            model_spec=self._effective_model_spec(),
-            model_params=self._model_params_override,
-            profile_override=self._profile_override,
-            feedback=feedback,
-            previous_criteria=previous_criteria,
-            repository_root=repository_root,
-        )
+        request: GoalCreateRequest = {
+            "request_id": uuid.uuid4().hex,
+            "kind": "create",
+            "objective": objective,
+        }
+        if feedback is not None:
+            request["feedback"] = feedback
+        if previous_criteria is not None:
+            request["previous_criteria"] = previous_criteria
+        await self._run_goal_criteria_request(request)
 
     async def _start_pending_goal_rubric_review(self) -> None:
         """Mount the pending goal review prompt and schedule its continuation."""
@@ -12553,6 +12472,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        graph_input: dict[str, Any] | None = None,
         blocked_goal_retry_context: str | None = None,
     ) -> None:
         """Run the agent task in a background worker.
@@ -12563,12 +12483,14 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            graph_input: Prepared non-conversation input for a server operation.
             blocked_goal_retry_context: One-turn model context for retrying a
                 previously blocked goal. This is not raw user input.
         """
         # Caller ensures _ui_adapter is set (checked in _handle_user_message)
         if self._ui_adapter is None:
             return
+        from deepagents_code.config import settings
         from deepagents_code.tui.textual_adapter import execute_task_textual
 
         # Create the stats object up-front and store on the app so
@@ -12590,17 +12512,19 @@ class DeepAgentsApp(App):
         # A paused or completed goal withholds its rubric so the grader does not
         # run this turn (mirrors the persisted-state suppression in
         # `_goal_state_update`). A one-shot `_next_rubric` still applies.
-        rubric = self._next_rubric
-        if rubric is None and not (
-            self._active_goal and self._goal_status in {"paused", "complete"}
-        ):
-            rubric = self._active_rubric
-        if self._next_rubric is not None:
-            self._last_consumed_next_rubric = self._next_rubric
-            self._last_consumed_next_previous_rubric = self._active_rubric
-            await self._persist_goal_rubric_state()
-            self._next_rubric = None
-            self._sync_status_rubric()
+        rubric = None
+        if graph_input is None:
+            rubric = self._next_rubric
+            if rubric is None and not (
+                self._active_goal and self._goal_status in {"paused", "complete"}
+            ):
+                rubric = self._active_rubric
+            if self._next_rubric is not None:
+                self._last_consumed_next_rubric = self._next_rubric
+                self._last_consumed_next_previous_rubric = self._active_rubric
+                await self._persist_goal_rubric_state()
+                self._next_rubric = None
+                self._sync_status_rubric()
 
         try:
             await execute_task_textual(
@@ -12613,8 +12537,9 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                graph_input=graph_input,
                 rubric=rubric,
-                goal_active=bool(self._active_goal),
+                goal_active=bool(self._active_goal) and graph_input is None,
                 blocked_goal_retry_context=blocked_goal_retry_context,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
@@ -12622,6 +12547,8 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    profile_overrides=self._profile_override or {},
+                    model_context_limit=settings.model_context_limit,
                 ),
                 turn_stats=turn_stats,
             )
@@ -12687,7 +12614,7 @@ class DeepAgentsApp(App):
             # Collapse the open tool group so an interrupted turn doesn't leave a
             # summary spinning "Running…" forever (synchronous, cancel-safe).
             self._close_active_tool_group()
-            await self._cleanup_agent_task()
+            await self._cleanup_agent_task(force_goal_sync=graph_input is not None)
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.
@@ -12738,7 +12665,7 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
-    async def _cleanup_agent_task(self) -> None:
+    async def _cleanup_agent_task(self, *, force_goal_sync: bool = False) -> None:
         """Tear down after a turn completes or is cancelled.
 
         Resets spinner/cursor/token display, refreshes the git branch, drains
@@ -12747,6 +12674,9 @@ class DeepAgentsApp(App):
         out-of-run checkpoint mutations may proceed. Invoked from the `finally`
         block of `_run_agent_task`, so it must run on interrupt as well as on
         normal completion.
+
+        Args:
+            force_goal_sync: Read goal state even when no local goal fields are set.
         """
         self._agent_quiescent.clear()
         self._agent_reconciling = True
@@ -12763,7 +12693,7 @@ class DeepAgentsApp(App):
                     self._chat_input.set_cursor_active(active=True)
                 self._show_tokens(approximate=self._tokens_approximate)
                 self._schedule_git_branch_refresh()
-                await self._sync_goal_rubric_state_from_thread()
+                await self._sync_goal_rubric_state_from_thread(force=force_goal_sync)
 
                 try:
                     await self._maybe_drain_deferred()

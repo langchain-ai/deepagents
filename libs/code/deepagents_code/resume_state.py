@@ -13,9 +13,9 @@ Written from inside the graph on successful model turns:
     successful model call. Lets `dcode -r` restore the model the resumed thread
     was actually using instead of falling back to the user's global default.
 
-Written primarily by the TUI client, via `aupdate_state` (see
-`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Most
-have no model-node write site; the two exceptions are called out below:
+Written through the main graph or by the TUI client via `aupdate_state` (see
+`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Their
+write sites are called out below:
 
 - `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
     the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
@@ -27,7 +27,8 @@ have no model-node write site; the two exceptions are called out below:
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
 - `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` — a
-    proposed goal or amendment awaiting user acceptance of its criteria.
+    proposed goal or amendment written by `GoalCriteriaMiddleware` inside the
+    main graph, then cleared by the TUI when the user accepts or rejects it.
 
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
@@ -37,10 +38,10 @@ separate client-side `aupdate_state` call) so the write rides the same checkpoin
 as the model response and avoids creating a standalone `UpdateState` run in
 LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
-aggregate. The goal/rubric channels are client-written because the user sets
-them outside any model turn (except `_goal_status`/`_goal_status_note`, which the
-`update_goal` tool also writes from inside the graph). Both paths work
-identically against local and remote (HTTP) graphs.
+aggregate. Accepted goal/rubric state is client-written because the user sets it
+outside any model turn; pending criteria proposals and agent-driven status
+updates are graph-written. Both paths work identically against local and remote
+(HTTP) graphs.
 """
 
 from __future__ import annotations

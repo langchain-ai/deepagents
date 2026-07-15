@@ -45,6 +45,37 @@ class TestServerGraph:
 
         make_graph.assert_awaited_once_with()
 
+    def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
+        """Criteria tools should be known context objects in main-tool order."""
+        module = _import_fresh_server_graph()
+        from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
+
+        mcp_tool = SimpleNamespace(name="repository_search")
+        mcp_lookalike = SimpleNamespace(name="repository_search")
+        unknown_builtin = object()
+
+        result = module._criteria_context_tools(
+            [
+                unknown_builtin,
+                mcp_tool,
+                get_current_thread_id,
+                web_search,
+                mcp_lookalike,
+                fetch_url,
+            ],
+            [mcp_tool],
+        )
+
+        assert len(result) == 3
+        assert all(
+            actual is expected
+            for actual, expected in zip(
+                result,
+                [mcp_tool, web_search, fetch_url],
+                strict=True,
+            )
+        )
+
     async def test_make_graph_emits_marker_and_exits_on_failure(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -73,15 +104,17 @@ class TestServerGraph:
         model_obj = object()
         fetch_tool = object()
         thread_tool = object()
+        web_tool = object()
         mcp_tool = object()
         mcp_server_info = [SimpleNamespace(name="docs")]
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []
         create_model_thread_ids: list[int] = []
+        repository_backend = object()
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
-            return graph_obj, object()
+            return graph_obj, SimpleNamespace(default=repository_backend)
 
         def create_model_side_effect(*_: object, **__: object) -> object:
             create_model_thread_ids.append(threading.get_ident())
@@ -100,13 +133,14 @@ class TestServerGraph:
             apply_to_settings=MagicMock(),
         )
         configure_redaction = MagicMock()
+        create_model = MagicMock(side_effect=create_model_side_effect)
         config_module = _module_with_attrs(
             "deepagents_code.config",
             configure_langsmith_secret_redaction=configure_redaction,
-            create_model=MagicMock(side_effect=create_model_side_effect),
+            create_model=create_model,
             is_memory_auto_save_enabled=MagicMock(return_value=True),
             settings=SimpleNamespace(
-                has_tavily=False,
+                has_tavily=True,
                 reload_from_environment=MagicMock(),
             ),
         )
@@ -115,7 +149,7 @@ class TestServerGraph:
             "deepagents_code.tools",
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
-            web_search=object(),
+            web_search=web_tool,
         )
 
         class FakeSessionManager:
@@ -129,7 +163,10 @@ class TestServerGraph:
             resolve_and_load_mcp_tools=resolve_mcp_tools,
         )
 
-        config = ServerConfig(no_mcp=False)
+        config = ServerConfig(
+            no_mcp=False,
+            profile_overrides={"max_input_tokens": 32000},
+        )
         env_overrides = {}
         for suffix, value in config.to_env().items():
             if value is not None:
@@ -172,6 +209,9 @@ class TestServerGraph:
         # `os.mkdir`), which `blockbuster` rejects on the server event loop.
         assert create_model_thread_ids
         assert create_model_thread_ids[0] != loop_thread_id
+        assert create_model.call_args.kwargs["profile_overrides"] == {
+            "max_input_tokens": 32000
+        }
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False
@@ -182,7 +222,7 @@ class TestServerGraph:
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",
-            tools=[fetch_tool, thread_tool, mcp_tool],
+            tools=[fetch_tool, thread_tool, web_tool, mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,
@@ -202,6 +242,7 @@ class TestServerGraph:
             cwd=None,
             project_context=None,
             async_subagents=None,
+            goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
@@ -233,13 +274,14 @@ class TestServerGraph:
             },
         ):
             module = _import_fresh_server_graph()
-            tools, mcp_server_info = await module._build_tools(
+            tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
             )
 
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info is None
+        assert mcp_tools == []
         resolve_mcp_tools.assert_not_awaited()
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
@@ -254,7 +296,7 @@ class TestServerGraph:
             observed["interpreter_ptc"] = settings.interpreter_ptc
             observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
             observed["enable_interpreter"] = settings.enable_interpreter
-            return graph_obj, object()
+            return graph_obj, SimpleNamespace(default=object())
 
         settings_obj = SimpleNamespace(
             has_tavily=False,
@@ -330,11 +372,12 @@ class TestServerGraph:
         """
         fetch_tool = object()
         thread_tool = object()
+        discovered_mcp_tools = [object(), object()]
 
         class FakeSessionManager:
             pass
 
-        resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+        resolve_mcp_tools = AsyncMock(return_value=(discovered_mcp_tools, None, []))
         config_module = _module_with_attrs(
             "deepagents_code.config",
             settings=SimpleNamespace(has_tavily=False),
@@ -361,14 +404,15 @@ class TestServerGraph:
         ):
             module = _import_fresh_server_graph()
             assert not hasattr(module, "_warm_mcp_adapter_imports")
-            tools, mcp_server_info = await module._build_tools(
+            tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=False),
                 None,
             )
 
         resolve_mcp_tools.assert_awaited_once()
-        assert tools == [fetch_tool, thread_tool]
+        assert tools == [fetch_tool, thread_tool, *discovered_mcp_tools]
         assert mcp_server_info == []
+        assert mcp_tools is discovered_mcp_tools
 
 
 class TestStartupErrorMarker:

@@ -1651,7 +1651,10 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
-        assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "goal_criteria_request": None,
+        }
         assert agent.contexts[0]["auto_approve"] is True
         assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
@@ -1683,6 +1686,7 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert stream_input == {
             "messages": [{"role": "user", "content": "hi"}],
             "rubric": "tests pass",
+            "goal_criteria_request": None,
         }
 
     async def test_blocked_goal_retry_context_is_not_user_input(
@@ -1711,7 +1715,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         stream_input = agent.stream_inputs[0]
         assert not isinstance(stream_input, Command)
         assert stream_input == {
-            "messages": [{"role": "user", "content": "continue now"}]
+            "messages": [{"role": "user", "content": "continue now"}],
+            "goal_criteria_request": None,
         }
         assert (
             agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
@@ -3806,6 +3811,78 @@ class TestExecuteTaskTextualAskUser:
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
         decisions = resume_payload["interrupt-1"]["decisions"]
         assert decisions == [{"type": "reject", "message": "use a safer command"}]
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert not any("Command rejected" in str(msg._content) for msg in app_messages)
+
+    async def test_server_operation_bare_rejection_resumes_agent(self) -> None:
+        """A criteria agent must receive a bare rejection and finish without context."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "reject"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {
+                                    "name": "fetch_url",
+                                    "args": {"url": "https://example.com"},
+                                }
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "fetch_url",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+        request = {
+            "messages": [],
+            "goal_criteria_request": {
+                "request_id": "request-1",
+                "kind": "create",
+                "objective": "ship it",
+            },
+        }
+
+        await execute_task_textual(
+            user_input="",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            graph_input=request,
+        )
+
+        assert len(agent.stream_inputs) == 2
+        assert agent.stream_inputs[0] == request
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["decisions"] == [{"type": "reject"}]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert not any("Command rejected" in str(msg._content) for msg in app_messages)
 

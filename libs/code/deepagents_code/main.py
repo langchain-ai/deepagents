@@ -2100,6 +2100,7 @@ async def run_textual_cli_async(
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
         "model_params": model_params,
+        "profile_overrides": profile_override,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
         "sandbox_snapshot_name": sandbox_snapshot_name,

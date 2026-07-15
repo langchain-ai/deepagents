@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
     from langchain_core.messages import HumanMessage
     from textual.pilot import Pilot
 
     from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.notifications import PendingNotification
-    from deepagents_code.resume_state import GoalStatus
+    from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.sessions import ThreadInfo
     from deepagents_code.tui.widgets.messages import ToolCallMessage
 
@@ -5774,6 +5774,24 @@ class TestGoalCommand:
         future.set_result(result)
         return future
 
+    @staticmethod
+    def _server_goal_result(
+        app: DeepAgentsApp,
+        objective: str,
+        criteria: str,
+        *,
+        kind: GoalProposalKind = "create",
+    ) -> Callable[[object], Awaitable[None]]:
+        """Return a fake main-graph run that exposes persisted proposal state."""
+
+        async def submit(_request: object) -> None:
+            app._pending_goal_objective = objective
+            app._pending_goal_rubric = criteria
+            app._pending_goal_kind = kind
+            await app._start_pending_goal_rubric_review()
+
+        return submit
+
     @pytest.mark.parametrize(
         ("status", "label"),
         [
@@ -5820,10 +5838,12 @@ class TestGoalCommand:
             with (
                 patch.object(
                     app,
-                    "_generate_goal_amendment",
-                    return_value=(
+                    "_run_goal_criteria_request",
+                    side_effect=self._server_goal_result(
+                        app,
                         "ship login with passkeys",
                         "- password login works\n- passkeys work\n- keep API stable",
+                        kind="amend",
                     ),
                 ),
                 patch.object(app, "_request_goal_review", review),
@@ -5901,17 +5921,15 @@ class TestGoalCommand:
                 persisted_updates.append(app._goal_state_update())
                 return True
 
-            def fail_generation(*_args: object) -> tuple[str, str]:
+            def observe_generation(*_args: object, **_kwargs: object) -> None:
                 events.append("generate")
-                msg = "model down"
-                raise RuntimeError(msg)
 
             with (
                 patch.object(app, "_persist_goal_rubric_state", side_effect=persist),
                 patch.object(
                     app,
-                    "_generate_goal_amendment",
-                    side_effect=fail_generation,
+                    "_run_goal_criteria_request",
+                    side_effect=observe_generation,
                 ),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
             ):
@@ -6552,7 +6570,13 @@ class TestGoalCommand:
                 patch.object(
                     app, "_set_rubric_model", new_callable=AsyncMock
                 ) as setter,
-                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(
+                    app,
+                    "_run_goal_criteria_request",
+                    side_effect=self._server_goal_result(
+                        app, "model the checkout flow", "- tests pass"
+                    ),
+                ),
                 patch.object(app, "_request_goal_review", request),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
             ):
@@ -6575,7 +6599,13 @@ class TestGoalCommand:
                 patch.object(
                     app, "_set_rubric_max_iterations", new_callable=AsyncMock
                 ) as setter,
-                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(
+                    app,
+                    "_run_goal_criteria_request",
+                    side_effect=self._server_goal_result(
+                        app, "max-iterations for the parser", "- tests pass"
+                    ),
+                ),
                 patch.object(app, "_request_goal_review", request),
                 patch.object(app, "_set_spinner", new_callable=AsyncMock),
             ):
@@ -6588,45 +6618,23 @@ class TestGoalCommand:
                 "max-iterations for the parser", "- tests pass"
             )
 
-    def test_goal_generator_receives_session_repository_root(self) -> None:
-        """Criteria drafting should use the repository for the session cwd."""
-        app = DeepAgentsApp(agent=MagicMock(), cwd="/workspace/project")
-        repository_root = Path("/workspace/project")
+    def test_goal_client_never_constructs_or_invokes_a_model(self) -> None:
+        """The TUI goal path should only drive the remote streaming protocol."""
+        import inspect
 
-        with (
-            patch(
-                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
-                return_value=SimpleNamespace(project_root=repository_root),
-            ) as resolve_context,
-            patch(
-                "deepagents_code.goal_rubric.generate_goal_rubric",
-                return_value="- criterion",
-            ) as generate,
-        ):
-            result = app._generate_goal_rubric("ship it")
+        source = "\n".join(
+            (
+                inspect.getsource(DeepAgentsApp._run_goal_criteria_request),
+                inspect.getsource(DeepAgentsApp._propose_goal_rubric),
+                inspect.getsource(DeepAgentsApp._propose_goal_amendment),
+            )
+        )
 
-        assert result == "- criterion"
-        resolve_context.assert_called_once_with("/workspace/project")
-        assert generate.call_args.kwargs["repository_root"] == repository_root
-
-    def test_goal_generator_falls_back_when_repository_resolution_fails(self) -> None:
-        """A broken cwd path should not prevent goal-only criteria generation."""
-        app = DeepAgentsApp(agent=MagicMock(), cwd="/workspace/project")
-
-        with (
-            patch(
-                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
-                side_effect=RuntimeError("symlink loop"),
-            ),
-            patch(
-                "deepagents_code.goal_rubric.generate_goal_rubric",
-                return_value="- criterion",
-            ) as generate,
-        ):
-            result = app._generate_goal_rubric("ship it")
-
-        assert result == "- criterion"
-        assert generate.call_args.kwargs["repository_root"] is None
+        assert "create_model" not in source
+        assert "model.invoke" not in source
+        assert "create_agent" not in source
+        assert "for_graph" not in source
+        assert "astream" not in source
 
     def test_rubric_detail_expansion_syncs_to_message_store(self) -> None:
         """Expanded grader details should survive transcript virtualization."""
@@ -6654,21 +6662,19 @@ class TestGoalCommand:
             with (
                 patch.object(
                     app,
-                    "_generate_goal_rubric",
-                    return_value="- tests pass\n- no unrelated files",
+                    "_run_goal_criteria_request",
+                    side_effect=self._server_goal_result(
+                        app,
+                        "add refresh tokens",
+                        "- tests pass\n- no unrelated files",
+                    ),
                 ),
                 patch.object(app, "_request_goal_review", request),
-                patch.object(
-                    app, "_set_spinner", new_callable=AsyncMock
-                ) as set_spinner,
             ):
                 await app._handle_command("/goal add refresh tokens")
                 await pilot.pause()
                 await pilot.pause()
 
-            set_spinner.assert_has_awaits(
-                [call("Drafting acceptance criteria"), call(None)]
-            )
             request.assert_awaited_once_with(
                 "add refresh tokens", "- tests pass\n- no unrelated files"
             )
@@ -6677,10 +6683,6 @@ class TestGoalCommand:
             assert app._active_rubric is None
             assert not any(
                 "Drafting acceptance criteria" in str(w._content)
-                for w in app.query(AppMessage)
-            )
-            assert any(
-                str(w._content) == "Proposed acceptance criteria are ready."
                 for w in app.query(AppMessage)
             )
             assert not any(
@@ -6702,8 +6704,12 @@ class TestGoalCommand:
 
             with patch.object(
                 app,
-                "_generate_goal_rubric",
-                return_value="- tests pass\n- no unrelated files",
+                "_run_goal_criteria_request",
+                side_effect=self._server_goal_result(
+                    app,
+                    "add refresh tokens",
+                    "- tests pass\n- no unrelated files",
+                ),
             ):
                 await pilot.press("enter")
                 for _ in range(10):
@@ -6760,19 +6766,17 @@ class TestGoalCommand:
     async def test_goal_replacement_cancels_stale_review_before_drafting(self) -> None:
         """Replacing `/goal` should remove the old review before drafting finishes."""
         app = DeepAgentsApp(agent=MagicMock())
-        started = threading.Event()
-        release = threading.Event()
+        started = asyncio.Event()
+        release = asyncio.Event()
 
-        def generate(
-            objective: str,
-            *,
-            feedback: str | None = None,  # noqa: ARG001
-            previous_criteria: str | None = None,  # noqa: ARG001
-        ) -> str:
-            assert objective == "add audit logs"
+        async def generate(request: dict[str, object]) -> None:
+            assert request["objective"] == "add audit logs"
             started.set()
-            release.wait(timeout=5)
-            return "- replacement criteria"
+            await release.wait()
+            app._pending_goal_objective = "add audit logs"
+            app._pending_goal_rubric = "- replacement criteria"
+            app._pending_goal_kind = "create"
+            await app._start_pending_goal_rubric_review()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -6784,7 +6788,7 @@ class TestGoalCommand:
             handle = AsyncMock()
 
             with (
-                patch.object(app, "_generate_goal_rubric", side_effect=generate),
+                patch.object(app, "_run_goal_criteria_request", side_effect=generate),
                 patch.object(app, "_handle_user_message", handle),
             ):
                 await app._handle_command("/goal add audit logs")
@@ -6814,72 +6818,28 @@ class TestGoalCommand:
                 assert app._pending_goal_review_widget is not None
                 handle.assert_not_awaited()
 
-    async def test_goal_command_clears_spinner_when_drafting_fails(self) -> None:
-        """Drafting failures should dismiss the goal spinner."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with (
-                patch.object(
-                    app,
-                    "_generate_goal_rubric",
-                    side_effect=RuntimeError("model down"),
-                ),
-                patch.object(
-                    app, "_set_spinner", new_callable=AsyncMock
-                ) as set_spinner,
-            ):
-                await app._handle_command("/goal add refresh tokens")
-                await pilot.pause()
-                await pilot.pause()
-
-            set_spinner.assert_has_awaits(
-                [call("Drafting acceptance criteria"), call(None)]
-            )
-            assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
-
-    async def test_goal_command_reports_empty_rubric(self) -> None:
-        """An all-whitespace draft must error, not mount an empty review."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            with patch.object(app, "_generate_goal_rubric", return_value="   "):
-                await app._handle_command("/goal add refresh tokens")
-                await pilot.pause()
-                await pilot.pause()
-
-            assert any(
-                "returned an empty rubric" in str(w._content)
-                for w in app.query(ErrorMessage)
-            )
-            # No review widget is mounted and no pending proposal is recorded.
-            assert not any(app.query(GoalReviewMenu))
-            assert app._pending_goal_objective is None
-            assert app._pending_goal_rubric is None
-
     async def test_escape_cancels_goal_criteria_generation(self) -> None:
         """Esc while `/goal` is drafting criteria should cancel the proposal."""
         app = DeepAgentsApp(agent=MagicMock())
-        started = threading.Event()
-        release = threading.Event()
+        started = asyncio.Event()
+        release = asyncio.Event()
         calls: list[str] = []
 
-        def generate(
-            objective: str,
-            *,
-            feedback: str | None = None,  # noqa: ARG001
-            previous_criteria: str | None = None,  # noqa: ARG001
-        ) -> str:
+        async def generate(request: dict[str, object]) -> None:
+            objective = str(request["objective"])
             calls.append(objective)
             if objective == "add refresh tokens":
                 started.set()
-                release.wait(timeout=5)
-                return "- stale criteria"
-            return "- replacement criteria"
+                await release.wait()
+                return
+            app._pending_goal_objective = objective
+            app._pending_goal_rubric = "- replacement criteria"
+            app._pending_goal_kind = "create"
+            await app._start_pending_goal_rubric_review()
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app, "_generate_goal_rubric", side_effect=generate):
+            with patch.object(app, "_run_goal_criteria_request", side_effect=generate):
                 await app._handle_command("/goal add refresh tokens")
                 for _ in range(10):
                     await pilot.pause()
@@ -7119,100 +7079,6 @@ class TestGoalCommand:
             assert app._pending_goal_objective == "add refresh tokens"
             assert app._pending_goal_rubric == "- model draft"
 
-    async def test_goal_revision_does_not_duplicate_ready_message(self) -> None:
-        """Revision cycles must not re-announce readiness (see duplicate bug)."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            # Stub the review continuation so no goal-review task is scheduled;
-            # the dedup under test runs before it in `_propose_goal_rubric`.
-            with (
-                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
-                patch.object(
-                    app, "_start_pending_goal_rubric_review", new_callable=AsyncMock
-                ),
-                patch.object(app, "_set_spinner", new_callable=AsyncMock),
-            ):
-                await app._propose_goal_rubric("add refresh tokens")
-                await pilot.pause()
-                await app._propose_goal_rubric(
-                    "add refresh tokens",
-                    feedback="be thorough in research",
-                    previous_criteria="- tests pass",
-                )
-                await pilot.pause()
-
-            ready_messages = [
-                w
-                for w in app.query(AppMessage)
-                if str(w._content) == "Proposed acceptance criteria are ready."
-            ]
-            assert len(ready_messages) == 1
-
-    async def test_goal_revision_warns_when_persist_fails_despite_suppression(
-        self,
-    ) -> None:
-        """A revision that cannot be saved must still surface the unsaved warning."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent = SimpleNamespace(
-                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
-            )
-            app._lc_thread_id = "thread-1"
-            with (
-                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
-                patch.object(
-                    app, "_start_pending_goal_rubric_review", new_callable=AsyncMock
-                ),
-                patch.object(app, "_set_spinner", new_callable=AsyncMock),
-            ):
-                await app._propose_goal_rubric(
-                    "add refresh tokens",
-                    feedback="be thorough in research",
-                    previous_criteria="- old criteria",
-                )
-                await pilot.pause()
-
-            # Success text is suppressed on the revision, but the failed write
-            # must still warn the user that the change is unsaved.
-            assert not any(
-                str(w._content) == "Proposed acceptance criteria are ready."
-                for w in app.query(AppMessage)
-            )
-            assert any(
-                "could not be saved to the thread" in str(w._content)
-                for w in app.query(ErrorMessage)
-            )
-
-    async def test_goal_review_regeneration_failure_remounts_pending_review(
-        self,
-    ) -> None:
-        """A failed rejection retry should leave the old proposal actionable."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._pending_goal_objective = "add refresh tokens"
-            app._pending_goal_rubric = "- model draft"
-
-            with patch.object(
-                app,
-                "_generate_goal_rubric",
-                side_effect=RuntimeError("model down"),
-            ):
-                await app._propose_goal_rubric(
-                    "add refresh tokens",
-                    feedback="include docs and migration notes",
-                    previous_criteria="- model draft",
-                )
-                await pilot.pause()
-
-            menu = app.query_one(GoalReviewMenu)
-            assert app._pending_goal_review_widget is menu
-            assert app._pending_goal_objective == "add refresh tokens"
-            assert app._pending_goal_rubric == "- model draft"
-            assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
-
     async def test_propose_goal_rubric_rejects_empty_objective(self) -> None:
         """A whitespace-only objective shows usage and never calls the model.
 
@@ -7223,7 +7089,7 @@ class TestGoalCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            with patch.object(app, "_generate_goal_rubric") as generate:
+            with patch.object(app, "_run_goal_criteria_request") as generate:
                 await app._propose_goal_rubric("   ")
                 await pilot.pause()
 
@@ -26082,3 +25948,63 @@ class TestToolGroupCollapse:
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command, read 1 file" in rendered.plain
+
+
+class TestForcedGoalCriteriaSync:
+    """A forced sync after a criteria turn reads back and recovers on failure."""
+
+    async def test_force_bypasses_fast_path_with_no_local_goal_state(self) -> None:
+        """`force=True` must read the checkpoint even when no goal fields are set."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._lc_thread_id = "thread-123"
+        read_threads: list[str] = []
+
+        async def capture_state(thread_id: str) -> dict[str, object]:  # noqa: RUF029
+            read_threads.append(thread_id)
+            return {}
+
+        app._get_thread_state_values = capture_state  # ty: ignore
+
+        await app._sync_goal_rubric_state_from_thread(force=True)
+
+        assert read_threads == ["thread-123"]
+
+    async def test_read_failure_still_remounts_pending_review(self) -> None:
+        """A criteria-turn checkpoint read failure must not drop the review."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._lc_thread_id = "thread-123"
+        app._pending_goal_objective = "ship it"
+        app._pending_goal_rubric = "- observable result"
+
+        async def fail_state(thread_id: str) -> dict[str, object]:  # noqa: RUF029
+            msg = f"checkpoint unavailable ({thread_id})"
+            raise RuntimeError(msg)
+
+        remount = AsyncMock()
+        app._get_thread_state_values = fail_state  # ty: ignore
+        app._remount_pending_goal_rubric_review = remount  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        await app._sync_goal_rubric_state_from_thread(force=True)
+
+        remount.assert_awaited_once()
+
+    async def test_read_failure_without_force_does_not_remount(self) -> None:
+        """A normal-turn read failure keeps the old behavior (no forced remount)."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._lc_thread_id = "thread-123"
+        app._pending_goal_objective = "ship it"
+        app._pending_goal_rubric = "- observable result"
+
+        async def fail_state(thread_id: str) -> dict[str, object]:  # noqa: RUF029
+            msg = f"checkpoint unavailable ({thread_id})"
+            raise RuntimeError(msg)
+
+        remount = AsyncMock()
+        app._get_thread_state_values = fail_state  # ty: ignore
+        app._remount_pending_goal_rubric_review = remount  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+
+        await app._sync_goal_rubric_state_from_thread(force=False)
+
+        remount.assert_not_awaited()

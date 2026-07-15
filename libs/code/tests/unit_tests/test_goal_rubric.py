@@ -1659,7 +1659,9 @@ class TestGoalCriteriaFallback:
         fallback.ainvoke.assert_not_awaited()
 
     def test_fallback_agent_can_be_created(self) -> None:
-        agent = create_goal_criteria_fallback_agent(model="openai:gpt-5.5")
+        agent = create_goal_criteria_fallback_agent(
+            model=GoalCriteriaIntegrationChatModel()
+        )
 
         assert agent is not None
 

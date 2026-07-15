@@ -478,13 +478,14 @@ class TestServerGraph:
             ) as discover_plugin_mcp,
         ):
             module = _import_fresh_server_graph()
-            tools, mcp_server_info = await module._build_tools(
+            tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=False),
                 project_context,
             )
 
         assert tools == [fetch_tool, thread_tool]
         assert mcp_server_info == []
+        assert mcp_tools == []
         discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
         assert discover_thread_ids
         assert discover_thread_ids[0] != loop_thread_id

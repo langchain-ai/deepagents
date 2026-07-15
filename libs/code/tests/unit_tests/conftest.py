@@ -121,6 +121,17 @@ def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent developer MCP trust decisions from changing unit-test behavior."""
+    for key in (
+        "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS",
+        "DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS",
+        "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent provider base-URL env vars from leaking into tests.
 

@@ -10,12 +10,21 @@ import aggregate_unified as au  # noqa: E402
 
 
 def _summary(
-    model, k, pass_k, avg_k, tasks, passed, incomplete=False, category="context"
+    model,
+    k,
+    pass_k,
+    avg_k,
+    tasks,
+    passed,
+    incomplete=False,
+    category="context",
+    config="bare",
 ):
-    # model + category are recorded authoritatively by aggregate_shards.py.
+    # model + category + config are recorded authoritatively by aggregate_shards.py.
     return {
         "model": model,
         "category": category,
+        "config": config,
         "dataset": "d",
         "rollouts_per_task": k,
         "incomplete": incomplete,
@@ -115,7 +124,7 @@ def test_discover_leaves_skips_summary_with_invalid_aggregation_inputs(
 
     combined = au.combine(au._discover_leaves(tmp_path))
 
-    assert list(combined["models"]) == ["anthropic:opus"]
+    assert [r["model"] for r in combined["rows"]] == ["anthropic:opus"]
     warning = capsys.readouterr().out
     assert "::warning::" in warning
     assert str(malformed / "summary.json") in warning
@@ -124,30 +133,63 @@ def test_discover_leaves_skips_summary_with_invalid_aggregation_inputs(
 def test_load_list_env_rejects_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", "[")
+    # _load_list_env still backs EXPECTED_CATEGORIES.
+    monkeypatch.setenv("EXPECTED_CATEGORIES", "[")
 
     with pytest.raises(SystemExit) as exc_info:
-        au._load_list_env("EXPECTED_MODELS")
+        au._load_list_env("EXPECTED_CATEGORIES")
 
-    assert str(exc_info.value) == "EXPECTED_MODELS must be a JSON list of strings"
+    assert str(exc_info.value) == "EXPECTED_CATEGORIES must be a JSON list of strings"
 
 
 @pytest.mark.parametrize("value", [{"model": "opus"}, ["opus", 3]])
 def test_load_list_env_rejects_invalid_decoded_shape(
     monkeypatch: pytest.MonkeyPatch, value: object
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", json.dumps(value))
+    monkeypatch.setenv("EXPECTED_CATEGORIES", json.dumps(value))
 
     with pytest.raises(SystemExit) as exc_info:
-        au._load_list_env("EXPECTED_MODELS")
+        au._load_list_env("EXPECTED_CATEGORIES")
 
-    assert str(exc_info.value) == "EXPECTED_MODELS must be a JSON list of strings"
+    assert str(exc_info.value) == "EXPECTED_CATEGORIES must be a JSON list of strings"
+
+
+def test_load_leaves_env_rejects_invalid_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EXPECTED_LEAVES", "[")
+
+    with pytest.raises(SystemExit) as exc_info:
+        au._load_leaves_env("EXPECTED_LEAVES")
+
+    assert (
+        str(exc_info.value)
+        == "EXPECTED_LEAVES must be a JSON list of {model, config, category} objects"
+    )
+
+
+@pytest.mark.parametrize(
+    "value", [{"model": "opus"}, [{"model": "m", "config": "bare"}], ["m"]]
+)
+def test_load_leaves_env_rejects_invalid_decoded_shape(
+    monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    monkeypatch.setenv("EXPECTED_LEAVES", json.dumps(value))
+
+    with pytest.raises(SystemExit) as exc_info:
+        au._load_leaves_env("EXPECTED_LEAVES")
+
+    assert (
+        str(exc_info.value)
+        == "EXPECTED_LEAVES must be a JSON list of {model, config, category} objects"
+    )
 
 
 def test_combine_computes_macro_and_micro():
     leaves = [
         {
             "model": "m",
+            "config": "bare",
             "category": "autonomous",
             "pass_at_k": 1.0,
             "avg_at_k": 1.0,
@@ -157,6 +199,7 @@ def test_combine_computes_macro_and_micro():
         },
         {
             "model": "m",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.0,
             "avg_at_k": 0.0,
@@ -166,7 +209,7 @@ def test_combine_computes_macro_and_micro():
         },
     ]
     out = au.combine(leaves)
-    m = out["models"]["m"]
+    (m,) = out["rows"]
     # macro = mean of category pass@k = (1.0 + 0.0)/2 = 0.5
     assert m["macro"]["pass_at_k"] == 0.5
     # Both micro metrics are task-weighted: (1.0*10 + 0.0*30)/40 = 0.25.
@@ -178,6 +221,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
     leaves = [
         {
             "model": "m",
+            "config": "bare",
             "category": "empty",
             "pass_at_k": None,
             "avg_at_k": None,
@@ -187,6 +231,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
         },
         {
             "model": "m",
+            "config": "bare",
             "category": "populated",
             "pass_at_k": 0.8,
             "avg_at_k": 0.5,
@@ -196,7 +241,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
         },
     ]
 
-    model = au.combine(leaves)["models"]["m"]
+    (model,) = au.combine(leaves)["rows"]
 
     assert model["macro"] == {"pass_at_k": 0.8, "avg_at_k": 0.5}
     assert model["micro"] == {"pass_at_k": 0.8, "avg_at_k": 0.5}
@@ -204,10 +249,11 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
     assert model["incomplete"] is True
 
 
-def test_combine_rejects_duplicate_model_category_leaves() -> None:
+def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
     leaves = [
         {
             "model": "m",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
             "avg_at_k": 0.5,
@@ -217,6 +263,7 @@ def test_combine_rejects_duplicate_model_category_leaves() -> None:
         },
         {
             "model": "m",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.7,
             "avg_at_k": 0.4,
@@ -227,7 +274,8 @@ def test_combine_rejects_duplicate_model_category_leaves() -> None:
     ]
 
     with pytest.raises(
-        ValueError, match="Duplicate leaf for model 'm' and category 'context'"
+        ValueError,
+        match="Duplicate leaf for model 'm', config 'bare', category 'context'",
     ):
         au.combine(leaves)
 
@@ -235,8 +283,10 @@ def test_combine_rejects_duplicate_model_category_leaves() -> None:
 def test_render_markdown_sorts_by_macro_desc():
     combined = {
         "categories": ["autonomous", "context"],
-        "models": {
-            "lo": {
+        "rows": [
+            {
+                "model": "lo",
+                "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.1, "avg_at_k": 0.1},
                     "context": {"pass_at_k": 0.1, "avg_at_k": 0.1},
@@ -245,7 +295,9 @@ def test_render_markdown_sorts_by_macro_desc():
                 "micro": {"pass_at_k": 0.1, "avg_at_k": 0.1},
                 "incomplete": False,
             },
-            "hi": {
+            {
+                "model": "hi",
+                "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.9, "avg_at_k": 0.9},
                     "context": {"pass_at_k": 0.9, "avg_at_k": 0.9},
@@ -254,7 +306,7 @@ def test_render_markdown_sorts_by_macro_desc():
                 "micro": {"pass_at_k": 0.9, "avg_at_k": 0.9},
                 "incomplete": False,
             },
-        },
+        ],
     }
     md = au.render_markdown(combined, k=3)
     assert md.index("hi") < md.index("lo")  # higher macro ranked first
@@ -262,42 +314,56 @@ def test_render_markdown_sorts_by_macro_desc():
 
 
 def test_render_markdown_ranks_none_macro_last():
-    # A model with an incomplete/ghost result has a None macro (_mean([]) is
+    # A row with an incomplete/ghost result has a None macro (_mean([]) is
     # None). The sort key pushes None to the bottom; if that element were
-    # dropped or inverted, incomplete models would rank above scored ones.
+    # dropped or inverted, incomplete rows would rank above scored ones.
     combined = {
         "categories": ["context"],
-        "models": {
-            "ghost": {
+        "rows": [
+            {
+                "model": "ghost",
+                "config": "bare",
                 "categories": {},
                 "macro": {"pass_at_k": None, "avg_at_k": None},
                 "micro": {"pass_at_k": None, "avg_at_k": None},
                 "incomplete": True,
             },
-            "scored": {
+            {
+                "model": "scored",
+                "config": "bare",
                 "categories": {"context": {"pass_at_k": 0.2, "avg_at_k": 0.2}},
                 "macro": {"pass_at_k": 0.2, "avg_at_k": 0.2},
                 "micro": {"pass_at_k": 0.2, "avg_at_k": 0.2},
                 "incomplete": False,
             },
-        },
+        ],
     }
     md = au.render_markdown(combined, k=3)
     assert md.index("scored") < md.index("ghost")  # None macro ranked last
 
 
-def test_render_markdown_describes_expected_model_without_leaf_summaries() -> None:
-    combined = au.combine([], expected_models=["ghost"])
+def test_render_markdown_describes_expected_row_without_leaf_summaries() -> None:
+    combined = au.combine(
+        [],
+        expected_leaves=[
+            {"model": "ghost", "config": "bare", "category": "autonomous"}
+        ],
+    )
 
     markdown = au.render_markdown(combined, k=3)
 
-    assert "`ghost` — no leaf summaries found" in markdown
+    assert "`ghost / bare` — no leaf summaries found" in markdown
 
 
-def test_write_outputs_describes_expected_model_without_leaf_summaries(
+def test_write_outputs_describes_expected_row_without_leaf_summaries(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    combined = au.combine([], expected_models=["ghost"])
+    combined = au.combine(
+        [],
+        expected_leaves=[
+            {"model": "ghost", "config": "bare", "category": "autonomous"}
+        ],
+    )
 
     au.write_outputs(combined, k=3, out_dir=tmp_path, step_summary_path=None)
 
@@ -309,8 +375,10 @@ def test_write_outputs_describes_expected_model_without_leaf_summaries(
 def test_radar_results_shape():
     combined = {
         "categories": ["autonomous", "context"],
-        "models": {
-            "m": {
+        "rows": [
+            {
+                "model": "m",
+                "config": "bare",
                 "categories": {
                     "autonomous": {"pass_at_k": 0.5},
                     "context": {"pass_at_k": 0.7},
@@ -319,10 +387,12 @@ def test_radar_results_shape():
                 "micro": {"pass_at_k": 0.6},
                 "incomplete": False,
             }
-        },
+        ],
     }
     rr = au.radar_results(combined)
-    assert rr == [{"model": "m", "scores": {"autonomous": 0.5, "context": 0.7}}]
+    assert rr == [
+        {"model": "m / bare", "scores": {"autonomous": 0.5, "context": 0.7}}
+    ]
 
 
 def _leaf_dir(
@@ -335,13 +405,22 @@ def _leaf_dir(
     tasks=10,
     passed=15,
     incomplete=False,
+    config="bare",
 ):
     d = tmp_path / f"harbor-{model}-{category}".replace(":", "-").replace("/", "-")
     d.mkdir()
     (d / "summary.json").write_text(
         json.dumps(
             _summary(
-                model, k, pass_k, avg_k, tasks, passed, incomplete, category=category
+                model,
+                k,
+                pass_k,
+                avg_k,
+                tasks,
+                passed,
+                incomplete,
+                category=category,
+                config=config,
             )
         )
     )
@@ -356,7 +435,7 @@ def test_discover_leaves_rejects_numeric_metrics_for_zero_task_summary(
     )
     _leaf_dir(tmp_path, "m", "populated", pass_k=0.8, avg_k=0.5)
 
-    model = au.combine(au._discover_leaves(tmp_path))["models"]["m"]
+    (model,) = au.combine(au._discover_leaves(tmp_path))["rows"]
 
     assert model["macro"] == {"pass_at_k": 0.8, "avg_at_k": 0.5}
     assert str(malformed / "summary.json") in capsys.readouterr().out
@@ -425,7 +504,7 @@ def test_discover_leaves_warns_and_skips_oversized_task_weight(
 
     combined = au.combine(au._discover_leaves(tmp_path))
 
-    assert list(combined["models"]) == ["good"]
+    assert [r["model"] for r in combined["rows"]] == ["good"]
     assert str(malformed / "summary.json") in capsys.readouterr().out
 
 
@@ -497,7 +576,10 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", '["m"]')
+    monkeypatch.setenv(
+        "EXPECTED_LEAVES",
+        '[{"model": "m", "config": "bare", "category": "context"}]',
+    )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     out = tmp_path / "combined"
 
@@ -505,7 +587,10 @@ def test_main_fails_only_when_every_expected_model_is_incomplete(
 
     assert rc == 1
     assert (out / "unified_summary.json").exists()
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    assert (
+        "::error::Every expected (model, config) row is incomplete"
+        in capsys.readouterr().out
+    )
 
     _leaf_dir(tmp_path, "m", "context")
     assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
@@ -516,7 +601,10 @@ def test_main_fails_when_required_leaf_has_no_tasks(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", '["m"]')
+    monkeypatch.setenv(
+        "EXPECTED_LEAVES",
+        '[{"model": "m", "config": "bare", "category": "context"}]',
+    )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     _leaf_dir(
         tmp_path,
@@ -532,35 +620,48 @@ def test_main_fails_when_required_leaf_has_no_tasks(
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
     combined = json.loads((out / "unified_summary.json").read_text())
-    model = combined["models"]["m"]
+    (model,) = combined["rows"]
     assert rc == 1
     assert model["categories"]["context"]["incomplete"] is True
     assert model["incomplete"] is True
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    assert (
+        "::error::Every expected (model, config) row is incomplete"
+        in capsys.readouterr().out
+    )
 
 
-def test_main_ignores_unexpected_complete_model_for_expected_grid_failure(
+def test_main_passes_when_an_unexpected_row_is_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", '["missing"]')
+    # New contract: main fails only when EVERY row (expected or not) is incomplete.
+    # A complete unexpected (model, config) row therefore keeps the run green, while
+    # the missing expected leaf is still surfaced as a warning.
+    monkeypatch.setenv(
+        "EXPECTED_LEAVES",
+        '[{"model": "missing", "config": "bare", "category": "context"}]',
+    )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     _leaf_dir(tmp_path, "extra", "context")
     out = tmp_path / "combined"
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 1
-    assert "::error::Every expected model is incomplete" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert "::warning::missing / bare incomplete" in output
+    assert (
+        "::error::Every expected (model, config) row is incomplete" not in output
+    )
 
 
-def test_main_does_not_apply_expected_grid_failure_without_expected_models(
+def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.delenv("EXPECTED_MODELS", raising=False)
+    monkeypatch.delenv("EXPECTED_LEAVES", raising=False)
     monkeypatch.delenv("EXPECTED_CATEGORIES", raising=False)
     _leaf_dir(tmp_path, "m", "context", incomplete=True)
     out = tmp_path / "combined"
@@ -569,8 +670,10 @@ def test_main_does_not_apply_expected_grid_failure_without_expected_models(
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "::warning::Model m incomplete" in output
-    assert "::error::Every expected model is incomplete" not in output
+    assert "::warning::m / bare incomplete" in output
+    assert (
+        "::error::Every expected (model, config) row is incomplete" not in output
+    )
 
 
 def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
@@ -578,7 +681,10 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("EXPECTED_MODELS", '["m"]')
+    monkeypatch.setenv(
+        "EXPECTED_LEAVES",
+        '[{"model": "m", "config": "bare", "category": "context"}]',
+    )
     monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
     leaf_dir = _leaf_dir(tmp_path, "m", "context", k=2, pass_k=0.8, avg_k=0.5)
     assert au.read_leaf(leaf_dir)["pass_at_k"] == 0.8
@@ -588,9 +694,10 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
 
     output = capsys.readouterr().out
     combined = json.loads((out / "unified_summary.json").read_text())
+    (model,) = combined["rows"]
     assert rc == 1
     assert "rollouts_per_task is 2; expected 3" in output
-    assert combined["models"]["m"]["missing_categories"] == ["context"]
+    assert model["missing_categories"] == ["context"]
 
 
 def test_combine_flags_missing_leaves_against_expected_grid():
@@ -598,6 +705,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     leaves = [
         {
             "model": "a",
+            "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.9,
             "avg_at_k": 0.9,
@@ -607,6 +715,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
         },
         {
             "model": "a",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
             "avg_at_k": 0.8,
@@ -616,6 +725,7 @@ def test_combine_flags_missing_leaves_against_expected_grid():
         },
         {
             "model": "b",
+            "config": "bare",
             "category": "autonomous",
             "pass_at_k": 1.0,
             "avg_at_k": 1.0,
@@ -626,19 +736,26 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     ]
     out = au.combine(
         leaves,
-        expected_models=["a", "b"],
+        expected_leaves=[
+            {"model": "a", "config": "bare", "category": "autonomous"},
+            {"model": "a", "config": "bare", "category": "context"},
+            {"model": "b", "config": "bare", "category": "autonomous"},
+            {"model": "b", "config": "bare", "category": "context"},
+        ],
         expected_categories=["autonomous", "context"],
     )
+    rows = {r["model"]: r for r in out["rows"]}
     assert out["categories"] == ["autonomous", "context"]
-    assert out["models"]["a"]["incomplete"] is False
-    assert out["models"]["b"]["incomplete"] is True
-    assert out["models"]["b"]["missing_categories"] == ["context"]
+    assert rows["a"]["incomplete"] is False
+    assert rows["b"]["incomplete"] is True
+    assert rows["b"]["missing_categories"] == ["context"]
 
 
 def test_combine_excludes_display_only_categories_from_expected_completeness() -> None:
     leaves = [
         {
             "model": "m",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
             "avg_at_k": 0.5,
@@ -648,6 +765,7 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
         },
         {
             "model": "extra",
+            "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.7,
             "avg_at_k": 0.4,
@@ -657,11 +775,16 @@ def test_combine_excludes_display_only_categories_from_expected_completeness() -
         },
     ]
 
-    out = au.combine(leaves, expected_models=["m"], expected_categories=["context"])
+    out = au.combine(
+        leaves,
+        expected_leaves=[{"model": "m", "config": "bare", "category": "context"}],
+        expected_categories=["context"],
+    )
 
+    rows = {r["model"]: r for r in out["rows"]}
     assert out["categories"] == ["context", "autonomous"]
-    assert out["models"]["m"]["missing_categories"] == []
-    assert out["models"]["m"]["incomplete"] is False
+    assert rows["m"]["missing_categories"] == []
+    assert rows["m"]["incomplete"] is False
 
 
 @pytest.mark.parametrize("unexpected_incomplete", [False, True])
@@ -671,6 +794,7 @@ def test_combine_scores_only_expected_categories(
     leaves = [
         {
             "model": "m",
+            "config": "bare",
             "category": "context",
             "pass_at_k": 0.8,
             "avg_at_k": 0.5,
@@ -680,6 +804,7 @@ def test_combine_scores_only_expected_categories(
         },
         {
             "model": "m",
+            "config": "bare",
             "category": "autonomous",
             "pass_at_k": 0.0,
             "avg_at_k": 0.0,
@@ -689,7 +814,13 @@ def test_combine_scores_only_expected_categories(
         },
     ]
 
-    model = au.combine(leaves, expected_categories=["context"])["models"]["m"]
+    # The required category set now comes from the expected-leaf grid, so scoring
+    # is scoped to "context" even though the "autonomous" leaf is present.
+    (model,) = au.combine(
+        leaves,
+        expected_leaves=[{"model": "m", "config": "bare", "category": "context"}],
+        expected_categories=["context"],
+    )["rows"]
 
     assert set(model["categories"]) == {"context", "autonomous"}
     assert model["macro"] == {"pass_at_k": 0.8, "avg_at_k": 0.5}
@@ -697,17 +828,99 @@ def test_combine_scores_only_expected_categories(
     assert model["incomplete"] is False
 
 
-def test_combine_includes_expected_model_with_no_leaves():
-    out = au.combine([], expected_models=["ghost"], expected_categories=["autonomous"])
-    assert "ghost" in out["models"]
-    assert out["models"]["ghost"]["incomplete"] is True
-    assert out["models"]["ghost"]["missing_categories"] == ["autonomous"]
+def test_combine_includes_expected_row_with_no_leaves():
+    out = au.combine(
+        [],
+        expected_leaves=[
+            {"model": "ghost", "config": "bare", "category": "autonomous"}
+        ],
+        expected_categories=["autonomous"],
+    )
+    rows = {(r["model"], r["config"]): r for r in out["rows"]}
+    assert ("ghost", "bare") in rows
+    assert rows[("ghost", "bare")]["incomplete"] is True
+    assert rows[("ghost", "bare")]["missing_categories"] == ["autonomous"]
 
 
-def test_combine_marks_expected_model_without_leaves_incomplete_without_categories() -> (
-    None
-):
-    out = au.combine([], expected_models=["ghost"])
+# --- Task 2: (model, config, category) rows -----------------------------------
 
-    assert out["models"]["ghost"]["missing_categories"] == []
-    assert out["models"]["ghost"]["incomplete"] is True
+
+def test_read_leaf_includes_config(tmp_path):
+    import json
+
+    import aggregate_unified
+
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "summary.json").write_text(
+        json.dumps(
+            {
+                "model": "openai:gpt",
+                "category": "autonomous",
+                "config": "bare",
+                "rollouts_per_task": 3,
+                "totals": {"tasks": 1, "passed": 1},
+                "incomplete": False,
+                "pass@3": 1.0,
+                "avg@3": 1.0,
+            }
+        )
+    )
+    result = aggregate_unified.read_leaf(leaf, expected_rollouts=3)
+    assert result["config"] == "bare"
+
+
+def _leaf(model, config, category, pass_at_k):
+    return {
+        "model": model,
+        "config": config,
+        "category": category,
+        "pass_at_k": pass_at_k,
+        "avg_at_k": pass_at_k,
+        "tasks": 1,
+        "passed": int(pass_at_k),
+        "incomplete": False,
+    }
+
+
+def test_combine_rows_are_model_config_pairs():
+    import aggregate_unified
+
+    leaves = [
+        _leaf("openai:gpt", "bare", "autonomous", 1.0),
+        _leaf("openai:gpt", "dcode", "autonomous", 0.0),
+    ]
+    expected_leaves = [
+        {"model": "openai:gpt", "config": "bare", "category": "autonomous"},
+        {"model": "openai:gpt", "config": "dcode", "category": "autonomous"},
+    ]
+    combined = aggregate_unified.combine(
+        leaves, expected_leaves=expected_leaves, expected_categories=["autonomous"]
+    )
+    keys = {(r["model"], r["config"]) for r in combined["rows"]}
+    assert keys == {("openai:gpt", "bare"), ("openai:gpt", "dcode")}
+
+
+def test_combine_same_model_configs_do_not_collide():
+    import aggregate_unified
+
+    # Two configs, same model+category: must NOT raise a duplicate-leaf error.
+    leaves = [
+        _leaf("openai:gpt", "bare", "autonomous", 1.0),
+        _leaf("openai:gpt", "dcode", "autonomous", 0.5),
+    ]
+    combined = aggregate_unified.combine(leaves)
+    assert len(combined["rows"]) == 2
+
+
+def test_combine_raises_on_true_triple_duplicate():
+    import pytest
+
+    import aggregate_unified
+
+    leaves = [
+        _leaf("openai:gpt", "bare", "autonomous", 1.0),
+        _leaf("openai:gpt", "bare", "autonomous", 0.0),
+    ]
+    with pytest.raises(ValueError, match="Duplicate leaf"):
+        aggregate_unified.combine(leaves)

@@ -1,0 +1,33 @@
+.github/scripts/test_unified_workflow.py
+  s_29b15f4502019c::t_8d2550a2052b8b 188-190
+  s_29b15f4502019c::t_8fd1bba9ff52b7 93,95,97-103,116-126,128-165,169-187
+  s_29b15f4502019c::t_2a783e10ad67e0 127
+  s_29b15f4502019c::t_6bad70c18d2e7d 166-168
+  s_29b15f4502019c::t_8617a162e6698a 94
+  s_29b15f4502019c::t_6eebb5a759ab3a 191-192
+.github/scripts/test_unified_prep.py
+  s_29b15f4502019c::t_b6bc846de25c70 182
+  s_29b15f4502019c::t_4cc459bf3d736b 185-197,201
+  s_29b15f4502019c::t_1918995fc7ab95 73-74
+  s_29b15f4502019c::t_30e11bce9e1ba9 198-200,202
+.github/scripts/unified_prep.py
+  s_29b15f4502019c::t_0569d747fffd99 274-290
+.github/workflows/unified_evals.yml
+  s_29b15f4502019c::t_f3206700148efa 49,58,62-64,71-167,175-178,181-182,186-190,195-205,216
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "4376b7f3bbe037cd5660c28e8a951de2deecb7fa",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

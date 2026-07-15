@@ -1,0 +1,24 @@
+.github/scripts/test_unified_prep.py
+  s_29b15f4502019c::t_045108d0f5765b 26,29,31-32,38-49
+  s_29b15f4502019c::t_4c417e450d0740 250
+.github/scripts/unified_prep.py
+  s_29b15f4502019c::t_7f1ef667ebee96 10
+  s_29b15f4502019c::t_808bd6dd320972 25
+  s_29b15f4502019c::t_71dc32e114eeb1 116-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.13",
+  "base_commit_sha": "4a6d1ed6b3551ecba7f229c7e8d70d9896a0ea79",
+  "prompts": {},
+  "sessions": {
+    "s_29b15f4502019c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17a33c94-f664-4fda-9f39-f43f8e942f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

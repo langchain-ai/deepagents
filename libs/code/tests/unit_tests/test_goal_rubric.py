@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -835,6 +836,57 @@ class TestCreateGoalCriteriaAgent:
 
         assert not hasattr(module, "generate_goal_rubric")
         assert not hasattr(module, "generate_goal_amendment")
+
+    async def test_preserves_async_callable_as_coroutine_tool(self) -> None:
+        async def fetch_context(query: str) -> str:
+            """Fetch async context."""
+            await asyncio.sleep(0)
+            return f"context for {query}"
+
+        graph = MagicMock()
+        graph.with_config.return_value = "configured-graph"
+        with (
+            patch("langchain.agents.create_agent", return_value=graph) as create_agent,
+            patch(
+                "langchain.agents.middleware.HumanInTheLoopMiddleware",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=None,
+                context_tools=[fetch_context],
+            )
+
+        context_tool = create_agent.call_args.kwargs["tools"][0]
+        assert context_tool.coroutine is fetch_context
+        assert context_tool.func is None
+        assert await context_tool.ainvoke({"query": "login"}) == "context for login"
+
+    @pytest.mark.parametrize(
+        ("name", "has_repository"),
+        [
+            ("GoalProposal", False),
+            ("ls", True),
+            ("read_file", True),
+            ("glob", True),
+            ("grep", True),
+        ],
+    )
+    def test_rejects_context_tool_names_reserved_by_criteria_agent(
+        self,
+        name: str,
+        has_repository: bool,
+    ) -> None:
+        context_tool = TestCriteriaHitlPolicy._tool(name, "Conflicting tool")
+        backend = MagicMock() if has_repository else None
+
+        with pytest.raises(ValueError, match=name):
+            create_goal_criteria_agent(
+                model=MagicMock(),
+                repository_backend=backend,
+                context_tools=[context_tool],
+            )
 
 
 class TestGoalCriteriaRequestValidation:

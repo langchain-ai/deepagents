@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import inspect
 import json
 import logging
 import threading
@@ -57,6 +58,7 @@ _REPOSITORY_TOOL_RESULT_LIMIT = 12_000
 _REPOSITORY_RECURSION_LIMIT = _REPOSITORY_TOOL_CALL_LIMIT * 2 + 2
 _REPOSITORY_OPERATION_BUDGET_CACHE_LIMIT = 128
 _REPOSITORY_TOOL_NAMES = frozenset({"ls", "read_file", "glob", "grep"})
+_STRUCTURED_OUTPUT_TOOL_NAME = "GoalProposal"
 _WEB_SEARCH_CALL_LIMIT = 3
 _CONVERSATION_CONTEXT_MESSAGE_LIMIT = 8
 _CONVERSATION_CONTEXT_MESSAGE_TEXT_LIMIT = 1_600
@@ -1253,6 +1255,9 @@ def create_goal_criteria_agent(
 
     Returns:
         Compiled criteria agent graph.
+
+    Raises:
+        ValueError: If a context tool conflicts with a criteria-agent tool.
     """
     from deepagents.middleware import FilesystemMiddleware
     from langchain.agents import create_agent
@@ -1263,10 +1268,27 @@ def create_goal_criteria_agent(
     from deepagents_code._cli_context import CLIContextSchema
     from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
-    normalized_context_tools = [
-        tool if isinstance(tool, BaseTool) else StructuredTool.from_function(func=tool)
-        for tool in context_tools
-    ]
+    normalized_context_tools: list[BaseTool] = []
+    for tool in context_tools:
+        if isinstance(tool, BaseTool):
+            normalized_context_tools.append(tool)
+        elif inspect.iscoroutinefunction(tool):
+            normalized_context_tools.append(
+                StructuredTool.from_function(coroutine=tool)
+            )
+        else:
+            normalized_context_tools.append(StructuredTool.from_function(func=tool))
+
+    reserved_names = {_STRUCTURED_OUTPUT_TOOL_NAME}
+    if repository_backend is not None:
+        reserved_names.update(_REPOSITORY_TOOL_NAMES)
+    conflicting_names = sorted(
+        tool.name for tool in normalized_context_tools if tool.name in reserved_names
+    )
+    if conflicting_names:
+        names = ", ".join(conflicting_names)
+        msg = f"Context tool names conflict with criteria-agent tools: {names}."
+        raise ValueError(msg)
     middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(persist_model_state=False),
         _GoalContextFallbackMiddleware(),

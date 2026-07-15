@@ -134,7 +134,7 @@ on:
           - dcode
           - bare
           - tau3
-          - oolong-rlm
+          - bare-ci
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true

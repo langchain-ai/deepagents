@@ -57,20 +57,19 @@ harbor run --path datasets/oolong-synth --n-tasks 1 -a oracle -e docker -k 1
 The adapter source (HF loader, official scorer, task generator) lives in
 `libs/evals/harbor_adapters/oolong/`.
 
-## Arms: RLM vs. baseline
+## Arms
 
-The task is agent-agnostic, so the arm is a `harbor run` choice, not task content:
+The task is agent-agnostic, so the arm is a `harbor run` choice, not task content.
+Both arms use the same generic Deep Agent; they differ only by the code interpreter:
 
-- **Code-interpreter (RLM)** — the `oolong_code_interpreter` graph fans out
-  `general-purpose` subagents from inside a QuickJS `eval` program and aggregates
-  in JavaScript. In the manual Harbor workflow, select it with `agent_impl=oolong-rlm`.
-- **Baseline** — the existing `bare_deepagent` graph against the same dataset.
-  Select it with `agent_impl=bare`.
+- **Baseline** — the `bare_deepagent` graph. Select it with `agent_impl=bare`.
+- **Code interpreter** — the `bare_ci_deepagent` graph: identical to `bare` plus
+  the `CodeInterpreterMiddleware` (a QuickJS `eval` tool). Nothing is tailored to
+  OOLONG, so `bare` vs `bare-ci` isolates the code interpreter's effect. Select it
+  with `agent_impl=bare-ci`.
 
 Both dispatch with `dataset_path=datasets/oolong-synth`. Locally, after
 `make stage-harbor-local-deps` + `python -m harbor_adapters.oolong.main --populate
 datasets/oolong-synth`, run either graph with
-`harbor run --agent langgraph --ak graph=oolong_code_interpreter` (or
-`graph=bare_deepagent`) against `--path datasets/oolong-synth`. The subagent model
-defaults to the root model; override with `OOLONG_SUB_MODEL` for the paper's
-asymmetric setup.
+`harbor run --agent langgraph --ak graph=bare_ci_deepagent` (or
+`graph=bare_deepagent`) against `--path datasets/oolong-synth`.

@@ -532,11 +532,11 @@ jobs:
               HARBOR_AGENT_GRAPH=tau3_deepagent
               HARBOR_AGENT_LABEL="tau3 conversational deepagent"
               ;;
-            oolong-rlm)
-              # OOLONG code-interpreter arm (pair with dataset_path=datasets/oolong-synth).
-              # The no-code-interpreter baseline is `bare` against the same dataset.
-              HARBOR_AGENT_GRAPH=oolong_code_interpreter
-              HARBOR_AGENT_LABEL="oolong RLM (code interpreter)"
+            bare-ci)
+              # Generic bare Deep Agent with the code interpreter (`eval`) enabled;
+              # differs from `bare` only by the CodeInterpreterMiddleware.
+              HARBOR_AGENT_GRAPH=bare_ci_deepagent
+              HARBOR_AGENT_LABEL="bare create_deep_agent + code interpreter"
               ;;
             *)
               echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"

@@ -996,6 +996,29 @@ class TestStartupAutoUpdate:
         assert exc_info.value.code == 130
         launch.assert_not_called()
 
+    def test_project_mcp_server_selection_cancel_aborts_before_tui(self) -> None:
+        """Esc in the server selector cancels launch before Textual starts."""
+        from deepagents_code.main import _ProjectMcpTrustPromptOutcome
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch(
+                "deepagents_code.main._check_mcp_project_trust",
+                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+        ):
+            cli_main()
+
+        launch.assert_not_called()
+
 
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
@@ -2934,17 +2957,16 @@ class TestCheckMcpProjectTrustPrompt:
             in capsys.readouterr().err
         )
 
-    def test_always_allow_picker_cancel_denies(
+    def test_always_allow_picker_cancel_aborts_launch(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Backing out of the picker (Esc) denies rather than allowing the session.
+        """Backing out of the server picker returns a launch cancellation.
 
         Regression guard: a cancelled picker must not be read as "remember none,
-        allow this session" — that would silently grant trust the user backed
-        out of.
+        allow this session" or as a denial that continues into the TUI.
         """
         from deepagents_code import model_config
         from deepagents_code.main import (
@@ -3000,7 +3022,7 @@ class TestCheckMcpProjectTrustPrompt:
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
-        assert decision is False
+        assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
         assert not user_config.exists()
         assert "Cancelled" in capsys.readouterr().err
 

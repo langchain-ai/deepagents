@@ -64,7 +64,7 @@ class _ProjectMcpTrustPromptOutcome(Enum):
     """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
 
     CANCELLED = "cancelled"
-    """The user backed out of a nested prompt without granting trust."""
+    """The user backed out of a nested prompt; the caller aborts the launch."""
 
 
 _PROJECT_MCP_PICKER_VISIBLE_ROWS = 8
@@ -3012,7 +3012,14 @@ def _select_project_servers_to_persist(
 
 def _check_mcp_project_trust(
     *, trust_flag: bool = False
-) -> bool | Literal[_ProjectMcpTrustPromptOutcome.INTERRUPTED] | None:
+) -> (
+    bool
+    | Literal[
+        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
+        _ProjectMcpTrustPromptOutcome.CANCELLED,
+    ]
+    | None
+):
     """Check whether project-level MCP servers should be trusted.
 
     Both stdio and remote (http/sse) project entries require approval —
@@ -3025,8 +3032,8 @@ def _check_mcp_project_trust(
     returns `True`. Otherwise it shows an inline action selector for unresolved
     servers: allow once, remember selected servers, or deny. Remembered approvals
     are scoped to this project and each exact server definition. The remember
-    picker starts with nothing selected; Esc denies, and no server loads without
-    an explicit allow action.
+    picker starts with nothing selected; Esc cancels the launch, and no server
+    loads without an explicit allow action.
 
     Servers already resolved by the user's scoped approvals, the
     `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
@@ -3043,8 +3050,9 @@ def _check_mcp_project_trust(
     Returns:
         `True` to allow project servers, `False` to deny (including when the
             user's trust policy could not be read), `None` when there are no
-            project servers whose fate this prompt decides, or `INTERRUPTED`
-            when the user presses Ctrl+C at the approval prompt.
+            project servers whose fate this prompt decides, `INTERRUPTED` when
+            the user presses Ctrl+C, or `CANCELLED` when the user backs out of
+            server selection.
     """
     from deepagents_code.mcp_tools import (
         ProjectServerSummary,
@@ -3181,7 +3189,7 @@ def _check_mcp_project_trust(
             f"[dim]Cancelled; denied {server_count} project MCP {noun}.[/dim]",
             highlight=False,
         )
-        return False
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
     if not names:
         prompt_console.print(
             f"[dim]No servers selected; denied {server_count} project MCP "
@@ -4344,6 +4352,8 @@ def cli_main() -> None:
                 sys.exit(0)
             if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
+            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                return
 
             # Run Textual TUI
             return_code = 0

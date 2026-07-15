@@ -1110,6 +1110,25 @@ class TestGetSystemPromptNonInteractive:
         assert "{todo_guidance}" not in prompt
 
 
+class TestGetSystemPromptVerifyBeforeDone:
+    """Tests for the verification-before-completion guidance."""
+
+    def test_prompt_requires_reconciling_completion_claim_with_test_output(
+        self,
+    ) -> None:
+        """The prompt must forbid claiming success while failures are present."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "reconciling that claim against the actual output" in prompt
+        assert "failure markers" in prompt
+        assert "failed_iteration=" in prompt
+        assert "do NOT claim success" in prompt
+
+
 class TestGetSystemPromptCwdOSError:
     """Tests for Path.cwd() OSError handling in get_system_prompt."""
 
